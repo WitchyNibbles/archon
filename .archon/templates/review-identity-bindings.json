@@ -1,0 +1,29 @@
+{
+  "bindings": [
+    {
+      "principal": {
+        "provider": "github",
+        "subject": "replace-with-authenticated-user-id"
+      },
+      "actors": [
+        {
+          "actor": "replace-with-review-actor",
+          "roles": ["reviewer"]
+        }
+      ]
+    },
+    {
+      "principal": {
+        "provider": "github",
+        "subject": "replace-with-release-manager-id"
+      },
+      "actors": [
+        {
+          "actor": "replace-with-release-manager-actor",
+          "roles": ["qa_engineer"],
+          "waiverAuthorities": ["manager"]
+        }
+      ]
+    }
+  ]
+}

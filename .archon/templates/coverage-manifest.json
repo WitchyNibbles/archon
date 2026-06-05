@@ -1,0 +1,11 @@
+{
+  "run_id": "<run-id>",
+  "profile": "standard_delivery | legacy_rewrite | debug_heavy",
+  "required_categories": ["services", "tests"],
+  "thresholds": {
+    "critical_item_coverage": 0.8,
+    "critical_item_validation": 0.6,
+    "callsite_coverage": 0.85,
+    "runtime_trace_coverage": 0.75
+  }
+}

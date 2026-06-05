@@ -1,0 +1,16 @@
+{
+  "cycle": 1,
+  "proof_id": "<proof-id>",
+  "phase_before": "inventory",
+  "phase_after": "dependency_mapping",
+  "evidence_refs": ["src/core/service.ts:1"],
+  "coverage_delta": {
+    "fully_analyzed": 1
+  },
+  "blocking_gap_delta": {
+    "closed": 1,
+    "opened": 0
+  },
+  "next_target": "<coverage-item-id>",
+  "why_next": "highest-risk uncovered dependency"
+}

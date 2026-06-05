@@ -1,0 +1,47 @@
+{
+  "fixtures": [
+    {
+      "name": "allow reviewer principal",
+      "authContext": {
+        "provider": "github",
+        "subject": "replace-with-authenticated-user-id",
+        "verified": true
+      },
+      "review": {
+        "actor": "replace-with-review-actor",
+        "reviewerRole": "reviewer",
+        "reviewState": "passed"
+      },
+      "expect": {
+        "outcome": "allow",
+        "principal": {
+          "provider": "github",
+          "subject": "replace-with-authenticated-user-id",
+          "verified": true
+        },
+        "context": {
+          "actor": "replace-with-review-actor",
+          "actorRole": "reviewer",
+          "waiverAuthority": "none"
+        }
+      }
+    },
+    {
+      "name": "deny unverified principal",
+      "authContext": {
+        "provider": "github",
+        "subject": "replace-with-unverified-user-id",
+        "verified": false
+      },
+      "review": {
+        "actor": "replace-with-review-actor",
+        "reviewerRole": "reviewer",
+        "reviewState": "passed"
+      },
+      "expect": {
+        "outcome": "deny",
+        "errorIncludes": ["not verified"]
+      }
+    }
+  ]
+}
