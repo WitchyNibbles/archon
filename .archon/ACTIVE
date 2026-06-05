@@ -1,0 +1,6 @@
+# Archon Active Task Control File
+# Fields set by archon runtime when a task is active:
+#   task_id=<task-id>
+#   state=active|complete|done
+#   run_id=<run-id>
+# Leave empty when no task is active.

@@ -1,0 +1,31 @@
+node_modules/
+dist/
+.env
+.env.archon
+*.local
+
+# Runtime artifacts
+.archon/work/daemon/
+.archon/work/briefs/
+.archon/work/plans/
+.archon/work/tasks/
+.archon/work/reviews/
+.archon/work/council/
+.archon/work/proofs/
+
+# Keep the directory skeletons
+!.archon/work/briefs/.gitkeep
+!.archon/work/plans/.gitkeep
+!.archon/work/tasks/.gitkeep
+!.archon/work/reviews/.gitkeep
+!.archon/work/council/.gitkeep
+!.archon/work/proofs/.gitkeep
+!.archon/work/daemon/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
