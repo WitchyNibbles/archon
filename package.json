@@ -1,0 +1,38 @@
+{
+  "name": "archon",
+  "version": "0.1.0",
+  "description": "Manager-led workflow control layer for Claude Code",
+  "type": "module",
+  "engines": { "node": ">=22.0.0" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/admin.ts",
+    "archon": "tsx src/admin.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:quality": "tsc --noEmit && vitest run",
+    "check:workflow": "bash scripts/check-archon-workflow.sh",
+    "setup:local": "docker compose up -d",
+    "doctor": "tsx src/admin.ts doctor",
+    "status": "tsx src/admin.ts status",
+    "ops": "tsx src/admin.ts ops",
+    "mcp": "tsx src/mcp/server.ts",
+    "ui": "tsx src/ui/server.ts",
+    "install:project": "tsx src/install/cli.ts",
+    "scaffold:workflow": "tsx src/install/cli.ts scaffold-workflow"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "pg": "^8.13.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

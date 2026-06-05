@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "archon": {
+      "command": "tsx",
+      "args": ["src/mcp/server.ts"]
+    }
+  }
+}
