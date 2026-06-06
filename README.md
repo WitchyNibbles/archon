@@ -1,6 +1,8 @@
 # Archon
 
-Manager-led workflow control layer for Claude Code. Adaptation of [devgod](https://github.com/WitchyNibbles/devgod) for Claude Code infrastructure.
+Archon is an opt-in overlay for Claude Code that enforces a manager-led workflow control layer. It ships production-oriented package checks that verify agent catalog completeness, manifest hygiene, skill file coverage, and install contract integrity before any release.
+
+Adapted from [devgod](https://github.com/WitchyNibbles/devgod) for Claude Code infrastructure.
 
 Archon enforces:
 - Explicit scope and bounded task execution

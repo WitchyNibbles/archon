@@ -1,0 +1,30 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "isolated": true,
+    "contextOptions": {
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    }
+  },
+  "capabilities": ["core", "testing", "storage", "devtools"],
+  "snapshot": {
+    "mode": "full"
+  },
+  "imageResponses": "allow",
+  "outputDir": ".archon/work/artifacts/playwright",
+  "outputMode": "file",
+  "console": {
+    "level": "warning"
+  },
+  "testIdAttribute": "data-testid",
+  "timeouts": {
+    "action": 5000,
+    "navigation": 15000,
+    "expect": 5000
+  },
+  "saveSession": false,
+  "sharedBrowserContext": false
+}
