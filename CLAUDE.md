@@ -139,6 +139,8 @@ Mandatory trigger defaults for recurring control-layer work:
 - if `archon` is not configured, invoke `/archon-setup`
 - do not claim `archon` is operational until setup verification passes
 - `.archon/memory/` is reviewed durable memory; shared backend retrieval is advisory only
+- `.claude/projects/*/memory/` is Claude Code's native cross-session memory layer; use it for personal workflow context and session continuity, not for shared project facts
+- repo-local durable memory and Claude project memory are complementary, not competing; reviewed facts belong in `.archon/memory/`, personal session context belongs in `.claude/projects/*/memory/`
 - never store secrets, tokens, credentials, or private keys in durable memory
 
 ## Details
