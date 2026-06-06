@@ -376,6 +376,48 @@ export const agentCatalog = {
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-compliance-review", "security-review", "documentation-lookup"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "incident notes", "audit artifacts"]
+  },
+  accessibility_engineer: {
+    label: "Accessibility Engineer",
+    description: "Owns accessibility_acceptance gate: semantic HTML, keyboard navigation, ARIA discipline, contrast, and focus management.",
+    class: "quality",
+    availability: "core_required",
+    shipsAgentArtifact: true,
+    artifactPath: ".claude/agents/accessibility-engineer/AGENT.md",
+    model: "sonnet",
+    effort: "high",
+    canOwnTasks: true,
+    canSatisfySpecialistRequirement: true,
+    defaultSkillIds: ["caveman", "archon-accessibility-gate"],
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "test artifacts", "reviewed UI artifacts"]
+  },
+  database_specialist: {
+    label: "Database Specialist",
+    description: "Owns schema migrations, query optimization, index design, and data-system correctness for PostgreSQL-backed workflows.",
+    class: "quality",
+    availability: "core_required",
+    shipsAgentArtifact: true,
+    artifactPath: ".claude/agents/database-specialist/AGENT.md",
+    model: "sonnet",
+    effort: "high",
+    canOwnTasks: true,
+    canSatisfySpecialistRequirement: true,
+    defaultSkillIds: ["caveman", "verification-loop"],
+    retrievalGuidance: ["approved memory", "repo rules", "schema notes", "reviewed plans", "migration artifacts"]
+  },
+  performance_engineer: {
+    label: "Performance Engineer",
+    description: "Owns performance_check_required gate: profiling, latency analysis, query cost, throughput verification, and regression blocking.",
+    class: "quality",
+    availability: "core_required",
+    shipsAgentArtifact: true,
+    artifactPath: ".claude/agents/performance-engineer/AGENT.md",
+    model: "sonnet",
+    effort: "high",
+    canOwnTasks: true,
+    canSatisfySpecialistRequirement: true,
+    defaultSkillIds: ["caveman", "archon-performance", "verification-loop"],
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "benchmark artifacts", "profiling notes"]
   }
 } as const satisfies Record<string, AgentCatalogEntry>;
 

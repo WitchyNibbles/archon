@@ -588,6 +588,7 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     ".claude/skills/archon-infra-ops/SKILL.md",
     ".claude/skills/archon-intake/SKILL.md",
     ".claude/skills/archon-memory/SKILL.md",
+    ".claude/skills/archon-performance/SKILL.md",
     ".claude/skills/archon-planning/SKILL.md",
     ".claude/skills/archon-product-analysis/SKILL.md",
     ".claude/skills/archon-product-framing/SKILL.md",
@@ -600,12 +601,16 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     ".claude/skills/archon-tdd/SKILL.md",
     ".claude/skills/archon-technical-writing/SKILL.md",
     ".claude/skills/archon-ux-research/SKILL.md",
+    ".claude/skills/caveman/SKILL.md",
+    ".claude/skills/documentation-lookup/SKILL.md",
+    ".claude/skills/mcp-server-patterns/SKILL.md",
     ".claude/skills/superpowers-finishing-development-branch/SKILL.md",
     ".claude/skills/superpowers-systematic-debugging/SKILL.md",
     ".claude/skills/superpowers-test-driven-development/SKILL.md",
     ".claude/skills/superpowers-using-git-worktrees/SKILL.md",
     ".claude/skills/superpowers-verification-before-completion/SKILL.md",
-    ".claude/skills/superpowers-writing-plans/SKILL.md"
+    ".claude/skills/superpowers-writing-plans/SKILL.md",
+    ".claude/skills/verification-loop/SKILL.md"
   ];
 
   const expectedAgentFiles = listCatalogAgentArtifactPaths();
@@ -2706,6 +2711,7 @@ test("npm pack dry run includes the new agent, skill, and retrieval policy surfa
     ".claude/skills/archon-infra-ops/SKILL.md",
     ".claude/skills/archon-intake/SKILL.md",
     ".claude/skills/archon-memory/SKILL.md",
+    ".claude/skills/archon-performance/SKILL.md",
     ".claude/skills/archon-planning/SKILL.md",
     ".claude/skills/archon-product-analysis/SKILL.md",
     ".claude/skills/archon-product-framing/SKILL.md",
@@ -2718,12 +2724,16 @@ test("npm pack dry run includes the new agent, skill, and retrieval policy surfa
     ".claude/skills/archon-tdd/SKILL.md",
     ".claude/skills/archon-technical-writing/SKILL.md",
     ".claude/skills/archon-ux-research/SKILL.md",
+    ".claude/skills/caveman/SKILL.md",
+    ".claude/skills/documentation-lookup/SKILL.md",
+    ".claude/skills/mcp-server-patterns/SKILL.md",
     ".claude/skills/superpowers-finishing-development-branch/SKILL.md",
     ".claude/skills/superpowers-systematic-debugging/SKILL.md",
     ".claude/skills/superpowers-test-driven-development/SKILL.md",
     ".claude/skills/superpowers-using-git-worktrees/SKILL.md",
     ".claude/skills/superpowers-verification-before-completion/SKILL.md",
-    ".claude/skills/superpowers-writing-plans/SKILL.md"
+    ".claude/skills/superpowers-writing-plans/SKILL.md",
+    ".claude/skills/verification-loop/SKILL.md"
   ];
 
   const expectedAgentFiles = listCatalogAgentArtifactPaths();
