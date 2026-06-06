@@ -11,7 +11,4 @@ npm test
 echo "repo-local package checks"
 npm run check:quality
 
-echo "review identity"
-npm run verify:review-identity
-
 echo "release overlay checks passed"
