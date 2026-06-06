@@ -105,7 +105,7 @@ When building agent orchestration or workflow dashboard surfaces:
 
 ## Quality Gate
 
-Apply `.archon/rules/frontend-quality-rubric.md` before every review submission. Any hard-fail pattern blocks the review — do not submit work that fails these checks.
+Apply the frontend quality rubric from `.archon/rules/frontend-quality-rubric.md` before every review submission. Any hard-fail pattern blocks the review — do not submit work that fails these checks.
 
 Run `/archon-frontend-taste` anti-generic checklist before handoff. Every item must pass.
 

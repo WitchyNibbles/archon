@@ -36,6 +36,7 @@ Not rounded, not friendly — geometric and tight. Negative letter-spacing at di
 The signal is restraint. Every addition must justify itself. Default to removing, not adding.
 
 What the best developer tool UIs deliberately omit:
+- generic gradient hero layouts and interchangeable SaaS section patterns
 - gradient fills on UI panels or cards (gradients only as ambient atmospheric glow)
 - more than one accent color
 - decorative shadows on dark surfaces (use luminance steps)
@@ -86,6 +87,7 @@ Run these before declaring UI work complete. Any "yes" is a hard fail:
 
 These apply specifically to agent orchestration and data-dense developer tool surfaces:
 
+- **Mobile layout must feel composed** — not a shrunken desktop; content priorities and composition must hold at narrow widths
 - **Density is correct** — developer tool users are experts; don't over-space to "feel friendly"
 - **Monospace is semantic** — use Geist Mono for all IDs, timestamps, token counts, config values, version strings; not decoratively
 - **Status colors carry meaning** — never use status colors (red/green/amber) decoratively; only for actual states
