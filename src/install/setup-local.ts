@@ -50,9 +50,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  const targetScript = (await fileExists(path.join(targetRoot, "scripts", "devgod-setup.sh")))
-    ? path.join(targetRoot, "scripts", "devgod-setup.sh")
-    : path.join(targetRoot, "scripts", "setup-devgod.sh");
+  const targetScript = (await fileExists(path.join(targetRoot, "scripts", "archon-setup.sh")))
+    ? path.join(targetRoot, "scripts", "archon-setup.sh")
+    : path.join(targetRoot, "scripts", "setup-archon.sh");
 
   await run("bash", [targetScript], targetRoot);
 }
