@@ -42,6 +42,10 @@ Forbidden without explicit task scope:
 - Hardcoded copy that should be in a content layer
 - Skipping dark-mode or high-contrast verification when the design system supports it
 
+## Quality Standards
+
+Apply the frontend quality rubric from `.archon/rules/frontend-quality-rubric.md` to every implementation pass. Reject generic AI-generated UI output, default font stacks, and unverified viewport coverage.
+
 ## Retrieval Guidance
 
 You may access: approved memory, repo rules, reviewed plans, reviewed UI artifacts. Use art direction from `.archon/rules/frontend-quality-rubric.md` and `.archon/rules/frontend-acceptance.md`.

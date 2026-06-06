@@ -37,8 +37,8 @@ If `product-state.md` or `task-queue.json` is missing, initialize it from `.arch
    - rollback notes where the change can require rollback
    - owner role
    - expected artifacts
-6. Implement the smallest vertical slice that can produce real evidence and advances the full product.
-7. Run the task verification commands exactly as written.
+6. Implement the smallest vertical slice that can produce real evidence and advances the full product, not just the current subtask.
+7. Run the task verification commands exactly as written, including good-path and bad-path coverage required by the task gates.
 8. If verification fails or acceptance evidence is incomplete, invoke `/archon-repair-loop`.
 9. Repeat repair until verification passes, a real blocker exists, or the bounded repair budget is exhausted.
 10. Record review evidence according to task class.
@@ -47,10 +47,12 @@ If `product-state.md` or `task-queue.json` is missing, initialize it from `.arch
     - `.archon/work/task-queue.json`
     - `.archon/ACTIVE`
 12. Select the next unblocked task and continue immediately unless a stop condition is met.
+13. Do not wait for the user to say "continue" between internal tasks; only stop for real blockers, approval-matrix actions, or explicit planning-only requests.
 
 ## Hard rules
 
 - do not stop after intake, architecture, planning, or one implementation slice
 - a completed phase is not a completed product
 - never mark work done without verification evidence
+- never stop after a single passing command when other required unit, integration, E2E, negative-case, or review evidence is still missing
 - stop only when all product-level acceptance criteria are complete, a real blocker requires user input, verification cannot proceed after documented repair attempts, or the user explicitly requested planning only

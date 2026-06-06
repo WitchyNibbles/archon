@@ -484,3 +484,14 @@ export function claudeMdManagedBlock(): string {
 export function dotClaudeMdManagedBlock(): string {
   return managedDotClaudeMdBlock;
 }
+
+// Backward-compatibility aliases (devgod names → archon names)
+export const mergeAgentsMd = mergeClaudeMd;
+export const mergeDotAgentsMd = mergeDotClaudeMd;
+export const gitNexusCodexConfigFragment = gitNexusMcpConfigFragment;
+export const playwrightCodexConfigFragment = playwrightMcpConfigFragment;
+export const grafanaCodexConfigFragment = grafanaMcpConfigFragment;
+
+// mergeCodexConfig: devgod used TOML; archon uses JSON (mergeClaudeSettings + mergeMcpJson).
+// For backward compatibility, alias to mergeClaudeSettings which merges JSON settings.
+export const mergeCodexConfig = mergeClaudeSettings;

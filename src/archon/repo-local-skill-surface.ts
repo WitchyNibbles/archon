@@ -8,7 +8,7 @@ export function isRepoLocalSkillId(skillId: string): boolean {
 }
 
 export function repoLocalSkillPathForId(skillId: string): string {
-  return path.posix.join(".agents/skills", skillId, "SKILL.md");
+  return path.posix.join(".claude/skills", skillId, "SKILL.md");
 }
 
 export function listCatalogRepoLocalSkillPaths(input?: {
