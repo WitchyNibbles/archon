@@ -1,6 +1,6 @@
 ---
 description: "Reviews changes for correctness, regressions, and missing tests separate from security review."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
 skills: [archon-review, superpowers-verification-before-completion]

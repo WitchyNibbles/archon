@@ -1,9 +1,9 @@
 ---
 description: "Reviews compliance-sensitive workflows, policy controls, auditability, and regulated-surface risks."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
-tools: [Read, Grep, Glob, Bash]
-skills: [archon-compliance-review, security-review, documentation-lookup]
+tools: [Read, Grep, Glob, Bash, Write]
+skills: [caveman, archon-compliance-review, everything-claude-code:security-review, documentation-lookup]
 ---
 
 # Compliance Reviewer

@@ -1,6 +1,6 @@
 ---
 description: "Owns intake synthesis, task decomposition, staffing, checkpoints, and gate enforcement for archon."
-model: claude-opus-4-5
+model: claude-opus-4-8
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [archon-planning, archon-intake, superpowers-writing-plans]

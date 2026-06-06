@@ -25,6 +25,11 @@ function isLikelySubstantiveInitialPrompt(prompt) {
     return false;
   }
 
+  // Bypass phrase: let the user escape the gate for trivial tasks
+  if (normalized.includes("archon:bypass")) {
+    return false;
+  }
+
   if (
     /^(what|why|how|when|where|which|who|show|list)\b/i.test(normalized) &&
     !/\b(build|create|implement|design|fix|refactor|migrate|workflow|feature|system|api)\b/i.test(normalized)
@@ -63,6 +68,15 @@ function isAllowedTaskTarget(target, context) {
 export function evaluatePreToolUse(payload, context) {
   const toolName = payload?.tool_name;
   const command = extractToolCommand(payload);
+
+  if (toolName === "Agent") {
+    if (context.allowedWriteScope.length > 0) {
+      return {
+        additionalContext: `spawning subagent while write scope is active (${context.allowedWriteScope.join(", ")}); ensure the subagent prompt does not exceed this scope`
+      };
+    }
+    return undefined;
+  }
 
   if (toolName === "apply_patch") {
     const targets = parseApplyPatchTargets(command);
@@ -117,7 +131,20 @@ export function evaluatePreToolUse(payload, context) {
 }
 
 export function evaluatePostToolUse(payload, context) {
-  if (payload?.tool_name !== "Bash") {
+  const toolName = payload?.tool_name;
+
+  if (toolName === "Write" || toolName === "Edit") {
+    const isError = payload?.tool_response?.isError === true;
+    if (isError && context.activeTaskId) {
+      const filePath = payload?.tool_input?.file_path ?? "unknown";
+      return {
+        additionalContext: `Write/Edit failed for ${filePath}; verify file state before claiming the change complete`
+      };
+    }
+    return undefined;
+  }
+
+  if (toolName !== "Bash") {
     return undefined;
   }
 
@@ -192,12 +219,12 @@ export function evaluateUserPromptSubmit(payload, context) {
   const prompt = typeof payload?.prompt === "string" ? payload.prompt : "";
   if (!context.activeTaskId && isLikelySubstantiveInitialPrompt(prompt)) {
     return {
-      additionalContext: [
-        "new substantive archon request: run intake first",
-        "ask up to 4 targeted clarifying questions before planning or implementation",
-        "cover intended outcome, primary user or operator, constraints or non-goals, and acceptance criteria",
-        "if clarification is not required, state explicit operating assumptions"
-      ].join("; ")
+      decision: "block",
+      reason: [
+        "archon: intake required before implementation.",
+        "Run /archon-intake to open the intake brief and set the active task.",
+        "For trivial tasks only, include 'archon:bypass' anywhere in your message to skip intake."
+      ].join(" ")
     };
   }
 

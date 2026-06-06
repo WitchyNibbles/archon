@@ -1,9 +1,9 @@
 ---
 description: "Owns agent orchestration, prompt/runtime contracts, tool surfaces, and execution-safety behavior."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-agent-runtime, anthropic-mcp-builder, mcp-server-patterns, verification-loop]
+skills: [caveman, claude-api, archon-agent-runtime, anthropic-mcp-builder, mcp-server-patterns, verification-loop]
 ---
 
 # Agent Runtime Engineer
