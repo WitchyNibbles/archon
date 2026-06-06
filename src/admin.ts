@@ -10755,12 +10755,18 @@ export async function executeExportDocsCommandFromArgs(
   const markdown = new ObsidianMarkdownRenderer().render(summary, request);
   const writer = new ObsidianVaultWriter(config.vaultPath!);
   const targetPath = await writer.writeNote(markdown, buildObsidianTargetPath(request, summary), args.includes("--overwrite"));
+  const vaultIndexPath = await writer.writeVaultIndex(
+    request.destination,
+    projectSlug,
+    request.dateFrom ?? new Date().toISOString().slice(0, 10)
+  );
 
   return {
     request,
     summary,
     targetPath,
-    message: `Exported Obsidian note:\n${targetPath}`,
+    vaultIndexPath,
+    message: `Exported Obsidian note:\n${targetPath}\nVault index updated:\n${vaultIndexPath}`,
     matchedEntries: entries.length
   };
 }

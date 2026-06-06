@@ -297,6 +297,18 @@ export function grafanaMcpConfigFragment(): string {
   }, null, 2);
 }
 
+export function obsidianMcpConfigFragment(): string {
+  return JSON.stringify({
+    mcpServers: {
+      obsidian: {
+        command: "npx",
+        args: ["@bitbonsai/mcpvault@latest", "${ARCHON_OBSIDIAN_VAULT_PATH}"],
+        env: {}
+      }
+    }
+  }, null, 2);
+}
+
 export function playwrightMcpConfigFragment(): string {
   return JSON.stringify({
     mcpServers: {

@@ -6,6 +6,7 @@ export interface InstallOptions {
   dryRun?: boolean;
   withGitNexus?: boolean;
   withGrafana?: boolean;
+  withObsidian?: boolean;
 }
 
 export interface InstallSummary {
