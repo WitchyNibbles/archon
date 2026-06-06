@@ -120,6 +120,10 @@ Mandatory trigger defaults for recurring control-layer work:
 - performance profiling, latency-sensitive paths, throughput, or `performance_check_required` gate: `performance-engineer`
 - schema migrations, query optimization, index design, or `database-specialist` gate work: `database-specialist`
 - accessibility gate, semantic HTML, keyboard flow, or `accessibility_acceptance` gate: `accessibility-engineer`
+- visual UI token decisions, color system, typography, or motion: `archon-visual-standards` before any CSS or styling work
+- visible UI implementation, component patterns, dashboards, or real-time data views: `archon-ui-patterns`
+- UI taste review, anti-generic check, or visual direction declaration: `archon-frontend-taste`
+- design system token consistency, component normalization, or cross-screen UI coherence: `archon-design-system`
 
 ## Git hygiene
 

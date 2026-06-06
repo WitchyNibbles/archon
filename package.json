@@ -21,6 +21,8 @@
     ".claude/skills/archon-compliance-review/SKILL.md",
     ".claude/skills/archon-debugging/SKILL.md",
     ".claude/skills/archon-design-system/SKILL.md",
+    ".claude/skills/archon-visual-standards/SKILL.md",
+    ".claude/skills/archon-ui-patterns/SKILL.md",
     ".claude/skills/archon-docs-research/SKILL.md",
     ".claude/skills/archon-e2e/SKILL.md",
     ".claude/skills/archon-eval-engineering/SKILL.md",
