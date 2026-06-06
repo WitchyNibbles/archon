@@ -1,4 +1,5 @@
 import { cp, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
@@ -2489,7 +2490,7 @@ async function main() {
 }
 
 const isEntrypoint =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 
 if (isEntrypoint) {
   main().catch((error: unknown) => {
