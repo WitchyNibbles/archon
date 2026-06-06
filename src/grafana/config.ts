@@ -39,7 +39,7 @@ export interface GrafanaRepoSignalResolution {
 }
 
 function isSafeDevgodEnvKey(candidate: string): boolean {
-  return /^DEVGOD_[A-Z0-9_]+$/.test(candidate);
+  return /^ARCHON_[A-Z0-9_]+$/.test(candidate) || /^DEVGOD_[A-Z0-9_]+$/.test(candidate);
 }
 
 function parseDevgodEnvContent(content: string): NodeJS.ProcessEnv {

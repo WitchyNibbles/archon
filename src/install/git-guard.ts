@@ -106,8 +106,8 @@ export async function verifyGitGuard(cwd = process.cwd()): Promise<GitGuardVerif
     }
   }
 
-  if (!(await fileExistsAsRegularFile(path.join(repoRoot, ".devgod/install-manifest.json")))) {
-    problems.push("missing .devgod/install-manifest.json");
+  if (!(await fileExistsAsRegularFile(path.join(repoRoot, ".archon/install-manifest.json")))) {
+    problems.push("missing .archon/install-manifest.json");
   }
 
   return {

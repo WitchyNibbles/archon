@@ -66,6 +66,7 @@ ${workflowContractBlock}
 - default branch prefixes are \`feature/\`, \`bugfix/\`, \`hotfix/\`, \`release/\`, \`chore/\`, \`refactor/\`, \`docs/\`, \`test/\`, \`ci/\`, and \`perf/\`
 - this git-flow-style default overrides GitHub MCP naming suggestions unless a consuming repo's higher-precedence guideline says otherwise
 - in consuming repos, \`git_operator\` must not stage \`.archon/\`, \`.agents/\`, \`.claude/\`, or \`CLAUDE.md\` unless the task explicitly targets archon/control-layer installation or maintenance
+- do not use \`codex\` in branch names, commit subjects, PR titles, or PR bodies
 - keep commits atomic and briefly named
 
 ${CLAUDE_END}`;
@@ -87,6 +88,7 @@ const managedDotClaudeMdBlock = `${DOT_CLAUDE_BEGIN}
 - markdown review files are evidence summaries, not reviewer authority
 - authenticated reviewer identity and waiver authority must come from runtime policy or another authenticated principal-binding source
 - branch from updated \`origin/main\` before task or plan work and prefer \`feature/\`, \`bugfix/\`, \`hotfix/\`, \`release/\`, \`chore/\`, \`refactor/\`, \`docs/\`, \`test/\`, \`ci/\`, or \`perf/\` prefixes unless a consuming repo overrides them
+- keep \`codex\` out of branch names, commit subjects, PR titles, and PR bodies
 - package owns \`src/\`, \`scripts/\`, \`.agents/\`, \`.claude/\`, \`.archon/rules/\`, and \`.archon/templates/\`
 - live work state belongs in \`.archon/work/\`
 - reviewed memory in \`.archon/memory/\` is canonical; retrieval is advisory; never store secrets there
