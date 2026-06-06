@@ -65,6 +65,7 @@
     ".claude/agents/memory-curator/AGENT.md",
     ".claude/agents/ml-engineer/AGENT.md",
     ".claude/agents/mobile-engineer/AGENT.md",
+    ".claude/agents/observability-engineer/AGENT.md",
     ".claude/agents/performance-engineer/AGENT.md",
     ".claude/agents/planner/AGENT.md",
     ".claude/agents/product-analyst/AGENT.md",
