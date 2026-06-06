@@ -1,3 +1,5 @@
+> **Archived** — This was the porting plan used to build archon from devgod. It references devgod source paths and Codex-era conventions that no longer apply. Kept for lineage context only; do not use as a current implementation guide.
+
 # Archon: Claude Code Orchestration Platform
 
 > Adaptation of [devgod](../devgod) for Claude Code infrastructure.

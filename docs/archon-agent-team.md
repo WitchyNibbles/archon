@@ -40,6 +40,9 @@ The canonical source of truth is [`src/archon/agent-catalog.ts`](/home/eimi/proj
 | `ux_researcher` | domain_specialist | domain_optional | `archon-ux-research`, `archon-frontend-taste`, `market-research` |
 | `product_analyst` | domain_specialist | domain_optional | `archon-product-analysis`, `market-research` |
 | `compliance_reviewer` | domain_specialist | domain_optional | `archon-compliance-review`, `security-review`, `documentation-lookup` |
+| `accessibility_engineer` | quality | core_required | `archon-accessibility-gate`, `e2e-testing`, `web-design-guidelines` |
+| `database_specialist` | quality | core_required | `postgres-patterns`, `database-migrations`, `verification-loop` |
+| `performance_engineer` | quality | core_required | `archon-performance`, `verification-loop`, `backend-patterns` |
 
 ## Notes
 

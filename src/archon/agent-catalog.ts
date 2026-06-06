@@ -28,7 +28,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-planning", "archon-intake", "superpowers-writing-plans"],
+    defaultSkillIds: ["archon-planning", "archon-intake", "superpowers-writing-plans", "everything-claude-code:planner"],
     retrievalGuidance: ["approved memory", "reviewed briefs", "reviewed plans", "repo rules"]
   },
   product_strategist: {
@@ -56,7 +56,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-architecture", "everything-claude-code:backend-patterns", "everything-claude-code:security-review"],
+    defaultSkillIds: ["archon-architecture", "everything-claude-code:backend-patterns", "everything-claude-code:security-review", "everything-claude-code:agentic-engineering"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "architecture notes"]
   },
   docs_researcher: {
@@ -70,7 +70,7 @@ export const agentCatalog = {
     effort: "medium",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-docs-research", "documentation-lookup"],
+    defaultSkillIds: ["archon-docs-research", "documentation-lookup", "everything-claude-code:search-first"],
     retrievalGuidance: ["approved memory", "repo rules", "approved briefs", "local technical notes"]
   },
   backend_engineer: {
@@ -84,7 +84,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-execution", "everything-claude-code:backend-patterns", "everything-claude-code:api-design"],
+    defaultSkillIds: ["archon-execution", "everything-claude-code:backend-patterns", "everything-claude-code:api-design", "everything-claude-code:tdd-workflow"],
     retrievalGuidance: ["approved memory", "repo rules", "runbooks", "reviewed retrieval notes"]
   },
   frontend_designer: {
@@ -130,7 +130,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-infra-ops", "archon-setup", "archon-release-readiness"],
+    defaultSkillIds: ["archon-infra-ops", "archon-setup", "archon-release-readiness", "everything-claude-code:deployment-patterns", "everything-claude-code:docker-patterns"],
     retrievalGuidance: ["approved memory", "repo rules", "setup notes", "runbooks", "incident learnings"]
   },
   reviewer: {
@@ -205,7 +205,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-tdd", "superpowers-test-driven-development"],
+    defaultSkillIds: ["archon-tdd", "superpowers-test-driven-development", "everything-claude-code:tdd-workflow"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "task packets", "verification artifacts"]
   },
   "e2e-runner": {
@@ -219,7 +219,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-e2e", "everything-claude-code:e2e-testing"],
+    defaultSkillIds: ["archon-e2e", "everything-claude-code:e2e-testing", "anthropic-webapp-testing"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "setup notes", "test artifacts"]
   },
   "release-readiness": {
@@ -289,7 +289,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "claude-api", "archon-agent-runtime", "anthropic-mcp-builder", "mcp-server-patterns", "verification-loop"],
+    defaultSkillIds: ["caveman", "claude-api", "archon-agent-runtime", "anthropic-mcp-builder", "mcp-server-patterns", "verification-loop", "everything-claude-code:agentic-engineering", "everything-claude-code:continuous-agent-loop"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "runtime traces", "tooling integration notes"]
   },
   mobile_engineer: {
@@ -417,6 +417,20 @@ export const agentCatalog = {
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "everything-claude-code:backend-patterns"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "benchmark artifacts", "profiling notes"]
+  },
+  observability_engineer: {
+    label: "Observability Engineer",
+    description: "Owns observability gate: Grafana dashboards, distributed tracing, SLI/SLO design, alerting, and log-signal quality.",
+    class: "quality",
+    availability: "core_optional",
+    shipsAgentArtifact: true,
+    artifactPath: ".claude/agents/observability-engineer/AGENT.md",
+    model: "sonnet",
+    effort: "high",
+    canOwnTasks: true,
+    canSatisfySpecialistRequirement: true,
+    defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "everything-claude-code:backend-patterns"],
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "runbooks", "benchmark artifacts", "Grafana config at src/grafana/"]
   }
 } as const satisfies Record<string, AgentCatalogEntry>;
 

@@ -34,7 +34,7 @@ Claude Code is powerful, but raw autonomy without structure leads to drift, unve
 | Agent says it's done → you trust it | Evidence required before completion is accepted |
 | Anyone can merge anything | Authenticated reviewer, QA, and security gates |
 | Session ends, context lost | Resumable state via PostgreSQL checkpoint |
-| One big agent doing everything | 25 specialist roles, right model for the job |
+| One big agent doing everything | 28 specialist roles, right model for the job |
 | Ad-hoc prompting | Typed workflow skills with declared contracts |
 
 ---
@@ -46,7 +46,7 @@ Claude Code is powerful, but raw autonomy without structure leads to drift, unve
 - **🔐 Review gates** — `reviewer`, `qa_engineer`, and `security_reviewer` must sign off on substantive work
 - **♻️ Resumable state** — checkpoint/resume so long-running work survives session breaks
 - **🧠 Reasoning discipline** — facts, assumptions, and hypotheses are separated and labelled
-- **⚖️ Role-based orchestration** — 25 specialist agents, each with retrieval policies and effort routing
+- **⚖️ Role-based orchestration** — 28 specialist agents, each with retrieval policies and effort routing
 
 ---
 
@@ -55,8 +55,8 @@ Claude Code is powerful, but raw autonomy without structure leads to drift, unve
 ```
 archon/
 ├── .claude/
-│   ├── agents/          # 25 specialist role definitions (AGENT.md per role)
-│   ├── skills/          # 37 workflow skills (SKILL.md per skill)
+│   ├── agents/          # 28 specialist role definitions (AGENT.md per role)
+│   ├── skills/          # 42 workflow skills (SKILL.md per skill)
 │   └── hooks/           # Session lifecycle hooks
 ├── .archon/
 │   ├── rules/           # Detailed policy documents
@@ -78,7 +78,7 @@ archon/
 
 ## 👥 The Agent Team
 
-Archon ships **25 specialist roles** arranged into four classes:
+Archon ships **28 specialist roles** arranged into four classes:
 
 ### 🧭 Manager Roles
 | Role | Purpose |
@@ -106,6 +106,9 @@ Archon ships **25 specialist roles** arranged into four classes:
 | `e2e-runner` | Critical user flow verification |
 | `release-readiness` | Pre-release quality gate |
 | `eval_engineer` | Skill regression, grader benchmarks |
+| `accessibility_engineer` | Accessibility acceptance gate — semantic HTML, keyboard, ARIA, contrast |
+| `database_specialist` | Schema migrations, query optimization, PostgreSQL correctness |
+| `performance_engineer` | Latency profiling, throughput, benchmark regressions |
 
 ### 📚 Knowledge Roles
 | Role | Purpose |
@@ -126,10 +129,10 @@ Archon routes tasks to the right Claude model automatically:
 
 | Task Class | Model | Effort |
 |---|---|---|
-| Planning, architecture, council | `claude-opus-4` | high |
-| Implementation, review, QA | `claude-sonnet-4` | high |
-| Docs, knowledge, memory | `claude-haiku-4` | medium |
-| Trivial mechanical tasks | `claude-haiku-4` | low |
+| Planning, architecture, council | `claude-opus-4-8` | high |
+| Implementation, review, QA | `claude-sonnet-4-6` | high |
+| Docs, knowledge, memory | `claude-haiku-4-5-20251001` | medium |
+| Trivial mechanical tasks | `claude-haiku-4-5-20251001` | low |
 
 ---
 
@@ -138,19 +141,36 @@ Archon routes tasks to the right Claude model automatically:
 Invoke any skill from within a Claude Code session with a slash command:
 
 ```
-/archon-intake          ✦ Start or clarify a substantive task
-/archon-planning        ✦ Structure and scope a task
-/archon-architecture    ✦ Architecture council review
-/archon-execution       ✦ Run a delivery task with full gates
-/archon-review          ✦ Invoke review gate evidence gathering
-/archon-git-operator    ✦ Stage, slice, and commit safely
-/archon-autopilot       ✦ Run the full delivery loop autonomously
-/archon-debugging       ✦ Systematic root-cause investigation
-/archon-docs-research   ✦ Research docs, evidence, and prior art
-/archon-memory          ✦ Promote live state to durable memory
-/archon-tdd             ✦ Test-driven development enforcement
-/archon-e2e             ✦ End-to-end flow verification
-/archon-infra-ops       ✦ Infrastructure and environment work
+/archon-intake              ✦ Start or clarify a substantive task
+/archon-planning            ✦ Structure and scope a task
+/archon-architecture        ✦ Architecture council review
+/archon-execution           ✦ Run a delivery task with full gates
+/archon-autopilot           ✦ Run the full delivery loop autonomously
+/archon-review              ✦ Invoke review gate evidence gathering
+/archon-qa-verification     ✦ QA verification and regression checks
+/archon-tdd                 ✦ Test-driven development enforcement
+/archon-e2e                 ✦ End-to-end flow verification
+/archon-accessibility-gate  ✦ Accessibility acceptance gate
+/archon-performance         ✦ Performance profiling and benchmark verification
+/archon-release-readiness   ✦ Pre-release quality gate
+/archon-debugging           ✦ Systematic root-cause investigation
+/archon-repair-loop         ✦ Autonomous repair when a task gets stuck
+/archon-git-operator        ✦ Stage, slice, and commit safely
+/archon-gitnexus            ✦ Cross-repo git coordination
+/archon-infra-ops           ✦ Infrastructure and environment work
+/archon-setup               ✦ First-time project bootstrap
+/archon-docs-research       ✦ Research docs, evidence, and prior art
+/archon-technical-writing   ✦ Operator docs, release notes, onboarding
+/archon-memory              ✦ Promote live state to durable memory
+/archon-product-framing     ✦ Product framing and acceptance clarity
+/archon-product-analysis    ✦ Metrics framing and product-signal analysis
+/archon-ux-research         ✦ User-flow investigation and experience quality
+/archon-compliance-review   ✦ Compliance-sensitive review of policy and controls
+/archon-design-system       ✦ Design system discipline and visual consistency
+/archon-frontend-taste      ✦ Frontend quality and UI taste direction
+/archon-agent-runtime       ✦ Hook, MCP, and tool-contract changes
+/archon-eval-engineering    ✦ Benchmark datasets, graders, eval rigor
+/archon-skill-evals         ✦ Skill regression and quality scoring
 ```
 
 Skills live in `.claude/skills/`. Each `SKILL.md` declares its trigger, output contract, and allowed write scope.
@@ -171,8 +191,8 @@ Skills live in `.claude/skills/`. Each `SKILL.md` declares its trigger, output c
 git clone https://github.com/WitchyNibbles/archon.git
 cd archon
 npm install
-cp .env.example .env.archon
-# Fill in .env.archon with your config
+cp .env.example .env
+# Fill in .env with your config
 ```
 
 ### Start the backing stores
@@ -222,7 +242,7 @@ Every council review must name a **dissent owner** responsible for arguing at le
 
 ## 🌿 Environment Variables
 
-Copy `.env.example` to `.env.archon` and configure:
+Copy `.env.example` to `.env` and configure:
 
 ```bash
 # PostgreSQL — workflow state, task queue, run history
@@ -263,8 +283,9 @@ npm run check:quality   # TypeScript + tests
 | [`CLAUDE.md`](./CLAUDE.md) | Operating rules, workflow contract, role chain |
 | [`.archon/rules/`](./.archon/rules/) | Detailed policy: review gates, write scope, reasoning quality |
 | [`docs/archon-agent-team.md`](./docs/archon-agent-team.md) | Full agent team reference matrix |
-| [`.claude/agents/`](./.claude/agents/) | 25 specialist role definitions |
-| [`.claude/skills/`](./.claude/skills/) | 37 workflow skill definitions |
+| [`docs/global-setup.md`](./docs/global-setup.md) | Installing archon into a consuming project |
+| [`.claude/agents/`](./.claude/agents/) | 28 specialist role definitions |
+| [`.claude/skills/`](./.claude/skills/) | 42 workflow skill definitions |
 
 ---
 
