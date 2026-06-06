@@ -17,7 +17,7 @@ Any of these blocks approval. No exceptions without explicit council waiver:
 - more than one accent color in the palette
 - `box-shadow` for elevation on dark surfaces instead of luminance steps
 - border radius above 8px on data or infrastructure surfaces
-- default system font stack with no stated typographic direction
+- default font stack with no stated typographic direction
 - pure `#FFFFFF` body text on dark backgrounds
 - spacing values not on the 8px grid (arbitrary padding)
 - status colors (red/green/amber) used decoratively, not to communicate actual state
@@ -103,12 +103,12 @@ Run before any handoff or review submission. Every "yes" is a hard fail:
 
 For `ui_surface = visual_change` or `ui_surface = interactive_flow`, all of the following must be cited in the `qa_engineer` review:
 
-- Desktop viewport screenshot (≥1280px wide)
-- Mobile viewport screenshot (≤480px wide)
-- Happy path walkthrough
-- Empty state (no data) rendering
-- Error/failure state rendering
-- Playwright evidence refs or equivalent replayable artifacts
+- one desktop viewport (screenshot, ≥1280px)
+- one mobile viewport (screenshot, ≤480px)
+- one happy path walkthrough
+- one empty state (no data) rendering
+- one error/failure state rendering
+- cited Playwright evidence refs in the `qa_engineer` review
 
 ---
 
