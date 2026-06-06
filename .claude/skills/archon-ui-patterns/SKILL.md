@@ -28,6 +28,7 @@ For all new frontend surfaces built with or for Archon:
 | Workflow graph | React Flow v12 + Dagre | Industry standard for agent DAG/node visualization |
 | Virtualization | TanStack Virtual | Log streams and long lists — only render visible rows |
 | Real-time | SSE (EventSource) + polling | SSE for log streams; TanStack Query polling for status/metrics |
+| Animation | motion/react | Spring physics, layout transitions, status pulse — GPU-accelerated 120fps |
 | Typography | Geist Sans + Geist Mono | See `archon-visual-standards` |
 
 Do not use: Next.js App Router (RSC model fights real-time client state), MUI (wrong aesthetic), Chakra UI (fights customization).
@@ -468,6 +469,96 @@ No top navigation bar — developer tools use sidebar-primary navigation.
 Use `EventSource` natively — no wrapper library needed. PostgreSQL `LISTEN/NOTIFY` → SSE is the cleanest bridge from Archon's runtime state.
 
 Apply TanStack Virtual for log panels and any list that can exceed 100 items. Never render more than 100 DOM nodes for a log list.
+
+---
+
+## Pattern 11: Motion Patterns (motion/react)
+
+Install: `npm install motion`
+
+Use Motion for three recurring patterns in Archon UIs. Do not animate for decoration — every animation must communicate state change, reveal sequence, or spatial relationship.
+
+### Status Pulse (running state indicator)
+
+Replace Tailwind's `animate-pulse` with a Motion spring for a more credible "live" signal:
+
+```tsx
+import { motion } from 'motion/react'
+
+function RunningDot() {
+  return (
+    <motion.span
+      className="block h-1.5 w-1.5 rounded-full bg-cyan-400"
+      animate={{ opacity: [1, 0.3, 1] }}
+      transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
+    />
+  )
+}
+```
+
+### Layout Transition (list additions and removals)
+
+Use `AnimatePresence` + `layout` when tasks enter or leave a kanban column or review queue:
+
+```tsx
+import { AnimatePresence, motion } from 'motion/react'
+
+function TaskList({ tasks }: { tasks: TaskRecord[] }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <AnimatePresence initial={false}>
+        {tasks.map(task => (
+          <motion.div
+            key={task.id}
+            layout
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
+          >
+            <TaskCard task={task} />
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  )
+}
+```
+
+### Stagger Reveal (initial page load or view switch)
+
+When a panel first mounts and populates (e.g. trace detail, review gate queue), stagger children to avoid a wall of content appearing at once:
+
+```tsx
+import { motion } from 'motion/react'
+
+const staggerContainer = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.04 } },
+}
+
+const staggerItem = {
+  hidden: { opacity: 0, y: 6 },
+  show:   { opacity: 1, y: 0, transition: { duration: 0.12, ease: 'easeOut' } },
+}
+
+function ReviewGateList({ gates }: { gates: ReviewGate[] }) {
+  return (
+    <motion.div variants={staggerContainer} initial="hidden" animate="show" className="space-y-2">
+      {gates.map(gate => (
+        <motion.div key={gate.role} variants={staggerItem}>
+          <ReviewGateRow gate={gate} />
+        </motion.div>
+      ))}
+    </motion.div>
+  )
+}
+```
+
+Rules:
+- Duration 100–200ms for UI feedback; 150–250ms for reveals. Never exceed 300ms on state-driven transitions.
+- Always add `prefers-reduced-motion` support: wrap animation values with `useReducedMotion()` and fall back to instant transitions.
+- Do not animate data cells, table rows in steady state, or background surfaces. Animate only items whose presence, absence, or state change is meaningful.
 
 ---
 
