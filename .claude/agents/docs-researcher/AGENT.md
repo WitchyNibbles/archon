@@ -3,7 +3,7 @@ description: "Verifies APIs, framework behavior, release notes, and standards fr
 model: claude-haiku-4-5-20251001
 effort: medium
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-docs-research, documentation-lookup]
+skills: [archon-docs-research, documentation-lookup, everything-claude-code:search-first]
 ---
 
 # Docs Researcher

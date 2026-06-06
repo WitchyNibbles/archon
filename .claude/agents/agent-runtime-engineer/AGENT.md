@@ -3,7 +3,7 @@ description: "Owns agent orchestration, prompt/runtime contracts, tool surfaces,
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [caveman, claude-api, archon-agent-runtime, anthropic-mcp-builder, mcp-server-patterns, verification-loop]
+skills: [caveman, claude-api, archon-agent-runtime, anthropic-mcp-builder, mcp-server-patterns, verification-loop, everything-claude-code:agentic-engineering, everything-claude-code:continuous-agent-loop]
 ---
 
 # Agent Runtime Engineer
