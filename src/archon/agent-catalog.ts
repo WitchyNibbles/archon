@@ -418,6 +418,20 @@ export const agentCatalog = {
     defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "everything-claude-code:backend-patterns"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "benchmark artifacts", "profiling notes"]
   },
+  context_manager: {
+    label: "Context Manager",
+    description: "Assembles retrieval context for agents from the correct authority layer: .archon/memory/, Postgres runtime, Obsidian vault, and Qdrant semantic index.",
+    class: "knowledge",
+    availability: "core_required",
+    shipsAgentArtifact: true,
+    artifactPath: ".claude/agents/context-manager/AGENT.md",
+    model: "haiku",
+    effort: "medium",
+    canOwnTasks: true,
+    canSatisfySpecialistRequirement: true,
+    defaultSkillIds: ["archon-context-retrieval", "archon-memory", "everything-claude-code:search-first", "everything-claude-code:iterative-retrieval"],
+    retrievalGuidance: ["all retrieval layers", ".archon/memory/", "Postgres runtime records", "Obsidian vault", "Qdrant semantic index"]
+  },
   observability_engineer: {
     label: "Observability Engineer",
     description: "Owns observability gate: Grafana dashboards, distributed tracing, SLI/SLO design, alerting, and log-signal quality.",
