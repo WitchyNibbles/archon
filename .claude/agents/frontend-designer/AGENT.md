@@ -52,6 +52,7 @@ You may access: approved memory, repo rules, reviewed plans, reviewed UI artifac
 
 ## Output Style
 
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Call out all interaction states: empty, loading, error, success
 - Invoke `/archon-frontend-taste` for taste and quality passes

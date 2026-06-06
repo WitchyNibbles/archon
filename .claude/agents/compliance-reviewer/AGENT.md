@@ -25,4 +25,5 @@ You may access: approved memory, repo rules, reviewed plans, incident notes, aud
 ## Output Style
 
 - State regulatory or policy basis for every finding
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted

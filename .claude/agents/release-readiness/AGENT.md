@@ -47,5 +47,6 @@ You may access: approved memory, repo rules, reviewed plans, setup notes, releas
 ## Output Style
 
 - State blocking gaps explicitly before any approval
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Invoke `/archon-release-readiness` skill for readiness gate structure

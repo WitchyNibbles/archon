@@ -46,5 +46,6 @@ You may access: approved memory, repo rules, setup notes, incident notes, prior 
 ## Output Style
 
 - Show the failing command, the error, the fix, and the verification command
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Invoke `/archon-debugging` for systematic failure analysis

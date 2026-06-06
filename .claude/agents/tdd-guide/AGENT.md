@@ -46,5 +46,6 @@ You may access: approved memory, repo rules, reviewed plans, task packets, verif
 ## Output Style
 
 - Show expected failure output before writing implementation
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Invoke `/archon-tdd` skill for sequencing structure

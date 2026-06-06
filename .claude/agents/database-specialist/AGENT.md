@@ -46,4 +46,5 @@ Forbidden without explicit task scope:
 
 - Include migration rollback plan with every schema change
 - Show EXPLAIN ANALYZE output for query optimizations
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted

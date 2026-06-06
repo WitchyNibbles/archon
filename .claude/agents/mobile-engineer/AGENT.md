@@ -26,4 +26,5 @@ You may access: approved memory, repo rules, reviewed plans, reviewed UI artifac
 ## Output Style
 
 - Show viewport sizes tested and accessibility checks performed
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted

@@ -49,5 +49,6 @@ You may access: approved memory, repo rules, reviewed plans, task packets, revie
 
 - Findings first, ordered by severity
 - Include residual risk and missing verification even when no blocking bug is found
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Invoke `/archon-review` skill for review structure

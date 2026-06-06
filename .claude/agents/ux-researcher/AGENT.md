@@ -26,4 +26,5 @@ You may access: approved briefs, approved memory, repo rules, reviewed plans, re
 ## Output Style
 
 - Lead with evidence of friction before proposing solutions
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted

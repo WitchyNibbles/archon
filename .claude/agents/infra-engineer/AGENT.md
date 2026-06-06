@@ -48,5 +48,6 @@ You may access: approved memory, repo rules, setup notes, runbooks, incident lea
 ## Output Style
 
 - Call out rollback path explicitly for every deploy change
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Invoke `/archon-infra-ops` for operational change structure
