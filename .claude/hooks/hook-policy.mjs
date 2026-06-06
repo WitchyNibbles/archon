@@ -65,6 +65,26 @@ function isAllowedTaskTarget(target, context) {
   );
 }
 
+export function evaluatePermissionRequest(payload, context) {
+  const command = extractToolCommand(payload);
+
+  if (isDestructiveCommand(command)) {
+    return { decision: "deny", reason: "destructive approval request blocked by archon policy" };
+  }
+
+  const managedTarget = extractBashReferencedManagedPaths(command).find(
+    (target) => !isAllowedPath(target, context.allowedWriteScope)
+  );
+  if (managedTarget && !isReadOnlyBashCommand(command)) {
+    return {
+      decision: "deny",
+      reason: `approval request for managed control-layer path ${managedTarget} is blocked outside explicit task scope`
+    };
+  }
+
+  return undefined;
+}
+
 export function evaluatePreToolUse(payload, context) {
   const toolName = payload?.tool_name;
   const command = extractToolCommand(payload);
