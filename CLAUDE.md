@@ -52,9 +52,9 @@ local_live_check=bash scripts/check-archon-workflow-live.sh [--task-id <task-id>
 Delegate via the `Agent` tool with a `subagent_type` matching an agent name from `.claude/agents/`.
 
 Model routing:
-- `claude-opus-4-5`: planner, product-strategist, solution-architect (high-effort planning and reasoning)
-- `claude-haiku-4-5`: docs-researcher, memory-curator, technical-writer, git-operator (knowledge and coordination)
-- `claude-sonnet-4-5`: all other delivery and quality roles
+- `claude-opus-4-8`: planner, product-strategist, solution-architect (high-effort planning and reasoning)
+- `claude-haiku-4-5-20251001`: docs-researcher, memory-curator, technical-writer, git-operator (knowledge and coordination)
+- `claude-sonnet-4-6`: all other delivery and quality roles
 
 For parallel specialist work, use `isolation: "worktree"` to run independent slices in separate git worktrees.
 
@@ -89,7 +89,7 @@ After each completed task:
 - planning and routing: `planner`, `product_strategist`, `solution_architect`
 - delivery: `backend_engineer`, `frontend_designer`, `infra_engineer`, `build_resolver`
 - repo operations: `git_operator`
-- quality: `reviewer`, `qa_engineer`, `security_reviewer`, `tdd-guide`, `e2e-runner`, `release-readiness`
+- quality: `reviewer`, `qa_engineer`, `security_reviewer`, `tdd-guide`, `e2e-runner`, `release-readiness`, `performance-engineer`, `database-specialist`, `accessibility-engineer`
 - memory: `memory_curator`
 
 Prefer repo-local `archon-*` skills and `.claude/agents/` roles when available.
@@ -117,6 +117,9 @@ Mandatory trigger defaults for recurring control-layer work:
 - git slicing, staging, or publish prep: `archon-git-operator`
 - setup, CI, env, deploy-surface, or rollback work: `archon-infra-ops`
 - operator docs, migration notes, release notes, or workflow-document clarity: `archon-technical-writing`
+- performance profiling, latency-sensitive paths, throughput, or `performance_check_required` gate: `performance-engineer`
+- schema migrations, query optimization, index design, or `database-specialist` gate work: `database-specialist`
+- accessibility gate, semantic HTML, keyboard flow, or `accessibility_acceptance` gate: `accessibility-engineer`
 
 ## Git hygiene
 

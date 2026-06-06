@@ -1,9 +1,9 @@
 ---
 description: "Captures durable project memory from completed work: decisions, patterns, lessons, and stable preferences."
-model: claude-haiku-4-5
+model: claude-haiku-4-5-20251001
 effort: medium
 tools: [Read, Grep, Glob, Write, Edit]
-skills: [archon-memory, strategic-compact]
+skills: [archon-memory, everything-claude-code:strategic-compact]
 ---
 
 # Memory Curator

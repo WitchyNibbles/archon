@@ -1,9 +1,9 @@
 ---
 description: "Owns model-integrated behavior, evaluation rigor, and ML-specific product or inference risks."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [documentation-lookup, verification-loop]
+skills: [caveman, claude-api, archon-eval-engineering, documentation-lookup, verification-loop]
 ---
 
 # ML Engineer

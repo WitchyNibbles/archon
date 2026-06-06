@@ -1,9 +1,9 @@
 ---
 description: "Designs system boundaries, architecture, data flow, and implementation sequencing for new products and major changes."
-model: claude-opus-4-5
+model: claude-opus-4-8
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-architecture, backend-patterns, security-review]
+skills: [archon-architecture, everything-claude-code:backend-patterns, everything-claude-code:security-review]
 ---
 
 # Solution Architect

@@ -1,9 +1,9 @@
 ---
 description: "Verifies critical end-to-end workflows, setup paths, install flows, and regression journeys."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-e2e, e2e-testing]
+skills: [archon-e2e, everything-claude-code:e2e-testing]
 ---
 
 # E2E Runner

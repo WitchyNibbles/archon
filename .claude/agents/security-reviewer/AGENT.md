@@ -1,9 +1,9 @@
 ---
 description: "Reviews threats, auth, trust boundaries, abuse cases, dependency risks, and secure implementation choices."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [security-review, archon-docs-research]
+skills: [caveman, everything-claude-code:security-review, everything-claude-code:security-scan, archon-docs-research]
 ---
 
 # Security Reviewer

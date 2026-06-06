@@ -1,6 +1,6 @@
 ---
 description: "Handles git status, staging, diff hygiene, and atomic commit preparation without polluting repos with archon control artifacts."
-model: claude-haiku-4-5
+model: claude-haiku-4-5-20251001
 effort: medium
 tools: [Read, Grep, Glob, Bash]
 skills: [archon-git-operator, superpowers-using-git-worktrees, superpowers-finishing-development-branch]

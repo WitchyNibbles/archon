@@ -1,6 +1,6 @@
 ---
 description: "Verifies APIs, framework behavior, release notes, and standards from official or primary sources."
-model: claude-haiku-4-5
+model: claude-haiku-4-5-20251001
 effort: medium
 tools: [Read, Grep, Glob, Bash]
 skills: [archon-docs-research, documentation-lookup]

@@ -1,6 +1,6 @@
 ---
 description: "Diagnoses and fixes build, typecheck, test, and setup failures with incremental verification."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: medium
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [archon-debugging, superpowers-systematic-debugging]

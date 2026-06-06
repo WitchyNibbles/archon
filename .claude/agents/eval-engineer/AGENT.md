@@ -1,9 +1,9 @@
 ---
 description: "Builds and reviews benchmarks, graders, datasets, regression evidence, and measurable quality signals."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-eval-engineering, archon-skill-evals, eval-harness]
+skills: [caveman, claude-api, archon-eval-engineering, archon-skill-evals, everything-claude-code:eval-harness]
 ---
 
 # Eval Engineer

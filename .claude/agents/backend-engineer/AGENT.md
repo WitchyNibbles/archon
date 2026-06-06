@@ -1,9 +1,9 @@
 ---
 description: "Implements and reviews APIs, services, auth, data models, jobs, and server-side correctness."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-execution, backend-patterns, api-design]
+skills: [archon-execution, everything-claude-code:backend-patterns, everything-claude-code:api-design]
 ---
 
 # Backend Engineer

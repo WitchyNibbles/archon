@@ -1,9 +1,9 @@
 ---
 description: "Owns UX, UI quality, accessibility, and frontend implementation with a bias for polished, intentional interfaces."
-model: claude-sonnet-4-5
+model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-frontend-taste, archon-design-system, frontend-patterns, web-design-guidelines]
+skills: [archon-frontend-taste, archon-design-system, everything-claude-code:frontend-patterns, web-design-guidelines]
 ---
 
 # Frontend Designer
