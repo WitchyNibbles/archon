@@ -6,6 +6,7 @@ import process from "node:process";
 import {
   archonMcpConfigFragment,
   grafanaMcpConfigFragment,
+  obsidianMcpConfigFragment,
   gitNexusMcpConfigFragment,
   playwrightMcpConfigFragment,
   mergeClaudeMd,
@@ -74,6 +75,7 @@ interface ParsedInstallCommand {
   targetArg: string;
   withGitNexus?: boolean;
   withGrafana?: boolean;
+  withObsidian?: boolean;
 }
 
 interface ParsedVerifyCommand {
@@ -160,9 +162,9 @@ export default createReviewPrincipalAdapter(async () => {
 
 function usage(): never {
   throw new Error(
-    "Usage: node --experimental-strip-types src/install/cli.ts --dry-run [--with-gitnexus] [--with-grafana] --target <path> | <path>\n" +
-      "   or: node --experimental-strip-types src/install/cli.ts init (--apply | --dry-run) [--with-gitnexus] [--with-grafana] --target <path> | <path>\n" +
-      "   or: node --experimental-strip-types src/install/cli.ts upgrade (--apply | --dry-run) [--with-gitnexus] [--with-grafana] --target <path> | <path>\n" +
+    "Usage: node --experimental-strip-types src/install/cli.ts --dry-run [--with-gitnexus] [--with-grafana] [--with-obsidian] --target <path> | <path>\n" +
+      "   or: node --experimental-strip-types src/install/cli.ts init (--apply | --dry-run) [--with-gitnexus] [--with-grafana] [--with-obsidian] --target <path> | <path>\n" +
+      "   or: node --experimental-strip-types src/install/cli.ts upgrade (--apply | --dry-run) [--with-gitnexus] [--with-grafana] [--with-obsidian] --target <path> | <path>\n" +
       "   or: node --experimental-strip-types src/install/cli.ts verify --target <path> | <path>\n" +
       "   or: node --experimental-strip-types src/install/cli.ts scaffold-workflow --target <path> --task-id <task-id> [--force] [--force-active]\n" +
       "   or: node --experimental-strip-types src/install/cli.ts seed-happy-path-fixture --target <path> --task-id fixture-<name> [--force]\n" +
@@ -176,6 +178,7 @@ function buildNextSteps(
   options: {
     withGitNexus: boolean;
     withGrafana: boolean;
+    withObsidian: boolean;
   }
 ): string[] {
   if (command === "upgrade") {
@@ -190,6 +193,9 @@ function buildNextSteps(
         options.withGrafana
           ? "If you want Grafana-backed logs, set ARCHON_GRAFANA_URL plus auth in .env.archon, then use the grafana MCP tools from Codex."
           : "Optional: rerun upgrade with --with-grafana to install the Grafana MCP server wiring for log-backed debugging and research.",
+        options.withObsidian
+          ? "After apply, set ARCHON_OBSIDIAN_VAULT_PATH and DEVGOD_OBSIDIAN_ENABLED=true in .env.archon to enable Obsidian export and mcpvault tools."
+          : "Optional: rerun upgrade with --with-obsidian to install mcpvault MCP wiring for Obsidian knowledge-base integration.",
         "After apply, run npm run archon:setup:git-guard and npm run archon:verify:git-guard."
       ];
     }
@@ -202,6 +208,9 @@ function buildNextSteps(
       options.withGrafana
         ? "Fill in ARCHON_GRAFANA_URL plus auth and datasource settings in .env.archon before using Grafana-backed log tools."
         : "Optional: rerun upgrade with --with-grafana to install the Grafana MCP server wiring for log-backed debugging and research.",
+      options.withObsidian
+        ? "Set ARCHON_OBSIDIAN_VAULT_PATH and DEVGOD_OBSIDIAN_ENABLED=true in .env.archon before using the Obsidian export and mcpvault tools."
+        : "Optional: rerun upgrade with --with-obsidian to install mcpvault MCP wiring for Obsidian knowledge-base integration.",
       "Run npm run archon:setup:git-guard and npm run archon:verify:git-guard.",
       "Resolve any reported orphans manually if the current package no longer manages them."
     ];
@@ -220,6 +229,9 @@ function buildNextSteps(
         options.withGrafana
           ? "If you want Grafana-backed logs, set ARCHON_GRAFANA_URL plus auth and datasource settings in .env.archon after apply."
           : "Optional: rerun init with --with-grafana to add Grafana MCP wiring for log-backed debugging and research.",
+        options.withObsidian
+          ? "If you want Obsidian export and mcpvault, set ARCHON_OBSIDIAN_VAULT_PATH and DEVGOD_OBSIDIAN_ENABLED=true in .env.archon after apply."
+          : "Optional: rerun init with --with-obsidian to add mcpvault MCP wiring for Obsidian knowledge-base integration.",
         "Implement archon/review-identity-adapter.ts before trusting review actions or running npm run archon:record-review."
       ];
   }
@@ -235,6 +247,9 @@ function buildNextSteps(
     options.withGrafana
       ? "Fill in ARCHON_GRAFANA_URL plus auth and datasource settings in .env.archon before using the Grafana MCP tools."
       : "Optional: rerun init with --with-grafana to add Grafana MCP wiring for log-backed debugging and research.",
+    options.withObsidian
+      ? "Set ARCHON_OBSIDIAN_VAULT_PATH and DEVGOD_OBSIDIAN_ENABLED=true in .env.archon to use Obsidian export and mcpvault knowledge-base tools."
+      : "Optional: rerun init with --with-obsidian to add mcpvault MCP wiring for Obsidian knowledge-base integration.",
     "Implement archon/review-identity-adapter.ts, run npm run archon:verify:review-identity, then use npm run archon:record-review for live review actions."
   ];
 }
@@ -821,6 +836,7 @@ async function buildInstallPlan(
   options: {
     withGitNexus?: boolean;
     withGrafana?: boolean;
+    withObsidian?: boolean;
   } = {}
 ): Promise<InstallPlanEntry[]> {
   const plan: InstallPlanEntry[] = [];
@@ -844,6 +860,9 @@ async function buildInstallPlan(
   }
   if (options.withGrafana) {
     codexConfigSource = mergeClaudeSettings(codexConfigSource, grafanaMcpConfigFragment());
+  }
+  if (options.withObsidian) {
+    codexConfigSource = mergeClaudeSettings(codexConfigSource, obsidianMcpConfigFragment());
   }
   const setupScriptSh = await readFile(path.join(sourceRoot, "scripts/setup-archon.sh"), "utf8");
   const setupScriptPs1 = await readFile(path.join(sourceRoot, "scripts/setup-archon.ps1"), "utf8");
@@ -955,6 +974,11 @@ async function detectInstalledGrafana(targetRoot: string): Promise<boolean> {
   return detection.configured || detection.codex.hasGrafanaMcp || detection.packageJson.hasManagedScript;
 }
 
+async function detectInstalledObsidian(targetRoot: string): Promise<boolean> {
+  const codexConfig = await readFileIfExists(path.join(targetRoot, ".claude/settings.json"));
+  return Boolean(codexConfig?.includes('"obsidian"') && codexConfig.includes("mcpvault"));
+}
+
 async function backupExistingFile(
   targetRoot: string,
   relativePath: string,
@@ -1005,9 +1029,10 @@ function parseInstallCommand(command: "init" | "upgrade", args: string[]): Parse
   return {
     command,
     dryRun: hasDryRun,
-    targetArg: resolveCliTarget(args, new Set(["--dry-run", "--apply", "--with-gitnexus", "--with-grafana"])),
+    targetArg: resolveCliTarget(args, new Set(["--dry-run", "--apply", "--with-gitnexus", "--with-grafana", "--with-obsidian"])),
     ...(args.includes("--with-gitnexus") ? { withGitNexus: true } : {}),
-    ...(args.includes("--with-grafana") ? { withGrafana: true } : {})
+    ...(args.includes("--with-grafana") ? { withGrafana: true } : {}),
+    ...(args.includes("--with-obsidian") ? { withObsidian: true } : {})
   };
 }
 
@@ -1153,9 +1178,10 @@ export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
   return {
     command: "init",
     dryRun: true,
-    targetArg: resolveCliTarget(rawArgs, new Set(["--dry-run", "--with-gitnexus", "--with-grafana"])),
+    targetArg: resolveCliTarget(rawArgs, new Set(["--dry-run", "--with-gitnexus", "--with-grafana", "--with-obsidian"])),
     ...(rawArgs.includes("--with-gitnexus") ? { withGitNexus: true } : {}),
-    ...(rawArgs.includes("--with-grafana") ? { withGrafana: true } : {})
+    ...(rawArgs.includes("--with-grafana") ? { withGrafana: true } : {}),
+    ...(rawArgs.includes("--with-obsidian") ? { withObsidian: true } : {})
   };
 }
 
@@ -1372,6 +1398,7 @@ async function buildManagedUpgradePlan(
   options: {
     withGitNexus?: boolean;
     withGrafana?: boolean;
+    withObsidian?: boolean;
   } = {}
 ): Promise<{
   orphans: string[];
@@ -1420,14 +1447,15 @@ export async function installArchonIntoProject(options: InstallOptions): Promise
   const dryRun = mode === "dry-run";
   const withGitNexus = options.withGitNexus ?? (await detectInstalledGitNexus(targetRoot));
   const withGrafana = options.withGrafana ?? (await detectInstalledGrafana(targetRoot));
+  const withObsidian = options.withObsidian ?? (await detectInstalledObsidian(targetRoot));
 
   assertTargetRoot(sourceRoot, targetRoot);
 
-  const summary = createInstallSummary(mode, buildNextSteps("init", mode, { withGitNexus, withGrafana }));
+  const summary = createInstallSummary(mode, buildNextSteps("init", mode, { withGitNexus, withGrafana, withObsidian }));
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const plannedWrites: PlannedWrite[] = [];
 
-  for (const entry of await buildInstallPlan(sourceRoot, { withGitNexus, withGrafana })) {
+  for (const entry of await buildInstallPlan(sourceRoot, { withGitNexus, withGrafana, withObsidian })) {
     const plannedWrite = resolveInstallAction(await resolvePlanEntry(entry, targetRoot));
     plannedWrites.push(plannedWrite);
     if (plannedWrite.action === "conflict") {
@@ -1452,15 +1480,17 @@ export async function upgradeArchonInProject(options: InstallOptions): Promise<I
   const dryRun = mode === "dry-run";
   const withGitNexus = options.withGitNexus ?? (await detectInstalledGitNexus(targetRoot));
   const withGrafana = options.withGrafana ?? (await detectInstalledGrafana(targetRoot));
+  const withObsidian = options.withObsidian ?? (await detectInstalledObsidian(targetRoot));
 
   assertTargetRoot(sourceRoot, targetRoot);
 
-  const summary = createInstallSummary(mode, buildNextSteps("upgrade", mode, { withGitNexus, withGrafana }));
+  const summary = createInstallSummary(mode, buildNextSteps("upgrade", mode, { withGitNexus, withGrafana, withObsidian }));
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const { existingManifest, manifest } = await loadInstallManifestOrBackfill(sourceRoot, targetRoot);
   const { orphans, plannedWrites } = await buildManagedUpgradePlan(sourceRoot, targetRoot, manifest, {
     withGitNexus,
-    withGrafana
+    withGrafana,
+    withObsidian
   });
 
   summary.orphans.push(...orphans);
@@ -1499,11 +1529,12 @@ export async function verifyArchonInstall(options: InstallOptions): Promise<Veri
   const targetRoot = path.resolve(options.targetRoot);
   const withGitNexus = options.withGitNexus ?? (await detectInstalledGitNexus(targetRoot));
   const withGrafana = options.withGrafana ?? (await detectInstalledGrafana(targetRoot));
+  const withObsidian = options.withObsidian ?? (await detectInstalledObsidian(targetRoot));
 
   assertTargetRoot(sourceRoot, targetRoot);
 
   const { manifest } = await loadInstallManifestOrBackfill(sourceRoot, targetRoot);
-  const planEntries = (await buildInstallPlan(sourceRoot, { withGitNexus, withGrafana })).filter(
+  const planEntries = (await buildInstallPlan(sourceRoot, { withGitNexus, withGrafana, withObsidian })).filter(
     (entry) => entry.mode === "managed"
   );
   const plannedTargets = new Set(planEntries.map((entry) => entry.target));
@@ -2420,12 +2451,18 @@ async function main() {
     ? await installArchonIntoProject({
         sourceRoot,
         targetRoot,
-        dryRun: parsedArgs.dryRun
+        dryRun: parsedArgs.dryRun,
+        withGitNexus: parsedArgs.withGitNexus,
+        withGrafana: parsedArgs.withGrafana,
+        withObsidian: parsedArgs.withObsidian
       })
     : await upgradeArchonInProject({
         sourceRoot,
         targetRoot,
-        dryRun: parsedArgs.dryRun
+        dryRun: parsedArgs.dryRun,
+        withGitNexus: parsedArgs.withGitNexus,
+        withGrafana: parsedArgs.withGrafana,
+        withObsidian: parsedArgs.withObsidian
       });
 
   printInstallSummary(parsedArgs.command, targetRoot, summary);

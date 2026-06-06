@@ -76,6 +76,7 @@ export interface ExportDocsCommandResult {
   request: ExportDocsRequest;
   summary?: ExportDocsSummary | undefined;
   targetPath?: string | undefined;
+  vaultIndexPath?: string | undefined;
   message: string;
   matchedEntries: number;
 }
