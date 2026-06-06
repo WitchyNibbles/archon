@@ -1,4 +1,5 @@
 import { access, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -12227,7 +12228,7 @@ async function main() {
 }
 
 const isEntrypoint =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 
 if (isEntrypoint) {
   main().catch((error: unknown) => {

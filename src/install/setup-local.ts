@@ -1,4 +1,5 @@
 import { access } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,7 +58,7 @@ async function main(): Promise<void> {
   await run("bash", [targetScript], targetRoot);
 }
 
-const entryUrl = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+const entryUrl = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : "";
 
 if (import.meta.url === entryUrl) {
   main().catch((error: unknown) => {

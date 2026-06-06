@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { setupGitGuard } from "./git-guard.ts";
@@ -9,7 +10,7 @@ async function main(): Promise<void> {
   console.log("override for intentional overlay maintenance: ARCHON_ALLOW_MANAGED_COMMITS=1 git commit ...");
 }
 
-const entryUrl = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+const entryUrl = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : "";
 
 if (import.meta.url === entryUrl) {
   main().catch((error: unknown) => {

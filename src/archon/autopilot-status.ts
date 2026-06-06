@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -44,7 +45,7 @@ async function main(): Promise<void> {
 }
 
 const isEntrypoint =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 
 if (isEntrypoint) {
   await main();

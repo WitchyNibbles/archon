@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { verifyGitGuard } from "./git-guard.ts";
@@ -18,7 +19,7 @@ async function main(): Promise<void> {
   console.log(`hooksPath: ${summary.hooksPath ?? ".githooks"}`);
 }
 
-const entryUrl = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+const entryUrl = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : "";
 
 if (import.meta.url === entryUrl) {
   main().catch((error: unknown) => {
