@@ -2441,3 +2441,8 @@ if (isEntrypoint) {
     process.exitCode = 1;
   });
 }
+
+// Backward-compatibility aliases (devgod names → archon names)
+export const installDevgodIntoProject = installArchonIntoProject;
+export const upgradeDevgodInProject = upgradeArchonInProject;
+export const verifyDevgodInstall = verifyArchonInstall;

@@ -9,19 +9,22 @@ Use when answering API, framework, library, or standards questions from current 
 
 Goal: answer documentation and standards questions with current, source-backed evidence.
 
-1. Identify the exact question and the relevant official source.
-2. Retrieve current documentation (not cached assumptions).
-3. Note the version and date of the documentation consulted.
-4. Flag when docs are ambiguous, out of date, or contradict implementation behavior.
-5. Cite the source with enough specificity to be re-checked.
+1. Define the exact question.
+2. Prefer official docs, release notes, and primary specs.
+3. Record version or date when it matters.
+4. Separate sourced fact from inference.
+5. Record competing interpretations or unresolved drift when the docs are ambiguous or incomplete.
+6. When repo-local Grafana configuration is present, use Grafana logs as advisory runtime evidence when they help validate incidents, regressions, or observed behavior. If the configuration is partial or the tool is unavailable, say that explicitly instead of acting like Grafana does not exist.
+7. If local repo context matters, read the repo evidence before or alongside external docs.
 
 ## Rules
 
-- always cite the source and version for documentation claims
-- do not treat blog posts or Stack Overflow as authoritative without corroboration from official docs
-- do not claim "it's documented" without a verifiable reference
-- flag deprecation notices instead of ignoring them
+- no blog-first answers when primary docs exist
+- do not assume stale behavior is still current
+- cite the source used
+- do not make strong negative claims from a narrow pass when broader evidence or an alternate interpretation has not been checked
+- stop at the evidence boundary instead of filling gaps with confident guesses
 
 ## Output
 
-Return the answer, the source citation with version, and any ambiguity or deprecation caveats.
+Return concise findings with sources, dates or versions, and any unresolved drift risk.

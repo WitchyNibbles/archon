@@ -104,6 +104,20 @@ Prefer repo-local `archon-*` skills and `.claude/agents/` roles when available.
 - the council may not silently override user intent without user acceptance
 - trivial work, local bug fixes, and tasks covered by an approved parent council packet may bypass the council
 
+## Recurring control-layer routing
+
+Use a repo-local `archon-*` workflow skill before generic secondary skills when it fits the domain.
+
+Mandatory trigger defaults for recurring control-layer work:
+
+- product framing and acceptance clarity: `archon-product-framing`
+- design and architecture council routing, packets, or policy: `solution_architect`, `product_strategist`, `planner`
+- agent runtime, hook, tool-contract, automation, or continuation changes: `archon-agent-runtime`
+- benchmark, grader, or skill-regression work: `archon-eval-engineering` and `archon-skill-evals`
+- git slicing, staging, or publish prep: `archon-git-operator`
+- setup, CI, env, deploy-surface, or rollback work: `archon-infra-ops`
+- operator docs, migration notes, release notes, or workflow-document clarity: `archon-technical-writing`
+
 ## Git hygiene
 
 - use `git_operator` for staging, commit slicing, and commit-message prep
