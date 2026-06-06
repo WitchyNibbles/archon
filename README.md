@@ -19,6 +19,8 @@
 
 Archon is an **opt-in overlay** for [Claude Code](https://claude.ai/code) that conjures a structured, manager-led control layer over your AI development sessions. It enforces evidence-based delivery, authenticated review gates, bounded task execution, and resumable state — so your agents actually *finish things correctly* instead of hallucinating completion.
 
+It ships **production-oriented package checks** that verify agent catalog completeness, manifest hygiene, skill file coverage, and install contract integrity before any release.
+
 Adapted from [devgod](https://github.com/WitchyNibbles/devgod), which brought the same discipline to Codex.
 
 ---
