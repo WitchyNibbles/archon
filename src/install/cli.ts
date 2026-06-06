@@ -849,12 +849,28 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
   return manifest;
 }
 
+async function readObsidianVaultPath(targetRoot: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(path.join(targetRoot, ".env.archon"), "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("ARCHON_OBSIDIAN_VAULT_PATH=")) continue;
+      const val = trimmed.slice("ARCHON_OBSIDIAN_VAULT_PATH=".length).replace(/^"(.*)"$/, "$1").trim();
+      return val.length > 0 ? val : undefined;
+    }
+  } catch {
+    // .env.archon not present or unreadable
+  }
+  return undefined;
+}
+
 async function buildInstallPlan(
   sourceRoot: string,
   options: {
     withGitNexus?: boolean;
     withGrafana?: boolean;
     withObsidian?: boolean;
+    obsidianVaultPath?: string;
   } = {}
 ): Promise<InstallPlanEntry[]> {
   const plan: InstallPlanEntry[] = [];
@@ -880,7 +896,7 @@ async function buildInstallPlan(
     codexConfigSource = mergeClaudeSettings(codexConfigSource, grafanaMcpConfigFragment());
   }
   if (options.withObsidian) {
-    codexConfigSource = mergeClaudeSettings(codexConfigSource, obsidianMcpConfigFragment());
+    codexConfigSource = mergeClaudeSettings(codexConfigSource, obsidianMcpConfigFragment(options.obsidianVaultPath));
   }
   const setupScriptSh = await readFile(path.join(sourceRoot, "scripts/setup-archon.sh"), "utf8");
   const setupScriptPs1 = await readFile(path.join(sourceRoot, "scripts/setup-archon.ps1"), "utf8");
@@ -1417,6 +1433,7 @@ async function buildManagedUpgradePlan(
     withGitNexus?: boolean;
     withGrafana?: boolean;
     withObsidian?: boolean;
+    obsidianVaultPath?: string;
   } = {}
 ): Promise<{
   orphans: string[];
@@ -1466,6 +1483,7 @@ export async function installArchonIntoProject(options: InstallOptions): Promise
   const withGitNexus = options.withGitNexus ?? (await detectInstalledGitNexus(targetRoot));
   const withGrafana = options.withGrafana ?? (await detectInstalledGrafana(targetRoot));
   const withObsidian = options.withObsidian ?? (await detectInstalledObsidian(targetRoot));
+  const obsidianVaultPath = withObsidian ? await readObsidianVaultPath(targetRoot) : undefined;
 
   assertTargetRoot(sourceRoot, targetRoot);
 
@@ -1473,7 +1491,7 @@ export async function installArchonIntoProject(options: InstallOptions): Promise
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const plannedWrites: PlannedWrite[] = [];
 
-  for (const entry of await buildInstallPlan(sourceRoot, { withGitNexus, withGrafana, withObsidian })) {
+  for (const entry of await buildInstallPlan(sourceRoot, { withGitNexus, withGrafana, withObsidian, obsidianVaultPath })) {
     const plannedWrite = resolveInstallAction(await resolvePlanEntry(entry, targetRoot));
     plannedWrites.push(plannedWrite);
     if (plannedWrite.action === "conflict") {
@@ -1499,6 +1517,7 @@ export async function upgradeArchonInProject(options: InstallOptions): Promise<I
   const withGitNexus = options.withGitNexus ?? (await detectInstalledGitNexus(targetRoot));
   const withGrafana = options.withGrafana ?? (await detectInstalledGrafana(targetRoot));
   const withObsidian = options.withObsidian ?? (await detectInstalledObsidian(targetRoot));
+  const obsidianVaultPath = withObsidian ? await readObsidianVaultPath(targetRoot) : undefined;
 
   assertTargetRoot(sourceRoot, targetRoot);
 
@@ -1508,7 +1527,8 @@ export async function upgradeArchonInProject(options: InstallOptions): Promise<I
   const { orphans, plannedWrites } = await buildManagedUpgradePlan(sourceRoot, targetRoot, manifest, {
     withGitNexus,
     withGrafana,
-    withObsidian
+    withObsidian,
+    obsidianVaultPath
   });
 
   summary.orphans.push(...orphans);
@@ -1548,11 +1568,12 @@ export async function verifyArchonInstall(options: InstallOptions): Promise<Veri
   const withGitNexus = options.withGitNexus ?? (await detectInstalledGitNexus(targetRoot));
   const withGrafana = options.withGrafana ?? (await detectInstalledGrafana(targetRoot));
   const withObsidian = options.withObsidian ?? (await detectInstalledObsidian(targetRoot));
+  const obsidianVaultPath = withObsidian ? await readObsidianVaultPath(targetRoot) : undefined;
 
   assertTargetRoot(sourceRoot, targetRoot);
 
   const { manifest } = await loadInstallManifestOrBackfill(sourceRoot, targetRoot);
-  const planEntries = (await buildInstallPlan(sourceRoot, { withGitNexus, withGrafana, withObsidian })).filter(
+  const planEntries = (await buildInstallPlan(sourceRoot, { withGitNexus, withGrafana, withObsidian, obsidianVaultPath })).filter(
     (entry) => entry.mode === "managed"
   );
   const plannedTargets = new Set(planEntries.map((entry) => entry.target));

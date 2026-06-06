@@ -10,13 +10,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 
 export async function loadDotEnv(): Promise<void> {
-  const envPath = path.join(repoRoot, ".env");
+  // When archon runs as a node_module in a consuming project, process.cwd() is the
+  // consuming project root. Check there first so project-specific config (vault path,
+  // enabled flags, etc.) wins over the bundled fallback env.
+  const candidates: string[] = [
+    path.join(process.cwd(), ".env.archon"),
+    path.join(repoRoot, ".env")
+  ];
 
-  try {
-    const raw = await readFile(envPath, "utf8");
-    applyDotEnvText(raw, process.env);
-  } catch {
-    // .env is optional as long as the environment variables were provided another way.
+  for (const envPath of candidates) {
+    try {
+      const raw = await readFile(envPath, "utf8");
+      applyDotEnvText(raw, process.env);
+      return;
+    } catch {
+      // try next candidate
+    }
   }
 }
 

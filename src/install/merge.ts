@@ -280,7 +280,7 @@ export function archonMcpConfigFragment(): string {
     mcpServers: {
       archon: {
         command: "node",
-        args: ["--experimental-strip-types", "./node_modules/archon/src/mcp/server.ts"]
+        args: ["--env-file=.env.archon", "--experimental-strip-types", "./node_modules/archon/src/mcp/server.ts"]
       }
     }
   }, null, 2);
@@ -297,13 +297,12 @@ export function grafanaMcpConfigFragment(): string {
   }, null, 2);
 }
 
-export function obsidianMcpConfigFragment(): string {
+export function obsidianMcpConfigFragment(vaultPath?: string): string {
   return JSON.stringify({
     mcpServers: {
       obsidian: {
         command: "npx",
-        args: ["@bitbonsai/mcpvault@latest", "${ARCHON_OBSIDIAN_VAULT_PATH}"],
-        env: {}
+        args: ["@bitbonsai/mcpvault@latest", vaultPath ?? "${ARCHON_OBSIDIAN_VAULT_PATH}"]
       }
     }
   }, null, 2);
