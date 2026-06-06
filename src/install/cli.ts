@@ -7,6 +7,7 @@ import {
   archonMcpConfigFragment,
   grafanaMcpConfigFragment,
   gitNexusMcpConfigFragment,
+  playwrightMcpConfigFragment,
   mergeClaudeMd,
   mergeDotClaudeMd,
   mergeClaudeSettings,
@@ -713,8 +714,8 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
     });
   }
 
-  const repoLocalSkillPrefixes = repoLocalSkillIdPrefixes.map((prefix) => `.agents/skills/${prefix}`);
-  const skillsRoot = path.join(sourceRoot, ".agents/skills");
+  const repoLocalSkillPrefixes = repoLocalSkillIdPrefixes.map((prefix) => `.claude/skills/${prefix}`);
+  const skillsRoot = path.join(sourceRoot, ".claude/skills");
   for (const skillPath of await listFilesRecursive(skillsRoot)) {
     const relativePath = path.relative(sourceRoot, skillPath);
     if (!repoLocalSkillPrefixes.some((prefix) => relativePath.startsWith(prefix))) {
@@ -730,19 +731,20 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
 
   const agentsRoot = path.join(sourceRoot, ".claude/agents");
   for (const agentPath of await listFilesRecursive(agentsRoot)) {
-    const baseName = path.basename(agentPath);
-    const prefixedName = baseName.startsWith("archon-") ? baseName : `archon-${baseName}`;
+    // Agents are directory-based: .claude/agents/<name>/AGENT.md
+    // Preserve the full relative path from the agents root.
+    const relativePath = path.relative(agentsRoot, agentPath);
     manifest.push({
       source: agentPath,
-      target: path.join(".claude/agents", prefixedName),
+      target: path.join(".claude/agents", relativePath),
       overwriteManaged: true
     });
   }
 
   manifest.push(
     {
-      source: path.join(sourceRoot, ".claude/hooks.json"),
-      target: ".claude/hooks.json",
+      source: path.join(sourceRoot, ".claude/hooks/hooks.json"),
+      target: ".claude/hooks/hooks.json",
       overwriteManaged: true
     },
     {
@@ -836,6 +838,7 @@ async function buildInstallPlan(
   const sourceConfig = await readFile(path.join(sourceRoot, ".claude/settings.json"), "utf8");
   const baseCodexConfigSource = stripArchonFromMcpJson(sourceConfig);
   let codexConfigSource = mergeClaudeSettings(baseCodexConfigSource, archonMcpConfigFragment());
+  codexConfigSource = mergeClaudeSettings(codexConfigSource, playwrightMcpConfigFragment());
   if (options.withGitNexus) {
     codexConfigSource = mergeClaudeSettings(codexConfigSource, gitNexusMcpConfigFragment());
   }
