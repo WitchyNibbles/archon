@@ -217,13 +217,16 @@ export function evaluateSessionStart(payload, context) {
 
 export function evaluateUserPromptSubmit(payload, context) {
   const prompt = typeof payload?.prompt === "string" ? payload.prompt : "";
-  if (!context.activeTaskId && isLikelySubstantiveInitialPrompt(prompt)) {
+
+  // Don't gate skill invocations — the user is already routing through a skill
+  const isSkillInvocation = /^\/archon-\S/.test(prompt.trim());
+
+  if (!context.activeTaskId && isLikelySubstantiveInitialPrompt(prompt) && !isSkillInvocation) {
     return {
-      decision: "block",
-      reason: [
-        "archon: intake required before implementation.",
-        "Run /archon-intake to open the intake brief and set the active task.",
-        "For trivial tasks only, include 'archon:bypass' anywhere in your message to skip intake."
+      additionalContext: [
+        "archon: substantive request detected without an active task.",
+        "Automatically invoke /archon-intake with the user's full request before any planning or implementation.",
+        "Do not ask the user to run intake manually — invoke it yourself now."
       ].join(" ")
     };
   }
