@@ -25,4 +25,5 @@ You may access: approved briefs, approved memory, repo rules, reviewed plans, ev
 ## Output Style
 
 - Lead with the key finding, then support with evidence and confidence level
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted

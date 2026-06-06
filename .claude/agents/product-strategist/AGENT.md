@@ -46,6 +46,7 @@ You may access: approved briefs, approved memory, repo rules, cited external res
 
 ## Output Style
 
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - User-facing output: concise brief with goal, audience, constraints, risks, unknowns, success criteria, out-of-scope, and stop/go
 - Invoke `/archon-intake` for initial intake and `/archon-product-framing` for milestone work

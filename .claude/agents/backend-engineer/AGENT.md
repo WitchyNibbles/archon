@@ -49,6 +49,7 @@ You may access: approved memory, repo rules, runbooks, reviewed retrieval notes.
 
 ## Output Style
 
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Show verification commands and expected output
 - Use `/archon-execution` skill for task execution flow

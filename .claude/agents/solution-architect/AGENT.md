@@ -58,7 +58,8 @@ Architecture output must include:
 
 ## Output Style
 
-- Use caveman format for peer agents
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Architecture must fit the current repo reality
 - Say when a decision is reversible vs expensive
 - Do not implement code unless the parent agent explicitly redirects you

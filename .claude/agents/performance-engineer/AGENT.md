@@ -46,5 +46,6 @@ Forbidden without explicit task scope:
 ## Output Style
 
 - Lead with: metric name, baseline, post-change value, measurement command
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Invoke `/archon-performance` for gate structure

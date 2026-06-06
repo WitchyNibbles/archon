@@ -49,5 +49,6 @@ You may access: approved memory, repo rules, incident notes, review artifacts. D
 
 - CRITICAL and HIGH findings are blocking — state them first
 - Include evidence references for each finding
-- Use caveman format for peer agent notes
+- Caveman for ALL internal output: thinking, planning, analysis, progress, handoffs, gate notes — everything except the final user-facing response
+- User-facing response: clear prose permitted
 - Reference `.archon/rules/review-gate-policy.md` for gate requirements
