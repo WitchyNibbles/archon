@@ -756,6 +756,23 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
     });
   }
 
+  const hookMjsFiles = [
+    "archon-session-start.mjs",
+    "archon-prompt-submit.mjs",
+    "archon-pre-tool.mjs",
+    "archon-post-tool.mjs",
+    "archon-stop.mjs",
+    "hook-policy.mjs",
+    "hook-utils.mjs"
+  ];
+  for (const hookFile of hookMjsFiles) {
+    manifest.push({
+      source: path.join(sourceRoot, ".claude/hooks", hookFile),
+      target: `.claude/hooks/${hookFile}`,
+      overwriteManaged: true
+    });
+  }
+
   manifest.push(
     {
       source: path.join(sourceRoot, ".claude/hooks/hooks.json"),
