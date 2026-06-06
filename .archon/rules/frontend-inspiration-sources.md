@@ -88,6 +88,34 @@ Use for:
 Best fit:
 - when the agent needs concrete full-page references for marketing, SaaS, AI, or launch surfaces after the core concept is already chosen
 
+## Component block reference
+
+### 4. `21st.dev`
+
+URL: `https://21st.dev/`
+
+Use for:
+- copy-paste component blocks (buttons, inputs, modals, hero sections, pricing, marketing blocks)
+- concrete implementation patterns beyond shadcn/ui's primitive set
+- community-sourced UI patterns for marketing and product surfaces
+
+Why it ships:
+- 1,000+ community-made components across UI primitives and marketing blocks
+- complements shadcn/ui: shadcn owns the design-system primitives, 21st.dev covers higher-level blocks that shadcn doesn't ship
+- useful when an agent needs a concrete structural reference for a marketing surface or dashboard widget variant rather than an aesthetic inspiration ceiling
+
+Best fit:
+- when the agent needs a concrete copy-paste starting point for a component or layout block
+- when the brief calls for a full marketing section (hero, pricing, CTA, testimonials) and the agent needs implementation-level references
+- when shadcn/ui primitives are insufficient and the agent needs an existing community pattern to adapt
+
+Do NOT use for:
+- aesthetic taste calibration — use Awwwards, Godly, or Siteinspire for that
+- setting the visual ambition ceiling — 21st.dev is implementation-level, not ambition-level
+- replacing motion or interaction references — the components are largely static starting points
+
+---
+
 ## Required usage pattern
 
 For substantive redesign work:
