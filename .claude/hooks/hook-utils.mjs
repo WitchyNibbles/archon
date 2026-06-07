@@ -700,6 +700,42 @@ export function isTaskPacketPath(relativePath) {
   return normalized.startsWith(".archon/work/tasks/task-") && normalized.endsWith(".md");
 }
 
+// Returns true for any write target that requires an active task.
+// Bootstrap paths (needed to create a task packet) are always exempt.
+export function isSubstantiveWriteTarget(relativePath) {
+  if (typeof relativePath !== "string" || relativePath.trim().length === 0) {
+    return false;
+  }
+  const normalized = normalizePath(relativePath);
+  if (normalized === ".archon/ACTIVE") return false;
+  if (normalized === ".archon/work/task-queue.json") return false;
+  if (normalized === ".archon/work/product-state.md") return false;
+  if (isTaskPacketPath(normalized)) return false;
+  return true;
+}
+
+export function appendBypassLogEntry(repoRootPath, prompt) {
+  const logPath = path.join(repoRootPath, ".archon", "work", "daemon", "bypass-log.json");
+  try {
+    mkdirSync(path.dirname(logPath), { recursive: true });
+    let entries = [];
+    try {
+      const raw = readFileSync(logPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) entries = parsed;
+    } catch {
+      // file does not exist yet or is invalid — start fresh
+    }
+    entries.push({
+      timestamp: new Date().toISOString(),
+      promptExcerpt: typeof prompt === "string" ? prompt.slice(0, 200) : ""
+    });
+    writeFileSync(logPath, `${JSON.stringify(entries, null, 2)}\n`, "utf8");
+  } catch {
+    // bypass logging is advisory — never let it break the hook
+  }
+}
+
 export function parseApplyPatchTargets(command) {
   if (typeof command !== "string") {
     return [];

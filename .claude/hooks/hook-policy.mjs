@@ -10,6 +10,7 @@ import {
   isManagedPathAllowed,
   isManagedPrefixPartiallyAllowed,
   isReadOnlyBashCommand,
+  isSubstantiveWriteTarget,
   isTaskPacketPath,
   isVerificationCommand,
   parseApplyPatchTargets,
@@ -143,6 +144,14 @@ export function evaluatePreToolUse(payload, context) {
       return {
         decision: "block",
         reason: `managed control-layer file ${filePath} requires an active archon task with explicit write scope`
+      };
+    }
+    // No-task write gate: block substantive writes when no task is active.
+    // archon:bypass does NOT apply here — it only affects the UserPromptSubmit advisory.
+    if (filePath && !context.activeTaskId && isSubstantiveWriteTarget(filePath)) {
+      return {
+        decision: "block",
+        reason: `write to ${filePath} blocked — no active archon task. To unblock: create a task packet at .archon/work/tasks/task-<id>.md, set .archon/ACTIVE to task_id=<id> and state=active, then retry.`
       };
     }
   }

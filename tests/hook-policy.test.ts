@@ -11,9 +11,14 @@ const hooksDir = path.resolve(
 );
 
 // Dynamic import because hook files are .mjs ESM modules
-const { isManagedPath, isManagedPathAllowed, isManagedPrefixPartiallyAllowed, isAllowedPath } = await import(
-  `${hooksDir}/hook-utils.mjs`
-);
+const {
+  isManagedPath,
+  isManagedPathAllowed,
+  isManagedPrefixPartiallyAllowed,
+  isAllowedPath,
+  isSubstantiveWriteTarget,
+  appendBypassLogEntry
+} = await import(`${hooksDir}/hook-utils.mjs`);
 const { evaluatePreToolUse, evaluatePermissionRequest } = await import(
   `${hooksDir}/hook-policy.mjs`
 );
@@ -178,10 +183,12 @@ test("Write to .claude/ with active task but path NOT in scope is blocked", () =
   assert.equal(result.decision, "block");
 });
 
-test("Write to src/index.ts with no active task is NOT blocked by managed-path guard", () => {
+test("Write to src/index.ts with no active task is blocked by no-task write gate", () => {
   const result = evaluatePreToolUse(writePayload("src/index.ts"), emptyContext());
-  // May be undefined or have additionalContext — must not be a block
-  assert.ok(result === undefined || result.decision !== "block");
+  assert.ok(result, "expected a block response");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+  assert.match(result.reason, /\.archon\/work\/tasks\//i);
 });
 
 test("Write to .archon/work/tasks/task-foo.md with no active task is NOT blocked", () => {
@@ -257,4 +264,136 @@ test("PermissionRequest: read-only Bash referencing .claude/ with no task is not
     emptyContext()
   );
   assert.ok(result === undefined || result.decision !== "deny");
+});
+
+// ─── isSubstantiveWriteTarget ────────────────────────────────────────────────
+
+test("isSubstantiveWriteTarget: .archon/ACTIVE is NOT substantive (bootstrap exempt)", () => {
+  assert.equal(isSubstantiveWriteTarget(".archon/ACTIVE"), false);
+});
+
+test("isSubstantiveWriteTarget: .archon/work/task-queue.json is NOT substantive (bootstrap exempt)", () => {
+  assert.equal(isSubstantiveWriteTarget(".archon/work/task-queue.json"), false);
+});
+
+test("isSubstantiveWriteTarget: .archon/work/product-state.md is NOT substantive (bootstrap exempt)", () => {
+  assert.equal(isSubstantiveWriteTarget(".archon/work/product-state.md"), false);
+});
+
+test("isSubstantiveWriteTarget: task packet path is NOT substantive (bootstrap exempt)", () => {
+  assert.equal(isSubstantiveWriteTarget(".archon/work/tasks/task-p2-write-gate.md"), false);
+  assert.equal(isSubstantiveWriteTarget(".archon/work/tasks/task-any-id.md"), false);
+});
+
+test("isSubstantiveWriteTarget: src/ and tests/ paths are substantive", () => {
+  assert.equal(isSubstantiveWriteTarget("src/index.ts"), true);
+  assert.equal(isSubstantiveWriteTarget("tests/hook-policy.test.ts"), true);
+  assert.equal(isSubstantiveWriteTarget("src/admin.ts"), true);
+});
+
+test("isSubstantiveWriteTarget: .archon/work/reviews/ is substantive (requires active task)", () => {
+  assert.equal(isSubstantiveWriteTarget(".archon/work/reviews/review-p2-reviewer.md"), true);
+});
+
+test("isSubstantiveWriteTarget: empty or non-string returns false", () => {
+  assert.equal(isSubstantiveWriteTarget(""), false);
+  assert.equal(isSubstantiveWriteTarget("   "), false);
+});
+
+// ─── evaluatePreToolUse: no-task write gate ──────────────────────────────────
+
+test("Edit to tests/foo.test.ts with no active task is blocked by no-task write gate", () => {
+  const result = evaluatePreToolUse(editPayload("tests/foo.test.ts"), emptyContext());
+  assert.ok(result, "expected a block response");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("Write to .archon/ACTIVE with no active task is NOT blocked (bootstrap exempt)", () => {
+  const result = evaluatePreToolUse(writePayload(".archon/ACTIVE"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Write to .archon/work/task-queue.json with no active task is NOT blocked (bootstrap exempt)", () => {
+  const result = evaluatePreToolUse(writePayload(".archon/work/task-queue.json"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Write to .archon/work/product-state.md with no active task is NOT blocked (bootstrap exempt)", () => {
+  const result = evaluatePreToolUse(writePayload(".archon/work/product-state.md"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Write to src/index.ts WITH active task is allowed", () => {
+  const ctx = contextWithScope("src/index.ts");
+  const result = evaluatePreToolUse(writePayload("src/index.ts"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Write to src/ with active task but any scope is allowed (no scope restriction for non-managed)", () => {
+  const ctx = { ...emptyContext(), activeTaskId: "task-1" };
+  const result = evaluatePreToolUse(writePayload("src/foo.ts"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("no-task gate block reason is actionable (names bootstrap path to unblock)", () => {
+  const result = evaluatePreToolUse(writePayload("src/index.ts"), emptyContext());
+  assert.ok(result?.reason);
+  assert.match(result.reason, /\.archon\/work\/tasks\//i);
+  assert.match(result.reason, /\.archon\/ACTIVE/i);
+});
+
+// DAC condition 3: archon:bypass must NOT bypass the PreToolUse write gate
+test("no-task gate fires regardless of bypass-like context in PreToolUse payload", () => {
+  // The PreToolUse payload has no prompt field — archon:bypass cannot appear here.
+  // Verify the gate fires on a normal write payload (no bypass mechanism exists at this layer).
+  const result = evaluatePreToolUse(writePayload("src/index.ts"), emptyContext());
+  assert.ok(result, "gate must fire");
+  assert.equal(result.decision, "block");
+});
+
+// ─── Phase 5: appendBypassLogEntry ───────────────────────────────────────────
+
+import os from "node:os";
+import fs from "node:fs";
+
+test("appendBypassLogEntry: creates bypass log with first entry", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-bypass-test-"));
+  try {
+    appendBypassLogEntry(tmpDir, "archon:bypass do something");
+    const logPath = path.join(tmpDir, ".archon", "work", "daemon", "bypass-log.json");
+    const entries = JSON.parse(fs.readFileSync(logPath, "utf8"));
+    assert.equal(entries.length, 1);
+    assert.match(entries[0].promptExcerpt, /archon:bypass/);
+    assert.ok(typeof entries[0].timestamp === "string");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("appendBypassLogEntry: appends entries on successive calls", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-bypass-test-"));
+  try {
+    appendBypassLogEntry(tmpDir, "archon:bypass first");
+    appendBypassLogEntry(tmpDir, "archon:bypass second");
+    const logPath = path.join(tmpDir, ".archon", "work", "daemon", "bypass-log.json");
+    const entries = JSON.parse(fs.readFileSync(logPath, "utf8"));
+    assert.equal(entries.length, 2);
+    assert.match(entries[1].promptExcerpt, /second/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("appendBypassLogEntry: truncates long prompts to 200 chars", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-bypass-test-"));
+  try {
+    const longPrompt = "archon:bypass " + "x".repeat(500);
+    appendBypassLogEntry(tmpDir, longPrompt);
+    const logPath = path.join(tmpDir, ".archon", "work", "daemon", "bypass-log.json");
+    const entries = JSON.parse(fs.readFileSync(logPath, "utf8"));
+    assert.ok(entries[0].promptExcerpt.length <= 200);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
