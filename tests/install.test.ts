@@ -423,25 +423,25 @@ test("verifyCatalogRepoLocalSkills reports missing repo-local wrapper files dete
   const repoRoot = await mkdtemp(path.join(tmpdir(), "archon-skill-catalog-"));
 
   try {
-    for (const relativePath of listCatalogRepoLocalSkillPaths({ roles: ["planner", "reviewer"] })) {
+    for (const relativePath of listCatalogRepoLocalSkillPaths({ roles: ["planner", "git_operator"] })) {
       const targetPath = path.join(repoRoot, relativePath);
       await mkdir(path.dirname(targetPath), { recursive: true });
       await writeFile(targetPath, "---\nname = \"placeholder\"\n---\n", "utf8");
     }
 
-    await rm(path.join(repoRoot, ".claude/skills/superpowers-verification-before-completion"), {
+    await rm(path.join(repoRoot, ".claude/skills/superpowers-using-git-worktrees"), {
       recursive: true,
       force: true
     });
 
     const result = await verifyCatalogRepoLocalSkills({
       repoRoot,
-      roles: ["planner", "reviewer"]
+      roles: ["planner", "git_operator"]
     });
 
     assert.equal(result.ok, false);
     assert.deepEqual(result.missingSkillFiles, [
-      ".claude/skills/superpowers-verification-before-completion/SKILL.md"
+      ".claude/skills/superpowers-using-git-worktrees/SKILL.md"
     ]);
   } finally {
     await rm(repoRoot, { recursive: true, force: true });
@@ -584,6 +584,7 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     ".claude/skills/archon-eval-engineering/SKILL.md",
     ".claude/skills/archon-execution/SKILL.md",
     ".claude/skills/archon-frontend-taste/SKILL.md",
+    ".claude/skills/archon-frontend/SKILL.md",
     ".claude/skills/archon-git-operator/SKILL.md",
     ".claude/skills/archon-gitnexus/SKILL.md",
     ".claude/skills/archon-infra-ops/SKILL.md",
@@ -609,11 +610,7 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     ".claude/skills/graphify/SKILL.md",
     ".claude/skills/mcp-server-patterns/SKILL.md",
     ".claude/skills/superpowers-finishing-development-branch/SKILL.md",
-    ".claude/skills/superpowers-systematic-debugging/SKILL.md",
-    ".claude/skills/superpowers-test-driven-development/SKILL.md",
     ".claude/skills/superpowers-using-git-worktrees/SKILL.md",
-    ".claude/skills/superpowers-verification-before-completion/SKILL.md",
-    ".claude/skills/superpowers-writing-plans/SKILL.md",
     ".claude/skills/verification-loop/SKILL.md"
   ];
 
@@ -1512,11 +1509,9 @@ test("upgradeDevgodInProject writes runtime migration artifacts for legacy insta
     ) as {
       repoPath: string;
       runtimeProfile: string;
-      qdrantCollection: string;
     };
     assert.equal(registration.repoPath, targetRoot);
     assert.equal(registration.runtimeProfile, "local-docker");
-    assert.equal(registration.qdrantCollection, "archon-memory");
 
     const backupManifest = JSON.parse(
       await readFile(path.join(targetRoot, summary.runtimeBackupManifest ?? ""), "utf8")
@@ -1570,13 +1565,9 @@ test("upgradeDevgodInProject derives runtime migration artifacts from target rep
       await readFile(path.join(targetRoot, summary.runtimeRegistration ?? ""), "utf8")
     ) as {
       dataRoot: string;
-      qdrantUrl: string;
-      qdrantCollection: string;
     };
 
     assert.equal(registration.dataRoot, path.join(targetRoot, "runtime-state"));
-    assert.equal(registration.qdrantUrl, "http://127.0.0.1:7444/");
-    assert.equal(registration.qdrantCollection, "custom-memory");
   } finally {
     await rm(targetRoot, { recursive: true, force: true });
   }
@@ -1788,11 +1779,7 @@ test("installDevgodIntoProject seeds scaffolding but not live work or reviewed m
     ".claude/skills/archon-ux-research/SKILL.md",
     ".claude/skills/archon-visual-standards/SKILL.md",
     ".claude/skills/superpowers-finishing-development-branch/SKILL.md",
-    ".claude/skills/superpowers-systematic-debugging/SKILL.md",
-    ".claude/skills/superpowers-test-driven-development/SKILL.md",
-    ".claude/skills/superpowers-using-git-worktrees/SKILL.md",
-    ".claude/skills/superpowers-verification-before-completion/SKILL.md",
-    ".claude/skills/superpowers-writing-plans/SKILL.md"
+    ".claude/skills/superpowers-using-git-worktrees/SKILL.md"
   ];
 
   for (const relativePath of installedSkills) {
@@ -2202,7 +2189,7 @@ test("installed setup script bootstraps a clean workspace with synthetic docker 
       "version",
       "compose up -d archon-postgres archon-qdrant",
       "inspect -f {{.State.Health.Status}} archon-postgres",
-      "inspect -f {{.State.Health.Status}} archon-qdrant"
+      "inspect -f {{.State.Health.Status}} archon-qdrant-archon"
     ]);
 
     const npmEnv = await readFile(npmEnvCapture, "utf8");
@@ -2714,6 +2701,7 @@ test("npm pack dry run includes the new agent, skill, and retrieval policy surfa
     ".claude/skills/archon-eval-engineering/SKILL.md",
     ".claude/skills/archon-execution/SKILL.md",
     ".claude/skills/archon-frontend-taste/SKILL.md",
+    ".claude/skills/archon-frontend/SKILL.md",
     ".claude/skills/archon-git-operator/SKILL.md",
     ".claude/skills/archon-gitnexus/SKILL.md",
     ".claude/skills/archon-infra-ops/SKILL.md",
@@ -2739,11 +2727,7 @@ test("npm pack dry run includes the new agent, skill, and retrieval policy surfa
     ".claude/skills/graphify/SKILL.md",
     ".claude/skills/mcp-server-patterns/SKILL.md",
     ".claude/skills/superpowers-finishing-development-branch/SKILL.md",
-    ".claude/skills/superpowers-systematic-debugging/SKILL.md",
-    ".claude/skills/superpowers-test-driven-development/SKILL.md",
     ".claude/skills/superpowers-using-git-worktrees/SKILL.md",
-    ".claude/skills/superpowers-verification-before-completion/SKILL.md",
-    ".claude/skills/superpowers-writing-plans/SKILL.md",
     ".claude/skills/verification-loop/SKILL.md"
   ];
 

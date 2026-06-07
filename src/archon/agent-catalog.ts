@@ -28,7 +28,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-planning", "archon-intake", "superpowers-writing-plans", "everything-claude-code:planner"],
+    defaultSkillIds: ["archon-planning", "archon-intake", "everything-claude-code:planner"],
     retrievalGuidance: ["approved memory", "reviewed briefs", "reviewed plans", "repo rules"]
   },
   product_strategist: {
@@ -144,7 +144,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-review", "superpowers-verification-before-completion"],
+    defaultSkillIds: ["archon-review"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "task packets", "review artifacts"]
   },
   build_resolver: {
@@ -158,7 +158,7 @@ export const agentCatalog = {
     effort: "medium",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-debugging", "superpowers-systematic-debugging"],
+    defaultSkillIds: ["archon-debugging"],
     retrievalGuidance: ["approved memory", "repo rules", "setup notes", "incident notes", "prior fixes"]
   },
   security_reviewer: {
@@ -205,7 +205,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-tdd", "superpowers-test-driven-development", "everything-claude-code:tdd-workflow"],
+    defaultSkillIds: ["archon-tdd", "everything-claude-code:tdd-workflow"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "task packets", "verification artifacts"]
   },
   "e2e-runner": {
