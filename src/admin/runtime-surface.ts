@@ -174,7 +174,6 @@ export async function getRuntimeHealthSurface(args: readonly string[], options: 
       getProjectRuntimeRegistration(projectId) {
         return store.getProjectRuntimeRegistration(projectId);
       },
-      inspectQdrant: dependencies.inspectQdrant,
       inspectReviewIdentity: dependencies.inspectReviewIdentity
     })
   );
@@ -286,7 +285,6 @@ export async function getLoopSurface(args: readonly string[], options: RuntimeSu
         getProjectRuntimeRegistration(projectId) {
           return store.getProjectRuntimeRegistration(projectId);
         },
-        inspectQdrant: dependencies.inspectQdrant,
         inspectReviewIdentity: dependencies.inspectReviewIdentity,
         getStatusSnapshot(runId) {
           return service.getStatus(runId);

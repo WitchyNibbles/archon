@@ -560,8 +560,6 @@ async function writeRuntimeMigrationArtifacts(params: {
       projectSlug,
       runtimeProfile: runtimeConfig.runtimeProfile,
       dataRoot: runtimeConfig.dataRoot,
-      qdrantUrl: runtimeConfig.qdrantUrl,
-      qdrantCollection: runtimeConfig.qdrantCollection,
       installManifestPath: runtimeConfig.installManifestPath
     },
     params.summary
