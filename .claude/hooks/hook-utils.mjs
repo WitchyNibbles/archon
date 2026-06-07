@@ -662,15 +662,32 @@ export function reviewArtifactPath(taskId, role) {
   return `.archon/work/reviews/review-${taskId}-${role}.md`;
 }
 
+// Claude Code tool calls pass absolute file_path values; scope entries are relative.
+// Strip the repo root prefix so path comparisons work correctly regardless of how
+// Claude Code formats the path.
+export function toRelativePath(filePath, repoRoot) {
+  if (typeof filePath !== "string" || !filePath.startsWith("/")) {
+    return filePath;
+  }
+  if (typeof repoRoot === "string" && repoRoot.length > 0) {
+    const prefix = repoRoot.endsWith("/") ? repoRoot : `${repoRoot}/`;
+    if (filePath.startsWith(prefix)) {
+      return filePath.slice(prefix.length);
+    }
+  }
+  return filePath;
+}
+
 function normalizePath(value) {
-  return value.replace(/\\/g, "/").replace(/^\.\//, "");
+  return value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
 export function isManagedPath(relativePath) {
   const normalized = normalizePath(relativePath);
-  return managedPathPrefixes.some((prefix) =>
-    normalized === prefix.replace(/\/$/, "") || normalized.startsWith(prefix)
-  );
+  return managedPathPrefixes.some((prefix) => {
+    const normalizedPrefix = normalizePath(prefix);
+    return normalized === normalizedPrefix || normalized.startsWith(`${normalizedPrefix}/`);
+  });
 }
 
 export function isAllowedPath(relativePath, allowedWriteScope) {

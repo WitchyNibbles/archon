@@ -16,7 +16,8 @@ import {
   parseApplyPatchTargets,
   persistHookBlockerState,
   reviewArtifactPath,
-  shouldHoldStop
+  shouldHoldStop,
+  toRelativePath
 } from "./hook-utils.mjs";
 
 // Claude Code PreToolUse output: {decision: "block", reason: "..."} or {decision: "allow"}
@@ -140,7 +141,9 @@ export function evaluatePreToolUse(payload, context) {
   }
 
   if (toolName === "Write" || toolName === "Edit") {
-    const filePath = payload?.tool_input?.file_path ?? "";
+    const rawFilePath = payload?.tool_input?.file_path ?? "";
+    // Normalize to relative path — Claude Code may pass absolute paths.
+    const filePath = toRelativePath(rawFilePath, context.repoRoot);
     if (filePath && isManagedPath(filePath) && !isManagedPathAllowed(filePath, context.allowedWriteScope)) {
       return {
         decision: "block",
@@ -153,6 +156,21 @@ export function evaluatePreToolUse(payload, context) {
       return {
         decision: "block",
         reason: `write to ${filePath} blocked — no active archon task. To unblock: create a task packet at .archon/work/tasks/task-<id>.md, set .archon/ACTIVE to task_id=<id> and state=active, then retry.`
+      };
+    }
+    // Task-scope gate: when a task is active and declares a non-empty write scope,
+    // block writes to files outside that scope.
+    if (
+      filePath &&
+      context.activeTaskId &&
+      context.allowedWriteScope.length > 0 &&
+      !isAllowedTaskTarget(filePath, context)
+    ) {
+      const scopeSummary = context.allowedWriteScope.slice(0, 5).join(", ");
+      const truncated = context.allowedWriteScope.length > 5 ? ` (and ${context.allowedWriteScope.length - 5} more)` : "";
+      return {
+        decision: "block",
+        reason: `write to ${filePath} is outside active task ${context.activeTaskId} write scope. Allowed: ${scopeSummary}${truncated}. Expand the task packet's ## Allowed write scope to include this path if it is needed.`
       };
     }
   }

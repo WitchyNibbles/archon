@@ -19,7 +19,8 @@ const {
   isSubstantiveWriteTarget,
   appendBypassLogEntry,
   parseRequiredReviews,
-  reviewArtifactPath
+  reviewArtifactPath,
+  toRelativePath
 } = await import(`${hooksDir}/hook-utils.mjs`);
 const { evaluatePreToolUse, evaluatePermissionRequest, evaluateStop } = await import(
   `${hooksDir}/hook-policy.mjs`
@@ -489,4 +490,107 @@ test("evaluateStop: active task, all reviews missing — stop held naming all mi
   for (const p of missing) {
     assert.ok(result.stopReason.includes(p), `stop reason must name missing file: ${p}`);
   }
+});
+
+// ─── toRelativePath ──────────────────────────────────────────────────────────
+
+test("toRelativePath: strips repo root prefix from absolute path", () => {
+  assert.equal(
+    toRelativePath("/home/user/project/src/index.ts", "/home/user/project"),
+    "src/index.ts"
+  );
+});
+
+test("toRelativePath: leaves relative paths unchanged", () => {
+  assert.equal(toRelativePath("src/index.ts", "/home/user/project"), "src/index.ts");
+});
+
+test("toRelativePath: handles repo root with trailing slash", () => {
+  assert.equal(
+    toRelativePath("/home/user/project/tests/foo.ts", "/home/user/project/"),
+    "tests/foo.ts"
+  );
+});
+
+test("toRelativePath: returns original if not under repo root", () => {
+  assert.equal(
+    toRelativePath("/other/path/file.ts", "/home/user/project"),
+    "/other/path/file.ts"
+  );
+});
+
+// ─── Phase 4: task-scope write gate ─────────────────────────────────────────
+
+test("Write to in-scope file with active task is allowed", () => {
+  const ctx = contextWithScope("src/foo.ts");
+  const result = evaluatePreToolUse(writePayload("src/foo.ts"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Write to out-of-scope file with active task and non-empty scope is blocked", () => {
+  const ctx = contextWithScope("src/foo.ts");
+  const result = evaluatePreToolUse(writePayload("src/bar.ts"), ctx);
+  assert.ok(result, "expected a block");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /outside active task/i);
+  assert.match(result.reason, /src\/foo\.ts/);
+});
+
+test("Write to any file with active task and empty scope is allowed (task does not restrict)", () => {
+  const ctx = { ...emptyContext(), activeTaskId: "task-1" };
+  const result = evaluatePreToolUse(writePayload("src/anything.ts"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Edit to out-of-scope file with active task and non-empty scope is blocked", () => {
+  const ctx = contextWithScope("src/foo.ts");
+  const result = evaluatePreToolUse(editPayload("src/other.ts"), ctx);
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+});
+
+test("scope gate block reason names the allowed scope entries", () => {
+  const ctx = contextWithScope("src/foo.ts", "src/bar.ts");
+  const result = evaluatePreToolUse(writePayload("src/baz.ts"), ctx);
+  assert.ok(result?.reason);
+  assert.match(result.reason, /src\/foo\.ts/);
+});
+
+// Phase 4 with absolute paths (simulating real Claude Code hook payloads)
+
+function writePayloadAbsolute(filePath: string) {
+  return { tool_name: "Write", tool_input: { file_path: `/repo/${filePath}` } };
+}
+
+function ctxWithAbsoluteRoot(...scope: string[]) {
+  return {
+    ...emptyContext(),
+    repoRoot: "/repo",
+    activeTaskId: "task-1",
+    allowedWriteScope: scope
+  };
+}
+
+test("Phase 4 + toRelativePath: absolute path in scope is allowed", () => {
+  const ctx = ctxWithAbsoluteRoot("src/foo.ts");
+  const result = evaluatePreToolUse(writePayloadAbsolute("src/foo.ts"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Phase 4 + toRelativePath: absolute path out of scope is blocked", () => {
+  const ctx = ctxWithAbsoluteRoot("src/foo.ts");
+  const result = evaluatePreToolUse(writePayloadAbsolute("src/bar.ts"), ctx);
+  assert.ok(result, "expected a block");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /outside active task/i);
+});
+
+test("scope entry with trailing slash matches files in that directory", () => {
+  // .archon/work/reviews/ (with trailing slash) must match review files inside it
+  const ctx = contextWithScope(".archon/work/reviews/");
+  const result = evaluatePreToolUse(
+    writePayload(".archon/work/reviews/review-p4-reviewer.md"),
+    ctx
+  );
+  assert.ok(result === undefined || result.decision !== "block");
 });
