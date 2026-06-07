@@ -106,10 +106,13 @@ Prefer repo-local `archon-*` skills and `.claude/agents/` roles when available.
 
 ## Recurring control-layer routing
 
-Use a repo-local `archon-*` workflow skill before generic secondary skills when it fits the domain. Each skill's description declares its trigger domain — consult the skill list rather than restating triggers here.
+Use a repo-local `archon-*` workflow skill before generic secondary skills when it fits the domain. Each skill's description declares its trigger domain.
 
 Key routing shortcuts:
-- any CSS, UI component, visual, or design-system work: `archon-frontend` (hub for all frontend concerns)
+- agent runtime, hook, tool-contract, automation, or continuation changes: `archon-agent-runtime`
+- benchmark, grader, or skill-regression work: `archon-eval-engineering` and `archon-skill-evals`
+- operator docs, migration notes, release notes, or workflow-document clarity: `archon-technical-writing`
+- any CSS, UI component, visual, or design-system work: `archon-frontend`
 - specialist gates: `performance-engineer`, `database-specialist`, `accessibility-engineer`
 
 ## Git hygiene
