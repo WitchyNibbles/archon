@@ -3,7 +3,7 @@ description: "Implements and reviews mobile-specific product behavior, interacti
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-frontend-taste, archon-design-system, everything-claude-code:frontend-patterns, everything-claude-code:e2e-testing]
+skills: [archon-frontend, everything-claude-code:frontend-patterns, everything-claude-code:e2e-testing]
 ---
 
 # Mobile Engineer

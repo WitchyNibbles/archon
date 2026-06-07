@@ -3,7 +3,7 @@ description: "Owns intake synthesis, task decomposition, staffing, checkpoints, 
 model: claude-opus-4-8
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-planning, archon-intake, superpowers-writing-plans, everything-claude-code:planner]
+skills: [archon-planning, archon-intake, everything-claude-code:planner]
 ---
 
 # Planner

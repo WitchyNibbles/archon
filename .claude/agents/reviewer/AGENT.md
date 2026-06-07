@@ -3,7 +3,7 @@ description: "Reviews changes for correctness, regressions, and missing tests se
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-review, superpowers-verification-before-completion]
+skills: [archon-review]
 ---
 
 # Reviewer

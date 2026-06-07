@@ -6,8 +6,6 @@ import type {
   LeaseEmbeddingJobsInput,
   QueueEmbeddingJobInput
 } from "./types.ts";
-import type { ArtifactVectorIndex } from "./qdrant-artifact-index.ts";
-
 interface SqlQueryResult<Row> {
   rows: Row[];
   rowCount: number | null;
@@ -40,21 +38,6 @@ interface EmbeddingSourceRow {
   content: string;
 }
 
-interface ArtifactVectorSyncRow {
-  id: string;
-  workspaceId: string;
-  projectId: string;
-  title: string;
-  content: string;
-  sourcePath: string | null;
-  sourceAnchor: string | null;
-  retrievalRoles: string[] | null;
-  tags: string[] | null;
-  runtimeProfile: string | null;
-  qdrantUrl: string | null;
-  qdrantCollection: string | null;
-}
-
 function mapEmbeddingJobRow(row: EmbeddingJobRow): EmbeddingJobRecord {
   return {
     id: row.id,
@@ -84,11 +67,9 @@ async function withTransaction<T>(client: SqlClient, work: () => Promise<T>): Pr
 
 export class PostgresEmbeddingJobs {
   private readonly client: SqlClient;
-  private readonly artifactVectorIndex?: ArtifactVectorIndex | undefined;
 
-  constructor(client: SqlClient, options: { artifactVectorIndex?: ArtifactVectorIndex | undefined } = {}) {
+  constructor(client: SqlClient) {
     this.client = client;
-    this.artifactVectorIndex = options.artifactVectorIndex;
   }
 
   async queueEmbeddingJob(input: QueueEmbeddingJobInput): Promise<EmbeddingJobRecord> {
@@ -229,13 +210,6 @@ export class PostgresEmbeddingJobs {
         throw new Error(`embedding source not found for completion: ${input.sourceTable}:${input.sourceId}`);
       }
 
-      if (input.sourceTable === "artifacts" && this.artifactVectorIndex) {
-        await this.syncArtifactVector({
-          sourceId: input.sourceId,
-          embedding: input.embedding
-        });
-      }
-
       await this.client.query(
         `update embedding_jobs
          set status = 'done',
@@ -321,58 +295,4 @@ export class PostgresEmbeddingJobs {
     return result.rowCount ?? 0;
   }
 
-  private async syncArtifactVector(input: {
-    sourceId: string;
-    embedding: readonly number[];
-  }): Promise<void> {
-    const artifactResult = await this.client.query<ArtifactVectorSyncRow>(
-      `select
-         a.id,
-         a.workspace_id as "workspaceId",
-         a.project_id as "projectId",
-         a.title,
-         coalesce(a.content->>'text', a.content::text) as content,
-         a.metadata->>'sourcePath' as "sourcePath",
-         a.metadata->>'sourceAnchor' as "sourceAnchor",
-         coalesce(
-           array(
-             select jsonb_array_elements_text(a.metadata->'retrievalRoles')
-           ),
-           array[]::text[]
-         ) as "retrievalRoles",
-         coalesce(
-           array(
-             select jsonb_array_elements_text(a.metadata->'tags')
-           ),
-           array[]::text[]
-         ) as "tags",
-         r.runtime_profile as "runtimeProfile",
-         r.qdrant_url as "qdrantUrl",
-         r.qdrant_collection as "qdrantCollection"
-       from artifacts a
-       left join runtime_project_registrations r on r.project_id = a.project_id
-       where a.id = $1`,
-      [input.sourceId]
-    );
-
-    const artifact = artifactResult.rows[0];
-    if (!artifact || !artifact.qdrantUrl || !artifact.qdrantCollection || !artifact.runtimeProfile) {
-      return;
-    }
-
-    await this.artifactVectorIndex?.upsertArtifactPoint({
-      baseUrl: artifact.qdrantUrl,
-      runtimeProfile: artifact.runtimeProfile,
-      collection: artifact.qdrantCollection,
-      point: {
-        id: artifact.id,
-        vector: input.embedding,
-        projectId: artifact.projectId,
-        sourcePath: artifact.sourcePath ?? undefined,
-        sourceAnchor: artifact.sourceAnchor ?? undefined,
-        retrievalRoles: artifact.retrievalRoles ?? [],
-        tags: artifact.tags ?? []
-      }
-    });
-  }
 }

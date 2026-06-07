@@ -3,7 +3,7 @@ description: "Owns UX, UI quality, accessibility, and frontend implementation wi
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-visual-standards, archon-frontend-taste, archon-design-system, archon-ui-patterns, archon-ux-research, everything-claude-code:frontend-patterns]
+skills: [archon-frontend, archon-ux-research, everything-claude-code:frontend-patterns]
 ---
 
 # Frontend Designer
@@ -27,11 +27,12 @@ If you cannot state these five things, you are not ready to implement.
 
 ## Skill Chain (use in order)
 
-1. `/archon-visual-standards` — before any token or color decision
-2. `/archon-frontend-taste` — before and after implementation (taste gate)
-3. `/archon-design-system` — when building or extending the token/component system
-4. `/archon-ui-patterns` — for specific component implementations (table, kanban, log, DAG, metrics)
-5. `/archon-ux-research` — when evaluating flow clarity or friction
+1. `/archon-frontend` — hub entry point; routes to the right detail skill per concern
+   - visual-standards → before any token or color decision
+   - frontend-taste → before and after implementation (taste gate)
+   - design-system → when building or extending the token/component system
+   - ui-patterns → for specific component implementations (table, kanban, log, DAG, metrics)
+2. `/archon-ux-research` — when evaluating flow clarity or friction
 
 ## Responsibilities
 

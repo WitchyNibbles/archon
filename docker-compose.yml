@@ -21,24 +21,5 @@ services:
       timeout: 5s
       retries: 20
 
-  archon-qdrant:
-    image: qdrant/qdrant:v1.17.1
-    container_name: ${ARCHON_QDRANT_CONTAINER_NAME:-archon-qdrant}
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:${ARCHON_QDRANT_PORT:-6433}:6333"
-    volumes:
-      - archon-qdrant-data:/qdrant/storage
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "bash -lc 'exec 3<>/dev/tcp/127.0.0.1/6333'"
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
 volumes:
   archon-postgres-data:
-  archon-qdrant-data:

@@ -533,7 +533,7 @@ export interface RuntimeProjectRegistrationRecord {
   runtimeProfile: string;
   dataRoot: string;
   qdrantUrl?: string | undefined;
-  qdrantCollection: string;
+  qdrantCollection?: string | undefined;
   installManifestPath?: string | undefined;
   manifest: Record<string, unknown>;
   provenance: Record<string, unknown>;

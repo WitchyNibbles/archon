@@ -6,8 +6,6 @@ export interface RuntimeEnvironmentConfig {
   runtimeMode: RuntimeMode;
   runtimeProfile: string;
   dataRoot: string;
-  qdrantUrl: string;
-  qdrantCollection: string;
   installManifestPath: string;
 }
 
@@ -67,44 +65,6 @@ function isLoopbackHostname(hostname: string): boolean {
   return ipVersion === 4 ? normalized.startsWith("127.") : false;
 }
 
-function shouldRestrictQdrantToLoopback(runtimeProfile: string): boolean {
-  return runtimeProfile.trim().toLowerCase().startsWith("local");
-}
-
-export function validateRuntimeQdrantUrl(candidate: string, runtimeProfile: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(candidate);
-  } catch {
-    throw new Error(`invalid Qdrant URL: ${candidate}`);
-  }
-
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error(`Qdrant URL must use http or https: ${candidate}`);
-  }
-
-  if (parsed.username || parsed.password) {
-    throw new Error("Qdrant URL must not embed credentials");
-  }
-
-  if (shouldRestrictQdrantToLoopback(runtimeProfile) && !isLoopbackHostname(parsed.hostname)) {
-    throw new Error(
-      `local runtime profiles require a loopback Qdrant URL host; received ${parsed.hostname}`
-    );
-  }
-
-  return parsed.toString();
-}
-
-export function resolveQdrantCollectionsUrl(baseUrl: string): URL {
-  const parsed = new URL(baseUrl);
-  const normalizedBase = new URL(parsed.toString());
-  if (!normalizedBase.pathname.endsWith("/")) {
-    normalizedBase.pathname = `${normalizedBase.pathname}/`;
-  }
-  return new URL("collections", normalizedBase);
-}
-
 function defaultRuntimeDataRoot(projectSlug: string): string {
   if (process.platform === "darwin") {
     return path.join(os.homedir(), "Library", "Application Support", "archon", projectSlug);
@@ -131,19 +91,12 @@ export function resolveRuntimeEnvironmentConfig(
       ? env.ARCHON_RUNTIME_PROFILE?.trim() || "local-docker"
       : runtimeProfileForMode(requestedRuntimeMode);
   const runtimeMode = runtimeModeFromProfile(runtimeProfile);
-  const qdrantPort = env.ARCHON_QDRANT_PORT?.trim() || "6333";
   const dataRoot = env.ARCHON_RUNTIME_DATA_ROOT?.trim() || defaultRuntimeDataRoot(options.projectSlug);
-  const qdrantUrl = validateRuntimeQdrantUrl(
-    env.ARCHON_QDRANT_URL?.trim() || `http://127.0.0.1:${qdrantPort}`,
-    runtimeProfile
-  );
 
   return {
     runtimeMode,
     runtimeProfile,
     dataRoot: path.resolve(options.cwd ?? process.cwd(), dataRoot),
-    qdrantUrl,
-    qdrantCollection: env.ARCHON_QDRANT_COLLECTION?.trim() || "archon-memory",
     installManifestPath:
       env.ARCHON_INSTALL_MANIFEST_PATH?.trim() ||
       path.join(options.cwd ?? process.cwd(), ".archon", "install-manifest.json")
