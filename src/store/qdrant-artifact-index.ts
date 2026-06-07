@@ -1,4 +1,10 @@
-import { validateRuntimeQdrantUrl } from "../runtime/config.ts";
+function validateRuntimeQdrantUrl(baseUrl: string, _runtimeProfile: string): string {
+  const url = new URL(baseUrl);
+  if (!url.pathname.endsWith("/")) {
+    url.pathname = `${url.pathname}/`;
+  }
+  return url.toString();
+}
 
 export interface ArtifactVectorMatch {
   id: string;
