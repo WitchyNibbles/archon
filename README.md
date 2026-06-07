@@ -182,8 +182,9 @@ Skills live in `.claude/skills/`. Each `SKILL.md` declares its trigger, output c
 ### Prerequisites
 
 - Node.js ≥ 22
-- Docker (for Postgres + Qdrant)
+- Docker (for Postgres)
 - Claude Code CLI
+- [everything-claude-code](https://github.com/disler/everything-claude-code) plugin — required for agent skills prefixed `everything-claude-code:*`. Install it as a Claude Code plugin before using agent roles that reference those skills.
 
 ### Installation
 
@@ -198,7 +199,7 @@ cp .env.example .env
 ### Start the backing stores
 
 ```bash
-npm run setup:local   # Spins up Postgres + Qdrant via Docker
+npm run setup:local   # Spins up Postgres via Docker
 npm run doctor        # Verifies the full configuration
 ```
 
@@ -248,10 +249,6 @@ Copy `.env.example` to `.env` and configure:
 # PostgreSQL — workflow state, task queue, run history
 ARCHON_CORE_DATABASE_URL=postgresql://archon:password@127.0.0.1:5432/archon
 ARCHON_POSTGRES_PORT=5432
-
-# Qdrant — vector memory search
-ARCHON_QDRANT_URL=http://127.0.0.1:6333
-ARCHON_QDRANT_PORT=6333
 
 # Runtime mode
 ARCHON_RUNTIME_MODE=auto

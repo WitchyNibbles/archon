@@ -106,24 +106,11 @@ Prefer repo-local `archon-*` skills and `.claude/agents/` roles when available.
 
 ## Recurring control-layer routing
 
-Use a repo-local `archon-*` workflow skill before generic secondary skills when it fits the domain.
+Use a repo-local `archon-*` workflow skill before generic secondary skills when it fits the domain. Each skill's description declares its trigger domain — consult the skill list rather than restating triggers here.
 
-Mandatory trigger defaults for recurring control-layer work:
-
-- product framing and acceptance clarity: `archon-product-framing`
-- design and architecture council routing, packets, or policy: `solution_architect`, `product_strategist`, `planner`
-- agent runtime, hook, tool-contract, automation, or continuation changes: `archon-agent-runtime`
-- benchmark, grader, or skill-regression work: `archon-eval-engineering` and `archon-skill-evals`
-- git slicing, staging, or publish prep: `archon-git-operator`
-- setup, CI, env, deploy-surface, or rollback work: `archon-infra-ops`
-- operator docs, migration notes, release notes, or workflow-document clarity: `archon-technical-writing`
-- performance profiling, latency-sensitive paths, throughput, or `performance_check_required` gate: `performance-engineer`
-- schema migrations, query optimization, index design, or `database-specialist` gate work: `database-specialist`
-- accessibility gate, semantic HTML, keyboard flow, or `accessibility_acceptance` gate: `accessibility-engineer`
-- visual UI token decisions, color system, typography, or motion: `archon-visual-standards` before any CSS or styling work
-- visible UI implementation, component patterns, dashboards, or real-time data views: `archon-ui-patterns`
-- UI taste review, anti-generic check, or visual direction declaration: `archon-frontend-taste`
-- design system token consistency, component normalization, or cross-screen UI coherence: `archon-design-system`
+Key routing shortcuts:
+- any CSS, UI component, visual, or design-system work: `archon-frontend` (hub for all frontend concerns)
+- specialist gates: `performance-engineer`, `database-specialist`, `accessibility-engineer`
 
 ## Git hygiene
 
@@ -143,6 +130,7 @@ Mandatory trigger defaults for recurring control-layer work:
 
 ## Setup and memory
 
+- the `everything-claude-code` plugin is a required external dependency — agent skills prefixed `everything-claude-code:*` resolve only when it is installed; see README.md Prerequisites for install instructions
 - if `archon` is not configured, invoke `/archon-setup`
 - do not claim `archon` is operational until setup verification passes
 - `.archon/memory/` is reviewed durable memory; shared backend retrieval is advisory only

@@ -9,10 +9,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { installArchonIntoProject, upgradeArchonInProject, verifyArchonInstall } from "./install/cli.ts";
 import { embedQueryText, runEmbeddingJobs, type EmbeddingProvider } from "./runtime/embedding-runner.ts";
 import {
-  resolveQdrantCollectionsUrl,
   resolveRuntimeEnvironmentConfig,
-  runtimeModeFromProfile,
-  validateRuntimeQdrantUrl
+  runtimeModeFromProfile
 } from "./runtime/config.ts";
 import { createHashEmbeddingProvider } from "./runtime/hash-embedding-provider.ts";
 import {
@@ -131,7 +129,6 @@ import type {
 import type { WorkspaceRecord } from "./domain/types.ts";
 import type { ExportDocsCommandResult } from "./docs-export/models.ts";
 import { PostgresStore } from "./store/postgres-store.ts";
-import { QdrantArtifactIndex, type ArtifactVectorIndex } from "./store/qdrant-artifact-index.ts";
 import type { ArchonStore as ArchonStoreContract } from "./store/types.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -226,8 +223,6 @@ async function bootstrapProject() {
       repoPath,
       runtimeProfile: runtimeConfig.runtimeProfile,
       dataRoot: runtimeConfig.dataRoot,
-      qdrantUrl: runtimeConfig.qdrantUrl,
-      qdrantCollection: runtimeConfig.qdrantCollection,
       installManifestPath: runtimeConfig.installManifestPath,
       manifest: {
         installManifestPath: runtimeConfig.installManifestPath
@@ -394,33 +389,6 @@ async function verifySetup() {
 
     const registration = registrationResult.rows[0]!;
     await access(registration.data_root);
-
-    if (registration.qdrant_url) {
-      const qdrantHealth = await inspectQdrantHealthWithRetry(
-        {
-          projectId,
-          workspaceId: projectContext.workspace.id,
-          repoPath: path.resolve(process.env.ARCHON_PROJECT_REPO_PATH ?? process.cwd()),
-          runtimeProfile: registration.runtime_profile,
-          dataRoot: registration.data_root,
-          qdrantUrl: registration.qdrant_url!,
-          qdrantCollection: registration.qdrant_collection,
-          installManifestPath: undefined,
-          manifest: {},
-          provenance: {},
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        },
-        {
-          attempts: 20,
-          delayMs: 1_000
-        }
-      );
-
-      if (!qdrantHealth.ok) {
-        throw new Error(`Qdrant health check failed: ${qdrantHealth.summary}`);
-      }
-    }
 
     await syncRuntimeMigrationJournal({
       store,
@@ -819,9 +787,6 @@ interface ExecuteDoctorCommandOptions extends ExecuteStatusCommandOptions {
   getProjectRuntimeRegistration: (
     projectId: string
   ) => Promise<RuntimeProjectRegistrationRecord | undefined>;
-  inspectQdrant?: ((
-    registration: RuntimeProjectRegistrationRecord
-  ) => Promise<{ ok: boolean; summary: string }>) | undefined;
   pathExists?: ((candidatePath: string) => Promise<boolean>) | undefined;
   inspectGitNexus?: (() => Promise<GitNexusStatusObservation>) | undefined;
 }
@@ -854,14 +819,11 @@ export interface DoctorCommandReport {
     runtimeMode: string | undefined;
     runtimeProfile: string | undefined;
     dataRoot: string | undefined;
-    qdrantUrl: string | undefined;
-    qdrantCollection: string | undefined;
   };
   checks: {
     registration: DoctorCheckObservation;
     repoPath: DoctorCheckObservation;
     dataRoot: DoctorCheckObservation;
-    qdrant: DoctorCheckObservation;
     reviewIdentity: DoctorCheckObservation;
   };
   blockers: string[];
@@ -910,7 +872,6 @@ interface ExecuteRuntimePreflightCommandOptions {
   getStatusSnapshot?: ExecuteStatusCommandOptions["getStatusSnapshot"];
   findProjectContext?: ExecuteDoctorCommandOptions["findProjectContext"];
   getProjectRuntimeRegistration?: ExecuteDoctorCommandOptions["getProjectRuntimeRegistration"];
-  inspectQdrant?: ExecuteDoctorCommandOptions["inspectQdrant"];
   pathExists?: ExecuteDoctorCommandOptions["pathExists"];
   inspectReviewIdentity?: ExecuteStatusCommandOptions["inspectReviewIdentity"];
   skipRuntimePreflight?: boolean | undefined;
@@ -974,7 +935,6 @@ interface ExecuteLoopCommandOptions extends ExecuteStatusCommandOptions {
   applyRecovery: (runId: string, actionIds: readonly string[], staleAfterHours: number) => Promise<RecoveryApplyResult>;
   findProjectContext?: ExecuteDoctorCommandOptions["findProjectContext"];
   getProjectRuntimeRegistration?: ExecuteDoctorCommandOptions["getProjectRuntimeRegistration"];
-  inspectQdrant?: ExecuteDoctorCommandOptions["inspectQdrant"];
   pathExists?: ExecuteDoctorCommandOptions["pathExists"];
   skipRuntimePreflight?: boolean | undefined;
   runtimePreflightBypassToken?: symbol | undefined;
@@ -1595,17 +1555,8 @@ export interface RefreshRepoContextResult {
   fingerprint?: string | undefined;
 }
 
-export interface CreateRuntimeStoreOptions {
-  artifactVectorIndex?: ArtifactVectorIndex | undefined;
-}
-
-export function createRuntimeStore(
-  client: PostgresStoreClient,
-  options: CreateRuntimeStoreOptions = {}
-): PostgresStore {
-  return new PostgresStore(client, {
-    artifactVectorIndex: options.artifactVectorIndex ?? new QdrantArtifactIndex()
-  });
+export function createRuntimeStore(client: PostgresStoreClient): PostgresStore {
+  return new PostgresStore(client);
 }
 
 export async function createPlanContextEmbedQuery(
@@ -6052,59 +6003,6 @@ async function syncRuntimeMigrationJournal(options: {
   return journal;
 }
 
-async function inspectQdrantHealth(
-  registration: RuntimeProjectRegistrationRecord
-): Promise<{ ok: boolean; summary: string }> {
-  if (!registration.qdrantUrl) {
-    return {
-      ok: false,
-      summary: "qdrant URL is not configured in runtime registration"
-    };
-  }
-
-  try {
-    const qdrantUrl = validateRuntimeQdrantUrl(registration.qdrantUrl, registration.runtimeProfile);
-    const response = await fetch(resolveQdrantCollectionsUrl(qdrantUrl), {
-      redirect: "error",
-      signal: AbortSignal.timeout(3_000)
-    });
-    if (!response.ok) {
-      return {
-        ok: false,
-        summary: `qdrant returned ${response.status} ${response.statusText}`
-      };
-    }
-
-    return {
-      ok: true,
-      summary: "qdrant reachable"
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      summary: `qdrant unreachable: ${message}`
-    };
-  }
-}
-
-async function inspectQdrantHealthWithRetry(
-  registration: RuntimeProjectRegistrationRecord,
-  options: {
-    attempts: number;
-    delayMs: number;
-  }
-): Promise<{ ok: boolean; summary: string }> {
-  let latestResult = await inspectQdrantHealth(registration);
-
-  for (let attempt = 1; attempt < options.attempts && !latestResult.ok; attempt += 1) {
-    await sleep(options.delayMs);
-    latestResult = await inspectQdrantHealth(registration);
-  }
-
-  return latestResult;
-}
-
 export async function executeDoctorCommandFromArgs(
   args: readonly string[],
   options: ExecuteDoctorCommandOptions
@@ -6198,18 +6096,6 @@ export async function executeDoctorCommandFromArgs(
         summary: "runtime data root could not be checked without runtime registration"
       };
 
-  const qdrantStatus =
-    registration ? await (options.inspectQdrant ?? inspectQdrantHealth)(registration) : {
-      ok: false,
-      summary: "qdrant URL is not configured in runtime registration"
-    };
-
-  const qdrantCheck = {
-    authorityLabel: "runtime_authoritative" as const,
-    ok: qdrantStatus.ok,
-    summary: qdrantStatus.summary
-  };
-
   const reviewIdentityCheck = {
     authorityLabel: "derived_only" as const,
     ok: reviewIdentity.liveTrustReady,
@@ -6222,15 +6108,13 @@ export async function executeDoctorCommandFromArgs(
     registration: registrationCheck,
     repoPath: repoPathCheck,
     dataRoot: dataRootCheck,
-    qdrant: qdrantCheck,
     reviewIdentity: reviewIdentityCheck
   };
 
   const blockers = [
     registrationCheck,
     repoPathCheck,
-    dataRootCheck,
-    qdrantCheck
+    dataRootCheck
   ]
     .filter((check) => !check.ok)
     .map((check) => check.summary);
@@ -6257,9 +6141,7 @@ export async function executeDoctorCommandFromArgs(
       authorityLabel: "runtime_authoritative" as const,
       runtimeMode: registration?.runtimeProfile ? runtimeModeFromProfile(registration.runtimeProfile) : undefined,
       runtimeProfile: registration?.runtimeProfile,
-      dataRoot: registration?.dataRoot,
-      qdrantUrl: registration?.qdrantUrl,
-      qdrantCollection: registration?.qdrantCollection
+      dataRoot: registration?.dataRoot
     },
     checks,
     blockers,
@@ -6401,7 +6283,7 @@ function resolveDoctorRepairPlan(input: {
     };
   }
 
-  if (!report.checks.qdrant.ok) {
+  if (!report.checks.dataRoot.ok) {
     return {
       step: "setup_script",
       skippedReasons
@@ -6824,7 +6706,6 @@ async function executeRuntimeExecutionPreflight(
     getStatusSnapshot: options.getStatusSnapshot,
     findProjectContext,
     getProjectRuntimeRegistration: options.getProjectRuntimeRegistration,
-    inspectQdrant: options.inspectQdrant,
     pathExists: options.pathExists,
     inspectReviewIdentity: options.inspectReviewIdentity
   });

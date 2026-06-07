@@ -6,7 +6,7 @@ origin: Local
 
 # Caveman
 
-Use this skill when Codex or a subagent needs to reduce token cost for internal notes without dropping key facts.
+Use this skill when Claude Code or a subagent needs to reduce token cost for internal notes without dropping key facts.
 
 ## Goal
 
