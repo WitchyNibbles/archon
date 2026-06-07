@@ -397,7 +397,7 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
     const pgModule = await import("pg");
     const Client = pgModule.Client ?? pgModule.default?.Client;
     if (!Client) {
-      return undefined;
+      return { activeTaskId: undefined, queueCurrentTaskId: undefined, runtimeConnected: false };
     }
 
     client = new Client({ connectionString });
@@ -433,10 +433,12 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
 
     return {
       activeTaskId,
-      queueCurrentTaskId
+      queueCurrentTaskId,
+      runtimeConnected: true
     };
   } catch {
-    return undefined;
+    // Env vars were present but connection failed — signal configured-but-offline.
+    return { activeTaskId: undefined, queueCurrentTaskId: undefined, runtimeConnected: false };
   } finally {
     if (client) {
       try {
@@ -465,14 +467,18 @@ export async function readActiveTaskContext(options = {}) {
     queueCurrentTaskId: undefined,
     authorityMismatches: [],
     requiredReviews: [],
-    missingReviews: []
+    missingReviews: [],
+    runtimeConfigured: false,
+    runtimeConnected: false
   };
   const runtimeContext = await readRuntimeAuthorityContext(resolvedRepoRoot);
+  context.runtimeConfigured = runtimeContext !== undefined;
+  context.runtimeConnected = runtimeContext?.runtimeConnected === true;
   let activeFileTaskId;
   let activeFileState;
   let queueHasAuthoritativePointer = false;
 
-  if (runtimeContext) {
+  if (runtimeContext?.runtimeConnected === true) {
     context.queueCurrentTaskId = runtimeContext.queueCurrentTaskId;
     context.activeTaskId =
       runtimeContext.activeTaskId ??
@@ -525,12 +531,12 @@ export async function readActiveTaskContext(options = {}) {
   }
 
   if (queueHasAuthoritativePointer) {
-    if (runtimeContext === undefined) {
+    if (!runtimeContext?.runtimeConnected) {
       context.activeTaskId =
         typeof context.queueCurrentTaskId === "string" ? context.queueCurrentTaskId : undefined;
     }
   } else if (activeFileTaskId && activeFileState !== "complete" && activeFileState !== "done") {
-    if (runtimeContext === undefined) {
+    if (!runtimeContext?.runtimeConnected) {
       context.activeTaskId = activeFileTaskId;
     }
   }
