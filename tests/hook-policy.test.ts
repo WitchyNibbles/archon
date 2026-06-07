@@ -23,7 +23,7 @@ const {
   reviewArtifactPath,
   toRelativePath
 } = await import(`${hooksDir}/hook-utils.mjs`);
-const { evaluatePreToolUse, evaluatePermissionRequest, evaluateStop } = await import(
+const { evaluatePreToolUse, evaluatePermissionRequest, evaluateStop, evaluateSessionStart } = await import(
   `${hooksDir}/hook-policy.mjs`
 );
 
@@ -40,7 +40,9 @@ function emptyContext() {
     queueCurrentTaskId: undefined,
     authorityMismatches: [],
     requiredReviews: [],
-    missingReviews: []
+    missingReviews: [],
+    runtimeConfigured: false,
+    runtimeConnected: false
   };
 }
 
@@ -683,4 +685,106 @@ test("isReadOnlyBashCommand: git commit is not read-only even with heredoc body 
 test("isReadOnlyBashCommand: heredoc with dash-stripped variant <<-WORD", () => {
   const command = "ls .claude/ && cat <<-EOF\n\ttee output\nEOF";
   assert.equal(isReadOnlyBashCommand(command), true);
+});
+
+// ─── Phase 8: runtime health — session-start and stop gate ───────────────────
+
+function sessionStartPayload(source?: string) {
+  return source ? { source } : {};
+}
+
+test("Phase 8 evaluateSessionStart: configured+offline runtime → additionalContext includes runtime offline warning", () => {
+  const ctx = { ...emptyContext(), runtimeConfigured: true, runtimeConnected: false };
+  const result = evaluateSessionStart(sessionStartPayload(), ctx);
+  assert.ok(result, "expected additionalContext to be returned");
+  assert.ok(
+    typeof result.additionalContext === "string" && result.additionalContext.includes("archon runtime offline"),
+    `expected "archon runtime offline" in additionalContext, got: ${result?.additionalContext}`
+  );
+});
+
+test("Phase 8 evaluateSessionStart: runtime not configured → no runtime warning", () => {
+  const ctx = { ...emptyContext(), runtimeConfigured: false, runtimeConnected: false };
+  const result = evaluateSessionStart(sessionStartPayload(), ctx);
+  const hasRuntimeWarning =
+    typeof result?.additionalContext === "string" && result.additionalContext.includes("archon runtime offline");
+  assert.ok(!hasRuntimeWarning, "must not warn when runtime is not configured");
+});
+
+test("Phase 8 evaluateSessionStart: configured+connected runtime → no runtime warning", () => {
+  const ctx = { ...emptyContext(), runtimeConfigured: true, runtimeConnected: true };
+  const result = evaluateSessionStart(sessionStartPayload(), ctx);
+  const hasRuntimeWarning =
+    typeof result?.additionalContext === "string" && result.additionalContext.includes("archon runtime offline");
+  assert.ok(!hasRuntimeWarning, "must not warn when runtime is connected");
+});
+
+test("Phase 8 evaluateStop: completion signal + configured+offline + active task → held by runtime gate", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "p8-runtime-activation",
+    runtimeConfigured: true,
+    runtimeConnected: false,
+    missingReviews: []
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.ok(
+    typeof result.stopReason === "string" && result.stopReason.includes("archon runtime is offline"),
+    `expected runtime gate message, got: ${result?.stopReason}`
+  );
+});
+
+test("Phase 8 evaluateStop: mid-task (empty message) + configured+offline + active task → NOT held by runtime gate", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "p8-runtime-activation",
+    runtimeConfigured: true,
+    runtimeConnected: false,
+    missingReviews: []
+  };
+  // Empty message → shouldHoldStop returns true → taskShouldHold is true → runtime gate must NOT fire
+  const result = evaluateStop(stopPayload(""), ctx);
+  const heldByRuntimeGate =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("archon runtime is offline");
+  assert.ok(!heldByRuntimeGate, "runtime gate must not fire mid-task");
+});
+
+test("Phase 8 evaluateStop: completion + runtime not configured → not held by runtime gate", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "p8-runtime-activation",
+    runtimeConfigured: false,
+    runtimeConnected: false,
+    missingReviews: []
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByRuntimeGate =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("archon runtime is offline");
+  assert.ok(!heldByRuntimeGate, "runtime gate must not fire when runtime is not configured");
+});
+
+test("Phase 8 evaluateStop: configured+offline + NO active task → stop not held by runtime gate", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: undefined,
+    queueCurrentTaskId: undefined,
+    runtimeConfigured: true,
+    runtimeConnected: false,
+    missingReviews: []
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByRuntimeGate =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("archon runtime is offline");
+  assert.ok(!heldByRuntimeGate, "runtime gate must not fire when no active task");
 });

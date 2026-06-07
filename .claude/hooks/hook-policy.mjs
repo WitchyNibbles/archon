@@ -237,6 +237,9 @@ export function evaluatePostToolUse(payload, context) {
 
 export function evaluateSessionStart(payload, context) {
   const lines = [];
+  if (context.runtimeConfigured && !context.runtimeConnected) {
+    lines.push("archon runtime offline: postgres is configured but unreachable; falling back to local .archon/ACTIVE");
+  }
   if (context.activeTaskId) {
     lines.push(`archon active task: ${context.activeTaskId}`);
   }
@@ -343,6 +346,19 @@ export function evaluateStop(payload, context) {
     return {
       continue: false,
       stopReason: `task ${context.activeTaskId} is missing required review files: ${missing}. Write each missing review file to pass the review gate before the session closes.`
+    };
+  }
+
+  if (
+    !taskShouldHold &&
+    context.runtimeConfigured &&
+    !context.runtimeConnected &&
+    (context.activeTaskId || context.queueCurrentTaskId)
+  ) {
+    const taskId = context.activeTaskId ?? context.queueCurrentTaskId;
+    return {
+      continue: false,
+      stopReason: `archon runtime is offline: postgres is configured but unreachable. Task ${taskId} cannot be marked complete without runtime confirmation. Restore postgres connectivity and retry, or remove ARCHON_CORE_DATABASE_URL from .env to fall back to local state only.`
     };
   }
 
