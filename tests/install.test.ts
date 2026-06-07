@@ -2761,7 +2761,6 @@ test("npm pack dry run includes the new agent, skill, and retrieval policy surfa
     "scripts/archon-session-start.sh",
     "scripts/verify-archon-workflow-check.sh",
     "scripts/verify-release-overlay.sh",
-    ".claude/hooks/hooks.json",
     ".claude/hooks/hook-utils.mjs",
     ".claude/hooks/hook-policy.mjs",
     ".claude/hooks/archon-pre-tool.mjs",

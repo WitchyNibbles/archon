@@ -825,12 +825,25 @@ export function extractBashReferencedManagedPaths(command) {
   return [...new Set(matches)];
 }
 
+function stripHeredocBodies(command) {
+  if (typeof command !== "string") return command;
+  // Remove heredoc body content so that words like tee or > inside a heredoc
+  // do not trigger write-like detection. Handles <<WORD, <<'WORD', <<"WORD",
+  // <<`WORD`, and <<-WORD variants. The opener and structure are kept; only the
+  // body lines and closing delimiter are removed.
+  return command.replace(
+    /<<-?['"`]?(\w+)['"`]?[^\n]*\n[\s\S]*?\n\1[ \t]*(?:\n|$)/g,
+    "<<STRIPPED\n"
+  );
+}
+
 export function isReadOnlyBashCommand(command) {
   if (typeof command !== "string" || command.trim().length === 0) {
     return false;
   }
 
-  const segments = command
+  const normalized = stripHeredocBodies(command);
+  const segments = normalized
     .split(/\&\&|\|\||[|;]/)
     .map((segment) => segment.trim())
     .filter(Boolean);
