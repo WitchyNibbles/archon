@@ -457,7 +457,10 @@ test("evaluateStop: active task, all reviews present — stop proceeds (review g
   assert.ok(!heldByReviewGate, "review gate must not fire when all reviews are present");
 });
 
-test("evaluateStop: active task, one review missing — stop held with actionable message", () => {
+// Use a completion-signal message so shouldHoldStop returns false and the review gate fires.
+const COMPLETION_MSG = "scoped task is complete; external workflow/runtime closure";
+
+test("evaluateStop: active task, one review missing + completion signal — stop held by review gate", () => {
   const missingPath = ".archon/work/reviews/review-p3-review-gate-stop-security_reviewer.md";
   const ctx = {
     ...emptyContext(),
@@ -465,14 +468,14 @@ test("evaluateStop: active task, one review missing — stop held with actionabl
     requiredReviews: ["reviewer", "qa_engineer", "security_reviewer"],
     missingReviews: [missingPath]
   };
-  const result = evaluateStop(stopPayload(""), ctx);
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
   assert.ok(result, "expected stop to be held");
   assert.equal(result.continue, false);
   assert.match(result.stopReason, /missing required review files/i);
   assert.ok(result.stopReason.includes(missingPath), "stop reason must name the missing file");
 });
 
-test("evaluateStop: active task, all reviews missing — stop held naming all missing files", () => {
+test("evaluateStop: active task, all reviews missing + completion signal — stop held naming all missing files", () => {
   const missing = [
     ".archon/work/reviews/review-p3-reviewer.md",
     ".archon/work/reviews/review-p3-qa_engineer.md",
@@ -484,12 +487,61 @@ test("evaluateStop: active task, all reviews missing — stop held naming all mi
     requiredReviews: ["reviewer", "qa_engineer", "security_reviewer"],
     missingReviews: missing
   };
-  const result = evaluateStop(stopPayload(""), ctx);
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
   assert.ok(result);
   assert.equal(result.continue, false);
   for (const p of missing) {
     assert.ok(result.stopReason.includes(p), `stop reason must name missing file: ${p}`);
   }
+});
+
+// ─── Phase 6: stop hook hardening — review gate fires only at completion ─────
+
+test("Phase 6: mid-task (empty message) + missing reviews → shouldHoldStop drives, review gate silent", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "p6",
+    requiredReviews: ["reviewer"],
+    missingReviews: [".archon/work/reviews/review-p6-reviewer.md"]
+  };
+  // Empty message → shouldHoldStop returns true → review gate must NOT fire
+  const result = evaluateStop(stopPayload(""), ctx);
+  assert.ok(result, "expected stop to be held by shouldHoldStop");
+  assert.equal(result.continue, false);
+  // Must be driven by shouldHoldStop (task in progress), not by review gate
+  assert.ok(
+    !result.stopReason.includes("missing required review files"),
+    "review gate must not fire mid-task"
+  );
+});
+
+test("Phase 6: completion signal + missing reviews → review gate holds", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "p6",
+    requiredReviews: ["reviewer"],
+    missingReviews: [".archon/work/reviews/review-p6-reviewer.md"]
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  assert.ok(result);
+  assert.equal(result.continue, false);
+  assert.match(result.stopReason, /missing required review files/i);
+});
+
+test("Phase 6: completion signal + all reviews present → stop allowed", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "p6",
+    requiredReviews: ["reviewer"],
+    missingReviews: []
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByReviewGate =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("missing required review files");
+  assert.ok(!heldByReviewGate, "review gate must not fire when reviews are present");
 });
 
 // ─── toRelativePath ──────────────────────────────────────────────────────────

@@ -328,8 +328,17 @@ export function evaluateStop(payload, context) {
     };
   }
 
-  // Review existence gate: hold stop when required review files are missing.
-  if (context.activeTaskId && Array.isArray(context.missingReviews) && context.missingReviews.length > 0) {
+  const taskShouldHold =
+    (context.activeTaskId || context.queueCurrentTaskId) && shouldHoldStop(lastAssistantMessage);
+
+  // Review existence gate fires only when Claude signals completion (shouldHoldStop is false)
+  // but required review files are absent. Mid-task pauses are handled by taskShouldHold below.
+  if (
+    !taskShouldHold &&
+    context.activeTaskId &&
+    Array.isArray(context.missingReviews) &&
+    context.missingReviews.length > 0
+  ) {
     const missing = context.missingReviews.join(", ");
     return {
       continue: false,
@@ -337,7 +346,7 @@ export function evaluateStop(payload, context) {
     };
   }
 
-  if ((context.activeTaskId || context.queueCurrentTaskId) && shouldHoldStop(lastAssistantMessage)) {
+  if (taskShouldHold) {
     return {
       continue: false,
       stopReason: `active archon task ${activeTaskId} remains in progress; continue execution or state the real blocker explicitly`
