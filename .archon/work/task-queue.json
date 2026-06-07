@@ -1,4 +1,14 @@
 {
-  "current_task_id": null,
-  "tasks": []
+  "current_task_id": "p1-managed-path-guard",
+  "tasks": [
+    { "id": "p1-managed-path-guard", "status": "active", "phase": 1 },
+    { "id": "p2-write-gate", "status": "pending", "phase": 2 },
+    { "id": "p2-dac", "status": "pending", "phase": "2-dac" },
+    { "id": "p3-review-gate-stop", "status": "pending", "phase": 3 },
+    { "id": "p4-task-packet-validation", "status": "pending", "phase": 4 },
+    { "id": "p5-bypass-audit", "status": "pending", "phase": 5 },
+    { "id": "p6-stop-hook-hardening", "status": "pending", "phase": 6 },
+    { "id": "p7-cleanup", "status": "pending", "phase": 7 },
+    { "id": "p8-runtime-activation", "status": "pending", "phase": 8 }
+  ]
 }

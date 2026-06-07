@@ -7,6 +7,8 @@ import {
   isAllowedPath,
   isDestructiveCommand,
   isManagedPath,
+  isManagedPathAllowed,
+  isManagedPrefixPartiallyAllowed,
   isReadOnlyBashCommand,
   isTaskPacketPath,
   isVerificationCommand,
@@ -73,7 +75,7 @@ export function evaluatePermissionRequest(payload, context) {
   }
 
   const managedTarget = extractBashReferencedManagedPaths(command).find(
-    (target) => !isAllowedPath(target, context.allowedWriteScope)
+    (target) => !isManagedPrefixPartiallyAllowed(target, context.allowedWriteScope)
   );
   if (managedTarget && !isReadOnlyBashCommand(command)) {
     return {
@@ -109,12 +111,12 @@ export function evaluatePreToolUse(payload, context) {
     }
 
     const managedTarget = targets.find(
-      (target) => isManagedPath(target) && !isAllowedTaskTarget(target, context)
+      (target) => isManagedPath(target) && !isManagedPathAllowed(target, context.allowedWriteScope)
     );
     if (managedTarget) {
       return {
         decision: "block",
-        reason: `managed control-layer file ${managedTarget} is blocked outside explicit task scope`
+        reason: `managed control-layer file ${managedTarget} requires an active archon task with explicit write scope`
       };
     }
   }
@@ -125,25 +127,23 @@ export function evaluatePreToolUse(payload, context) {
     }
 
     const managedTarget = extractBashReferencedManagedPaths(command).find(
-      (target) => !isAllowedPath(target, context.allowedWriteScope)
+      (target) => !isManagedPrefixPartiallyAllowed(target, context.allowedWriteScope)
     );
     if (managedTarget && !isReadOnlyBashCommand(command)) {
       return {
         decision: "block",
-        reason: `managed control-layer path ${managedTarget} is blocked outside explicit task scope`
+        reason: `managed control-layer path ${managedTarget} requires an active archon task with explicit write scope`
       };
     }
   }
 
   if (toolName === "Write" || toolName === "Edit") {
     const filePath = payload?.tool_input?.file_path ?? "";
-    if (filePath && isManagedPath(filePath) && !isAllowedTaskTarget(filePath, context)) {
-      if (context.allowedWriteScope.length > 0) {
-        return {
-          decision: "block",
-          reason: `managed control-layer file ${filePath} is blocked outside explicit task scope`
-        };
-      }
+    if (filePath && isManagedPath(filePath) && !isManagedPathAllowed(filePath, context.allowedWriteScope)) {
+      return {
+        decision: "block",
+        reason: `managed control-layer file ${filePath} requires an active archon task with explicit write scope`
+      };
     }
   }
 

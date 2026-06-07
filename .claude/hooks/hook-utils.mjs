@@ -667,6 +667,34 @@ export function isAllowedPath(relativePath, allowedWriteScope) {
   });
 }
 
+// Managed paths always require explicit scope — empty scope means no access.
+// Unlike isAllowedPath, this never grants access by default.
+// Use for Write/Edit where the exact target path is known.
+export function isManagedPathAllowed(relativePath, allowedWriteScope) {
+  if (!Array.isArray(allowedWriteScope) || allowedWriteScope.length === 0) {
+    return false;
+  }
+  return isAllowedPath(relativePath, allowedWriteScope);
+}
+
+// For Bash commands we can only detect the managed prefix (e.g. ".claude"), not
+// the specific target path. Allow if any scope entry overlaps with that prefix.
+export function isManagedPrefixPartiallyAllowed(managedPrefix, allowedWriteScope) {
+  if (!Array.isArray(allowedWriteScope) || allowedWriteScope.length === 0) {
+    return false;
+  }
+  const normalized = normalizePath(managedPrefix);
+  return allowedWriteScope.some((scope) => {
+    const normalizedScope = normalizePath(scope);
+    return (
+      normalizedScope === normalized ||
+      normalizedScope.startsWith(`${normalized}/`) ||
+      normalized.startsWith(`${normalizedScope}/`) ||
+      normalizedScope === "."
+    );
+  });
+}
+
 export function isTaskPacketPath(relativePath) {
   const normalized = normalizePath(relativePath);
   return normalized.startsWith(".archon/work/tasks/task-") && normalized.endsWith(".md");
