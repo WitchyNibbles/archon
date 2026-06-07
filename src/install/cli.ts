@@ -774,11 +774,6 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
 
   manifest.push(
     {
-      source: path.join(sourceRoot, ".claude/hooks/hooks.json"),
-      target: ".claude/hooks/hooks.json",
-      overwriteManaged: true
-    },
-    {
       source: path.join(sourceRoot, ".env.example"),
       target: ".env.archon.example",
       overwriteManaged: true

@@ -16,6 +16,7 @@ const {
   isManagedPathAllowed,
   isManagedPrefixPartiallyAllowed,
   isAllowedPath,
+  isReadOnlyBashCommand,
   isSubstantiveWriteTarget,
   appendBypassLogEntry,
   parseRequiredReviews,
@@ -645,4 +646,41 @@ test("scope entry with trailing slash matches files in that directory", () => {
     ctx
   );
   assert.ok(result === undefined || result.decision !== "block");
+});
+
+// ─── Phase 7: isReadOnlyBashCommand heredoc false-positive fix ───────────────
+
+test("isReadOnlyBashCommand: tee in heredoc body is not write-like", () => {
+  // ls is read-only; echo with heredoc containing tee should not flag as write
+  const command = "ls .claude/ && echo \"$(cat <<'EOF'\ntee output here\nEOF\n)\"";
+  assert.equal(isReadOnlyBashCommand(command), true);
+});
+
+test("isReadOnlyBashCommand: > in heredoc body is not a redirect", () => {
+  const command = "ls .claude/ && echo \"$(cat <<'EOF'\nsome > output\nEOF\n)\"";
+  assert.equal(isReadOnlyBashCommand(command), true);
+});
+
+test("isReadOnlyBashCommand: multi-line heredoc body with multiple write-like words", () => {
+  const command = "cat .claude/settings.json && echo \"$(cat <<'EOF'\ntee\nmv\nmkdir\nEOF\n)\"";
+  assert.equal(isReadOnlyBashCommand(command), true);
+});
+
+test("isReadOnlyBashCommand: tee OUTSIDE heredoc is still write-like", () => {
+  assert.equal(isReadOnlyBashCommand("cat .claude/settings.json | tee /tmp/out"), false);
+});
+
+test("isReadOnlyBashCommand: > redirect outside heredoc is still write-like", () => {
+  assert.equal(isReadOnlyBashCommand("cat .claude/settings.json > /tmp/out"), false);
+});
+
+test("isReadOnlyBashCommand: git commit is not read-only even with heredoc body stripping", () => {
+  // git commit is not in readOnlyCommandSegmentPatterns regardless of heredoc content
+  const command = "git commit -m \"$(cat <<'EOF'\ntee info\nEOF\n)\"";
+  assert.equal(isReadOnlyBashCommand(command), false);
+});
+
+test("isReadOnlyBashCommand: heredoc with dash-stripped variant <<-WORD", () => {
+  const command = "ls .claude/ && cat <<-EOF\n\ttee output\nEOF";
+  assert.equal(isReadOnlyBashCommand(command), true);
 });
