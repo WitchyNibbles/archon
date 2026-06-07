@@ -463,7 +463,9 @@ export async function readActiveTaskContext(options = {}) {
     continuationIntent: undefined,
     hookBlockerState: undefined,
     queueCurrentTaskId: undefined,
-    authorityMismatches: []
+    authorityMismatches: [],
+    requiredReviews: [],
+    missingReviews: []
   };
   const runtimeContext = await readRuntimeAuthorityContext(resolvedRepoRoot);
   let activeFileTaskId;
@@ -579,6 +581,18 @@ export async function readActiveTaskContext(options = {}) {
     context.activeTaskId,
     context.queueCurrentTaskId
   );
+
+  const requiredRoles = parseRequiredReviews(taskMarkdown);
+  context.requiredReviews = requiredRoles;
+  context.missingReviews = [];
+  for (const role of requiredRoles) {
+    const relPath = reviewArtifactPath(context.activeTaskId, role);
+    const exists = await readTextIfExists(path.join(resolvedRepoRoot, relPath));
+    if (!exists) {
+      context.missingReviews.push(relPath);
+    }
+  }
+
   return context;
 }
 
@@ -638,6 +652,14 @@ function parseContinuationIntentSection(markdown) {
 
   const normalized = value.trim().replace(/`/g, "");
   return continuationIntentValues.has(normalized) ? normalized : undefined;
+}
+
+export function parseRequiredReviews(markdown) {
+  return parseMarkdownListSection(markdown, "## Required reviews").map((v) => v.trim());
+}
+
+export function reviewArtifactPath(taskId, role) {
+  return `.archon/work/reviews/review-${taskId}-${role}.md`;
 }
 
 function normalizePath(value) {

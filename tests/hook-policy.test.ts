@@ -17,9 +17,11 @@ const {
   isManagedPrefixPartiallyAllowed,
   isAllowedPath,
   isSubstantiveWriteTarget,
-  appendBypassLogEntry
+  appendBypassLogEntry,
+  parseRequiredReviews,
+  reviewArtifactPath
 } = await import(`${hooksDir}/hook-utils.mjs`);
-const { evaluatePreToolUse, evaluatePermissionRequest } = await import(
+const { evaluatePreToolUse, evaluatePermissionRequest, evaluateStop } = await import(
   `${hooksDir}/hook-policy.mjs`
 );
 
@@ -34,7 +36,9 @@ function emptyContext() {
     continuationIntent: undefined,
     hookBlockerState: undefined,
     queueCurrentTaskId: undefined,
-    authorityMismatches: []
+    authorityMismatches: [],
+    requiredReviews: [],
+    missingReviews: []
   };
 }
 
@@ -395,5 +399,94 @@ test("appendBypassLogEntry: truncates long prompts to 200 chars", () => {
     assert.ok(entries[0].promptExcerpt.length <= 200);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ─── Phase 3: parseRequiredReviews + reviewArtifactPath ─────────────────────
+
+test("parseRequiredReviews: extracts role names from ## Required reviews section", () => {
+  const md = `# Task\n\n## Required reviews\n\n- \`reviewer\`\n- \`qa_engineer\`\n- \`security_reviewer\`\n\n## Next section\n`;
+  const roles = parseRequiredReviews(md);
+  assert.deepEqual(roles, ["reviewer", "qa_engineer", "security_reviewer"]);
+});
+
+test("parseRequiredReviews: returns empty array when section is absent", () => {
+  const md = `# Task\n\n## Allowed write scope\n\n- src/\n`;
+  assert.deepEqual(parseRequiredReviews(md), []);
+});
+
+test("reviewArtifactPath: returns correct relative path for task + role", () => {
+  assert.equal(
+    reviewArtifactPath("p2-write-gate", "reviewer"),
+    ".archon/work/reviews/review-p2-write-gate-reviewer.md"
+  );
+  assert.equal(
+    reviewArtifactPath("p3-review-gate-stop", "qa_engineer"),
+    ".archon/work/reviews/review-p3-review-gate-stop-qa_engineer.md"
+  );
+});
+
+// ─── Phase 3: evaluateStop review existence gate ─────────────────────────────
+
+function stopPayload(lastAssistantMessage = "") {
+  return { last_assistant_message: lastAssistantMessage, stop_hook_active: false };
+}
+
+test("evaluateStop: no active task — review gate does not fire", () => {
+  const ctx = { ...emptyContext(), missingReviews: [".archon/work/reviews/review-x-reviewer.md"] };
+  // No activeTaskId — review gate must not hold stop
+  const result = evaluateStop(stopPayload("scoped task is complete; external workflow/runtime closure"), ctx);
+  assert.ok(result === undefined || result.continue !== false);
+});
+
+test("evaluateStop: active task, all reviews present — stop proceeds (review gate silent)", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "p3-review-gate-stop",
+    requiredReviews: ["reviewer", "qa_engineer"],
+    missingReviews: []
+  };
+  const result = evaluateStop(stopPayload("scoped task is complete; external workflow/runtime closure"), ctx);
+  // Review gate must not hold stop — missingReviews is empty
+  const heldByReviewGate =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("missing required review files");
+  assert.ok(!heldByReviewGate, "review gate must not fire when all reviews are present");
+});
+
+test("evaluateStop: active task, one review missing — stop held with actionable message", () => {
+  const missingPath = ".archon/work/reviews/review-p3-review-gate-stop-security_reviewer.md";
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "p3-review-gate-stop",
+    requiredReviews: ["reviewer", "qa_engineer", "security_reviewer"],
+    missingReviews: [missingPath]
+  };
+  const result = evaluateStop(stopPayload(""), ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.match(result.stopReason, /missing required review files/i);
+  assert.ok(result.stopReason.includes(missingPath), "stop reason must name the missing file");
+});
+
+test("evaluateStop: active task, all reviews missing — stop held naming all missing files", () => {
+  const missing = [
+    ".archon/work/reviews/review-p3-reviewer.md",
+    ".archon/work/reviews/review-p3-qa_engineer.md",
+    ".archon/work/reviews/review-p3-security_reviewer.md"
+  ];
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "p3",
+    requiredReviews: ["reviewer", "qa_engineer", "security_reviewer"],
+    missingReviews: missing
+  };
+  const result = evaluateStop(stopPayload(""), ctx);
+  assert.ok(result);
+  assert.equal(result.continue, false);
+  for (const p of missing) {
+    assert.ok(result.stopReason.includes(p), `stop reason must name missing file: ${p}`);
   }
 });

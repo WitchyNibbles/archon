@@ -15,6 +15,7 @@ import {
   isVerificationCommand,
   parseApplyPatchTargets,
   persistHookBlockerState,
+  reviewArtifactPath,
   shouldHoldStop
 } from "./hook-utils.mjs";
 
@@ -306,6 +307,15 @@ export function evaluateStop(payload, context) {
     return {
       continue: false,
       stopReason: hookBlockerState.summary
+    };
+  }
+
+  // Review existence gate: hold stop when required review files are missing.
+  if (context.activeTaskId && Array.isArray(context.missingReviews) && context.missingReviews.length > 0) {
+    const missing = context.missingReviews.join(", ");
+    return {
+      continue: false,
+      stopReason: `task ${context.activeTaskId} is missing required review files: ${missing}. Write each missing review file to pass the review gate before the session closes.`
     };
   }
 
