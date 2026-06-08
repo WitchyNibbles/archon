@@ -150,6 +150,10 @@ export function evaluatePreToolUse(payload, context) {
         reason: `managed control-layer file ${filePath} requires an active archon task with explicit write scope`
       };
     }
+    // .archon/skills/** is always writable — repo-local skill accumulation does not require an active task.
+    if (filePath && (filePath === ".archon/skills" || filePath.startsWith(".archon/skills/"))) {
+      return undefined;
+    }
     // No-task write gate: block substantive writes when no task is active.
     // archon:bypass does NOT apply here — it only affects the UserPromptSubmit advisory.
     if (filePath && !context.activeTaskId && isSubstantiveWriteTarget(filePath)) {

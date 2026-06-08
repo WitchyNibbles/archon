@@ -351,6 +351,29 @@ test("no-task gate block reason is actionable (names bootstrap path to unblock)"
   assert.match(result.reason, /\.archon\/ACTIVE/i);
 });
 
+// ─── .archon/skills/** whitelist ─────────────────────────────────────────────
+
+test("Write to .archon/skills/SKILL.md with no active task is NOT blocked (skills whitelisted)", () => {
+  const result = evaluatePreToolUse(writePayload(".archon/skills/typescript-build/SKILL.md"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Write to .archon/skills/README.md with no active task is NOT blocked (skills whitelisted)", () => {
+  const result = evaluatePreToolUse(writePayload(".archon/skills/README.md"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Edit to .archon/skills/deploy/SKILL.md with no active task is NOT blocked (skills whitelisted)", () => {
+  const result = evaluatePreToolUse(editPayload(".archon/skills/deploy/staging-deploy/SKILL.md"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Write to .archon/skills/ is NOT blocked even when a task with narrow scope is active", () => {
+  const ctx = contextWithScope("src/index.ts");
+  const result = evaluatePreToolUse(writePayload(".archon/skills/build/SKILL.md"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
 // DAC condition 3: archon:bypass must NOT bypass the PreToolUse write gate
 test("no-task gate fires regardless of bypass-like context in PreToolUse payload", () => {
   // The PreToolUse payload has no prompt field — archon:bypass cannot appear here.
