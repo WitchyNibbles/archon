@@ -270,7 +270,7 @@ export function createMcpToolDefinitions(runtime: McpRuntimeSurface): readonly M
     {
       name: "archon_runtime_health",
       description:
-        "Check runtime registration, data-root, qdrant, and review-identity health for a archon run.",
+        "Check runtime registration, data-root, and review-identity health for a archon run.",
       inputSchema: {
         runId: z.string().trim().optional(),
         workspaceSlug: z.string().trim().optional(),

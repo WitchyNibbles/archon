@@ -4,20 +4,19 @@
 
 ## Current phase
 
-Active — audit-fixes in progress. Qdrant removal from setup scripts, CI, and tests is
-complete. Residual Qdrant code in src/ (schema columns, domain types, dead-code file)
-is being removed as part of audit-fixes.
+Complete — all four audit-completion phases shipped.
 
 ## Active run
 
-`audit-fixes` — fixing 13 weakpoints identified in June 2026 codebase audit.
+None.
 
 ## Last completed task
 
-`qdrant-cleanup` — removed Qdrant from setup-archon.sh, setup-archon.ps1, ci.yml, and
-install.test.ts (commit 44f6f09). Scope was explicitly limited to setup scripts, CI,
-and tests; src-level Qdrant code (qdrant-artifact-index.ts, domain types, schema
-columns) remained as dead code and is tracked for removal under audit-fixes.
+`qdrant-full-removal` — dropped qdrant_url and qdrant_collection schema columns
+(migration 014), removed qdrant fields from domain types, postgres-store, admin.ts
+verifySetup, and mcp/tools.ts description. Migration 013 hotfix preceded this to
+unblock bootstrap. Also removed dead serve-ui command and archon:ui script (phase 2),
+and fixed CLAUDE.md routing gaps (phase 4).
 
 ## Acceptance criteria status
 
@@ -35,7 +34,7 @@ columns) remained as dead code and is tracked for removal under audit-fixes.
 - [x] Working tree clean: gitignore, product-state, env (cleanup-1)
 - [x] Runtime workflow proofs seeded for cleanup-1 and qdrant-cleanup
 - [x] Qdrant fully removed from setup scripts, CI, and tests (qdrant-cleanup)
-- [ ] Residual Qdrant dead code removed from src/ (audit-fixes)
+- [x] Residual Qdrant dead code removed from src/ (audit-fixes)
 
 ## Open risks
 
