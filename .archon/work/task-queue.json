@@ -1,6 +1,6 @@
 {
   "project_status": "active",
-  "current_task_id": "archon-repo-skill-evolution",
+  "current_task_id": null,
   "tasks": [
     {
       "id": "qdrant-cleanup",
@@ -44,7 +44,7 @@
     {
       "id": "archon-repo-skill-evolution",
       "title": "Phase 1 repo-local skill evolution foundation",
-      "status": "active",
+      "status": "done",
       "class": "feature",
       "depends_on": [],
       "acceptance_criteria": [
@@ -58,7 +58,8 @@
         "npm test"
       ],
       "evidence": [
-        "commit 80f009e: feat: Phase 1 repo-local skill evolution foundation"
+        "commit 80f009e: feat: Phase 1 repo-local skill evolution foundation",
+        "commit 9dfb5d1: feat: whitelist .archon/skills/** in hook-policy"
       ],
       "blocker": null
     }
