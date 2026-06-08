@@ -22,6 +22,9 @@ dist/
 !.archon/work/proofs/.gitkeep
 !.archon/work/daemon/.gitkeep
 
+# Generated output
+graphify-out/
+
 # Logs
 *.log
 npm-debug.log*

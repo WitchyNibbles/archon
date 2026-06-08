@@ -848,6 +848,14 @@ function stripHeredocBodies(command) {
   );
 }
 
+// Strip fd>/dev/null and fd>&N redirects from a single segment before write-like
+// classification. These discard output and are not writes to any real file.
+function stripIoDiscardRedirects(segment) {
+  return segment
+    .replace(/\s+\d*>\/dev\/null\b/g, "")
+    .replace(/\s+\d*>&\d+\b/g, "");
+}
+
 export function isReadOnlyBashCommand(command) {
   if (typeof command !== "string" || command.trim().length === 0) {
     return false;
@@ -856,7 +864,7 @@ export function isReadOnlyBashCommand(command) {
   const normalized = stripHeredocBodies(command);
   const segments = normalized
     .split(/\&\&|\|\||[|;]/)
-    .map((segment) => segment.trim())
+    .map((segment) => stripIoDiscardRedirects(segment).trim())
     .filter(Boolean);
   if (segments.length === 0) {
     return false;
