@@ -1,6 +1,6 @@
 {
-  "project_status": "done",
-  "current_task_id": null,
+  "project_status": "active",
+  "current_task_id": "graphify-first-install",
   "tasks": [
     {
       "id": "qdrant-cleanup",
@@ -20,6 +20,23 @@
         "verification: node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id qdrant-cleanup",
         "quality gate: release_readiness_required"
       ],
+      "blocker": null
+    },
+    {
+      "id": "graphify-first-install",
+      "title": "Install graphify on first setup and run initial wiki build",
+      "status": "active",
+      "class": "feature",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "setup-archon.sh installs graphify via uv/pip if absent",
+        "setup-archon.sh runs graphify . --wiki on first install",
+        ".graphifyignore seeded to consuming repos with non-code exclusions"
+      ],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [],
       "blocker": null
     }
   ]

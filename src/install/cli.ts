@@ -934,6 +934,12 @@ async function buildInstallPlan(
       mode: "seed",
       strategy: "seed",
       resolveDesiredContent: async () => generatedReviewIdentityAdapter
+    },
+    {
+      target: ".graphifyignore",
+      mode: "seed",
+      strategy: "seed",
+      resolveDesiredContent: async () => readFile(path.join(sourceRoot, ".graphifyignore"), "utf8")
     }
   );
 
