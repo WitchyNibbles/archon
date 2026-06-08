@@ -12,6 +12,7 @@
     { "id": "p8-runtime-activation", "status": "complete", "phase": 8 },
     { "id": "p9-claude-md-tags", "status": "complete", "phase": 9 },
     { "id": "p10-graphify-integration", "status": "complete", "phase": 10 },
-    { "id": "p11-hook-complete-check", "status": "complete", "phase": 11 }
+    { "id": "p11-hook-complete-check", "status": "complete", "phase": 11 },
+    { "id": "cleanup-1", "status": "complete", "phase": "cleanup" }
   ]
 }

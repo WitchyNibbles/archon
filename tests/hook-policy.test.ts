@@ -788,3 +788,30 @@ test("Phase 8 evaluateStop: configured+offline + NO active task → stop not hel
     result.stopReason.includes("archon runtime is offline");
   assert.ok(!heldByRuntimeGate, "runtime gate must not fire when no active task");
 });
+
+// ─── Cleanup-1: isReadOnlyBashCommand io-discard redirect fix ─────────────────
+
+test("isReadOnlyBashCommand: ls with 2>/dev/null is read-only", () => {
+  assert.equal(isReadOnlyBashCommand("ls .claude/hooks/ 2>/dev/null"), true);
+});
+
+test("isReadOnlyBashCommand: ls chained with && and 2>/dev/null on each segment is read-only", () => {
+  const command = "ls .claude/hooks/ 2>/dev/null && ls src/ 2>/dev/null";
+  assert.equal(isReadOnlyBashCommand(command), true);
+});
+
+test("isReadOnlyBashCommand: cat with 2>/dev/null is read-only", () => {
+  assert.equal(isReadOnlyBashCommand("cat .archon/ACTIVE 2>/dev/null"), true);
+});
+
+test("isReadOnlyBashCommand: find with 2>&1 is read-only", () => {
+  assert.equal(isReadOnlyBashCommand("find .claude -name '*.mjs' 2>&1"), true);
+});
+
+test("isReadOnlyBashCommand: redirect to a real file path is still write-like", () => {
+  assert.equal(isReadOnlyBashCommand("cat .archon/ACTIVE > /tmp/out.txt"), false);
+});
+
+test("isReadOnlyBashCommand: tee after a pipe is still write-like even with 2>/dev/null", () => {
+  assert.equal(isReadOnlyBashCommand("cat .claude/settings.json 2>/dev/null | tee /tmp/out"), false);
+});

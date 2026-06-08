@@ -1,3 +1,2 @@
-task_id=p11-hook-complete-check
+task_id=cleanup-1
 state=complete
-run_id=graphify-integration-run-1
