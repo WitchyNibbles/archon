@@ -1,6 +1,6 @@
 {
   "project_status": "active",
-  "current_task_id": null,
+  "current_task_id": "audit-fixes",
   "tasks": [
     {
       "id": "qdrant-cleanup",
@@ -39,6 +39,21 @@
       "evidence": [
         "commit 334b2f8: feat: install graphify on first setup and run initial wiki build"
       ],
+      "blocker": null
+    },
+    {
+      "id": "audit-fixes",
+      "title": "Fix codebase audit weakpoints and inconsistencies",
+      "status": "in_progress",
+      "class": "chore",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "All 13 audit issues resolved",
+        "npm test passes",
+        "tsc --noEmit passes"
+      ],
+      "verification": ["npm test", "tsc --noEmit"],
+      "evidence": [],
       "blocker": null
     },
     {
