@@ -1,5 +1,5 @@
 {
-  "current_task_id": "p11-hook-complete-check",
+  "current_task_id": null,
   "tasks": [
     { "id": "p1-managed-path-guard", "status": "complete", "phase": 1 },
     { "id": "p2-dac", "status": "complete", "phase": "2-dac" },
@@ -12,6 +12,6 @@
     { "id": "p8-runtime-activation", "status": "complete", "phase": 8 },
     { "id": "p9-claude-md-tags", "status": "complete", "phase": 9 },
     { "id": "p10-graphify-integration", "status": "complete", "phase": 10 },
-    { "id": "p11-hook-complete-check", "status": "in_progress", "phase": 11 }
+    { "id": "p11-hook-complete-check", "status": "complete", "phase": 11 }
   ]
 }
