@@ -92,6 +92,7 @@ const managedDotClaudeMdBlock = `${DOT_CLAUDE_BEGIN}
 - package owns \`src/\`, \`scripts/\`, \`.agents/\`, \`.claude/\`, \`.archon/rules/\`, and \`.archon/templates/\`
 - live work state belongs in \`.archon/work/\`
 - reviewed memory in \`.archon/memory/\` is canonical; retrieval is advisory; never store secrets there
+- repo-local skills in \`\.archon/skills/\` encode repo-specific procedures; check before starting domain work and update them when the agent learns something new about this repo
 - when repo-local Grafana configuration is present, treat Grafana as advisory evidence for debugging and research; if configuration is partial or tools are unavailable, report that explicitly
 - avoid strong negative claims from a narrow pass; gather broader evidence or test an alternate hypothesis before concluding no other cases exist
 - ask before deploys, auth changes, secret rotation, destructive data operations, global config changes outside this repo, or durable memory policy changes
