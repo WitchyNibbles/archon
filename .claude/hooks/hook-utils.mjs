@@ -520,7 +520,12 @@ export async function readActiveTaskContext(options = {}) {
         queueHasAuthoritativePointer = true;
         const currentTaskId = parsed.current_task_id;
         if (typeof currentTaskId === "string" && currentTaskId.trim().length > 0) {
-          context.queueCurrentTaskId = currentTaskId.trim();
+          const taskEntry = Array.isArray(parsed.tasks)
+            ? parsed.tasks.find((t) => t && typeof t === "object" && t.id === currentTaskId.trim())
+            : undefined;
+          const taskIsComplete =
+            taskEntry && (taskEntry.status === "complete" || taskEntry.status === "done");
+          context.queueCurrentTaskId = taskIsComplete ? null : currentTaskId.trim();
         } else if (currentTaskId === null) {
           context.queueCurrentTaskId = null;
         }
