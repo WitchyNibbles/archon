@@ -21,11 +21,20 @@ const {
   appendBypassLogEntry,
   parseRequiredReviews,
   reviewArtifactPath,
-  toRelativePath
+  toRelativePath,
+  parseVerificationRequired,
+  parseRequiredVerifications,
+  isVerificationSatisfied,
+  persistVerificationCert,
+  readVerificationCert
 } = await import(`${hooksDir}/hook-utils.mjs`);
-const { evaluatePreToolUse, evaluatePermissionRequest, evaluateStop, evaluateSessionStart } = await import(
-  `${hooksDir}/hook-policy.mjs`
-);
+const {
+  evaluatePreToolUse,
+  evaluatePermissionRequest,
+  evaluateStop,
+  evaluateSessionStart,
+  evaluatePostToolUse
+} = await import(`${hooksDir}/hook-policy.mjs`);
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -41,6 +50,9 @@ function emptyContext() {
     authorityMismatches: [],
     requiredReviews: [],
     missingReviews: [],
+    verificationRequired: true,
+    requiredVerifications: [],
+    verificationCert: undefined,
     runtimeConfigured: false,
     runtimeConnected: false
   };
@@ -837,4 +849,261 @@ test("isReadOnlyBashCommand: redirect to a real file path is still write-like", 
 
 test("isReadOnlyBashCommand: tee after a pipe is still write-like even with 2>/dev/null", () => {
   assert.equal(isReadOnlyBashCommand("cat .claude/settings.json 2>/dev/null | tee /tmp/out"), false);
+});
+
+// ─── Verification cert: pure function tests ──────────────────────────────────
+
+test("parseVerificationRequired: absent section → required by default", () => {
+  assert.equal(parseVerificationRequired("## Some other section\n- item\n"), true);
+});
+
+test("parseVerificationRequired: false → not required", () => {
+  assert.equal(parseVerificationRequired("## Verification required\n\n`false`\n"), false);
+  assert.equal(parseVerificationRequired("## Verification required\n\nfalse\n"), false);
+});
+
+test("parseVerificationRequired: no/skip → not required", () => {
+  assert.equal(parseVerificationRequired("## Verification required\n\nno\n"), false);
+  assert.equal(parseVerificationRequired("## Verification required\n\nskip\n"), false);
+});
+
+test("parseVerificationRequired: true or any other value → required", () => {
+  assert.equal(parseVerificationRequired("## Verification required\n\ntrue\n"), true);
+  assert.equal(parseVerificationRequired("## Verification required\n\nyes\n"), true);
+});
+
+test("parseRequiredVerifications: empty section → empty array", () => {
+  assert.deepEqual(parseRequiredVerifications("## Something else\n"), []);
+});
+
+test("parseRequiredVerifications: lists commands", () => {
+  const md = "## Required verifications\n\n- npm run test\n- bash scripts/check.sh\n";
+  assert.deepEqual(parseRequiredVerifications(md), ["npm run test", "bash scripts/check.sh"]);
+});
+
+test("isVerificationSatisfied: empty passed commands → false", () => {
+  assert.equal(isVerificationSatisfied("npm run test", []), false);
+});
+
+test("isVerificationSatisfied: exact match → true", () => {
+  assert.equal(isVerificationSatisfied("npm run test", [{ command: "npm run test", passedAt: "t" }]), true);
+});
+
+test("isVerificationSatisfied: passed command contains required → true", () => {
+  assert.equal(
+    isVerificationSatisfied("npm run test", [{ command: "npm run test -- --coverage 2>&1 | tail -50", passedAt: "t" }]),
+    true
+  );
+});
+
+test("isVerificationSatisfied: required contains passed (short canonical form) → true", () => {
+  assert.equal(
+    isVerificationSatisfied("npm test", [{ command: "npm test", passedAt: "t" }]),
+    true
+  );
+});
+
+test("isVerificationSatisfied: unrelated command → false", () => {
+  assert.equal(
+    isVerificationSatisfied("npm run test", [{ command: "bash scripts/check.sh", passedAt: "t" }]),
+    false
+  );
+});
+
+// ─── Verification cert: file I/O tests ───────────────────────────────────────
+
+test("persistVerificationCert + readVerificationCert: roundtrip", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-test-"));
+  try {
+    persistVerificationCert(tmpDir, "task-1", "npm run test");
+    const cert = readVerificationCert(tmpDir, "task-1");
+    assert.ok(cert, "cert should exist after writing");
+    assert.equal(cert.taskId, "task-1");
+    assert.equal(cert.passedCommands.length, 1);
+    assert.equal(cert.passedCommands[0].command, "npm run test");
+    assert.ok(typeof cert.passedCommands[0].passedAt === "string");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("persistVerificationCert: appends entries on subsequent calls", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-test-"));
+  try {
+    persistVerificationCert(tmpDir, "task-1", "npm run test");
+    persistVerificationCert(tmpDir, "task-1", "bash scripts/check.sh");
+    const cert = readVerificationCert(tmpDir, "task-1");
+    assert.equal(cert.passedCommands.length, 2);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("readVerificationCert: missing cert → undefined", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-test-"));
+  try {
+    assert.equal(readVerificationCert(tmpDir, "no-such-task"), undefined);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ─── evaluatePostToolUse: cert written on passing verification ────────────────
+
+function bashSuccessPayload(command: string) {
+  return { tool_name: "Bash", tool_input: { command }, tool_response: { exitCode: 0 } };
+}
+
+function bashFailPayload(command: string) {
+  return { tool_name: "Bash", tool_input: { command }, tool_response: { exitCode: 1, stderr: "failed" } };
+}
+
+test("evaluatePostToolUse: passing verification command writes cert", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-test-"));
+  try {
+    const ctx = { ...emptyContext(), repoRoot: tmpDir, activeTaskId: "task-cert" };
+    evaluatePostToolUse(bashSuccessPayload("npm run test"), ctx);
+    const cert = readVerificationCert(tmpDir, "task-cert");
+    assert.ok(cert, "cert should be written after passing verification");
+    assert.equal(cert.passedCommands[0].command, "npm run test");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("evaluatePostToolUse: passing non-verification bash does NOT write cert", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-test-"));
+  try {
+    const ctx = { ...emptyContext(), repoRoot: tmpDir, activeTaskId: "task-cert" };
+    evaluatePostToolUse(bashSuccessPayload("ls src/"), ctx);
+    assert.equal(readVerificationCert(tmpDir, "task-cert"), undefined);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("evaluatePostToolUse: passing verification with no active task does NOT write cert", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-test-"));
+  try {
+    const ctx = { ...emptyContext(), repoRoot: tmpDir, activeTaskId: undefined };
+    evaluatePostToolUse(bashSuccessPayload("npm run test"), ctx);
+    assert.equal(readVerificationCert(tmpDir, "task-no-active"), undefined);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ─── evaluateStop: verification cert gate ────────────────────────────────────
+
+const CERT_PRESENT = { passedCommands: [{ command: "npm run test", passedAt: "2026-01-01T00:00:00.000Z" }] };
+
+test("evaluateStop: no active task → verification gate does not fire", () => {
+  const ctx = { ...emptyContext(), verificationRequired: true };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByVerification =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("verification evidence");
+  assert.ok(!heldByVerification, "verification gate must not fire when no active task");
+});
+
+test("evaluateStop: active task + cert present → verification gate silent", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-1",
+    missingReviews: [],
+    verificationRequired: true,
+    verificationCert: CERT_PRESENT
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByVerification =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("verification evidence");
+  assert.ok(!heldByVerification, "verification gate must not fire when cert is present");
+});
+
+test("evaluateStop: active task + no cert → stop held with actionable message", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-1",
+    missingReviews: [],
+    verificationRequired: true,
+    verificationCert: undefined
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.ok(result.stopReason.includes("verification evidence"), `unexpected stopReason: ${result.stopReason}`);
+  assert.ok(result.stopReason.includes("task-1"), "stopReason should name the task");
+});
+
+test("evaluateStop: verification required: false → gate does not fire even without cert", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-1",
+    missingReviews: [],
+    verificationRequired: false,
+    verificationCert: undefined
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByVerification =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("verification evidence");
+  assert.ok(!heldByVerification, "verification gate must not fire when verificationRequired is false");
+});
+
+test("evaluateStop: required verifications all satisfied → gate silent", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-1",
+    missingReviews: [],
+    verificationRequired: true,
+    requiredVerifications: ["npm run test"],
+    verificationCert: CERT_PRESENT
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByVerification =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("verification evidence");
+  assert.ok(!heldByVerification, "verification gate must not fire when all required verifications are satisfied");
+});
+
+test("evaluateStop: required verification missing → stop held naming missing command", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-1",
+    missingReviews: [],
+    verificationRequired: true,
+    requiredVerifications: ["npm run test", "bash scripts/check-archon-workflow.sh"],
+    verificationCert: CERT_PRESENT
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.ok(result.stopReason.includes("bash scripts/check-archon-workflow.sh"), `stopReason should name missing command: ${result.stopReason}`);
+});
+
+test("evaluateStop: mid-task message + no cert → shouldHoldStop fires, verification gate silent", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-1",
+    missingReviews: [],
+    verificationRequired: true,
+    verificationCert: undefined
+  };
+  // Empty message → shouldHoldStop returns true → taskShouldHold → verification gate must NOT drive
+  const result = evaluateStop(stopPayload(""), ctx);
+  assert.ok(result, "expected stop to be held by shouldHoldStop");
+  // Must not be the verification gate message
+  assert.ok(
+    !result.stopReason.includes("verification evidence"),
+    "mid-task pause must be held by shouldHoldStop, not verification gate"
+  );
 });

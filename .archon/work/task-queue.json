@@ -3,6 +3,25 @@
   "current_task_id": null,
   "tasks": [
     {
+      "id": "verification-cert-enforcement",
+      "title": "Positive verification certificate enforcement in hook system",
+      "status": "done",
+      "class": "feature",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "Post-tool hook writes cert when verification command exits 0 with active task",
+        "Stop hook holds if active task has no passing verification cert",
+        "Opt-out via ## Verification required: false",
+        "## Required verifications commands must all pass before stop",
+        "npm run test passes"
+      ],
+      "verification": [
+        "npm run test"
+      ],
+      "evidence": ["190/190 tests pass; cert written on passing verification, stop held without cert; 23 new tests added"],
+      "blocker": null
+    },
+    {
       "id": "qdrant-cleanup",
       "title": "Local workflow proof seed for qdrant-cleanup",
       "status": "done",

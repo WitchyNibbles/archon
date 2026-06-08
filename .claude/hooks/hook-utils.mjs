@@ -468,6 +468,9 @@ export async function readActiveTaskContext(options = {}) {
     authorityMismatches: [],
     requiredReviews: [],
     missingReviews: [],
+    verificationRequired: true,
+    requiredVerifications: [],
+    verificationCert: undefined,
     runtimeConfigured: false,
     runtimeConnected: false
   };
@@ -603,6 +606,10 @@ export async function readActiveTaskContext(options = {}) {
       context.missingReviews.push(relPath);
     }
   }
+
+  context.verificationRequired = parseVerificationRequired(taskMarkdown);
+  context.requiredVerifications = parseRequiredVerifications(taskMarkdown);
+  context.verificationCert = readVerificationCert(resolvedRepoRoot, context.activeTaskId);
 
   return context;
 }
@@ -762,6 +769,74 @@ export function isSubstantiveWriteTarget(relativePath) {
   if (normalized === ".archon/work/product-state.md") return false;
   if (isTaskPacketPath(normalized)) return false;
   return true;
+}
+
+function verificationCertPath(repoRootPath, taskId) {
+  return path.join(repoRootPath, ".archon", "work", "daemon", `verification-cert-${taskId}.json`);
+}
+
+export function persistVerificationCert(repoRootPath, taskId, command) {
+  const certPath = verificationCertPath(repoRootPath, taskId);
+  mkdirSync(path.dirname(certPath), { recursive: true });
+  let existing = { version: 1, taskId, passedCommands: [] };
+  try {
+    const raw = readFileSync(certPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.passedCommands)) {
+      existing = parsed;
+    }
+  } catch {
+    // start fresh
+  }
+  existing.passedCommands.push({
+    command: typeof command === "string" ? command : "",
+    passedAt: new Date().toISOString()
+  });
+  writeFileSync(certPath, `${JSON.stringify(existing, null, 2)}\n`, "utf8");
+}
+
+export function readVerificationCert(repoRootPath, taskId) {
+  try {
+    const raw = readFileSync(verificationCertPath(repoRootPath, taskId), "utf8");
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      Array.isArray(parsed.passedCommands) &&
+      parsed.passedCommands.length > 0
+    ) {
+      return parsed;
+    }
+  } catch {
+    // no cert
+  }
+  return undefined;
+}
+
+export function parseVerificationRequired(markdown) {
+  const lines = parseMarkdownListSection(markdown, "## Verification required");
+  if (lines.length === 0) {
+    return true;
+  }
+  const value = lines[0].trim().toLowerCase();
+  return value !== "false" && value !== "no" && value !== "skip";
+}
+
+export function parseRequiredVerifications(markdown) {
+  return parseMarkdownListSection(markdown, "## Required verifications")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+export function isVerificationSatisfied(requiredCommand, passedCommands) {
+  if (!Array.isArray(passedCommands) || passedCommands.length === 0) {
+    return false;
+  }
+  const normalized = requiredCommand.trim().toLowerCase();
+  return passedCommands.some((entry) => {
+    const passed = (typeof entry.command === "string" ? entry.command : "").trim().toLowerCase();
+    return passed.includes(normalized) || normalized.includes(passed);
+  });
 }
 
 export function appendBypassLogEntry(repoRootPath, prompt) {
