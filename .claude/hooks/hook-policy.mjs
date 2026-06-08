@@ -13,8 +13,10 @@ import {
   isSubstantiveWriteTarget,
   isTaskPacketPath,
   isVerificationCommand,
+  isVerificationSatisfied,
   parseApplyPatchTargets,
   persistHookBlockerState,
+  persistVerificationCert,
   reviewArtifactPath,
   shouldHoldStop,
   toRelativePath
@@ -207,6 +209,10 @@ export function evaluatePostToolUse(payload, context) {
 
   if (exitCode === 0) {
     clearHookBlockerState(context.repoRoot);
+    const command = extractToolCommand(payload);
+    if (isVerificationCommand(command) && context.activeTaskId && context.repoRoot) {
+      persistVerificationCert(context.repoRoot, context.activeTaskId, command);
+    }
     return undefined;
   }
 
@@ -227,8 +233,8 @@ export function evaluatePostToolUse(payload, context) {
     });
   }
 
-  const command = extractToolCommand(payload);
-  if (!isVerificationCommand(command)) {
+  const failedCommand = extractToolCommand(payload);
+  if (!isVerificationCommand(failedCommand)) {
     return undefined;
   }
 
@@ -364,6 +370,32 @@ export function evaluateStop(payload, context) {
       continue: false,
       stopReason: `archon runtime is offline: postgres is configured but unreachable. Task ${taskId} cannot be marked complete without runtime confirmation. Restore postgres connectivity and retry, or remove ARCHON_CORE_DATABASE_URL from .env to fall back to local state only.`
     };
+  }
+
+  // Verification cert gate: require at least one passing verification before session closes.
+  // Fires only when Claude signals completion, reviews pass, and runtime is reachable.
+  // Opt-out via ## Verification required: false in the task packet.
+  if (!taskShouldHold && context.activeTaskId && context.verificationRequired !== false) {
+    const passedCommands = context.verificationCert?.passedCommands ?? [];
+    if (
+      Array.isArray(context.requiredVerifications) &&
+      context.requiredVerifications.length > 0
+    ) {
+      const missing = context.requiredVerifications.filter(
+        (req) => !isVerificationSatisfied(req, passedCommands)
+      );
+      if (missing.length > 0) {
+        return {
+          continue: false,
+          stopReason: `task ${context.activeTaskId} is missing required verification evidence for: ${missing.join(", ")}. Run these commands and ensure they pass before the session closes.`
+        };
+      }
+    } else if (passedCommands.length === 0) {
+      return {
+        continue: false,
+        stopReason: `task ${context.activeTaskId} has no passing verification evidence. Run: npm run test  OR  bash scripts/check-archon-workflow.sh --task-id ${context.activeTaskId}`
+      };
+    }
   }
 
   if (taskShouldHold) {

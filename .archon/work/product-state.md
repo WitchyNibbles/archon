@@ -4,7 +4,7 @@
 
 ## Current phase
 
-Complete — all four audit-completion phases shipped.
+Verification enforcement shipped.
 
 ## Active run
 
@@ -12,11 +12,12 @@ None.
 
 ## Last completed task
 
-`qdrant-full-removal` — dropped qdrant_url and qdrant_collection schema columns
-(migration 014), removed qdrant fields from domain types, postgres-store, admin.ts
-verifySetup, and mcp/tools.ts description. Migration 013 hotfix preceded this to
-unblock bootstrap. Also removed dead serve-ui command and archon:ui script (phase 2),
-and fixed CLAUDE.md routing gaps (phase 4).
+`verification-cert-enforcement` — added positive verification certificate mechanism
+to the hook system. Post-tool hook writes `.archon/work/daemon/verification-cert-<taskId>.json`
+when a verification command exits 0 with an active task. Stop hook requires the cert
+before allowing a task-active session to close. Opt-out via `## Verification required: false`
+in the task packet. `## Required verifications` section enables per-task required command
+declaration. 23 new tests; 190/190 total pass.
 
 ## Acceptance criteria status
 
@@ -35,6 +36,7 @@ and fixed CLAUDE.md routing gaps (phase 4).
 - [x] Runtime workflow proofs seeded for cleanup-1 and qdrant-cleanup
 - [x] Qdrant fully removed from setup scripts, CI, and tests (qdrant-cleanup)
 - [x] Residual Qdrant dead code removed from src/ (audit-fixes)
+- [x] Positive verification certificate enforcement (verification-cert-enforcement)
 
 ## Open risks
 
