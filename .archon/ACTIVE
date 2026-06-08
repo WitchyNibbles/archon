@@ -1,2 +1,2 @@
-task_id=cleanup-1
+task_id=qdrant-cleanup
 state=complete

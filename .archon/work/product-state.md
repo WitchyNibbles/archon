@@ -4,8 +4,8 @@
 
 ## Current phase
 
-Stable — graphify integration complete. All 12 phases of the control-layer build
-(p1–p11 + cleanup-1) are complete. No active run.
+Stable — all open risks resolved. Qdrant removal is now complete across all files.
+No active run.
 
 ## Active run
 
@@ -13,7 +13,9 @@ None.
 
 ## Last completed task
 
-`cleanup-1` — gitignore, hook read-only false-positive, product-state, stale env vars.
+`qdrant-cleanup` — completed partial Qdrant removal from commit 44f6f09: removed stale
+Qdrant references from setup-archon.sh, setup-archon.ps1, ci.yml, and install.test.ts.
+Also seeded runtime workflow proofs for cleanup-1 and qdrant-cleanup.
 
 ## Acceptance criteria status
 
@@ -29,12 +31,9 @@ None.
 - [x] Graphify replaces gitnexus as advisory repo-intelligence layer (p10)
 - [x] Hook false-positive on complete-task queue entries (p11)
 - [x] Working tree clean: gitignore, product-state, env (cleanup-1)
+- [x] Runtime workflow proofs seeded for cleanup-1 and qdrant-cleanup
+- [x] Qdrant fully removed from setup scripts, CI, and tests (qdrant-cleanup)
 
 ## Open risks
 
-- **Runtime workflow proof uses non-UUID run_id** — `graphify-integration-run-1` is
-  not a UUID; `workflow-proof` queries fail at the DB level. Phases p9–p11 relied on
-  `review_exports: runtime_optional`. The DB has no authoritative proof records for
-  these phases. Mitigation: all phases have markdown review artifacts and tests pass.
-- **Stale Qdrant env vars** — removed from `.env` in cleanup-1 but may reappear if
-  `.env` is regenerated from an old template.
+None.
