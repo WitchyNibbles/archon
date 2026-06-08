@@ -488,6 +488,49 @@ if has_npm_script "archon:verify:playwright" "verify:playwright"; then
   npm run archon:verify:playwright
 fi
 
+ensure_graphify_installed() {
+  if command -v graphify >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "graphify not found; installing graphifyy..."
+  if command -v uv >/dev/null 2>&1; then
+    uv tool install graphifyy
+    export PATH="$HOME/.local/bin:$PATH"
+  elif command -v pip3 >/dev/null 2>&1; then
+    pip3 install --user graphifyy
+    export PATH="$HOME/.local/bin:$PATH"
+  elif command -v pip >/dev/null 2>&1; then
+    pip install --user graphifyy
+    export PATH="$HOME/.local/bin:$PATH"
+  else
+    echo "warning: graphify could not be installed (no uv or pip found)" >&2
+    echo "run 'uv tool install graphifyy' manually, then 'npm run archon:graphify:build'" >&2
+    return 1
+  fi
+}
+
+run_graphify_initial_build() {
+  if ! command -v graphify >/dev/null 2>&1; then
+    echo "graphify not available; skipping initial graph build"
+    return
+  fi
+
+  if [[ -f graphify-out/graph.json ]]; then
+    echo "graphify graph already exists; skipping initial build"
+    return
+  fi
+
+  echo "running graphify initial build (this may take a few minutes)..."
+  if ! graphify . --wiki; then
+    echo ""
+    echo "graphify initial build did not complete; run 'npm run archon:graphify:build' when LLM credentials are available"
+  fi
+}
+
+ensure_graphify_installed
+run_graphify_initial_build
+
 echo ""
 echo "archon local setup complete"
 echo "runtime mode: ${ARCHON_RUNTIME_MODE}"

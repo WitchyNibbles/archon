@@ -1,2 +1,2 @@
-task_id=qdrant-cleanup
-state=complete
+task_id=graphify-first-install
+state=active

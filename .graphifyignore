@@ -1,0 +1,43 @@
+# Build and dependency directories
+node_modules/
+dist/
+build/
+out/
+.next/
+.nuxt/
+coverage/
+.turbo/
+.cache/
+
+# Lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+*.lockb
+bun.lock
+
+# Archon workflow and memory (not source code)
+.archon/
+graphify-out/
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Non-code content
+*.md
+*.mdx
+*.txt
+*.csv
+*.log
+
+# Config and data files — keep tsconfig/package.json
+*.yaml
+*.yml
+*.toml
+*.json
+!tsconfig*.json
+!package.json

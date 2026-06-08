@@ -315,6 +315,51 @@ if (Test-ArchonScript -Preferred "archon:verify:playwright" -Fallback "verify:pl
     npm run archon:verify:playwright
 }
 
+function Ensure-GraphifyInstalled {
+    if (Get-Command graphify -ErrorAction SilentlyContinue) {
+        return
+    }
+
+    Write-Host "graphify not found; installing graphifyy..."
+    $userBin = Join-Path $env:USERPROFILE ".local\bin"
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        uv tool install graphifyy
+        $env:PATH = "$userBin;$env:PATH"
+    } elseif (Get-Command pip3 -ErrorAction SilentlyContinue) {
+        pip3 install --user graphifyy
+        $env:PATH = "$userBin;$env:PATH"
+    } elseif (Get-Command pip -ErrorAction SilentlyContinue) {
+        pip install --user graphifyy
+        $env:PATH = "$userBin;$env:PATH"
+    } else {
+        Write-Warning "graphify could not be installed (no uv or pip found)"
+        Write-Warning "run 'uv tool install graphifyy' manually, then 'npm run archon:graphify:build'"
+    }
+}
+
+function Invoke-GraphifyInitialBuild {
+    if (-not (Get-Command graphify -ErrorAction SilentlyContinue)) {
+        Write-Host "graphify not available; skipping initial graph build"
+        return
+    }
+
+    if (Test-Path -LiteralPath "graphify-out\graph.json") {
+        Write-Host "graphify graph already exists; skipping initial build"
+        return
+    }
+
+    Write-Host "running graphify initial build (this may take a few minutes)..."
+    try {
+        graphify . --wiki
+    } catch {
+        Write-Host ""
+        Write-Host "graphify initial build did not complete; run 'npm run archon:graphify:build' when LLM credentials are available"
+    }
+}
+
+Ensure-GraphifyInstalled
+Invoke-GraphifyInitialBuild
+
 Write-Host ""
 Write-Host "archon local setup complete"
 Write-Host "runtime mode: $runtimeMode"
