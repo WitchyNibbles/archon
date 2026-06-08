@@ -136,3 +136,8 @@ test("AGENTS routes recurring control-layer work through repo-local workflow ski
   assert.match(agents, /operator docs, migration notes, release notes.*workflow-document clarity/i);
   assert.match(agents, /src\/docs-export\/.*archon-technical-writing/i);
 });
+
+test("CLAUDE.md Details section surfaces git-conventions.md", async () => {
+  const claudeMd = await read("CLAUDE.md");
+  assert.match(claudeMd, /git-conventions\.md/);
+});

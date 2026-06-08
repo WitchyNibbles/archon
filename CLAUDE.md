@@ -94,6 +94,10 @@ After each completed task:
 
 Prefer repo-local `archon-*` skills and `.claude/agents/` roles when available.
 
+Specialist agents available on demand (invoke explicitly when the task domain matches):
+`context-manager`, `compliance-reviewer`, `data-engineer`, `ml-engineer`,
+`mobile-engineer`, `observability-engineer`, `product-analyst`, `ux-researcher`
+
 ## Design And Architecture Council
 
 - the `Design and Architecture Council` is a pre-implementation quality gate for substantive roadmap and plan work
@@ -109,7 +113,9 @@ Prefer repo-local `archon-*` skills and `.claude/agents/` roles when available.
 Use a repo-local `archon-*` workflow skill before generic secondary skills when it fits the domain. Each skill's description declares its trigger domain.
 
 Key routing shortcuts:
-- agent runtime, hook, tool-contract, automation, or continuation changes: `archon-agent-runtime`
+- agent runtime, hook, tool-contract, automation, or continuation changes:
+  invoke `archon-agent-runtime` skill first; delegate to `agent-runtime-engineer` agent
+  for implementation work that touches `src/archon/`, `src/runtime/`, or hook scripts
 - benchmark, grader, or skill-regression work: `archon-eval-engineering` and `archon-skill-evals`
 - operator docs, migration notes, release notes, workflow-document clarity, or `src/docs-export/` changes: `archon-technical-writing`
 - any CSS, UI component, visual, or design-system work: `archon-frontend`
@@ -150,6 +156,7 @@ Use `.archon/rules/` for the detailed policy set:
 - `review-identity-policy.md`
 - `role-retrieval-policy.md`
 - `write-scope.md`
+- `git-conventions.md` — branch prefixes, commit format, and PR conventions
 - `reasoning-quality.md`
 - `task-quality-matrix.md`
 - `design-council-policy.md`
