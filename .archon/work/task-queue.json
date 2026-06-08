@@ -1,6 +1,6 @@
 {
   "project_status": "active",
-  "current_task_id": "graphify-first-install",
+  "current_task_id": null,
   "tasks": [
     {
       "id": "qdrant-cleanup",
@@ -25,7 +25,7 @@
     {
       "id": "graphify-first-install",
       "title": "Install graphify on first setup and run initial wiki build",
-      "status": "active",
+      "status": "done",
       "class": "feature",
       "depends_on": [],
       "acceptance_criteria": [
@@ -36,7 +36,9 @@
       "verification": [
         "npm test"
       ],
-      "evidence": [],
+      "evidence": [
+        "commit 334b2f8: feat: install graphify on first setup and run initial wiki build"
+      ],
       "blocker": null
     }
   ]

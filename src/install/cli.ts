@@ -698,7 +698,7 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
     }
   }
 
-  const scaffoldFiles = [".archon/memory/README.md"];
+  const scaffoldFiles = [".archon/memory/README.md", ".archon/skills/README.md"];
 
   for (const relativePath of scaffoldFiles) {
     const sourcePath = path.join(sourceRoot, relativePath);
