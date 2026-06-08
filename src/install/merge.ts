@@ -438,7 +438,6 @@ export function mergePackageJson(
     "node --experimental-strip-types ./node_modules/archon/src/archon/autopilot-status.ts";
   scripts["archon:github-dispatch"] = `${archonEntry} github-dispatch --target .`;
   scripts["archon:mcp"] = `${archonEntry} mcp`;
-  scripts["archon:ui"] = `${archonEntry} serve-ui`;
   scripts["archon:scaffold-workflow"] = `${archonEntry} scaffold-workflow --target .`;
   scripts["archon:upgrade-reasoning-workflow"] = `${archonEntry} upgrade-reasoning-workflow --target .`;
   scripts["archon:seed-happy-path-fixture"] = `${archonEntry} seed-happy-path-fixture --target .`;

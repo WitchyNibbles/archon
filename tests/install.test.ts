@@ -320,10 +320,6 @@ test("mergePackageJson adds archon dependency and scripts without removing exist
     merged.scripts["archon:mcp"],
     "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts mcp"
   );
-  assert.equal(
-    merged.scripts["archon:ui"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts serve-ui"
-  );
   assert.match(
     merged.scripts["archon:verify:migrations:live"],
     /node_modules\/archon\/src\/admin\/archon\.ts verify-live-migrations/

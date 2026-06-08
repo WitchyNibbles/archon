@@ -40,8 +40,7 @@ const adminCommands = new Set([
   "export-docs",
   "/export-docs",
   "github-dispatch",
-  "mcp",
-  "serve-ui"
+  "mcp"
 ]);
 
 const installCommands = new Set([
@@ -58,7 +57,6 @@ const repoRoot = path.resolve(moduleDir, "../..");
 const adminCliPath = path.join(repoRoot, "src/admin.ts");
 const installCliPath = path.join(repoRoot, "src/install/cli.ts");
 const mcpServerPath = path.join(repoRoot, "src/mcp/server.ts");
-const uiServerPath = path.join(repoRoot, "src/ui/server.ts");
 
 function resolveRealPath(candidate: string): string {
   try {
@@ -83,7 +81,7 @@ function printUsage(): void {
       "  status | coverage | gaps | checkpoint | resume | workflow-proof | seed-workflow-proof | seed-modernization-proof | advance-active-task | reconcile-runtime-state | sync-runtime-exports | daemon | supervisor | supervisor-history | ops | loop | recover | report | plan-context | export-docs | github-dispatch",
       "  migrate | health | doctor [--repair] | bootstrap-project | verify-setup | verify-live-migrations",
       "  verify-review-identity | record-review | index-repo-markdown | refresh-retrieval | refresh-repo-context | repair-task-queue | run-embedding-jobs",
-      "  mcp | serve-ui",
+      "  mcp",
       "",
       "Install commands:",
       "  init | upgrade | verify | scaffold-workflow | upgrade-reasoning-workflow | seed-happy-path-fixture",
@@ -104,11 +102,9 @@ function main(argv: readonly string[]): void {
     ? installCliPath
     : command === "mcp"
       ? mcpServerPath
-      : command === "serve-ui"
-        ? uiServerPath
-        : adminCommands.has(command)
-          ? adminCliPath
-          : undefined;
+      : adminCommands.has(command)
+        ? adminCliPath
+        : undefined;
 
   if (!scriptPath) {
     throw new Error(`Unknown archon command: ${command}`);
@@ -116,12 +112,12 @@ function main(argv: readonly string[]): void {
 
   const nodeArgs: string[] = [];
   if (
-    (scriptPath === adminCliPath || scriptPath === mcpServerPath || scriptPath === uiServerPath) &&
+    (scriptPath === adminCliPath || scriptPath === mcpServerPath) &&
     existsSync(path.resolve(process.cwd(), ".env.archon"))
   ) {
     nodeArgs.push("--env-file=.env.archon");
   }
-  if (scriptPath === mcpServerPath || scriptPath === uiServerPath) {
+  if (scriptPath === mcpServerPath) {
     nodeArgs.push("--experimental-strip-types", scriptPath, ...rest);
   } else {
     nodeArgs.push("--experimental-strip-types", scriptPath, command, ...rest);
