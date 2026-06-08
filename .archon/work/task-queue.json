@@ -1,6 +1,6 @@
 {
   "project_status": "active",
-  "current_task_id": "audit-fixes",
+  "current_task_id": "qdrant-bootstrap-hotfix",
   "tasks": [
     {
       "id": "qdrant-cleanup",
@@ -53,8 +53,12 @@
         "tsc --noEmit passes"
       ],
       "verification": ["npm test", "tsc --noEmit"],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "commit 18e0344: fix 12 of 13 audit issues",
+        "commit 5f758db: add src/docs-export/ routing (issue 13)",
+        "blocked: B1 (serve-ui), C1 (bootstrap NOT NULL), G1 (qdrant src cleanup)"
+      ],
+      "blocker": "superseded by qdrant-bootstrap-hotfix, serve-ui-removal, qdrant-full-removal"
     },
     {
       "id": "archon-repo-skill-evolution",
@@ -76,6 +80,76 @@
         "commit 80f009e: feat: Phase 1 repo-local skill evolution foundation",
         "commit 9dfb5d1: feat: whitelist .archon/skills/** in hook-policy"
       ],
+      "blocker": null
+    },
+    {
+      "id": "qdrant-bootstrap-hotfix",
+      "title": "Add qdrant_collection default to unblock bootstrap (C1)",
+      "status": "queued",
+      "class": "hotfix",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "src/sql/migrations/013_qdrant_collection_default.sql exists",
+        "Migration sets qdrant_collection default ''",
+        "npm test passes",
+        "tsc --noEmit passes"
+      ],
+      "verification": ["npm test", "tsc --noEmit"],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "serve-ui-removal",
+      "title": "Remove serve-ui dead command and archon:ui script injection (B1)",
+      "status": "queued",
+      "class": "chore",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "src/admin/archon.ts contains no reference to serve-ui or uiServerPath",
+        "src/install/merge.ts does not inject archon:ui script",
+        "tests/install.test.ts has no archon:ui assertion",
+        "npm test passes",
+        "tsc --noEmit passes"
+      ],
+      "verification": ["npm test", "tsc --noEmit"],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "qdrant-full-removal",
+      "title": "Drop qdrant columns and remove all dead Qdrant code from src/ (G1/I1/I3/I4/B2)",
+      "status": "queued",
+      "class": "chore",
+      "depends_on": ["qdrant-bootstrap-hotfix"],
+      "acceptance_criteria": [
+        "src/sql/migrations/014_drop_qdrant_columns.sql exists and drops both columns",
+        "src/domain/types.ts has no qdrantUrl or qdrantCollection fields",
+        "src/store/postgres-store.ts has no qdrant column references",
+        "src/admin.ts does not select qdrant columns",
+        "src/mcp/tools.ts archon_runtime_health description mentions no qdrant",
+        "audit-fixes status is done in task-queue.json",
+        "npm test passes",
+        "tsc --noEmit passes"
+      ],
+      "verification": ["npm test", "tsc --noEmit"],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "docs-routing-cleanup",
+      "title": "Fix CLAUDE.md routing gaps: git-conventions, skill/agent relationship, unrouted agents (G2/I2/G3)",
+      "status": "queued",
+      "class": "chore",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "CLAUDE.md Details section lists git-conventions.md",
+        "CLAUDE.md Recurring routing entry for agent-runtime names both skill and agent",
+        "CLAUDE.md Default role chain notes specialist-on-demand agents",
+        "tests/control-layer-contract.test.ts asserts git-conventions.md is listed",
+        "npm test passes"
+      ],
+      "verification": ["npm test"],
+      "evidence": [],
       "blocker": null
     }
   ]

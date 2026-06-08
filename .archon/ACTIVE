@@ -1,2 +1,3 @@
-task_id=archon-repo-skill-evolution
-state=done
+task_id=qdrant-bootstrap-hotfix
+state=queued
+plan=.archon/work/plans/plan-audit-completion.md
