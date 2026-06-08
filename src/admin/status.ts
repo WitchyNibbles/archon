@@ -6,7 +6,7 @@ import type {
   RuntimeTraceRegistrySummary,
   TaskStatus
 } from "../domain/types.ts";
-import type { GitNexusStatusObservation } from "./gitnexus.ts";
+import type { GraphifyStatusObservation } from "./graphify.ts";
 import {
   buildAutonomousOperatorSummary,
   type AutonomousContinuationProvider,
@@ -215,7 +215,7 @@ export interface OperatorStatusReport {
     supervisor?: DaemonSupervisorStatusObservation | undefined;
   };
   reviewIdentity: ReviewIdentityStatusObservation;
-  gitNexus: GitNexusStatusObservation;
+  graphify: GraphifyStatusObservation;
   integrity: {
     authorityLabel: "derived_only";
     status: "consistent" | "contradicted" | "unavailable";
@@ -286,7 +286,7 @@ export function buildOperatorStatusReport(input: {
   daemonHandoff?: DaemonOperatorHandoffObservation | undefined;
   daemonSupervisor?: DaemonSupervisorStatusObservation | undefined;
   reviewIdentity: ReviewIdentityStatusObservation;
-  gitNexus: GitNexusStatusObservation;
+  graphify: GraphifyStatusObservation;
   integrity?: OperatorStatusReport["integrity"] | undefined;
   now?: string | undefined;
   staleAfterDays?: number | undefined;
@@ -403,7 +403,7 @@ export function buildOperatorStatusReport(input: {
       supervisor: input.daemonSupervisor
     },
     reviewIdentity: input.reviewIdentity,
-    gitNexus: input.gitNexus,
+    graphify: input.graphify,
     integrity: input.integrity ?? {
       authorityLabel: "derived_only",
       status: "unavailable",

@@ -6,7 +6,7 @@ Derived retrieval is a hint layer for `archon`. It is not authority.
 
 - canonical policy remains `CLAUDE.md`, `.archon/rules/`, and reviewed `.archon/memory/`
 - derived retrieval may help discover files, prior work, and candidate decisions
-- GitNexus and similar graph/index tooling are advisory retrieval, not authority
+- graphify and similar graph/index tooling are advisory retrieval, not authority
 - runtime routing recommendations are advisory only and must not auto-assign a writer or reviewer
 - important claims must be re-anchored in canonical files before planning, review, or implementation decisions
 - no role may treat unreviewed work artifacts as settled policy

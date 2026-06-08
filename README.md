@@ -156,7 +156,7 @@ Invoke any skill from within a Claude Code session with a slash command:
 /archon-debugging           ✦ Systematic root-cause investigation
 /archon-repair-loop         ✦ Autonomous repair when a task gets stuck
 /archon-git-operator        ✦ Stage, slice, and commit safely
-/archon-gitnexus            ✦ Cross-repo git coordination
+/archon-graphify            ✦ Advisory repo intelligence via graphify knowledge graph
 /archon-infra-ops           ✦ Infrastructure and environment work
 /archon-setup               ✦ First-time project bootstrap
 /archon-docs-research       ✦ Research docs, evidence, and prior art

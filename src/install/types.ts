@@ -4,7 +4,6 @@ export interface InstallOptions {
   sourceRoot: string;
   targetRoot: string;
   dryRun?: boolean;
-  withGitNexus?: boolean;
   withGrafana?: boolean;
   withObsidian?: boolean;
 }
