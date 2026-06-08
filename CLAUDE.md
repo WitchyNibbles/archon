@@ -111,7 +111,7 @@ Use a repo-local `archon-*` workflow skill before generic secondary skills when 
 Key routing shortcuts:
 - agent runtime, hook, tool-contract, automation, or continuation changes: `archon-agent-runtime`
 - benchmark, grader, or skill-regression work: `archon-eval-engineering` and `archon-skill-evals`
-- operator docs, migration notes, release notes, or workflow-document clarity: `archon-technical-writing`
+- operator docs, migration notes, release notes, workflow-document clarity, or `src/docs-export/` changes: `archon-technical-writing`
 - any CSS, UI component, visual, or design-system work: `archon-frontend`
 - specialist gates: `performance-engineer`, `database-specialist`, `accessibility-engineer`
 
