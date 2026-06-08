@@ -133,5 +133,6 @@ test("AGENTS routes recurring control-layer work through repo-local workflow ski
   assert.match(agents, /repo-local `archon-\*` workflow skill/i);
   assert.match(agents, /agent runtime, hook, tool-contract, automation, or continuation changes/i);
   assert.match(agents, /benchmark, grader, or skill-regression work/i);
-  assert.match(agents, /operator docs, migration notes, release notes, or workflow-document clarity/i);
+  assert.match(agents, /operator docs, migration notes, release notes.*workflow-document clarity/i);
+  assert.match(agents, /src\/docs-export\/.*archon-technical-writing/i);
 });
