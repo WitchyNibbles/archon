@@ -366,10 +366,8 @@ async function verifySetup() {
     const registrationResult = await client.query<{
       data_root: string;
       runtime_profile: string;
-      qdrant_url: string | null;
-      qdrant_collection: string;
     }>(
-      `select data_root, runtime_profile, qdrant_url, qdrant_collection
+      `select data_root, runtime_profile
        from runtime_project_registrations
        where project_id = $1`,
       [projectId]

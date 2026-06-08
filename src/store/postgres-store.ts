@@ -167,20 +167,16 @@ export class PostgresStore implements ArchonStore {
          repo_path,
          runtime_profile,
          data_root,
-         qdrant_url,
-         qdrant_collection,
          install_manifest_path,
          manifest,
          provenance
        )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
+       values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
        on conflict (project_id) do update
        set workspace_id = excluded.workspace_id,
            repo_path = excluded.repo_path,
            runtime_profile = excluded.runtime_profile,
            data_root = excluded.data_root,
-           qdrant_url = excluded.qdrant_url,
-           qdrant_collection = excluded.qdrant_collection,
            install_manifest_path = excluded.install_manifest_path,
            manifest = excluded.manifest,
            provenance = excluded.provenance,
@@ -191,8 +187,6 @@ export class PostgresStore implements ArchonStore {
         registration.repoPath,
         registration.runtimeProfile,
         registration.dataRoot,
-        registration.qdrantUrl ?? null,
-        registration.qdrantCollection ?? null,
         registration.installManifestPath ?? null,
         JSON.stringify(registration.manifest),
         JSON.stringify(registration.provenance)
@@ -210,8 +204,6 @@ export class PostgresStore implements ArchonStore {
           'repoPath', repo_path,
           'runtimeProfile', runtime_profile,
           'dataRoot', data_root,
-          'qdrantUrl', qdrant_url,
-          'qdrantCollection', qdrant_collection,
           'installManifestPath', install_manifest_path,
           'manifest', manifest,
           'provenance', provenance,

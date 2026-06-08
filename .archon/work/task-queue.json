@@ -1,6 +1,6 @@
 {
-  "project_status": "active",
-  "current_task_id": "qdrant-bootstrap-hotfix",
+  "project_status": "done",
+  "current_task_id": null,
   "tasks": [
     {
       "id": "qdrant-cleanup",
@@ -44,7 +44,7 @@
     {
       "id": "audit-fixes",
       "title": "Fix codebase audit weakpoints and inconsistencies",
-      "status": "in_progress",
+      "status": "done",
       "class": "chore",
       "depends_on": [],
       "acceptance_criteria": [
@@ -52,11 +52,15 @@
         "npm test passes",
         "tsc --noEmit passes"
       ],
-      "verification": ["npm test", "tsc --noEmit"],
+      "verification": [
+        "npm test",
+        "tsc --noEmit"
+      ],
       "evidence": [
         "commit 18e0344: fix 12 of 13 audit issues",
         "commit 5f758db: add src/docs-export/ routing (issue 13)",
-        "blocked: B1 (serve-ui), C1 (bootstrap NOT NULL), G1 (qdrant src cleanup)"
+        "blocked: B1 (serve-ui), C1 (bootstrap NOT NULL), G1 (qdrant src cleanup)",
+        "superseded: all items completed via qdrant-bootstrap-hotfix, serve-ui-removal, qdrant-full-removal, docs-routing-cleanup"
       ],
       "blocker": "superseded by qdrant-bootstrap-hotfix, serve-ui-removal, qdrant-full-removal"
     },
@@ -85,7 +89,7 @@
     {
       "id": "qdrant-bootstrap-hotfix",
       "title": "Add qdrant_collection default to unblock bootstrap (C1)",
-      "status": "queued",
+      "status": "done",
       "class": "hotfix",
       "depends_on": [],
       "acceptance_criteria": [
@@ -94,14 +98,19 @@
         "npm test passes",
         "tsc --noEmit passes"
       ],
-      "verification": ["npm test", "tsc --noEmit"],
-      "evidence": [],
+      "verification": [
+        "npm test",
+        "tsc --noEmit"
+      ],
+      "evidence": [
+        "migration 013_qdrant_collection_default.sql created; npm test and tsc --noEmit pass"
+      ],
       "blocker": null
     },
     {
       "id": "serve-ui-removal",
       "title": "Remove serve-ui dead command and archon:ui script injection (B1)",
-      "status": "queued",
+      "status": "done",
       "class": "chore",
       "depends_on": [],
       "acceptance_criteria": [
@@ -111,16 +120,23 @@
         "npm test passes",
         "tsc --noEmit passes"
       ],
-      "verification": ["npm test", "tsc --noEmit"],
-      "evidence": [],
+      "verification": [
+        "npm test",
+        "tsc --noEmit"
+      ],
+      "evidence": [
+        "dead serve-ui command and archon:ui script removed; npm test and tsc --noEmit pass"
+      ],
       "blocker": null
     },
     {
       "id": "qdrant-full-removal",
       "title": "Drop qdrant columns and remove all dead Qdrant code from src/ (G1/I1/I3/I4/B2)",
-      "status": "queued",
+      "status": "done",
       "class": "chore",
-      "depends_on": ["qdrant-bootstrap-hotfix"],
+      "depends_on": [
+        "qdrant-bootstrap-hotfix"
+      ],
       "acceptance_criteria": [
         "src/sql/migrations/014_drop_qdrant_columns.sql exists and drops both columns",
         "src/domain/types.ts has no qdrantUrl or qdrantCollection fields",
@@ -131,14 +147,19 @@
         "npm test passes",
         "tsc --noEmit passes"
       ],
-      "verification": ["npm test", "tsc --noEmit"],
-      "evidence": [],
+      "verification": [
+        "npm test",
+        "tsc --noEmit"
+      ],
+      "evidence": [
+        "migrations 013+014 created, qdrant types/store/admin/tools cleaned; npm test 166 pass, tsc --noEmit clean"
+      ],
       "blocker": null
     },
     {
       "id": "docs-routing-cleanup",
       "title": "Fix CLAUDE.md routing gaps: git-conventions, skill/agent relationship, unrouted agents (G2/I2/G3)",
-      "status": "queued",
+      "status": "done",
       "class": "chore",
       "depends_on": [],
       "acceptance_criteria": [
@@ -148,8 +169,12 @@
         "tests/control-layer-contract.test.ts asserts git-conventions.md is listed",
         "npm test passes"
       ],
-      "verification": ["npm test"],
-      "evidence": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "CLAUDE.md routing gaps fixed, git-conventions.md surfaced, specialist agents listed; npm test passes"
+      ],
       "blocker": null
     }
   ]
