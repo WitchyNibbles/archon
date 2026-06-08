@@ -153,3 +153,14 @@ Use `.archon/rules/` for the detailed policy set:
 - `reasoning-quality.md`
 - `task-quality-matrix.md`
 - `design-council-policy.md`
+- `skill-format.md` — SKILL.md format and naming rules for repo-local skills
+
+Frontend and design standards:
+- `frontend-acceptance.md` — acceptance criteria for frontend changes
+- `frontend-quality-rubric.md` — quality rubric for UI work
+- `frontend-inspiration-sources.md` — approved design references
+
+Memory and graphify:
+- `memory-promotion.md` — policy for promoting retrieval hints to durable memory
+- `memory-vocabulary.md` — canonical memory terms
+- `graphify-advisory-policy.md` — when and how graphify results may be used

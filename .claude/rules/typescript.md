@@ -36,5 +36,6 @@ paths: ["src/**/*.ts", "tests/**/*.ts"]
 ## Tests
 
 - co-locate tests in `tests/` matching the `src/` path structure
-- use `vitest` for all unit and integration tests
+- use Node's built-in test runner (`node:test` + `node:assert/strict`) — vitest is NOT installed
+- run tests with `node --experimental-strip-types --test tests/*.test.ts`
 - write tests first when adding new behavior (red-green-refactor)

@@ -641,8 +641,7 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     "src/mcp/",
     "src/runtime/",
     "src/sql/migrations/",
-    "src/store/",
-    "src/ui/"
+    "src/store/"
   ];
   const excludedOverlayFiles = [
     ".archon/install-backups/",

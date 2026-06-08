@@ -4,18 +4,20 @@
 
 ## Current phase
 
-Stable — all open risks resolved. Qdrant removal is now complete across all files.
-No active run.
+Active — audit-fixes in progress. Qdrant removal from setup scripts, CI, and tests is
+complete. Residual Qdrant code in src/ (schema columns, domain types, dead-code file)
+is being removed as part of audit-fixes.
 
 ## Active run
 
-None.
+`audit-fixes` — fixing 13 weakpoints identified in June 2026 codebase audit.
 
 ## Last completed task
 
-`qdrant-cleanup` — completed partial Qdrant removal from commit 44f6f09: removed stale
-Qdrant references from setup-archon.sh, setup-archon.ps1, ci.yml, and install.test.ts.
-Also seeded runtime workflow proofs for cleanup-1 and qdrant-cleanup.
+`qdrant-cleanup` — removed Qdrant from setup-archon.sh, setup-archon.ps1, ci.yml, and
+install.test.ts (commit 44f6f09). Scope was explicitly limited to setup scripts, CI,
+and tests; src-level Qdrant code (qdrant-artifact-index.ts, domain types, schema
+columns) remained as dead code and is tracked for removal under audit-fixes.
 
 ## Acceptance criteria status
 
@@ -33,6 +35,7 @@ Also seeded runtime workflow proofs for cleanup-1 and qdrant-cleanup.
 - [x] Working tree clean: gitignore, product-state, env (cleanup-1)
 - [x] Runtime workflow proofs seeded for cleanup-1 and qdrant-cleanup
 - [x] Qdrant fully removed from setup scripts, CI, and tests (qdrant-cleanup)
+- [ ] Residual Qdrant dead code removed from src/ (audit-fixes)
 
 ## Open risks
 

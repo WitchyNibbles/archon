@@ -126,12 +126,9 @@
     "src/mcp/",
     "src/runtime/",
     "src/sql/migrations/",
-    "src/store/",
-    "src/ui/"
+    "src/store/"
   ],
   "engines": { "node": ">=22.0.0" },
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/admin.ts",
@@ -141,7 +138,7 @@
     "check:workflow": "bash scripts/check-archon-workflow.sh",
     "check:happy-path": "bash scripts/check-archon-happy-path.sh",
     "check:coverage": "node --experimental-strip-types scripts/check-coverage.ts",
-    "setup:local": "docker compose up -d archon-postgres archon-qdrant",
+    "setup:local": "docker compose up -d archon-postgres",
     "migrate": "tsx src/admin.ts migrate",
     "health": "tsx src/admin.ts health",
     "bootstrap": "tsx src/admin.ts bootstrap-project",
@@ -150,12 +147,14 @@
     "status": "tsx src/admin.ts status",
     "ops": "tsx src/admin.ts ops",
     "mcp": "tsx src/mcp/server.ts",
-    "ui": "tsx src/ui/server.ts",
     "install:project": "tsx src/install/cli.ts",
     "scaffold:workflow": "node --experimental-strip-types src/install/cli.ts scaffold-workflow --target .",
     "archon:autopilot-status": "node --experimental-strip-types src/archon/autopilot-status.ts",
     "archon:loop": "node --experimental-strip-types src/admin/archon.ts loop --format text",
-    "verify:release-overlay": "bash scripts/verify-release-overlay.sh"
+    "verify:release-overlay": "bash scripts/verify-release-overlay.sh",
+    "grafana:mcp": "tsx src/grafana/mcp-server.ts",
+    "evals:orchestration": "node --experimental-strip-types src/evals/orchestration-baseline.ts",
+    "evals:retrieval": "node --experimental-strip-types src/evals/retrieval-memory-baseline.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
