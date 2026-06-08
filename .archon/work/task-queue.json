@@ -1,6 +1,6 @@
 {
   "project_status": "active",
-  "current_task_id": null,
+  "current_task_id": "archon-repo-skill-evolution",
   "tasks": [
     {
       "id": "qdrant-cleanup",
@@ -38,6 +38,27 @@
       ],
       "evidence": [
         "commit 334b2f8: feat: install graphify on first setup and run initial wiki build"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "archon-repo-skill-evolution",
+      "title": "Phase 1 repo-local skill evolution foundation",
+      "status": "active",
+      "class": "feature",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "cli.ts seeds .archon/skills/ on first install",
+        "cli.ts adds a repo-skill directive to consuming repo context when non-empty",
+        ".archon/rules/skill-format.md documents SKILL.md format and naming rules",
+        ".claude/skills/archon-skill-evolution/SKILL.md teaches the agent the system",
+        "hook-policy.mjs whitelists .archon/skills/** as a permitted write path"
+      ],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "commit 80f009e: feat: Phase 1 repo-local skill evolution foundation"
       ],
       "blocker": null
     }
