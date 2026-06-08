@@ -420,7 +420,7 @@ export const agentCatalog = {
   },
   context_manager: {
     label: "Context Manager",
-    description: "Assembles retrieval context for agents from the correct authority layer: .archon/memory/, Postgres runtime, Obsidian vault, and Qdrant semantic index.",
+    description: "Assembles retrieval context for agents from the correct authority layer: .archon/memory/, Postgres runtime, Obsidian vault, and graphify knowledge graph.",
     class: "knowledge",
     availability: "core_required",
     shipsAgentArtifact: true,
@@ -430,7 +430,7 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-context-retrieval", "archon-memory", "everything-claude-code:search-first", "everything-claude-code:iterative-retrieval"],
-    retrievalGuidance: ["all retrieval layers", ".archon/memory/", "Postgres runtime records", "Obsidian vault", "Qdrant semantic index"]
+    retrievalGuidance: ["all retrieval layers", ".archon/memory/", "Postgres runtime records", "Obsidian vault", "graphify knowledge graph"]
   },
   observability_engineer: {
     label: "Observability Engineer",

@@ -44,12 +44,12 @@ export function buildOperatorDashboardReport(input: {
     alerts.push(`review identity not live-ready: ${input.status.reviewIdentity.notes.join("; ")}`);
   }
 
-  if (input.status.gitNexus.state === "stale") {
-    alerts.push("gitnexus advisory index is stale");
+  if (input.status.graphify.state === "stale") {
+    alerts.push("graphify advisory graph is stale");
   }
 
-  if (input.status.gitNexus.state === "invalid_metadata") {
-    alerts.push("gitnexus advisory metadata is invalid");
+  if (input.status.graphify.state === "missing_index") {
+    alerts.push("graphify advisory graph is missing");
   }
 
   if (input.status.integrity.status === "contradicted") {
@@ -213,10 +213,10 @@ export function buildOperatorDashboardReport(input: {
   }
 
   if (
-    (input.status.gitNexus.state === "stale" || input.status.gitNexus.state === "missing_index") &&
-    input.status.gitNexus.recommendedCommand
+    (input.status.graphify.state === "stale" || input.status.graphify.state === "missing_index") &&
+    input.status.graphify.recommendedCommand
   ) {
-    nextActions.push(input.status.gitNexus.recommendedCommand);
+    nextActions.push(input.status.graphify.recommendedCommand);
   }
 
   for (const recommendation of input.routing.recommendations) {
@@ -260,13 +260,13 @@ export function formatOperatorDashboardReport(report: OperatorDashboardReport): 
   lines.push(`safe-recovery-actions: ${report.recovery.summary.safeActions}`);
   lines.push(`execution-directive: ${report.executionPlan.directive.kind}`);
   lines.push(`next-ready: ${report.status.orchestration.nextTaskIds.join(", ") || "none"}`);
-  lines.push(`gitnexus: ${report.status.gitNexus.state}`);
+  lines.push(`graphify: ${report.status.graphify.state}`);
   lines.push(`integrity: ${report.status.integrity.status}`);
-  if (report.status.gitNexus.configuredScopes.length > 0) {
-    lines.push(`gitnexus-config: ${report.status.gitNexus.configuredScopes.join(", ")}`);
+  if (report.status.graphify.graphBuilt) {
+    lines.push(`graphify-graph: built`);
   }
-  if (report.status.gitNexus.indexedAt) {
-    lines.push(`gitnexus-indexed-at: ${report.status.gitNexus.indexedAt}`);
+  if (report.status.graphify.indexedAt) {
+    lines.push(`graphify-indexed-at: ${report.status.graphify.indexedAt}`);
   }
   if (report.status.daemon.continuation) {
     lines.push(

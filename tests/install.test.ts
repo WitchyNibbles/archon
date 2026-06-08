@@ -10,7 +10,6 @@ import { fileURLToPath } from "node:url";
 import { auditMaintainerOnlyPublishedPaths } from "../src/install/maintainer-boundary.ts";
 import {
   grafanaCodexConfigFragment,
-  gitNexusCodexConfigFragment,
   mergeAgentsMd,
   mergeDotAgentsMd,
   mergeCodexConfig,
@@ -180,19 +179,6 @@ test("mergeClaudeSettings enforces autoAcceptEdits and permissions from source",
   // enforced keys take source value
   assert.equal(merged.autoAcceptEdits, false);
   assert.deepEqual(merged.permissions?.allow, ["Bash"]);
-});
-
-test("mergeCodexConfig adds GitNexus MCP settings without overwriting existing project config", () => {
-  // In archon, gitNexusCodexConfigFragment returns JSON for .mcp.json
-  const fragment = gitNexusCodexConfigFragment();
-  const parsed = JSON.parse(fragment) as { mcpServers?: Record<string, unknown> };
-
-  assert.ok(parsed.mcpServers?.gitnexus, "expected gitnexus mcp server");
-  const gitnexus = parsed.mcpServers?.gitnexus as { command?: string; args?: string[] };
-  assert.equal(gitnexus.command, "npx");
-  assert.ok(gitnexus.args?.includes("--no-install"));
-  assert.ok(gitnexus.args?.includes("gitnexus"));
-  assert.ok(gitnexus.args?.includes("mcp"));
 });
 
 test("mergeCodexConfig adds Playwright MCP settings with standard and vision profiles", () => {
@@ -448,27 +434,22 @@ test("verifyCatalogRepoLocalSkills reports missing repo-local wrapper files dete
   }
 });
 
-test("mergePackageJson adds pinned GitNexus helpers only when requested", () => {
+test("mergePackageJson always adds graphify scripts", () => {
   const merged = JSON.parse(
     mergePackageJson(
       JSON.stringify({
         name: "target-project",
         private: true
       }),
-      "../archon",
-      {
-        withGitNexus: true,
-        gitNexusPackageVersion: "1.6.3"
-      }
+      "../archon"
     )
   ) as {
     scripts: Record<string, string>;
-    devDependencies: Record<string, string>;
   };
 
-  assert.equal(merged.devDependencies.gitnexus, "1.6.3");
-  assert.equal(merged.scripts["archon:gitnexus:analyze"], "gitnexus analyze --skip-agents-md");
-  assert.equal(merged.scripts["archon:gitnexus:status"], "gitnexus status");
+  assert.equal(merged.scripts["archon:graphify:build"], "graphify . --wiki");
+  assert.equal(merged.scripts["archon:graphify:update"], "graphify . --update --wiki");
+  assert.equal(merged.scripts["archon:graphify:report"], "graphify . --update");
 });
 
 test("mergePackageJson adds a Grafana MCP helper only when requested", () => {
@@ -501,11 +482,13 @@ test("mergeGitignore adds archon env ignores once", () => {
   assert.equal(first, second);
 });
 
-test("mergeGitignore adds GitNexus storage ignore only when requested", () => {
-  const first = mergeGitignore("node_modules/\n", { withGitNexus: true });
-  const second = mergeGitignore(first, { withGitNexus: true });
+test("mergeGitignore always adds graphify-out selective ignore", () => {
+  const first = mergeGitignore("node_modules/\n");
+  const second = mergeGitignore(first);
 
-  assert.match(first, /\.gitnexus\//);
+  assert.match(first, /graphify-out\/\*/);
+  assert.match(first, /!graphify-out\/GRAPH_REPORT\.md/);
+  assert.match(first, /!graphify-out\/wiki\//);
   assert.equal(first, second);
 });
 
@@ -586,7 +569,7 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     ".claude/skills/archon-frontend-taste/SKILL.md",
     ".claude/skills/archon-frontend/SKILL.md",
     ".claude/skills/archon-git-operator/SKILL.md",
-    ".claude/skills/archon-gitnexus/SKILL.md",
+    ".claude/skills/archon-graphify/SKILL.md",
     ".claude/skills/archon-infra-ops/SKILL.md",
     ".claude/skills/archon-intake/SKILL.md",
     ".claude/skills/archon-memory/SKILL.md",
@@ -994,42 +977,8 @@ test("installDevgodIntoProject first apply backs up divergent managed content", 
   }
 });
 
-test("installDevgodIntoProject opt-in GitNexus setup adds local package, MCP config, and safe next steps", async () => {
-  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-install-gitnexus-"));
-  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-
-  try {
-    await writeFile(path.join(targetRoot, "package.json"), '{ "name": "fixture", "private": true }\n');
-
-    const summary = await installDevgodIntoProject({
-      sourceRoot,
-      targetRoot,
-      withGitNexus: true
-    });
-
-    const packageJson = JSON.parse(await readFile(path.join(targetRoot, "package.json"), "utf8")) as {
-      devDependencies: Record<string, string>;
-      scripts: Record<string, string>;
-    };
-    const codexConfig = await readFile(path.join(targetRoot, ".claude", "settings.json"), "utf8");
-    const gitignore = await readFile(path.join(targetRoot, ".gitignore"), "utf8");
-
-    assert.equal(packageJson.devDependencies.gitnexus, "1.6.3");
-    assert.equal(packageJson.scripts["archon:gitnexus:analyze"], "gitnexus analyze --skip-agents-md");
-    assert.equal(packageJson.scripts["archon:gitnexus:status"], "gitnexus status");
-    // archon uses JSON settings.json (not TOML config.toml), so assert JSON format
-    assert.match(codexConfig, /"gitnexus"/);
-    assert.match(codexConfig, /"--no-install"/);
-    assert.match(gitignore, /\.gitnexus\//);
-    assert.match(summary.nextSteps.join("\n"), /archon:gitnexus:analyze/);
-    assert.match(summary.nextSteps.join("\n"), /archon:setup:git-guard/);
-  } finally {
-    await rm(targetRoot, { recursive: true, force: true });
-  }
-});
-
-test("installDevgodIntoProject keeps GitNexus opt-in even when the source repo enables it locally", async () => {
-  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-install-default-no-gitnexus-"));
+test("installDevgodIntoProject always adds graphify scripts and selective gitignore", async () => {
+  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-install-graphify-"));
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
   try {
@@ -1037,18 +986,15 @@ test("installDevgodIntoProject keeps GitNexus opt-in even when the source repo e
 
     const summary = await installDevgodIntoProject({ sourceRoot, targetRoot });
     const packageJson = JSON.parse(await readFile(path.join(targetRoot, "package.json"), "utf8")) as {
-      devDependencies?: Record<string, string>;
-      scripts?: Record<string, string>;
+      scripts: Record<string, string>;
     };
-    const codexConfig = await readFile(path.join(targetRoot, ".claude", "settings.json"), "utf8");
     const gitignore = await readFile(path.join(targetRoot, ".gitignore"), "utf8");
 
-    assert.equal(packageJson.devDependencies?.gitnexus, undefined);
-    assert.equal(packageJson.scripts?.["archon:gitnexus:analyze"], undefined);
-    // archon uses JSON settings (not TOML), check for gitnexus key absence in JSON
-    assert.doesNotMatch(codexConfig, /"gitnexus"/);
-    assert.doesNotMatch(gitignore, /\.gitnexus\//);
-    assert.doesNotMatch(summary.nextSteps.join("\n"), /archon:gitnexus:analyze/);
+    assert.equal(packageJson.scripts["archon:graphify:build"], "graphify . --wiki");
+    assert.equal(packageJson.scripts["archon:graphify:update"], "graphify . --update --wiki");
+    assert.match(gitignore, /graphify-out\/\*/);
+    assert.match(gitignore, /!graphify-out\/GRAPH_REPORT\.md/);
+    assert.match(summary.nextSteps.join("\n"), /archon:setup:git-guard/);
   } finally {
     await rm(targetRoot, { recursive: true, force: true });
   }
@@ -1194,13 +1140,13 @@ test("install CLI init --apply is explicit, replay-safe, and does not run docker
   }
 });
 
-test("verifyDevgodInstall auto-detects the GitNexus install option", async () => {
-  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-verify-gitnexus-"));
+test("verifyDevgodInstall verifies graphify-enabled install correctly", async () => {
+  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-verify-graphify-"));
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
   try {
     await writeFile(path.join(targetRoot, "package.json"), '{ "name": "fixture", "private": true }\n');
-    await installDevgodIntoProject({ sourceRoot, targetRoot, withGitNexus: true });
+    await installDevgodIntoProject({ sourceRoot, targetRoot });
 
     const summary = await verifyDevgodInstall({
       sourceRoot,
@@ -1237,13 +1183,13 @@ test("verifyDevgodInstall auto-detects the Grafana install option", async () => 
   }
 });
 
-test("upgradeDevgodInProject preserves the GitNexus install option without repeating the flag", async () => {
-  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-upgrade-gitnexus-"));
+test("upgradeDevgodInProject preserves graphify scripts without repeating the flag", async () => {
+  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-upgrade-graphify-"));
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
   try {
     await writeFile(path.join(targetRoot, "package.json"), '{ "name": "fixture", "private": true }\n');
-    await installDevgodIntoProject({ sourceRoot, targetRoot, withGitNexus: true });
+    await installDevgodIntoProject({ sourceRoot, targetRoot });
 
     const replay = await upgradeDevgodInProject({
       sourceRoot,
@@ -1760,7 +1706,7 @@ test("installDevgodIntoProject seeds scaffolding but not live work or reviewed m
     ".claude/skills/archon-execution/SKILL.md",
     ".claude/skills/archon-frontend-taste/SKILL.md",
     ".claude/skills/archon-git-operator/SKILL.md",
-    ".claude/skills/archon-gitnexus/SKILL.md",
+    ".claude/skills/archon-graphify/SKILL.md",
     ".claude/skills/archon-infra-ops/SKILL.md",
     ".claude/skills/archon-intake/SKILL.md",
     ".claude/skills/archon-memory/SKILL.md",
@@ -2703,7 +2649,7 @@ test("npm pack dry run includes the new agent, skill, and retrieval policy surfa
     ".claude/skills/archon-frontend-taste/SKILL.md",
     ".claude/skills/archon-frontend/SKILL.md",
     ".claude/skills/archon-git-operator/SKILL.md",
-    ".claude/skills/archon-gitnexus/SKILL.md",
+    ".claude/skills/archon-graphify/SKILL.md",
     ".claude/skills/archon-infra-ops/SKILL.md",
     ".claude/skills/archon-intake/SKILL.md",
     ".claude/skills/archon-memory/SKILL.md",

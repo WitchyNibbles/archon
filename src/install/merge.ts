@@ -114,12 +114,6 @@ Council reminders:
 See \`CLAUDE.md\` and \`.archon/rules/\` for the full workflow contract and policy details.
 ${DOT_CLAUDE_END}`;
 
-interface GitNexusInstallSettings {
-  withGitNexus?: boolean;
-  withGrafana?: boolean;
-  gitNexusPackageVersion?: string;
-}
-
 const enforcedClaudeSettingsKeys = ["autoAcceptEdits", "permissions"] as const;
 
 function sortObjectKeys<T>(value: T): T {
@@ -264,17 +258,6 @@ export function mergeClaudeSettings(
   return `${JSON.stringify(normalizedMerged, null, 2)}\n`;
 }
 
-export function gitNexusMcpConfigFragment(): string {
-  return JSON.stringify({
-    mcpServers: {
-      gitnexus: {
-        command: "npx",
-        args: ["--no-install", "gitnexus", "mcp"]
-      }
-    }
-  }, null, 2);
-}
-
 export function archonMcpConfigFragment(): string {
   return JSON.stringify({
     mcpServers: {
@@ -353,13 +336,15 @@ export function stripArchonFromMcpJson(
 }
 
 export function mergeGitignore(
-  existingContent: string | undefined,
-  options: GitNexusInstallSettings = {}
+  existingContent: string | undefined
 ): string {
-  const requiredLines = [".env.archon", ".env.archon.*"];
-  if (options.withGitNexus) {
-    requiredLines.push(".gitnexus/");
-  }
+  const requiredLines = [
+    ".env.archon",
+    ".env.archon.*",
+    "graphify-out/*",
+    "!graphify-out/GRAPH_REPORT.md",
+    "!graphify-out/wiki/"
+  ];
   const existingLines = new Set(
     (existingContent ?? "")
       .split(/\r?\n/)
@@ -394,7 +379,7 @@ function prefixedFileDependency(relativePath: string): string {
 export function mergePackageJson(
   existingContent: string | undefined,
   dependencyPathFromTarget: string,
-  options: GitNexusInstallSettings = {}
+  options: { withGrafana?: boolean } = {}
 ): string {
   const packageJson = existingContent && existingContent.trim().length > 0
     ? (JSON.parse(existingContent) as Record<string, unknown>)
@@ -476,13 +461,11 @@ export function mergePackageJson(
       "node --experimental-strip-types ./node_modules/archon/src/grafana/mcp-server.ts";
   }
 
-  devDependencies.archon = prefixedFileDependency(dependencyPathFromTarget);
+  scripts["archon:graphify:build"] = "graphify . --wiki";
+  scripts["archon:graphify:update"] = "graphify . --update --wiki";
+  scripts["archon:graphify:report"] = "graphify . --update";
 
-  if (options.withGitNexus) {
-    scripts["archon:gitnexus:analyze"] = "gitnexus analyze --skip-agents-md";
-    scripts["archon:gitnexus:status"] = "gitnexus status";
-    devDependencies.gitnexus = options.gitNexusPackageVersion ?? "1.6.3";
-  }
+  devDependencies.archon = prefixedFileDependency(dependencyPathFromTarget);
 
   packageJson.scripts = sortObjectKeys(scripts);
   packageJson.devDependencies = sortObjectKeys(devDependencies);
@@ -501,7 +484,6 @@ export function dotClaudeMdManagedBlock(): string {
 // Backward-compatibility aliases (devgod names → archon names)
 export const mergeAgentsMd = mergeClaudeMd;
 export const mergeDotAgentsMd = mergeDotClaudeMd;
-export const gitNexusCodexConfigFragment = gitNexusMcpConfigFragment;
 export const playwrightCodexConfigFragment = playwrightMcpConfigFragment;
 export const grafanaCodexConfigFragment = grafanaMcpConfigFragment;
 

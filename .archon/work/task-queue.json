@@ -1,5 +1,5 @@
 {
-  "current_task_id": null,
+  "current_task_id": "p10-graphify-integration",
   "tasks": [
     { "id": "p1-managed-path-guard", "status": "complete", "phase": 1 },
     { "id": "p2-dac", "status": "complete", "phase": "2-dac" },
@@ -9,6 +9,8 @@
     { "id": "p4-task-packet-validation", "status": "complete", "phase": 4 },
     { "id": "p6-stop-hook-hardening", "status": "complete", "phase": 6 },
     { "id": "p7-cleanup", "status": "complete", "phase": 7 },
-    { "id": "p8-runtime-activation", "status": "complete", "phase": 8 }
+    { "id": "p8-runtime-activation", "status": "complete", "phase": 8 },
+    { "id": "p9-claude-md-tags", "status": "complete", "phase": 9 },
+    { "id": "p10-graphify-integration", "status": "complete", "phase": 10 }
   ]
 }
