@@ -1,18 +1,26 @@
 {
+  "project_status": "done",
   "current_task_id": null,
   "tasks": [
-    { "id": "p1-managed-path-guard", "status": "complete", "phase": 1 },
-    { "id": "p2-dac", "status": "complete", "phase": "2-dac" },
-    { "id": "p2-write-gate", "status": "complete", "phase": 2 },
-    { "id": "p5-bypass-audit", "status": "complete", "phase": 5 },
-    { "id": "p3-review-gate-stop", "status": "complete", "phase": 3 },
-    { "id": "p4-task-packet-validation", "status": "complete", "phase": 4 },
-    { "id": "p6-stop-hook-hardening", "status": "complete", "phase": 6 },
-    { "id": "p7-cleanup", "status": "complete", "phase": 7 },
-    { "id": "p8-runtime-activation", "status": "complete", "phase": 8 },
-    { "id": "p9-claude-md-tags", "status": "complete", "phase": 9 },
-    { "id": "p10-graphify-integration", "status": "complete", "phase": 10 },
-    { "id": "p11-hook-complete-check", "status": "complete", "phase": 11 },
-    { "id": "cleanup-1", "status": "complete", "phase": "cleanup" }
+    {
+      "id": "qdrant-cleanup",
+      "title": "Local workflow proof seed for qdrant-cleanup",
+      "status": "done",
+      "class": "release_candidate",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "workflow-proof resolves qdrant-cleanup from the latest runtime run",
+        "required reviewer, qa, and security reviews are recorded as authenticated approvals"
+      ],
+      "verification": [
+        "node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id qdrant-cleanup"
+      ],
+      "evidence": [
+        "task packet: qdrant-cleanup",
+        "verification: node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id qdrant-cleanup",
+        "quality gate: release_readiness_required"
+      ],
+      "blocker": null
+    }
   ]
 }

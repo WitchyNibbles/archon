@@ -225,17 +225,6 @@ if (-not $env:ARCHON_DOCKER_CONTAINER_NAME) {
     $env:ARCHON_DOCKER_CONTAINER_NAME = "archon-postgres-$($env:ARCHON_PROJECT_SLUG)"
 }
 
-if (-not $env:ARCHON_QDRANT_CONTAINER_NAME) {
-    $env:ARCHON_QDRANT_CONTAINER_NAME = "archon-qdrant-$($env:ARCHON_PROJECT_SLUG)"
-}
-
-if (-not $env:ARCHON_QDRANT_URL) {
-    $env:ARCHON_QDRANT_URL = "http://127.0.0.1:$($env:ARCHON_QDRANT_PORT)"
-    if (-not $env:ARCHON_QDRANT_PORT) {
-        $env:ARCHON_QDRANT_URL = "http://127.0.0.1:6333"
-    }
-}
-
 if (-not $env:ARCHON_POSTGRES_PASSWORD -or $env:ARCHON_POSTGRES_PASSWORD -eq "archon") {
     throw "ARCHON_POSTGRES_PASSWORD must be set to a non-default local password before setup continues"
 }
@@ -276,31 +265,6 @@ function Wait-ArchonContainerHealth {
     throw "$Label did not become healthy"
 }
 
-function Wait-ArchonQdrantHttp {
-    param([Parameter(Mandatory = $true)][string]$Url)
-
-    Write-Host "waiting for archon-qdrant to answer $Url"
-    for ($i = 0; $i -lt 60; $i++) {
-        try {
-            $base = [System.Uri]::new($Url)
-            $builder = [System.UriBuilder]::new($base)
-            if (-not $builder.Path.EndsWith("/")) {
-                $builder.Path = "$($builder.Path)/"
-            }
-            $endpoint = [System.Uri]::new($builder.Uri, "collections")
-            $response = Invoke-WebRequest -Uri $endpoint -Method Get -MaximumRedirection 0 -TimeoutSec 2
-            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
-                return
-            }
-        } catch {
-        }
-
-        Start-Sleep -Seconds 2
-    }
-
-    docker logs $env:ARCHON_QDRANT_CONTAINER_NAME --tail 100
-    throw "archon-qdrant did not answer health checks at $Url"
-}
 
 $runtimeMode = Resolve-ArchonRuntimeMode
 $env:ARCHON_RUNTIME_MODE = $runtimeMode
@@ -312,14 +276,11 @@ switch ($runtimeMode) {
             throw "docker runtime mode selected but Docker is not available; use ARCHON_RUNTIME_MODE=managed or run the Unix setup path for native fallback"
         }
 
-        docker compose up -d archon-postgres archon-qdrant
+        docker compose up -d archon-postgres
 
         Wait-ArchonContainerHealth -ContainerName $env:ARCHON_DOCKER_CONTAINER_NAME -Label "archon-postgres"
-        Wait-ArchonContainerHealth -ContainerName $env:ARCHON_QDRANT_CONTAINER_NAME -Label "archon-qdrant"
-        Wait-ArchonQdrantHttp -Url $env:ARCHON_QDRANT_URL
     }
     "managed" {
-        Wait-ArchonQdrantHttp -Url $env:ARCHON_QDRANT_URL
     }
     "native" {
         throw "native runtime mode is only supported through the Unix/Linux setup path; use WSL bash setup or managed mode"
@@ -360,5 +321,4 @@ Write-Host "runtime mode: $runtimeMode"
 Write-Host "workspace: $($env:ARCHON_WORKSPACE_SLUG)"
 Write-Host "project: $($env:ARCHON_PROJECT_SLUG)"
 Write-Host "database: configured"
-Write-Host "qdrant: configured"
 Write-Host "playwright: configured"

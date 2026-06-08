@@ -509,8 +509,8 @@ test("ci workflow pins external actions and keeps read-only permissions", async 
     ciWorkflow,
     /ARCHON_REVIEW_IDENTITY_FIXTURES: \.archon\/templates\/review-identity-adapter\.fixture\.json/
   );
-  assert.match(ciWorkflow, /qdrant\/qdrant:v1\.13\.4/);
-  assert.match(ciWorkflow, /ARCHON_QDRANT_URL: http:\/\/127\.0\.0\.1:6333/);
+  assert.doesNotMatch(ciWorkflow, /qdrant\/qdrant/);
+  assert.doesNotMatch(ciWorkflow, /ARCHON_QDRANT_URL/);
   assert.doesNotMatch(ciWorkflow, /contents: write/);
   assert.doesNotMatch(ciWorkflow, /id-token: write/);
 });
@@ -1495,8 +1495,6 @@ test("upgradeDevgodInProject derives runtime migration artifacts from target rep
       path.join(targetRoot, ".env.archon"),
       [
         "ARCHON_RUNTIME_DATA_ROOT=./runtime-state",
-        "ARCHON_QDRANT_URL=http://127.0.0.1:7444",
-        "ARCHON_QDRANT_COLLECTION=custom-memory",
         ""
       ].join("\n"),
       "utf8"
@@ -1901,7 +1899,6 @@ test("setup scripts treat env files as data and keep repo defaults aligned", asy
   const binDir = path.join(targetRoot, "bin");
   const captureFile = path.join(targetRoot, "captured-env.txt");
   const sentinel = path.join(targetRoot, "env-executed");
-  const qdrantUrl = "http://127.0.0.1:6333";
 
   try {
     await mkdir(binDir, { recursive: true });
@@ -1984,7 +1981,6 @@ test("setup scripts treat env files as data and keep repo defaults aligned", asy
       env: {
         ...process.env,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
-        ARCHON_QDRANT_URL: qdrantUrl,
         NODE_OPTIONS: "baseline-node-options",
         BASH_ENV: "baseline-bash-env",
         LD_PRELOAD: "baseline-ld-preload",
@@ -2018,18 +2014,13 @@ test("installed setup script bootstraps a clean workspace with synthetic docker 
   const dockerComposeSentinel = path.join(targetRoot, "docker-compose-called");
   const npmLog = path.join(targetRoot, "npm-log.txt");
   const npmEnvCapture = path.join(targetRoot, "npm-env.txt");
-  const qdrantUrl = "http://127.0.0.1:7444";
 
   try {
     await mkdir(binDir, { recursive: true });
     await writeFile(path.join(targetRoot, "package.json"), '{ "name": "fixture", "private": true }\n');
-    const installedExampleEnv = (await readFile(path.join(sourceRoot, ".env.example"), "utf8")).replace(
-      "ARCHON_QDRANT_URL=http://127.0.0.1:6333",
-      `ARCHON_QDRANT_URL=${qdrantUrl}`
-    );
     await writeFile(
       path.join(targetRoot, ".env.example"),
-      installedExampleEnv,
+      await readFile(path.join(sourceRoot, ".env.example"), "utf8"),
       "utf8"
     );
 
@@ -2084,7 +2075,6 @@ test("installed setup script bootstraps a clean workspace with synthetic docker 
         "ARCHON_PROJECT_NAME=${ARCHON_PROJECT_NAME:-}",
         "ARCHON_PROJECT_REPO_PATH=${ARCHON_PROJECT_REPO_PATH:-}",
         "ARCHON_DOCKER_CONTAINER_NAME=${ARCHON_DOCKER_CONTAINER_NAME:-}",
-        "ARCHON_QDRANT_URL=${ARCHON_QDRANT_URL:-}",
         "EOF",
         "fi",
         "case \"${1:-}\" in",
@@ -2109,7 +2099,6 @@ test("installed setup script bootstraps a clean workspace with synthetic docker 
       env: {
         ...process.env,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
-        ARCHON_QDRANT_URL: qdrantUrl,
         ARCHON_DOCKER_LOG_FILE: dockerLog,
         ARCHON_DOCKER_COMPOSE_SENTINEL: dockerComposeSentinel,
         ARCHON_NPM_LOG_FILE: npmLog,
@@ -2133,9 +2122,8 @@ test("installed setup script bootstraps a clean workspace with synthetic docker 
     assert.deepEqual(dockerCalls, [
       "version",
       "version",
-      "compose up -d archon-postgres archon-qdrant",
-      "inspect -f {{.State.Health.Status}} archon-postgres",
-      "inspect -f {{.State.Health.Status}} archon-qdrant-archon"
+      "compose up -d archon-postgres",
+      "inspect -f {{.State.Health.Status}} archon-postgres"
     ]);
 
     const npmEnv = await readFile(npmEnvCapture, "utf8");
@@ -2144,7 +2132,6 @@ test("installed setup script bootstraps a clean workspace with synthetic docker 
     assert.match(npmEnv, /ARCHON_PROJECT_NAME=archon/);
     assert.match(npmEnv, new RegExp(`ARCHON_PROJECT_REPO_PATH=${targetRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.match(npmEnv, /ARCHON_DOCKER_CONTAINER_NAME=archon-postgres/);
-    assert.match(npmEnv, new RegExp(`ARCHON_QDRANT_URL=${qdrantUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 
     const copiedEnv = await readFile(path.join(targetRoot, ".env"), "utf8");
     assert.match(copiedEnv, /ARCHON_PROJECT_REPO_PATH=\/absolute\/path\/to\/repo/);
@@ -2163,7 +2150,6 @@ test("installed setup script falls back to native Linux services when docker is 
   const psqlLog = path.join(targetRoot, "psql-log.txt");
   const npmLog = path.join(targetRoot, "npm-log.txt");
   const unitDir = path.join(targetRoot, "systemd");
-  const qdrantUrl = "http://127.0.0.1:7555";
 
   try {
     await mkdir(binDir, { recursive: true });
@@ -2224,11 +2210,6 @@ test("installed setup script falls back to native Linux services when docker is 
     );
 
     await writeExecutable(
-      path.join(binDir, "qdrant"),
-      "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n"
-    );
-
-    await writeExecutable(
       path.join(binDir, "pg_isready"),
       "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n"
     );
@@ -2281,8 +2262,7 @@ test("installed setup script falls back to native Linux services when docker is 
         ARCHON_SUDO_LOG_FILE: sudoLog,
         ARCHON_PSQL_LOG_FILE: psqlLog,
         ARCHON_NPM_LOG_FILE: npmLog,
-        ARCHON_NATIVE_SYSTEMD_UNIT_DIR: unitDir,
-        ARCHON_QDRANT_URL: qdrantUrl
+        ARCHON_NATIVE_SYSTEMD_UNIT_DIR: unitDir
       }
     });
 
@@ -2292,8 +2272,6 @@ test("installed setup script falls back to native Linux services when docker is 
     const systemctlCalls = (await readFile(systemctlLog, "utf8")).trim().split(/\n+/);
     assert.match(systemctlCalls.join("\n"), /is-system-running/);
     assert.match(systemctlCalls.join("\n"), /enable --now postgresql/);
-    assert.match(systemctlCalls.join("\n"), /daemon-reload/);
-    assert.match(systemctlCalls.join("\n"), /enable --now archon-qdrant-archon/);
 
     const sudoCalls = await readFile(sudoLog, "utf8");
     assert.match(sudoCalls, /-u postgres psql/);
@@ -2311,17 +2289,7 @@ test("installed setup script falls back to native Linux services when docker is 
     ]);
 
     const unitFiles = await readdir(unitDir);
-    const qdrantUnitFile = unitFiles.find((entry) => entry.startsWith("archon-qdrant-") && entry.endsWith(".service"));
-    assert.ok(qdrantUnitFile, "expected a qdrant systemd unit file");
-    const qdrantUnit = await readFile(path.join(unitDir, qdrantUnitFile), "utf8");
-    assert.match(qdrantUnit, /ExecStart=.*qdrant/);
-    const runtimeProjects = await readdir(path.join(targetRoot, ".local", "share", "archon"));
-    assert.ok(runtimeProjects.length > 0, "expected a native runtime data root");
-    const qdrantConfig = await readFile(
-      path.join(targetRoot, ".local", "share", "archon", runtimeProjects[0]!, "qdrant", "config.yaml"),
-      "utf8"
-    );
-    assert.match(qdrantConfig, /http_port: \d+/);
+    assert.ok(unitFiles.every((f) => !f.startsWith("archon-qdrant-")), "no qdrant systemd unit files expected");
   } finally {
     await rm(targetRoot, { recursive: true, force: true });
   }
@@ -2334,16 +2302,15 @@ test("installed setup script honors managed runtime mode without taking service 
   const dockerLog = path.join(targetRoot, "docker-log.txt");
   const systemctlLog = path.join(targetRoot, "systemctl-log.txt");
   const npmLog = path.join(targetRoot, "npm-log.txt");
-  const qdrantUrl = "http://127.0.0.1:7666";
 
   try {
     await mkdir(binDir, { recursive: true });
     await writeFile(path.join(targetRoot, "package.json"), '{ "name": "fixture", "private": true }\n');
-    const installedExampleEnv = (await readFile(path.join(sourceRoot, ".env.example"), "utf8")).replace(
-      "ARCHON_QDRANT_URL=http://127.0.0.1:6333",
-      `ARCHON_QDRANT_URL=${qdrantUrl}`
+    await writeFile(
+      path.join(targetRoot, ".env.example"),
+      await readFile(path.join(sourceRoot, ".env.example"), "utf8"),
+      "utf8"
     );
-    await writeFile(path.join(targetRoot, ".env.example"), installedExampleEnv, "utf8");
     await installDevgodIntoProject({ sourceRoot, targetRoot });
     await writeHealthcheckNodeStub(binDir);
 
@@ -2398,8 +2365,7 @@ test("installed setup script honors managed runtime mode without taking service 
         ARCHON_RUNTIME_MODE: "managed",
         ARCHON_DOCKER_LOG_FILE: dockerLog,
         ARCHON_SYSTEMCTL_LOG_FILE: systemctlLog,
-        ARCHON_NPM_LOG_FILE: npmLog,
-        ARCHON_QDRANT_URL: qdrantUrl
+        ARCHON_NPM_LOG_FILE: npmLog
       }
     });
 
