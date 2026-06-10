@@ -215,10 +215,14 @@ export function evaluatePreToolUse(payload, context) {
     }
     // Task-scope gate: when a task is active and declares a non-empty write scope,
     // block writes to files outside that scope.
+    // Skip the scope gate for absolute paths that are outside the repo root — those
+    // are legitimately outside archon's jurisdiction (e.g. /tmp/foo.txt).
+    const filePathIsOutsideRepo = typeof filePath === "string" && filePath.startsWith("/");
     if (
       filePath &&
       context.activeTaskId &&
       context.allowedWriteScope.length > 0 &&
+      !filePathIsOutsideRepo &&
       !isAllowedTaskTarget(filePath, context)
     ) {
       const scopeSummary = context.allowedWriteScope.slice(0, 5).join(", ");
@@ -373,8 +377,9 @@ export function evaluateStop(payload, context) {
 
   // Authority-mismatch gate: corrupted state should not silently release every gate.
   // When mismatches exist and this is the first stop call (!stopHookActive), hold with an
-  // actionable message. When stopHookActive is true the user has already seen the hold —
-  // release to let the user reconcile state manually.
+  // actionable message. When stopHookActive is true the first-stop hold is skipped, but we
+  // must still fall through to review/runtime/verification gates — they must never be
+  // releasable by a repeated stop alone. This mirrors the hookBlockerState pattern.
   if (Array.isArray(context.authorityMismatches) && context.authorityMismatches.length > 0) {
     if (!stopHookActive) {
       const kinds = context.authorityMismatches.map((m) => m.kind).join(", ");
@@ -383,7 +388,9 @@ export function evaluateStop(payload, context) {
         stopReason: `archon task state authority mismatch (${kinds}): reconcile .archon/ACTIVE with .archon/work/task-queue.json before the session closes`
       };
     }
-    return undefined;
+    // stopHookActive is true: the repeated mismatch hold itself is skipped, but we must
+    // still fall through to review/runtime/verification gates — they must never be
+    // releasable by a repeated stop alone.
   }
 
   if (context.continuationIntent === "defer_same_thread" || context.continuationIntent === "defer_fresh_run") {
