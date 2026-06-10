@@ -1,5 +1,7 @@
 # Reasoning Quality
 
+**Enforcement level:** Advisory — reasoning mode and quality requirements described in this file are guidance and are not runtime-enforced by hooks.
+
 Use this rule when planning, debugging, implementing, researching, reviewing, or reporting substantive work.
 
 ## Core contract

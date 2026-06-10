@@ -965,7 +965,7 @@ interface ExecuteReportCommandOptions extends ExecuteStatusCommandOptions {
     createdAt: string;
     actor: string;
     actorRole: RetrievalRole;
-    identityAssurance: "authenticated" | "legacy_backfill";
+    identityAssurance: "authenticated" | "legacy_backfill" | "seeded";
     decision: string;
   }[]>;
   getLoopHistory?: ((runId: string, limit: number) => Promise<readonly SearchMemoryResult[]>) | undefined;
@@ -7448,13 +7448,25 @@ export async function executeWorkflowProofCommandFromArgs(
     throw new Error(`Task ${taskId} is missing one or more required runtime reviews`);
   }
 
+  if (options.integrityCheckMode !== "allow_seed_failure_recovery") {
+    const seededReviews = latestReviews.filter((review) => review.identityAssurance !== "authenticated");
+    if (seededReviews.length > 0) {
+      const details = seededReviews.map((review) => `reviewer=${review.identityAssurance}`).join(", ");
+      throw new Error(`Task ${taskId} required review provenance is not authenticated: ${details}`);
+    }
+  }
+
   enforcePlaywrightWorkflowProof(task.packet, latestReviews);
 
   const latestApproval = (await options.getApprovals(runId, taskId)).at(-1);
   if (!latestApproval) {
     throw new Error(`Task ${taskId} is missing a runtime approval record`);
   }
-  if (latestApproval.identityAssurance !== "authenticated" || latestApproval.decision !== "approved") {
+  const allowSeededApproval = options.integrityCheckMode === "allow_seed_failure_recovery";
+  const approvalAssuranceOk =
+    latestApproval.identityAssurance === "authenticated" ||
+    (allowSeededApproval && latestApproval.identityAssurance === "seeded");
+  if (!approvalAssuranceOk || latestApproval.decision !== "approved") {
     throw new Error(
       `Task ${taskId} latest runtime approval must be authenticated approved, found ${latestApproval.identityAssurance} ${latestApproval.decision}`
     );
@@ -10736,7 +10748,7 @@ async function workflowProofCommand(args: readonly string[]) {
   });
 }
 
-function createWorkflowProofSeedResolver(): ResolveReviewActionContext {
+export function createWorkflowProofSeedResolver(): ResolveReviewActionContext {
   return createReviewActionContextResolver({
     bindings: {
       bindings: [
@@ -10768,7 +10780,8 @@ async function seedWorkflowProofCommand(args: readonly string[]) {
   await withClient(async (client) => {
     const store = new PostgresStore(client);
     const service = new ArchonCoreService(store, {
-      resolveReviewActionContext: createWorkflowProofSeedResolver()
+      resolveReviewActionContext: createWorkflowProofSeedResolver(),
+      reviewIdentityAssurance: "seeded"
     });
     const result = await executeSeedWorkflowProofCommandFromArgs(args, {
       cwd: process.cwd(),

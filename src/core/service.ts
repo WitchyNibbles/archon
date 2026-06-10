@@ -112,6 +112,7 @@ import { assessTaskPacketReasoning } from "./reasoning-quality.ts";
 
 export interface ArchonCoreServiceOptions {
   resolveReviewActionContext?: ResolveReviewActionContext | undefined;
+  reviewIdentityAssurance?: "authenticated" | "seeded" | undefined;
 }
 
 export interface ExecuteReviewRecommendationResult {
@@ -581,10 +582,12 @@ function deriveRunStatus(tasks: readonly TaskRecord[]): RunRecord["status"] {
 export class ArchonCoreService {
   private readonly store: ArchonStore;
   private readonly resolveReviewActionContext?: ResolveReviewActionContext | undefined;
+  private readonly reviewIdentityAssurance: "authenticated" | "seeded";
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
     this.resolveReviewActionContext = options.resolveReviewActionContext;
+    this.reviewIdentityAssurance = options.reviewIdentityAssurance ?? "authenticated";
   }
 
   private async saveAutonomousExecutionState(
@@ -1405,7 +1408,7 @@ export class ArchonCoreService {
       reviewerRole: review.reviewerRole,
       actor: context.actor,
       actorRole: context.actorRole,
-      identityAssurance: "authenticated",
+      identityAssurance: this.reviewIdentityAssurance,
       state: review.state,
       severity: review.severity,
       findings: [...review.findings],
@@ -1425,7 +1428,7 @@ export class ArchonCoreService {
       taskId,
       actor: context.actor,
       actorRole: context.actorRole,
-      identityAssurance: "authenticated",
+      identityAssurance: this.reviewIdentityAssurance,
       decision: decision.decision,
       rationale:
         decision.blockers.length > 0 ? decision.blockers.join("; ") : "All required reviews passed",
