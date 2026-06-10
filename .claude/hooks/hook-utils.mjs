@@ -1123,8 +1123,10 @@ export function extractBashWriteTargets(command, repoRoot) {
       .trim();
 
     // > path or >> path (not fd>&N which were already stripped)
-    // Match > or >> followed by a path that is not /dev/* or $VAR or process substitution
-    const redirectPattern = /(?:>>?)\s*([^\s;&|<>()$`][^\s;&|<>()$`]*)/g;
+    // Match > or >> followed by a path that is not /dev/* or $VAR or process substitution.
+    // Exclude => (arrow function) by requiring > is not immediately preceded by =.
+    // Exclude >= (comparison) by requiring > is not immediately followed by =.
+    const redirectPattern = /(?<![=])>>?(?!=)\s*([^\s;&|<>()$`][^\s;&|<>()$`]*)/g;
     for (const m of clean.matchAll(redirectPattern)) {
       const p = stripQuotes(m[1]);
       addTarget(p, repoRoot, results);

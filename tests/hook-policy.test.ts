@@ -1701,16 +1701,36 @@ test("GAP-5: authorityMismatches present + stopHookActive false → held with mi
   );
 });
 
-test("GAP-5: authorityMismatches present + stopHookActive true → released (undefined)", () => {
+test("GAP-5: authorityMismatches + stopHookActive true + missing reviews → review gate fires", () => {
   const ctx = {
     ...emptyContext(),
     activeTaskId: "task-gap5",
     authorityMismatches: [{ kind: "active_file_conflicts_with_queue", activeFileTaskId: "task-gap5", queueCurrentTaskId: "task-other" }],
-    missingReviews: []
+    requiredReviews: ["reviewer"],
+    missingReviews: [".archon/work/reviews/review-task-gap5-reviewer.md"]
   };
   const payload = { last_assistant_message: COMPLETION_MSG, stop_hook_active: true };
   const result = evaluateStop(payload, ctx);
-  assert.ok(result === undefined, `expected released (undefined) when stopHookActive is true, got: ${JSON.stringify(result)}`);
+  assert.ok(result, "expected stop to be held by review gate even with stopHookActive true and mismatches");
+  assert.equal(result.continue, false);
+  assert.ok(
+    result.stopReason.includes("missing required review files"),
+    `expected review gate message (not mismatch message), got: ${result?.stopReason}`
+  );
+  assert.ok(
+    !result.stopReason.includes("authority mismatch"),
+    `stopReason must not be the mismatch message on second stop, got: ${result?.stopReason}`
+  );
+});
+
+test("GAP-5: authorityMismatches + stopHookActive true + all gates satisfied → released", () => {
+  const ctx = {
+    ...allGatesSatisfiedContext(),
+    authorityMismatches: [{ kind: "active_file_conflicts_with_queue", activeFileTaskId: "task-gap5", queueCurrentTaskId: "task-other" }]
+  };
+  const payload = { last_assistant_message: COMPLETION_MSG, stop_hook_active: true };
+  const result = evaluateStop(payload, ctx);
+  assert.ok(result === undefined, `expected released (undefined) when all gates satisfied, got: ${JSON.stringify(result)}`);
 });
 
 test("GAP-5: first stop with hookBlockerState still held with blocker summary", () => {
@@ -2355,4 +2375,57 @@ test("GAP-8 evaluateStop: existing emptyContext contexts (no councilRequired) st
     typeof result.stopReason === "string" &&
     result.stopReason.includes("Design and Architecture Council review");
   assert.ok(!heldByCouncil, "missing councilRequired must not trigger gate");
+});
+
+// ─── FIX2: extractBashWriteTargets arrow-function and comparison false-positive fixes ───
+
+test("FIX2 extractBashWriteTargets: arrow function => is not a redirect", () => {
+  const targets = extractBashWriteTargets("node -e 'arr.forEach(x => console.log(x))'", "/repo");
+  assert.deepEqual(targets, [], `expected empty, got ${JSON.stringify(targets)}`);
+});
+
+test("FIX2 extractBashWriteTargets: process.stdout.write is not a redirect", () => {
+  const targets = extractBashWriteTargets("node -e 'process.stdout.write(\"x\")'", "/repo");
+  assert.deepEqual(targets, [], `expected empty, got ${JSON.stringify(targets)}`);
+});
+
+test("FIX2 extractBashWriteTargets: real > redirect is still detected", () => {
+  const targets = extractBashWriteTargets("echo x > out.txt", "/repo");
+  assert.ok(targets.includes("out.txt"), `expected out.txt in ${JSON.stringify(targets)}`);
+});
+
+test("FIX2 extractBashWriteTargets: >= comparison is not a redirect", () => {
+  const targets = extractBashWriteTargets('echo "x >= 1"', "/repo");
+  assert.deepEqual(targets, [], `expected empty for comparison, got ${JSON.stringify(targets)}`);
+});
+
+test("FIX2 extractBashWriteTargets: => in quoted arg is not a redirect", () => {
+  const targets = extractBashWriteTargets('echo "x => y"', "/repo");
+  assert.deepEqual(targets, [], `expected empty for arrow in quotes, got ${JSON.stringify(targets)}`);
+});
+
+// ─── FIX2: evaluatePreToolUse Write to absolute path outside repo is not blocked by scope gate ───
+
+test("FIX2 evaluatePreToolUse: Write to /tmp/foo.txt with active task and narrow scope is NOT blocked", () => {
+  const ctx = {
+    ...emptyContext(),
+    repoRoot: "/repo",
+    activeTaskId: "task-1",
+    allowedWriteScope: ["src"]
+  };
+  const result = evaluatePreToolUse({ tool_name: "Write", tool_input: { file_path: "/tmp/foo.txt" } }, ctx);
+  assert.ok(result === undefined || result.decision !== "block", "absolute path outside repo must not be blocked by scope gate");
+});
+
+// ─── FIX2: evaluatePreToolUse Bash with redirect to absolute outside repo is NOT blocked ───
+
+test("FIX2 evaluatePreToolUse: echo x > /tmp/foo.txt with active task and narrow scope is NOT blocked", () => {
+  const ctx = {
+    ...emptyContext(),
+    repoRoot: "/repo",
+    activeTaskId: "task-1",
+    allowedWriteScope: ["src"]
+  };
+  const result = evaluatePreToolUse(bashPayload("echo x > /tmp/foo.txt"), ctx);
+  assert.ok(result === undefined || result.decision !== "block", "bash redirect to outside-repo absolute must not be blocked by scope gate");
 });
