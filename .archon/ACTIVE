@@ -1,3 +1,4 @@
 workflow=archon
-task_id=audit-hardening
+task_id=archon-remediation-p1
 state=complete
+brief=.archon/work/briefs/brief-archon-remediation.md

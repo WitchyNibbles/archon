@@ -1,6 +1,6 @@
 {
-  "project_status": "idle",
-  "current_task_id": null,
+  "project_status": "active",
+  "current_task_id": "archon-remediation-p1",
   "tasks": [
     {
       "id": "audit-hardening",
@@ -8,18 +8,142 @@
       "status": "done",
       "class": "release_candidate",
       "depends_on": [],
-      "acceptance_criteria": [
-        "workflow-proof resolves audit-hardening from the latest runtime run",
-        "required reviewer, qa, and security reviews are recorded as authenticated approvals"
-      ],
+      "acceptance_criteria": [],
+      "verification": [],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p1",
+      "title": "Seal backdoors",
+      "status": "done",
+      "class": "feature",
+      "depends_on": [],
+      "acceptance_criteria": [],
       "verification": [
-        "node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id audit-hardening"
+        "npm test"
       ],
-      "evidence": [
-        "task packet: audit-hardening",
-        "verification: node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id audit-hardening",
-        "quality gate: release_readiness_required"
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p2",
+      "title": "Real review gate pipeline",
+      "status": "pending",
+      "class": "feature",
+      "depends_on": [
+        "archon-remediation-p1"
       ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p3",
+      "title": "Fix the daemon",
+      "status": "pending",
+      "class": "feature",
+      "depends_on": [
+        "archon-remediation-p2"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p4",
+      "title": "Fix model routing",
+      "status": "pending",
+      "class": "feature",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p5",
+      "title": "Real embeddings",
+      "status": "pending",
+      "class": "feature",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p6",
+      "title": "Grafana MCP tool",
+      "status": "pending",
+      "class": "feature",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p7",
+      "title": "Obsidian export",
+      "status": "pending",
+      "class": "feature",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p8",
+      "title": "Cut the bloat",
+      "status": "pending",
+      "class": "feature",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p9",
+      "title": "Trust model honesty",
+      "status": "pending",
+      "class": "feature",
+      "depends_on": [
+        "archon-remediation-p2"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [],
       "blocker": null
     }
   ]
