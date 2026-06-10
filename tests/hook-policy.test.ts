@@ -101,11 +101,23 @@ test("isManagedPath: .archon/memory/ is managed", () => {
   assert.equal(isManagedPath(".archon/memory/README.md"), true);
 });
 
-test("isManagedPath: .archon/work/ and src/ are NOT managed", () => {
-  assert.equal(isManagedPath(".archon/work/tasks/task-foo.md"), false);
+test("isManagedPath: .archon/ACTIVE and src/ are NOT managed", () => {
   assert.equal(isManagedPath(".archon/ACTIVE"), false);
   assert.equal(isManagedPath("src/index.ts"), false);
   assert.equal(isManagedPath("tests/foo.test.ts"), false);
+});
+
+test("isManagedPath: .archon/work/tasks/ is managed", () => {
+  assert.equal(isManagedPath(".archon/work/tasks/task-foo.md"), true);
+  assert.equal(isManagedPath(".archon/work/tasks/task-abc-123.md"), true);
+});
+
+test("isManagedPath: .archon/work/reviews/ is managed", () => {
+  assert.equal(isManagedPath(".archon/work/reviews/review-foo.md"), true);
+});
+
+test("isManagedPath: .archon/work/daemon/ is managed", () => {
+  assert.equal(isManagedPath(".archon/work/daemon/foo.json"), true);
 });
 
 // ─── isManagedPathAllowed ────────────────────────────────────────────────────
@@ -222,12 +234,43 @@ test("Write to src/index.ts with no active task is blocked by no-task write gate
   assert.match(result.reason, /\.archon\/work\/tasks\//i);
 });
 
-test("Write to .archon/work/tasks/task-foo.md with no active task is NOT blocked", () => {
+test("Write to .archon/work/tasks/task-foo.md with no active task is blocked (managed path)", () => {
   const result = evaluatePreToolUse(
     writePayload(".archon/work/tasks/task-foo.md"),
     emptyContext()
   );
+  assert.ok(result, "expected a block response");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /requires an active archon task/i);
+});
+
+test("Write to .archon/work/tasks/task-foo.md with active task in scope is allowed", () => {
+  const ctx = contextWithScope(".archon/work/tasks");
+  const result = evaluatePreToolUse(
+    writePayload(".archon/work/tasks/task-foo.md"),
+    ctx
+  );
   assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("Write to .archon/work/reviews/review-foo.md with no active task is blocked (managed path)", () => {
+  const result = evaluatePreToolUse(
+    writePayload(".archon/work/reviews/review-foo.md"),
+    emptyContext()
+  );
+  assert.ok(result, "expected a block response");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /requires an active archon task/i);
+});
+
+test("Write to .archon/work/daemon/foo.json with no active task is blocked (managed path)", () => {
+  const result = evaluatePreToolUse(
+    writePayload(".archon/work/daemon/foo.json"),
+    emptyContext()
+  );
+  assert.ok(result, "expected a block response");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /requires an active archon task/i);
 });
 
 // ─── evaluatePreToolUse: Bash referencing managed paths ──────────────────────
@@ -900,14 +943,22 @@ test("isVerificationSatisfied: exact match → true", () => {
   assert.equal(isVerificationSatisfied("npm run test", [{ command: "npm run test", passedAt: "t" }]), true);
 });
 
-test("isVerificationSatisfied: passed command contains required → true", () => {
+test("isVerificationSatisfied: passed command with extra flags does NOT satisfy required (exact match enforced)", () => {
   assert.equal(
     isVerificationSatisfied("npm run test", [{ command: "npm run test -- --coverage 2>&1 | tail -50", passedAt: "t" }]),
-    true
+    false
   );
 });
 
-test("isVerificationSatisfied: required contains passed (short canonical form) → true", () => {
+test("isVerificationSatisfied: short prefix command does NOT satisfy longer required (exact match enforced)", () => {
+  // 'npm' alone must not satisfy 'npm test' — closes the substring exploit
+  assert.equal(
+    isVerificationSatisfied("npm test", [{ command: "npm", passedAt: "t" }]),
+    false
+  );
+});
+
+test("isVerificationSatisfied: exact match on short canonical form → true", () => {
   assert.equal(
     isVerificationSatisfied("npm test", [{ command: "npm test", passedAt: "t" }]),
     true
@@ -1597,9 +1648,12 @@ test("GAP-3 evaluatePreToolUse: echo x > .archon/ACTIVE is NOT blocked (bootstra
   assert.ok(result === undefined || result.decision !== "block", ".archon/ACTIVE must be bootstrap-exempt in bash gate");
 });
 
-test("GAP-3 evaluatePreToolUse: echo x > .archon/work/tasks/task-foo.md is NOT blocked (task packet path)", () => {
+test("GAP-3 evaluatePreToolUse: echo x > .archon/work/tasks/task-foo.md is blocked (managed path guard)", () => {
+  // .archon/work/tasks/ is now a managed path — bash write is blocked without active task scope
   const result = evaluatePreToolUse(bashPayload("echo x > .archon/work/tasks/task-foo.md"), emptyContext());
-  assert.ok(result === undefined || result.decision !== "block", "task packet path must be exempt");
+  assert.ok(result, "expected a block");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /requires an active archon task/i);
 });
 
 test("GAP-3 evaluatePreToolUse: active task scope — in-scope bash write is allowed", () => {
