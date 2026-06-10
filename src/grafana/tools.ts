@@ -3,8 +3,12 @@ import type {
   GrafanaDatasource,
   GrafanaHealthResponse,
   GrafanaQueryLogsInput,
-  GrafanaQueryLogsResult
+  GrafanaQueryLogsResult,
+  GrafanaQueryInput,
+  GrafanaQueryResult,
+  ArchonGrafanaQueryOptions
 } from "./client.ts";
+import { executeArchonGrafanaQuery } from "./client.ts";
 
 export interface GrafanaRuntimeSurface {
   testConnection(): Promise<GrafanaHealthResponse>;
@@ -30,7 +34,8 @@ function buildTextResult(summary: string, structuredContent: Record<string, unkn
 }
 
 export function createGrafanaMcpToolDefinitions(
-  runtime: GrafanaRuntimeSurface
+  runtime: GrafanaRuntimeSurface,
+  queryOptions: ArchonGrafanaQueryOptions = {}
 ): readonly GrafanaMcpToolDefinition[] {
   return [
     {
@@ -95,6 +100,58 @@ export function createGrafanaMcpToolDefinitions(
             direction: result.direction,
             lineCount: result.lineCount,
             lines: result.lines
+          }
+        );
+      }
+    },
+    {
+      name: "archon_grafana_query",
+      description:
+        "Query a Grafana-connected datasource (Loki or Prometheus) by name. Routes automatically based on the datasource name: names containing 'loki' use the Loki query_range API; all others use the Prometheus query_range API. Requires ARCHON_GRAFANA_URL and ARCHON_GRAFANA_TOKEN environment variables.",
+      inputSchema: {
+        datasource: z.string().trim().min(1).describe("Datasource name (e.g. 'loki', 'prometheus-prod')."),
+        query: z.string().min(1).max(10_000).describe("Query expression (LogQL for Loki, PromQL for Prometheus)."),
+        time_range: z
+          .object({
+            from: z.string().trim().min(1).describe("Start of the time range as an ISO 8601 string."),
+            to: z.string().trim().min(1).describe("End of the time range as an ISO 8601 string.")
+          })
+          .describe("Time range for the query.")
+      },
+      async invoke(input) {
+        const queryInput: GrafanaQueryInput = {
+          datasource: String(input.datasource),
+          query: String(input.query),
+          time_range: {
+            from: String((input.time_range as Record<string, unknown>).from),
+            to: String((input.time_range as Record<string, unknown>).to)
+          }
+        };
+
+        const outcome = executeArchonGrafanaQuery(queryInput, queryOptions);
+
+        if ("error" in outcome) {
+          return buildTextResult(`archon_grafana_query error: ${outcome.error}`, { error: outcome.error });
+        }
+
+        const result = (await outcome) as GrafanaQueryResult;
+
+        const countLabel =
+          result.datasourceType === "loki"
+            ? `${result.logLines.length} log line${result.logLines.length === 1 ? "" : "s"}`
+            : `${result.series.length} series`;
+
+        return buildTextResult(
+          `archon_grafana_query returned ${countLabel} from ${result.datasource} (${result.datasourceType}).`,
+          {
+            datasource: result.datasource,
+            datasourceType: result.datasourceType,
+            query: result.query,
+            timeRange: result.timeRange,
+            resultType: result.resultType,
+            totalCount: result.totalCount,
+            series: result.datasourceType === "prometheus" ? result.series : undefined,
+            logLines: result.datasourceType === "loki" ? result.logLines : undefined
           }
         );
       }
