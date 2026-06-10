@@ -2,7 +2,11 @@ import { appendBypassLogEntry, readActiveTaskContext, readHookPayload } from "./
 import { evaluateUserPromptSubmit } from "./hook-policy.mjs";
 
 const payload = await readHookPayload();
-const context = await readActiveTaskContext();
+const context = await readActiveTaskContext(
+  typeof payload?.cwd === "string" && payload.cwd.trim().length > 0
+    ? { repoRoot: payload.cwd }
+    : {}
+);
 const prompt = typeof payload?.prompt === "string" ? payload.prompt : "";
 
 if (prompt.includes("archon:bypass")) {

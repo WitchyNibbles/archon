@@ -12,6 +12,22 @@
 
 `artifact_complete | specialist_verified`
 
+## Task class
+
+Declare the task class. Typical values:
+
+- `feature` — new functionality or behavior change
+- `bugfix` — correcting a defect
+- `refactor` — structural improvement with no behavior change
+- `docs_only` — documentation updates only, no code changes
+- `state_sync` — updating workflow state files (.archon/ACTIVE, task-queue.json, product-state.md)
+- `memory_curation` — updating .archon/memory/ or .claude/projects/*/memory/ only
+- `scaffold_only` — creating skeleton files or empty stubs with no logic
+
+Only `docs_only`, `state_sync`, `memory_curation`, and `scaffold_only` may be combined with
+`## Verification required: false`. All other task classes require passing verification evidence
+before the session can close, regardless of the verification opt-out field.
+
 ## Required specialist roles
 
 List the specialist roles whose execution must be evidenced before completion.

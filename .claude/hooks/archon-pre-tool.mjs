@@ -2,7 +2,11 @@ import { readActiveTaskContext, readHookPayload } from "./hook-utils.mjs";
 import { evaluatePreToolUse } from "./hook-policy.mjs";
 
 const payload = await readHookPayload();
-const context = await readActiveTaskContext();
+const context = await readActiveTaskContext(
+  typeof payload?.cwd === "string" && payload.cwd.trim().length > 0
+    ? { repoRoot: payload.cwd }
+    : {}
+);
 const response = evaluatePreToolUse(payload, context);
 
 if (response) {
