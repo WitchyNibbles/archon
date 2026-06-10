@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..", "..");
 
-const managedPathPrefixes = ["CLAUDE.md", ".claude/", ".archon/memory/"];
+const managedPathPrefixes = ["CLAUDE.md", ".claude/", ".archon/memory/", ".archon/work/tasks/", ".archon/work/reviews/", ".archon/work/daemon/"];
 const destructiveCommandPatterns = [
   /\bgit\s+reset\s+--hard\b/,
   /\bgit\s+checkout\s+--\b/,
@@ -1075,7 +1075,7 @@ export function isVerificationSatisfied(requiredCommand, passedCommands) {
   const normalized = requiredCommand.trim().toLowerCase();
   return passedCommands.some((entry) => {
     const passed = (typeof entry.command === "string" ? entry.command : "").trim().toLowerCase();
-    return passed.includes(normalized) || normalized.includes(passed);
+    return passed === normalized;
   });
 }
 
