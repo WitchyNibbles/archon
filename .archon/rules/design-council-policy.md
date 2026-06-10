@@ -1,5 +1,7 @@
 # Design And Architecture Council Policy
 
+**Enforcement level:** The council outcome is enforced by the Stop hook via the task packet `## Council review` section — tasks with `### Required: true` or `council_review_required` in quality gates are blocked at session close until an approved-class outcome is recorded. All other aspects of this policy (membership, dissent, timeboxes, packet content) are advisory guidance and are not runtime-enforced.
+
 Use this rule for substantive roadmap, governance, architecture-significant, or user-flow-heavy work that needs stronger design critique before implementation starts.
 
 ## Purpose

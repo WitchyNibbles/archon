@@ -26,7 +26,14 @@ const {
   parseRequiredVerifications,
   isVerificationSatisfied,
   persistVerificationCert,
-  readVerificationCert
+  readVerificationCert,
+  qualifiesForVerificationCert,
+  parseTaskClass,
+  verificationExemptTaskClasses,
+  readActiveTaskContext,
+  extractBashWriteTargets,
+  validateReviewArtifact,
+  parseCouncilReview
 } = await import(`${hooksDir}/hook-utils.mjs`);
 const {
   evaluatePreToolUse,
@@ -50,11 +57,15 @@ function emptyContext() {
     authorityMismatches: [],
     requiredReviews: [],
     missingReviews: [],
+    invalidReviews: [],
     verificationRequired: true,
+    verificationOptOutRejected: false,
     requiredVerifications: [],
     verificationCert: undefined,
     runtimeConfigured: false,
-    runtimeConnected: false
+    runtimeConnected: false,
+    councilRequired: false,
+    councilOutcome: undefined
   };
 }
 
@@ -449,9 +460,9 @@ test("parseRequiredReviews: extracts role names from ## Required reviews section
   assert.deepEqual(roles, ["reviewer", "qa_engineer", "security_reviewer"]);
 });
 
-test("parseRequiredReviews: returns empty array when section is absent", () => {
+test("parseRequiredReviews: returns default trio when section is absent", () => {
   const md = `# Task\n\n## Allowed write scope\n\n- src/\n`;
-  assert.deepEqual(parseRequiredReviews(md), []);
+  assert.deepEqual(parseRequiredReviews(md), ["reviewer", "security_reviewer", "qa_engineer"]);
 });
 
 test("reviewArtifactPath: returns correct relative path for task + role", () => {
@@ -962,7 +973,9 @@ test("evaluatePostToolUse: passing verification command writes cert", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-test-"));
   try {
     const ctx = { ...emptyContext(), repoRoot: tmpDir, activeTaskId: "task-cert" };
-    evaluatePostToolUse(bashSuccessPayload("npm run test"), ctx);
+    // Provide TAP output with passing tests so qualifiesForVerificationCert returns true
+    const payload = { tool_name: "Bash", tool_input: { command: "npm run test" }, tool_response: { exitCode: 0, stdout: "# tests 5\n# pass 5\n# fail 0\n" } };
+    evaluatePostToolUse(payload, ctx);
     const cert = readVerificationCert(tmpDir, "task-cert");
     assert.ok(cert, "cert should be written after passing verification");
     assert.equal(cert.passedCommands[0].command, "npm run test");
@@ -1106,4 +1119,1240 @@ test("evaluateStop: mid-task message + no cert → shouldHoldStop fires, verific
     !result.stopReason.includes("verification evidence"),
     "mid-task pause must be held by shouldHoldStop, not verification gate"
   );
+});
+
+// ─── GAP-4: isReadOnlyBashCommand extended patterns ──────────────────────────
+
+test("isReadOnlyBashCommand: grep is read-only", () => {
+  assert.equal(isReadOnlyBashCommand(`grep -rn "x" .claude/hooks/`), true);
+});
+
+test("isReadOnlyBashCommand: awk is read-only", () => {
+  assert.equal(isReadOnlyBashCommand(`awk '{print $1}' CLAUDE.md`), true);
+});
+
+test("isReadOnlyBashCommand: diff is read-only", () => {
+  assert.equal(isReadOnlyBashCommand("diff a.txt b.txt"), true);
+});
+
+test("isReadOnlyBashCommand: git log is read-only", () => {
+  assert.equal(isReadOnlyBashCommand("git log --oneline -5"), true);
+});
+
+test("isReadOnlyBashCommand: git diff is read-only", () => {
+  assert.equal(isReadOnlyBashCommand("git diff HEAD~1 -- .claude/settings.json"), true);
+});
+
+test("isReadOnlyBashCommand: git status is read-only", () => {
+  assert.equal(isReadOnlyBashCommand("git status"), true);
+});
+
+test("isReadOnlyBashCommand: git rev-parse is read-only", () => {
+  assert.equal(isReadOnlyBashCommand("git rev-parse HEAD"), true);
+});
+
+test("isReadOnlyBashCommand: git remote -v is read-only", () => {
+  assert.equal(isReadOnlyBashCommand("git remote -v"), true);
+});
+
+test("isReadOnlyBashCommand: grep with redirect > is write-like", () => {
+  assert.equal(isReadOnlyBashCommand("grep x file > out.txt"), false);
+});
+
+test("isReadOnlyBashCommand: sed -i is write-like", () => {
+  assert.equal(isReadOnlyBashCommand("sed -i 's/a/b/' .claude/settings.json"), false);
+});
+
+// ─── GAP-4: read-only managed-path Bash is allowed without a task ────────────
+
+test("evaluatePermissionRequest: read-only grep on managed path with empty scope is not denied", () => {
+  const result = evaluatePermissionRequest(
+    bashPayload(`grep -n "foo" .claude/hooks/hook-utils.mjs`),
+    emptyContext()
+  );
+  assert.ok(result === undefined || result.decision !== "deny", "read-only grep on managed path must not be denied");
+});
+
+test("evaluatePreToolUse: read-only grep on managed path with empty scope is allowed", () => {
+  const result = evaluatePreToolUse(
+    bashPayload(`grep -n "foo" .claude/hooks/hook-utils.mjs`),
+    emptyContext()
+  );
+  assert.ok(result === undefined || result.decision !== "block", "read-only grep on managed path must not be blocked");
+});
+
+// ─── GAP-4: MultiEdit and NotebookEdit gates ─────────────────────────────────
+
+function multiEditPayload(filePath: string) {
+  return { tool_name: "MultiEdit", tool_input: { file_path: filePath } };
+}
+
+function notebookEditPayload(notebookPath: string) {
+  return { tool_name: "NotebookEdit", tool_input: { notebook_path: notebookPath } };
+}
+
+test("evaluatePreToolUse: MultiEdit targeting CLAUDE.md with empty scope is blocked (managed path)", () => {
+  const result = evaluatePreToolUse(multiEditPayload("CLAUDE.md"), emptyContext());
+  assert.ok(result, "expected a block response");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /requires an active archon task/i);
+});
+
+test("evaluatePreToolUse: NotebookEdit with no active task is blocked by no-task substantive write gate", () => {
+  const result = evaluatePreToolUse(notebookEditPayload("notebooks/analysis.ipynb"), emptyContext());
+  assert.ok(result, "expected a block response");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("evaluatePreToolUse: MultiEdit outside non-empty allowedWriteScope is blocked", () => {
+  const ctx = contextWithScope("src/foo.ts");
+  const result = evaluatePreToolUse(multiEditPayload("src/bar.ts"), ctx);
+  assert.ok(result, "expected a block response");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /outside active task/i);
+});
+
+test("evaluatePreToolUse: MultiEdit inside allowedWriteScope is allowed", () => {
+  const ctx = contextWithScope("src/foo.ts");
+  const result = evaluatePreToolUse(multiEditPayload("src/foo.ts"), ctx);
+  assert.ok(result === undefined || result.decision !== "block", "MultiEdit inside scope must be allowed");
+});
+
+// ─── GAP-7: parseRequiredReviews extended behavior ───────────────────────────
+
+test("parseRequiredReviews: specialist-roles heading is parsed", () => {
+  const md = `# Task\n\n## Required specialist roles\n\n- \`reviewer\`\n- \`qa_engineer\`\n`;
+  const roles = parseRequiredReviews(md);
+  assert.ok(roles.includes("reviewer"), "must include reviewer");
+  assert.ok(roles.includes("qa_engineer"), "must include qa_engineer");
+});
+
+test("parseRequiredReviews: both headings are merged and deduped", () => {
+  const md = `# Task\n\n## Required reviews\n\n- \`reviewer\`\n- \`qa_engineer\`\n\n## Required specialist roles\n\n- \`qa_engineer\`\n- \`security_reviewer\`\n`;
+  const roles = parseRequiredReviews(md);
+  assert.deepEqual(roles.sort(), ["qa_engineer", "reviewer", "security_reviewer"].sort());
+});
+
+test("parseRequiredReviews: explicit none returns empty array", () => {
+  const md = `# Task\n\n## Required reviews\n\n- none\n`;
+  assert.deepEqual(parseRequiredReviews(md), []);
+});
+
+test("parseRequiredReviews: none in specialist roles also returns empty array", () => {
+  const md = `# Task\n\n## Required specialist roles\n\n- none\n`;
+  assert.deepEqual(parseRequiredReviews(md), []);
+});
+
+test("parseRequiredReviews: prose-only section returns default trio", () => {
+  const md = `# Task\n\n## Required specialist roles\n\nList the roles required to review this task.\n`;
+  const roles = parseRequiredReviews(md);
+  assert.deepEqual(roles.sort(), ["qa_engineer", "reviewer", "security_reviewer"].sort());
+});
+
+// ─── GAP-1: qualifiesForVerificationCert ────────────────────────────────────
+
+test("GAP-1: tsc --version exit 0 does NOT qualify for cert", () => {
+  assert.equal(qualifiesForVerificationCert("tsc --version", "TypeScript 5.4.0"), false);
+});
+
+test("GAP-1: npm test exit 0 with 0 tests does NOT qualify for cert", () => {
+  const output = "# tests 0\n# pass 0\n# fail 0\n";
+  assert.equal(qualifiesForVerificationCert("npm test", output), false);
+});
+
+test("GAP-1: npm test exit 0 with 190 tests and fail 0 DOES qualify for cert", () => {
+  const output = "# tests 190\n# pass 190\n# fail 0\n";
+  assert.equal(qualifiesForVerificationCert("npm test", output), true);
+});
+
+test("GAP-1: npx vitest run with 12 passed DOES qualify for cert", () => {
+  const output = "12 passed (15)\n";
+  assert.equal(qualifiesForVerificationCert("npx vitest run", output), true);
+});
+
+test("GAP-1: vitest with 0 passed does NOT qualify for cert", () => {
+  const output = "0 passed (1)\n";
+  assert.equal(qualifiesForVerificationCert("vitest", output), false);
+});
+
+test("GAP-1: go test ./... with ok line DOES qualify for cert", () => {
+  const output = "ok  example.com/pkg  0.5s\n";
+  assert.equal(qualifiesForVerificationCert("go test ./...", output), true);
+});
+
+test("GAP-1: go test ./... with empty output does NOT qualify for cert", () => {
+  assert.equal(qualifiesForVerificationCert("go test ./...", ""), false);
+});
+
+test("GAP-1: tsc --noEmit exit 0 with empty output DOES qualify for cert (typecheck silence is success)", () => {
+  assert.equal(qualifiesForVerificationCert("tsc --noEmit", ""), true);
+});
+
+test("GAP-1: bash scripts/check-archon-workflow.sh exit 0 DOES qualify for cert", () => {
+  assert.equal(qualifiesForVerificationCert("bash scripts/check-archon-workflow.sh", ""), true);
+});
+
+// ─── GAP-1: evaluatePostToolUse cert-minting with output evidence ─────────────
+
+function bashSuccessWithOutput(command: string, stdout: string) {
+  return { tool_name: "Bash", tool_input: { command }, tool_response: { exitCode: 0, stdout } };
+}
+
+test("GAP-1 evaluatePostToolUse: tsc --version exit 0 does NOT write cert", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-gap1-"));
+  try {
+    const ctx = { ...emptyContext(), repoRoot: tmpDir, activeTaskId: "task-gap1" };
+    evaluatePostToolUse(bashSuccessWithOutput("tsc --version", "TypeScript 5.4.0"), ctx);
+    assert.equal(readVerificationCert(tmpDir, "task-gap1"), undefined);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-1 evaluatePostToolUse: npm test with 0 tests does NOT write cert", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-gap1-"));
+  try {
+    const ctx = { ...emptyContext(), repoRoot: tmpDir, activeTaskId: "task-gap1" };
+    evaluatePostToolUse(bashSuccessWithOutput("npm test", "# tests 0\n# pass 0\n# fail 0\n"), ctx);
+    assert.equal(readVerificationCert(tmpDir, "task-gap1"), undefined);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-1 evaluatePostToolUse: npm test with 190 tests writes cert", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-gap1-"));
+  try {
+    const ctx = { ...emptyContext(), repoRoot: tmpDir, activeTaskId: "task-gap1" };
+    evaluatePostToolUse(bashSuccessWithOutput("npm test", "# tests 190\n# pass 190\n# fail 0\n"), ctx);
+    const cert = readVerificationCert(tmpDir, "task-gap1");
+    assert.ok(cert, "cert should be written");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-1 evaluatePostToolUse: failed verification command still triggers repair-loop block", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-gap1-"));
+  try {
+    const payload = { tool_name: "Bash", tool_input: { command: "npm test" }, tool_response: { exitCode: 1, stderr: "failed" } };
+    const ctx = { ...emptyContext(), repoRoot: tmpDir, activeTaskId: "task-gap1" };
+    const result = evaluatePostToolUse(payload, ctx);
+    assert.ok(result, "expected a decision from failed verification");
+    assert.equal(result.decision, "block");
+    assert.match(result.reason, /repair loop/i);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ─── GAP-9: verificationOptOutRejected ──────────────────────────────────────
+
+test("GAP-9 parseTaskClass: returns undefined when section absent", () => {
+  assert.equal(parseTaskClass("## Some section\n\n- item\n"), undefined);
+});
+
+test("GAP-9 parseTaskClass: returns value from ## Task class section", () => {
+  assert.equal(parseTaskClass("## Task class\n\nfeature\n"), "feature");
+  assert.equal(parseTaskClass("## Task class\n\n`docs_only`\n"), "docs_only");
+});
+
+test("GAP-9 verificationExemptTaskClasses contains the four exempt classes", () => {
+  assert.ok(verificationExemptTaskClasses.includes("docs_only"));
+  assert.ok(verificationExemptTaskClasses.includes("state_sync"));
+  assert.ok(verificationExemptTaskClasses.includes("memory_curation"));
+  assert.ok(verificationExemptTaskClasses.includes("scaffold_only"));
+  assert.ok(!verificationExemptTaskClasses.includes("feature"));
+  assert.ok(!verificationExemptTaskClasses.includes("bugfix"));
+});
+
+test("GAP-9 readActiveTaskContext: verification required false + no task class → forced true, rejected flag set", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap9-"));
+  try {
+    const taskId = "gap9-test";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = `# Task\n\n## Task ID\n\n\`${taskId}\`\n\n## Verification required\n\nfalse\n\n## Allowed write scope\n\n- src/\n`;
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.verificationRequired, true, "should be forced to true");
+    assert.equal(ctx.verificationOptOutRejected, true, "rejected flag should be set");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-9 readActiveTaskContext: verification required false + docs_only task class → allowed (false)", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap9-"));
+  try {
+    const taskId = "gap9-docs";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = `# Task\n\n## Task ID\n\n\`${taskId}\`\n\n## Task class\n\ndocs_only\n\n## Verification required\n\nfalse\n\n## Allowed write scope\n\n- src/\n`;
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.verificationRequired, false, "docs_only should be allowed to opt out");
+    assert.equal(ctx.verificationOptOutRejected, false, "rejected flag should not be set");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-9 readActiveTaskContext: verification required false + feature task class → forced true + rejected", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap9-"));
+  try {
+    const taskId = "gap9-feature";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = `# Task\n\n## Task ID\n\n\`${taskId}\`\n\n## Task class\n\nfeature\n\n## Verification required\n\nfalse\n\n## Allowed write scope\n\n- src/\n`;
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.verificationRequired, true, "feature should be forced to true");
+    assert.equal(ctx.verificationOptOutRejected, true, "rejected flag should be set");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-9 evaluateStop: stopReason mentions ignored opt-out when rejected flag is set", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap9",
+    missingReviews: [],
+    verificationRequired: true,
+    verificationOptOutRejected: true,
+    taskClass: "feature",
+    verificationCert: undefined
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.ok(
+    result.stopReason.includes("Verification required: false"),
+    `stopReason should mention the ignored opt-out: ${result.stopReason}`
+  );
+  assert.ok(
+    result.stopReason.includes("docs_only"),
+    `stopReason should name exempt task classes: ${result.stopReason}`
+  );
+  assert.ok(
+    result.stopReason.includes('"feature"'),
+    `stopReason should name the actual task class: ${result.stopReason}`
+  );
+});
+
+// ─── GAP-3: extractBashWriteTargets unit tests ────────────────────────────────
+
+test("GAP-3 extractBashWriteTargets: > redirect to src file", () => {
+  const targets = extractBashWriteTargets('echo "x" > src/foo.ts', "/repo");
+  assert.ok(targets.includes("src/foo.ts"), `expected src/foo.ts in ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: >> append redirect", () => {
+  const targets = extractBashWriteTargets("printf 'y' >> tests/a.test.ts", "/repo");
+  assert.ok(targets.includes("tests/a.test.ts"), `expected tests/a.test.ts in ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: tee target", () => {
+  const targets = extractBashWriteTargets("cat src/foo.ts | tee src/file.ts", "/repo");
+  assert.ok(targets.includes("src/file.ts"), `expected src/file.ts in ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: tee -a target", () => {
+  const targets = extractBashWriteTargets("cat data | tee -a logs/out.log", "/repo");
+  assert.ok(targets.includes("logs/out.log"), `expected logs/out.log in ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: sed -i target", () => {
+  const targets = extractBashWriteTargets("sed -i 's/a/b/' src/admin.ts", "/repo");
+  assert.ok(targets.includes("src/admin.ts"), `expected src/admin.ts in ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: touch paths", () => {
+  const targets = extractBashWriteTargets("touch src/new.ts tests/new.test.ts", "/repo");
+  assert.ok(targets.includes("src/new.ts"), `expected src/new.ts in ${JSON.stringify(targets)}`);
+  assert.ok(targets.includes("tests/new.test.ts"), `expected tests/new.test.ts in ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: mkdir -p path", () => {
+  const targets = extractBashWriteTargets("mkdir -p src/utils", "/repo");
+  assert.ok(targets.includes("src/utils"), `expected src/utils in ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: cp — only dest tracked", () => {
+  const targets = extractBashWriteTargets("cp src/foo.ts src/bar.ts", "/repo");
+  assert.ok(targets.includes("src/bar.ts"), `expected src/bar.ts in ${JSON.stringify(targets)}`);
+  assert.ok(!targets.includes("src/foo.ts"), "source of cp must not be a write target");
+});
+
+test("GAP-3 extractBashWriteTargets: mv — only dest tracked", () => {
+  const targets = extractBashWriteTargets("mv src/old.ts src/new.ts", "/repo");
+  assert.ok(targets.includes("src/new.ts"), `expected src/new.ts in ${JSON.stringify(targets)}`);
+  assert.ok(!targets.includes("src/old.ts"), "source of mv must not be a write target");
+});
+
+test("GAP-3 extractBashWriteTargets: drops /dev/null", () => {
+  const targets = extractBashWriteTargets("ls > /dev/null", "/repo");
+  assert.deepEqual(targets, [], `expected no targets, got ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: drops /tmp/ paths", () => {
+  const targets = extractBashWriteTargets("node script.js > /tmp/out.txt", "/repo");
+  assert.deepEqual(targets, [], `expected no targets, got ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: drops $VAR targets", () => {
+  const targets = extractBashWriteTargets("echo x > $OUTPUT_FILE", "/repo");
+  assert.deepEqual(targets, [], `expected no targets for $VAR, got ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: drops absolute paths outside repo root", () => {
+  const targets = extractBashWriteTargets("echo x > /other/path/file.ts", "/repo");
+  assert.deepEqual(targets, [], `expected no targets for absolute outside repo, got ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: resolves absolute path inside repo root to relative", () => {
+  const targets = extractBashWriteTargets("echo x > /repo/src/foo.ts", "/repo");
+  assert.ok(targets.includes("src/foo.ts"), `expected src/foo.ts in ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: deduplicates repeated targets", () => {
+  const targets = extractBashWriteTargets("echo a > src/foo.ts && echo b > src/foo.ts", "/repo");
+  assert.equal(targets.filter((t) => t === "src/foo.ts").length, 1, "must deduplicate");
+});
+
+test("GAP-3 extractBashWriteTargets: npm install has no write targets", () => {
+  const targets = extractBashWriteTargets("npm install", "/repo");
+  assert.deepEqual(targets, [], `expected no targets for npm install, got ${JSON.stringify(targets)}`);
+});
+
+test("GAP-3 extractBashWriteTargets: echo hello has no write targets", () => {
+  const targets = extractBashWriteTargets("echo hello", "/repo");
+  assert.deepEqual(targets, [], `expected no targets for echo hello, got ${JSON.stringify(targets)}`);
+});
+
+// ─── GAP-3: evaluatePreToolUse Bash write-escape-hatch gate ──────────────────
+
+test("GAP-3 evaluatePreToolUse: echo > src/foo.ts with no active task is blocked", () => {
+  const result = evaluatePreToolUse(bashPayload('echo "x" > src/foo.ts'), emptyContext());
+  assert.ok(result, "expected a block");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+  assert.ok(result.reason.includes("src/foo.ts"), `reason should name the offending path: ${result.reason}`);
+});
+
+test("GAP-3 evaluatePreToolUse: printf >> tests/a.test.ts with no active task is blocked", () => {
+  const result = evaluatePreToolUse(bashPayload("printf 'y' >> tests/a.test.ts"), emptyContext());
+  assert.ok(result, "expected a block");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("GAP-3 evaluatePreToolUse: tee src/file.ts with no active task is blocked", () => {
+  const result = evaluatePreToolUse(bashPayload("cat data | tee src/file.ts"), emptyContext());
+  assert.ok(result, "expected a block");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("GAP-3 evaluatePreToolUse: sed -i on src/admin.ts with no active task is blocked", () => {
+  const result = evaluatePreToolUse(bashPayload("sed -i 's/a/b/' src/admin.ts"), emptyContext());
+  assert.ok(result, "expected a block");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("GAP-3 evaluatePreToolUse: heredoc cat > docs/x.md with no active task is blocked", () => {
+  const cmd = "cat > docs/x.md <<EOF\nhello world\nEOF";
+  const result = evaluatePreToolUse(bashPayload(cmd), emptyContext());
+  assert.ok(result, "expected a block");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("GAP-3 evaluatePreToolUse: npm install with no active task is NOT blocked (no explicit write target)", () => {
+  const result = evaluatePreToolUse(bashPayload("npm install"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block", "npm install must not be blocked");
+});
+
+test("GAP-3 evaluatePreToolUse: echo hello with no active task is NOT blocked", () => {
+  const result = evaluatePreToolUse(bashPayload("echo hello"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block", "echo hello must not be blocked");
+});
+
+test("GAP-3 evaluatePreToolUse: redirect to /tmp is NOT blocked", () => {
+  const result = evaluatePreToolUse(bashPayload("node script.js > /tmp/out.txt"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block", "redirect to /tmp must not be blocked");
+});
+
+test("GAP-3 evaluatePreToolUse: redirect to /dev/null is NOT blocked", () => {
+  const result = evaluatePreToolUse(bashPayload("ls > /dev/null"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block", "redirect to /dev/null must not be blocked");
+});
+
+test("GAP-3 evaluatePreToolUse: echo x > .archon/ACTIVE is NOT blocked (bootstrap-exempt)", () => {
+  const result = evaluatePreToolUse(bashPayload("echo x > .archon/ACTIVE"), emptyContext());
+  // .archon/ACTIVE is not a substantive write target so should not be blocked by no-task gate
+  assert.ok(result === undefined || result.decision !== "block", ".archon/ACTIVE must be bootstrap-exempt in bash gate");
+});
+
+test("GAP-3 evaluatePreToolUse: echo x > .archon/work/tasks/task-foo.md is NOT blocked (task packet path)", () => {
+  const result = evaluatePreToolUse(bashPayload("echo x > .archon/work/tasks/task-foo.md"), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block", "task packet path must be exempt");
+});
+
+test("GAP-3 evaluatePreToolUse: active task scope — in-scope bash write is allowed", () => {
+  const ctx = { ...emptyContext(), activeTaskId: "task-1", allowedWriteScope: ["src"] };
+  const result = evaluatePreToolUse(bashPayload("echo x > src/ok.ts"), ctx);
+  assert.ok(result === undefined || result.decision !== "block", "in-scope bash write must be allowed");
+});
+
+test("GAP-3 evaluatePreToolUse: active task scope — out-of-scope bash write is blocked", () => {
+  const ctx = { ...emptyContext(), activeTaskId: "task-1", allowedWriteScope: ["src"] };
+  const result = evaluatePreToolUse(bashPayload("echo x > tests/out.ts"), ctx);
+  assert.ok(result, "expected a block for out-of-scope bash write");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /outside active task/i);
+});
+
+test("GAP-3 evaluatePreToolUse: active task scope — .archon/skills/ write is NOT blocked (skills exemption)", () => {
+  const ctx = { ...emptyContext(), activeTaskId: "task-1", allowedWriteScope: ["src"] };
+  const result = evaluatePreToolUse(bashPayload("echo x > .archon/skills/foo/SKILL.md"), ctx);
+  assert.ok(result === undefined || result.decision !== "block", ".archon/skills/ must be exempt in bash scope gate");
+});
+
+// ─── GAP-5: Stop-hook hold/release hardening tests ───────────────────────────
+
+// Helper: a cert with a passing npm test command
+const PASSING_CERT = { passedCommands: [{ command: "npm run test", passedAt: "2026-01-01T00:00:00.000Z" }] };
+
+// Context that satisfies ALL gates (reviews, runtime, verification) with docs_only class
+// so the verification gate is skipped cleanly.
+function allGatesSatisfiedContext() {
+  return {
+    ...emptyContext(),
+    activeTaskId: "task-gap5",
+    missingReviews: [],
+    runtimeConfigured: false,
+    runtimeConnected: false,
+    verificationRequired: false,
+    verificationCert: PASSING_CERT,
+    taskClass: "docs_only",
+    verificationOptOutRejected: false,
+    requiredVerifications: []
+  };
+}
+
+test("GAP-5: hookBlockerState present + stopHookActive true + missing review → stop still held by review gate", () => {
+  const blocker = {
+    activeTaskId: "task-gap5",
+    summary: "some bash failed",
+    blockerKind: "generic_nonzero_bash"
+  };
+  const ctx = {
+    ...allGatesSatisfiedContext(),
+    hookBlockerState: blocker,
+    missingReviews: [".archon/work/reviews/review-task-gap5-reviewer.md"]
+  };
+  const payload = { last_assistant_message: COMPLETION_MSG, stop_hook_active: true };
+  const result = evaluateStop(payload, ctx);
+  assert.ok(result, "expected stop to be held by review gate even when stopHookActive is true");
+  assert.equal(result.continue, false);
+  assert.ok(
+    result.stopReason.includes("missing required review files"),
+    `expected review gate message, got: ${result?.stopReason}`
+  );
+});
+
+test("GAP-5: hookBlockerState present + stopHookActive true + all gates satisfied → released", () => {
+  const blocker = {
+    activeTaskId: "task-gap5",
+    summary: "some bash failed",
+    blockerKind: "generic_nonzero_bash"
+  };
+  const ctx = {
+    ...allGatesSatisfiedContext(),
+    hookBlockerState: blocker
+  };
+  const payload = { last_assistant_message: COMPLETION_MSG, stop_hook_active: true };
+  const result = evaluateStop(payload, ctx);
+  assert.ok(result === undefined, `expected released (undefined), got: ${JSON.stringify(result)}`);
+});
+
+test("GAP-5: authorityMismatches present + stopHookActive false → held with mismatch stopReason", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap5",
+    authorityMismatches: [{ kind: "active_file_conflicts_with_queue", activeFileTaskId: "task-gap5", queueCurrentTaskId: "task-other" }],
+    missingReviews: []
+  };
+  const payload = { last_assistant_message: COMPLETION_MSG, stop_hook_active: false };
+  const result = evaluateStop(payload, ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.ok(
+    result.stopReason.includes("authority mismatch"),
+    `expected mismatch message, got: ${result?.stopReason}`
+  );
+  assert.ok(
+    result.stopReason.includes("active_file_conflicts_with_queue"),
+    `mismatch message should name the kind: ${result?.stopReason}`
+  );
+});
+
+test("GAP-5: authorityMismatches present + stopHookActive true → released (undefined)", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap5",
+    authorityMismatches: [{ kind: "active_file_conflicts_with_queue", activeFileTaskId: "task-gap5", queueCurrentTaskId: "task-other" }],
+    missingReviews: []
+  };
+  const payload = { last_assistant_message: COMPLETION_MSG, stop_hook_active: true };
+  const result = evaluateStop(payload, ctx);
+  assert.ok(result === undefined, `expected released (undefined) when stopHookActive is true, got: ${JSON.stringify(result)}`);
+});
+
+test("GAP-5: first stop with hookBlockerState still held with blocker summary", () => {
+  const blocker = {
+    activeTaskId: "task-gap5",
+    summary: "node: command not found",
+    blockerKind: "command_not_found"
+  };
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap5",
+    hookBlockerState: blocker,
+    missingReviews: []
+  };
+  const payload = { last_assistant_message: COMPLETION_MSG, stop_hook_active: false };
+  const result = evaluateStop(payload, ctx);
+  assert.ok(result, "expected stop to be held on first call");
+  assert.equal(result.continue, false);
+  assert.ok(
+    result.stopReason.includes("node: command not found"),
+    `stopReason should be the blocker summary: ${result?.stopReason}`
+  );
+});
+
+// ─── GAP-6: validateReviewArtifact unit tests ─────────────────────────────────
+
+const REALISTIC_REVIEW = (taskId: string, role: string) =>
+  `# Review — ${taskId} — ${role}\n\n## Reviewer role\n\n\`${role}\`\n\n## Task ID\n\n\`${taskId}\`\n\n## Findings\n\nNo blocking issues found. The implementation is correct and test coverage is adequate.\nAll edge cases are handled properly. The code follows the established patterns.\nSecurity review passed with no findings. Performance is acceptable.\n\n**Status: passed**\n\n## Actor\n\n\`${role}\` — scoped task self-review\n`;
+
+test("GAP-6 validateReviewArtifact: empty file → invalid (too short)", () => {
+  const result = validateReviewArtifact("", "task-x", "reviewer");
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /too short/i);
+});
+
+test("GAP-6 validateReviewArtifact: short file → invalid (too short)", () => {
+  const result = validateReviewArtifact("task-x reviewer Status: passed", "task-x", "reviewer");
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /too short/i);
+});
+
+test("GAP-6 validateReviewArtifact: long but missing task id → invalid", () => {
+  const content = "# Review\n\nreviewer " + "x".repeat(250) + "\n\n**Status: passed**\n";
+  const result = validateReviewArtifact(content, "task-missing-id", "reviewer");
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /does not reference task/i);
+});
+
+test("GAP-6 validateReviewArtifact: long, has task id but missing role → invalid", () => {
+  const content = "# Review — task-x\n\n" + "x".repeat(250) + "\n\n**Status: passed**\n";
+  const result = validateReviewArtifact(content, "task-x", "qa_engineer");
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /does not reference role/i);
+});
+
+test("GAP-6 validateReviewArtifact: has task id + role but no status line → invalid", () => {
+  const content = "# Review — task-x — reviewer\n\nreviewer task-x " + "x".repeat(250) + "\n";
+  const result = validateReviewArtifact(content, "task-x", "reviewer");
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /missing a passed\/approved status line/i);
+});
+
+test("GAP-6 validateReviewArtifact: realistic artifact with **Status: passed** → valid", () => {
+  const content = REALISTIC_REVIEW("task-x", "reviewer");
+  const result = validateReviewArtifact(content, "task-x", "reviewer");
+  assert.equal(result.valid, true);
+  assert.equal(result.reason, undefined);
+});
+
+test("GAP-6 validateReviewArtifact: verdict approved → valid", () => {
+  const content = "# Review — task-y — security_reviewer\n\nsecurity_reviewer task-y " + "x".repeat(200) + "\n\n**Verdict: approved**\n";
+  const result = validateReviewArtifact(content, "task-y", "security_reviewer");
+  assert.equal(result.valid, true);
+});
+
+test("GAP-6 validateReviewArtifact: outcome = pass → valid", () => {
+  const content = "# Review — task-z — qa_engineer\n\nqa_engineer task-z " + "x".repeat(200) + "\n\noutcome: pass\n";
+  const result = validateReviewArtifact(content, "task-z", "qa_engineer");
+  assert.equal(result.valid, true);
+});
+
+// ─── GAP-6: readActiveTaskContext invalidReviews ──────────────────────────────
+
+test("GAP-6 readActiveTaskContext: all valid reviews → invalidReviews empty", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap6-"));
+  try {
+    const taskId = "gap6-valid";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "reviews"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = `# Task\n\n## Task ID\n\n\`${taskId}\`\n\n## Required reviews\n\n- reviewer\n- qa_engineer\n\n## Allowed write scope\n\n- src/\n`;
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    // Write valid review files
+    for (const role of ["reviewer", "qa_engineer"]) {
+      fs.writeFileSync(
+        path.join(tmpDir, ".archon", "work", "reviews", `review-${taskId}-${role}.md`),
+        REALISTIC_REVIEW(taskId, role)
+      );
+    }
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.deepEqual(ctx.invalidReviews, [], `invalidReviews should be empty, got: ${JSON.stringify(ctx.invalidReviews)}`);
+    assert.deepEqual(ctx.missingReviews, [], "missingReviews should be empty");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-6 readActiveTaskContext: empty review file → invalidReviews populated", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap6-"));
+  try {
+    const taskId = "gap6-empty";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "reviews"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = `# Task\n\n## Task ID\n\n\`${taskId}\`\n\n## Required reviews\n\n- reviewer\n\n## Allowed write scope\n\n- src/\n`;
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    // Write empty review file
+    fs.writeFileSync(
+      path.join(tmpDir, ".archon", "work", "reviews", `review-${taskId}-reviewer.md`),
+      ""
+    );
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.invalidReviews.length, 1, "should have one invalid review");
+    assert.ok(ctx.invalidReviews[0].includes(".archon/work/reviews/"), "should name the file path");
+    assert.ok(ctx.invalidReviews[0].includes("too short"), "should give reason");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-6 readActiveTaskContext: review missing task id → invalidReviews populated", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap6-"));
+  try {
+    const taskId = "gap6-no-taskid";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "reviews"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = `# Task\n\n## Task ID\n\n\`${taskId}\`\n\n## Required reviews\n\n- reviewer\n\n## Allowed write scope\n\n- src/\n`;
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    // Review without the task id
+    const badContent = "# Review\n\nreviewer " + "x".repeat(250) + "\n\n**Status: passed**\n";
+    fs.writeFileSync(
+      path.join(tmpDir, ".archon", "work", "reviews", `review-${taskId}-reviewer.md`),
+      badContent
+    );
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.invalidReviews.length, 1);
+    assert.ok(ctx.invalidReviews[0].includes("does not reference task"), "should give task-id reason");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-6 readActiveTaskContext: review missing status line → invalidReviews populated", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap6-"));
+  try {
+    const taskId = "gap6-no-status";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "reviews"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = `# Task\n\n## Task ID\n\n\`${taskId}\`\n\n## Required reviews\n\n- reviewer\n\n## Allowed write scope\n\n- src/\n`;
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    // Review without status line
+    const badContent = `# Review — ${taskId} — reviewer\n\nreviewer ${taskId} ` + "x".repeat(200) + "\n";
+    fs.writeFileSync(
+      path.join(tmpDir, ".archon", "work", "reviews", `review-${taskId}-reviewer.md`),
+      badContent
+    );
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.invalidReviews.length, 1);
+    assert.ok(ctx.invalidReviews[0].includes("missing a passed/approved status line"), "should give status-line reason");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ─── GAP-6: evaluateStop invalid reviews gate ────────────────────────────────
+
+test("GAP-6 evaluateStop: completion signal + invalidReviews → stop held naming file and reason", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap6",
+    missingReviews: [],
+    invalidReviews: [".archon/work/reviews/review-task-gap6-reviewer.md (missing a passed/approved status line)"]
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.ok(result.stopReason.includes("fail content validation"), `stopReason: ${result.stopReason}`);
+  assert.ok(result.stopReason.includes(".archon/work/reviews/review-task-gap6-reviewer.md"), "should name the file");
+  assert.ok(result.stopReason.includes("missing a passed/approved status line"), "should name the reason");
+});
+
+test("GAP-6 evaluateStop: no active task + invalidReviews → gate does not fire", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: undefined,
+    missingReviews: [],
+    invalidReviews: [".archon/work/reviews/review-task-gap6-reviewer.md (too short)"]
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByInvalid =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("fail content validation");
+  assert.ok(!heldByInvalid, "invalid reviews gate must not fire without an active task");
+});
+
+test("GAP-6 evaluateStop: mid-task + invalidReviews → shouldHoldStop drives, not invalid-reviews gate", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap6",
+    missingReviews: [],
+    invalidReviews: [".archon/work/reviews/review-task-gap6-reviewer.md (too short)"]
+  };
+  // Empty message → shouldHoldStop → review content gate must NOT fire
+  const result = evaluateStop(stopPayload(""), ctx);
+  assert.ok(result, "expected stop to be held by shouldHoldStop");
+  assert.ok(
+    !result.stopReason.includes("fail content validation"),
+    "invalid reviews gate must not fire mid-task"
+  );
+});
+
+test("GAP-6 evaluateStop: all reviews valid → invalidReviews gate silent", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap6",
+    missingReviews: [],
+    invalidReviews: []
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByInvalid =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("fail content validation");
+  assert.ok(!heldByInvalid, "invalid reviews gate must be silent when invalidReviews is empty");
+});
+
+// ─── GAP-8: parseCouncilReview unit tests ────────────────────────────────────
+
+function councilSection(required: string, outcome: string) {
+  return `## Council review\n\nSome prose.\n\n### Required\n\n\`${required}\`\n\n### Trigger rationale\n\nSome rationale.\n\n### Outcome\n\n\`${outcome}\`\n\n## Next section\n`;
+}
+
+test("GAP-8 parseCouncilReview: parses required=true and outcome=approved", () => {
+  const result = parseCouncilReview(councilSection("true", "approved"));
+  assert.equal(result.required, "true");
+  assert.equal(result.outcome, "approved");
+});
+
+test("GAP-8 parseCouncilReview: parses required=false and outcome=pending", () => {
+  const result = parseCouncilReview(councilSection("false", "pending"));
+  assert.equal(result.required, "false");
+  assert.equal(result.outcome, "pending");
+});
+
+test("GAP-8 parseCouncilReview: parses required=inherited and outcome=inherited", () => {
+  const result = parseCouncilReview(councilSection("inherited", "inherited"));
+  assert.equal(result.required, "inherited");
+  assert.equal(result.outcome, "inherited");
+});
+
+test("GAP-8 parseCouncilReview: returns undefined fields when section absent", () => {
+  const result = parseCouncilReview("## Some other section\n\n- item\n");
+  assert.equal(result.required, undefined);
+  assert.equal(result.outcome, undefined);
+});
+
+test("GAP-8 parseCouncilReview: ignores instructional prose in Required sub-section", () => {
+  const md = `## Council review\n\n### Required\n\ntrue | false | inherited\n\n### Outcome\n\napproved\n\n## Next\n`;
+  const result = parseCouncilReview(md);
+  // "true | false | inherited" is instructional — not a known token; should be ignored
+  assert.equal(result.required, undefined);
+  assert.equal(result.outcome, "approved");
+});
+
+test("GAP-8 parseCouncilReview: ignores instructional prose in Outcome sub-section", () => {
+  const md = `## Council review\n\n### Required\n\ntrue\n\n### Outcome\n\npending | approved | approved_with_conditions | rework_required | exception_granted | rejected | inherited\n\n## Next\n`;
+  const result = parseCouncilReview(md);
+  assert.equal(result.required, "true");
+  // The compound "pending | approved | ..." is not a known single token; should be ignored
+  assert.equal(result.outcome, undefined);
+});
+
+test("GAP-8 parseCouncilReview: quality-gates council_review_required forces councilRequired true", async () => {
+  // This tests the readActiveTaskContext integration; we test the quality-gate detection separately here
+  const md = `## Quality gates\n\n- council_review_required\n\n## Council review\n\n### Required\n\nfalse\n\n### Outcome\n\napproved\n\n## Next\n`;
+  // parseCouncilReview itself only parses the section; the quality-gate logic is in readActiveTaskContext
+  // Test that the section parser correctly returns false for Required
+  const result = parseCouncilReview(md);
+  assert.equal(result.required, "false");
+  assert.equal(result.outcome, "approved");
+});
+
+test("GAP-8 parseCouncilReview: backtick-wrapped values are accepted", () => {
+  const md = `## Council review\n\n### Required\n\n\`true\`\n\n### Outcome\n\n\`approved_with_conditions\`\n\n## Next\n`;
+  const result = parseCouncilReview(md);
+  assert.equal(result.required, "true");
+  assert.equal(result.outcome, "approved_with_conditions");
+});
+
+// ─── GAP-8: readActiveTaskContext council fields ──────────────────────────────
+
+test("GAP-8 readActiveTaskContext: council required=true + outcome=approved → councilRequired true, councilOutcome approved", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap8-"));
+  try {
+    const taskId = "gap8-approved";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = [
+      `# Task`,
+      ``,
+      `## Task ID`,
+      ``,
+      `\`${taskId}\``,
+      ``,
+      `## Required reviews`,
+      ``,
+      `- none`,
+      ``,
+      `## Council review`,
+      ``,
+      `### Required`,
+      ``,
+      `\`true\``,
+      ``,
+      `### Outcome`,
+      ``,
+      `\`approved\``,
+      ``,
+      `## Allowed write scope`,
+      ``,
+      `- src/`,
+    ].join("\n");
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.councilRequired, true, "councilRequired should be true");
+    assert.equal(ctx.councilOutcome, "approved", "councilOutcome should be approved");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-8 readActiveTaskContext: quality-gates council_review_required → councilRequired true", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap8-"));
+  try {
+    const taskId = "gap8-gate";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = [
+      `# Task`,
+      ``,
+      `## Task ID`,
+      ``,
+      `\`${taskId}\``,
+      ``,
+      `## Required reviews`,
+      ``,
+      `- none`,
+      ``,
+      `## Quality gates`,
+      ``,
+      `- council_review_required`,
+      ``,
+      `## Council review`,
+      ``,
+      `### Required`,
+      ``,
+      `\`false\``,
+      ``,
+      `### Outcome`,
+      ``,
+      `\`approved\``,
+      ``,
+      `## Allowed write scope`,
+      ``,
+      `- src/`,
+    ].join("\n");
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.councilRequired, true, "quality gate forces councilRequired true");
+    assert.equal(ctx.councilOutcome, "approved");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("GAP-8 readActiveTaskContext: council section absent → councilRequired false", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap8-"));
+  try {
+    const taskId = "gap8-absent";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = `# Task\n\n## Task ID\n\n\`${taskId}\`\n\n## Required reviews\n\n- none\n\n## Allowed write scope\n\n- src/\n`;
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.councilRequired, false, "should default to false when no council section");
+    assert.equal(ctx.councilOutcome, undefined);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// Mirror of the live active packet: audit-hardening declares Required=true Outcome=approved
+test("GAP-8 readActiveTaskContext: audit-hardening-like packet (required=true, outcome=approved) → councilRequired true, outcome satisfied", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-gap8-"));
+  try {
+    const taskId = "audit-hardening-mirror";
+    fs.mkdirSync(path.join(tmpDir, ".archon", "work", "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".archon", "ACTIVE"), `task_id=${taskId}\nstate=active\n`);
+    const taskMd = [
+      `# Task Packet — ${taskId}`,
+      ``,
+      `## Task ID`,
+      ``,
+      `\`${taskId}\``,
+      ``,
+      `## Required reviews`,
+      ``,
+      `- none`,
+      ``,
+      `## Quality gates`,
+      ``,
+      `- regression_safety_required`,
+      `- council_review_required`,
+      ``,
+      `## Council review`,
+      ``,
+      `### Required`,
+      ``,
+      `\`true\``,
+      ``,
+      `### Trigger rationale`,
+      ``,
+      `Architecture-significant change, mandated by operator after audit.`,
+      ``,
+      `### Dissent owner`,
+      ``,
+      `security_reviewer`,
+      ``,
+      `### Outcome`,
+      ``,
+      `\`approved\``,
+      ``,
+      `### Exception expiry`,
+      ``,
+      `none`,
+      ``,
+      `## Allowed write scope`,
+      ``,
+      `- src/`,
+    ].join("\n");
+    fs.writeFileSync(path.join(tmpDir, ".archon", "work", "tasks", `task-${taskId}.md`), taskMd);
+    const ctx = await readActiveTaskContext({ repoRoot: tmpDir });
+    assert.equal(ctx.councilRequired, true, "should be required");
+    assert.equal(ctx.councilOutcome, "approved", "outcome should be approved");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ─── GAP-8: evaluateStop council gate ────────────────────────────────────────
+
+test("GAP-8 evaluateStop: councilRequired true + outcome pending → stop held", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap8",
+    missingReviews: [],
+    invalidReviews: [],
+    councilRequired: true,
+    councilOutcome: "pending"
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.ok(result.stopReason.includes("Design and Architecture Council review"), `stopReason: ${result.stopReason}`);
+  assert.ok(result.stopReason.includes('"pending"'), `stopReason should name the outcome: ${result.stopReason}`);
+});
+
+test("GAP-8 evaluateStop: councilRequired true + outcome undefined → stop held", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap8",
+    missingReviews: [],
+    invalidReviews: [],
+    councilRequired: true,
+    councilOutcome: undefined
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.ok(result.stopReason.includes("Design and Architecture Council review"));
+  assert.ok(result.stopReason.includes('"unset"'), `should say unset: ${result.stopReason}`);
+});
+
+test("GAP-8 evaluateStop: councilRequired true + outcome rework_required → stop held", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap8",
+    missingReviews: [],
+    invalidReviews: [],
+    councilRequired: true,
+    councilOutcome: "rework_required"
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  assert.ok(result, "expected stop to be held");
+  assert.equal(result.continue, false);
+  assert.ok(result.stopReason.includes("Design and Architecture Council review"));
+});
+
+test("GAP-8 evaluateStop: councilRequired true + outcome approved → gate silent (falls through)", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap8",
+    missingReviews: [],
+    invalidReviews: [],
+    councilRequired: true,
+    councilOutcome: "approved",
+    verificationRequired: false
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByCouncil =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("Design and Architecture Council review");
+  assert.ok(!heldByCouncil, "council gate must be silent when outcome is approved");
+});
+
+test("GAP-8 evaluateStop: councilRequired true + outcome approved_with_conditions → gate silent", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap8",
+    missingReviews: [],
+    invalidReviews: [],
+    councilRequired: true,
+    councilOutcome: "approved_with_conditions",
+    verificationRequired: false
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByCouncil =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("Design and Architecture Council review");
+  assert.ok(!heldByCouncil, "approved_with_conditions is approved-class");
+});
+
+test("GAP-8 evaluateStop: councilRequired true + outcome exception_granted → gate silent", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap8",
+    missingReviews: [],
+    invalidReviews: [],
+    councilRequired: true,
+    councilOutcome: "exception_granted",
+    verificationRequired: false
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByCouncil =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("Design and Architecture Council review");
+  assert.ok(!heldByCouncil, "exception_granted is approved-class");
+});
+
+test("GAP-8 evaluateStop: councilRequired true + outcome inherited → gate silent", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap8",
+    missingReviews: [],
+    invalidReviews: [],
+    councilRequired: true,
+    councilOutcome: "inherited",
+    verificationRequired: false
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByCouncil =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("Design and Architecture Council review");
+  assert.ok(!heldByCouncil, "inherited is approved-class");
+});
+
+test("GAP-8 evaluateStop: councilRequired false → gate silent regardless of outcome", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap8",
+    missingReviews: [],
+    invalidReviews: [],
+    councilRequired: false,
+    councilOutcome: "pending",
+    verificationRequired: false
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByCouncil =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("Design and Architecture Council review");
+  assert.ok(!heldByCouncil, "council gate must not fire when councilRequired is false");
+});
+
+test("GAP-8 evaluateStop: no active task + councilRequired true → gate does not fire", () => {
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: undefined,
+    missingReviews: [],
+    invalidReviews: [],
+    councilRequired: true,
+    councilOutcome: "pending"
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByCouncil =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("Design and Architecture Council review");
+  assert.ok(!heldByCouncil, "council gate must not fire without an active task");
+});
+
+test("GAP-8 evaluateStop: existing emptyContext contexts (no councilRequired) still pass through", () => {
+  // Existing tests use emptyContext() which has no councilRequired field;
+  // ensure missing/undefined councilRequired does not trigger the gate
+  const ctx = {
+    ...emptyContext(),
+    activeTaskId: "task-gap8",
+    missingReviews: [],
+    invalidReviews: [],
+    verificationRequired: false
+    // no councilRequired set
+  };
+  const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
+  const heldByCouncil =
+    result !== undefined &&
+    result.continue === false &&
+    typeof result.stopReason === "string" &&
+    result.stopReason.includes("Design and Architecture Council review");
+  assert.ok(!heldByCouncil, "missing councilRequired must not trigger gate");
 });

@@ -26,7 +26,7 @@
     ],
     "PermissionRequest": [
       {
-        "matcher": "Bash|apply_patch|Edit|Write",
+        "matcher": "Bash|apply_patch|Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -38,7 +38,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Write|Edit|Agent",
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|apply_patch|Agent",
         "hooks": [
           {
             "type": "command",
@@ -50,7 +50,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Write|Edit",
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",

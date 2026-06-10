@@ -4,10 +4,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  createWorkflowProofSeedResolver,
   executeDoctorRepairCommandFromArgs,
   executeSeedModernizationProofCommandFromArgs,
   executeSeedWorkflowProofCommandFromArgs,
-  executeStatusCommandFromArgs
+  executeStatusCommandFromArgs,
+  executeWorkflowProofCommandFromArgs
 } from "../src/admin.ts";
 import { ArchonCoreService } from "../src/core/service.ts";
 import type { RuntimeProjectRegistrationRecord, TaskPacketInput } from "../src/domain/types.ts";
@@ -790,4 +792,164 @@ test("workflow integrity: orphan-lock recovery releases the owning lock across r
 
   const activeLocksAfter = await store.getActiveLocks(orphanRun.projectId);
   assert.deepEqual(activeLocksAfter, []);
+});
+
+// ---- seeded provenance tests ----
+
+function buildSeedHarness() {
+  const store = new MemoryStore();
+  const seededService = new ArchonCoreService(store, {
+    resolveReviewActionContext: createWorkflowProofSeedResolver(),
+    reviewIdentityAssurance: "seeded"
+  });
+  return { store, seededService };
+}
+
+async function runSuccessfulSeed(
+  store: MemoryStore,
+  seededService: ArchonCoreService,
+  taskId: string
+): Promise<{ runId: string }> {
+  await store.ensureProjectContext({ workspaceSlug: "team", projectSlug: "archon" });
+  const result = await executeSeedWorkflowProofCommandFromArgs(
+    ["--workspace-slug", "team", "--project-slug", "archon", "--task-id", taskId],
+    {
+      env: process.env,
+      intakeRequest(input) {
+        return seededService.intakeRequest(input);
+      },
+      getProjectContext(params) {
+        return store.getProjectContext(params);
+      },
+      getProjectRuntimeState(projectId) {
+        return store.getProjectRuntimeState(projectId);
+      },
+      saveProjectRuntimeState(state) {
+        return store.saveProjectRuntimeState(state);
+      },
+      createTaskGraph(runId, tasks) {
+        return seededService.createTaskGraph(runId, tasks);
+      },
+      claimTask(runId, tid, actor) {
+        return seededService.claimTask(runId, tid, actor);
+      },
+      submitHandoff(runId, tid, handoff) {
+        return seededService.submitHandoff(runId, tid, handoff);
+      },
+      recordReview(runId, tid, actor, review) {
+        return seededService.recordReview(runId, tid, actor, review);
+      },
+      failTask(runId, tid, reason) {
+        return seededService.failTask(runId, tid, reason);
+      },
+      getStatusSnapshot(runId) {
+        return seededService.getStatus(runId);
+      },
+      getReviews(runId, tid) {
+        return store.getReviews(runId, tid);
+      },
+      getApprovals(runId, tid) {
+        return store.getApprovals(runId, tid);
+      }
+    }
+  );
+  return { runId: result.runId };
+}
+
+test("workflow integrity: seed flow records reviews with identityAssurance seeded", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-seed-assurance");
+
+  const reviews = await store.getReviews(runId, "task-seed-assurance");
+  assert.ok(reviews.length > 0, "expected at least one recorded review");
+  for (const review of reviews) {
+    assert.equal(review.identityAssurance, "seeded", `review for ${review.reviewerRole} should be seeded`);
+  }
+});
+
+test("workflow integrity: seed flow records approvals with identityAssurance seeded", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-seed-approval-assurance");
+
+  const approvals = await store.getApprovals(runId, "task-seed-approval-assurance");
+  assert.ok(approvals.length > 0, "expected at least one recorded approval");
+  for (const approval of approvals) {
+    assert.equal(approval.identityAssurance, "seeded", `approval should carry seeded assurance`);
+  }
+});
+
+test("workflow integrity: seed command succeeds end-to-end (allow_seed_failure_recovery)", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const result = await runSuccessfulSeed(store, seededService, "task-seed-e2e");
+  assert.ok(result.runId, "seed should return a runId");
+
+  const snapshot = await seededService.getStatus(result.runId);
+  const proofTask = snapshot.tasks.find((t) => t.packet.taskId === "task-seed-e2e");
+  assert.ok(proofTask, "seeded task should appear in snapshot");
+  assert.equal(proofTask.status, "approved", "seeded task should reach approved status");
+});
+
+test("workflow integrity: standalone workflow-proof in default mode rejects seeded reviews", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-proof-reject");
+
+  await assert.rejects(
+    () =>
+      executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-proof-reject"], {
+        env: process.env,
+        getStatusSnapshot(id) {
+          return seededService.getStatus(id);
+        },
+        getReviews(id, tid) {
+          return store.getReviews(id, tid);
+        },
+        getApprovals(id, tid) {
+          return store.getApprovals(id, tid);
+        }
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "expected an Error");
+      assert.match(err.message, /required review provenance is not authenticated/i);
+      return true;
+    }
+  );
+});
+
+test("workflow integrity: standalone workflow-proof in default mode rejects seeded approval", async () => {
+  // Use a full seeded run (reviews + approval both seeded).
+  // The review provenance gate fires first; once reviews are authenticated the approval gate fires.
+  // Here we confirm the combined seeded case is rejected via the review gate.
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-approval-gate");
+
+  const approvals = await store.getApprovals(runId, "task-approval-gate");
+  assert.ok(
+    approvals.some((a) => a.identityAssurance === "seeded"),
+    "at least one approval should be seeded"
+  );
+
+  await assert.rejects(
+    () =>
+      executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-approval-gate"], {
+        env: process.env,
+        getStatusSnapshot(id) {
+          return seededService.getStatus(id);
+        },
+        getReviews(id, tid) {
+          return store.getReviews(id, tid);
+        },
+        getApprovals(id, tid) {
+          return store.getApprovals(id, tid);
+        }
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "expected an Error");
+      // The review provenance gate fires before the approval gate.
+      assert.match(
+        err.message,
+        /provenance is not authenticated|must be authenticated approved/i
+      );
+      return true;
+    }
+  );
 });
