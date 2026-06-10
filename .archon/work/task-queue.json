@@ -1,198 +1,24 @@
 {
-  "project_status": "done",
+  "project_status": "idle",
   "current_task_id": null,
   "tasks": [
     {
-      "id": "verification-cert-enforcement",
-      "title": "Positive verification certificate enforcement in hook system",
-      "status": "done",
-      "class": "feature",
-      "depends_on": [],
-      "acceptance_criteria": [
-        "Post-tool hook writes cert when verification command exits 0 with active task",
-        "Stop hook holds if active task has no passing verification cert",
-        "Opt-out via ## Verification required: false",
-        "## Required verifications commands must all pass before stop",
-        "npm run test passes"
-      ],
-      "verification": [
-        "npm run test"
-      ],
-      "evidence": ["190/190 tests pass; cert written on passing verification, stop held without cert; 23 new tests added"],
-      "blocker": null
-    },
-    {
-      "id": "qdrant-cleanup",
-      "title": "Local workflow proof seed for qdrant-cleanup",
+      "id": "audit-hardening",
+      "title": "Local workflow proof seed for audit-hardening",
       "status": "done",
       "class": "release_candidate",
       "depends_on": [],
       "acceptance_criteria": [
-        "workflow-proof resolves qdrant-cleanup from the latest runtime run",
+        "workflow-proof resolves audit-hardening from the latest runtime run",
         "required reviewer, qa, and security reviews are recorded as authenticated approvals"
       ],
       "verification": [
-        "node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id qdrant-cleanup"
+        "node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id audit-hardening"
       ],
       "evidence": [
-        "task packet: qdrant-cleanup",
-        "verification: node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id qdrant-cleanup",
+        "task packet: audit-hardening",
+        "verification: node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id audit-hardening",
         "quality gate: release_readiness_required"
-      ],
-      "blocker": null
-    },
-    {
-      "id": "graphify-first-install",
-      "title": "Install graphify on first setup and run initial wiki build",
-      "status": "done",
-      "class": "feature",
-      "depends_on": [],
-      "acceptance_criteria": [
-        "setup-archon.sh installs graphify via uv/pip if absent",
-        "setup-archon.sh runs graphify . --wiki on first install",
-        ".graphifyignore seeded to consuming repos with non-code exclusions"
-      ],
-      "verification": [
-        "npm test"
-      ],
-      "evidence": [
-        "commit 334b2f8: feat: install graphify on first setup and run initial wiki build"
-      ],
-      "blocker": null
-    },
-    {
-      "id": "audit-fixes",
-      "title": "Fix codebase audit weakpoints and inconsistencies",
-      "status": "done",
-      "class": "chore",
-      "depends_on": [],
-      "acceptance_criteria": [
-        "All 13 audit issues resolved",
-        "npm test passes",
-        "tsc --noEmit passes"
-      ],
-      "verification": [
-        "npm test",
-        "tsc --noEmit"
-      ],
-      "evidence": [
-        "commit 18e0344: fix 12 of 13 audit issues",
-        "commit 5f758db: add src/docs-export/ routing (issue 13)",
-        "blocked: B1 (serve-ui), C1 (bootstrap NOT NULL), G1 (qdrant src cleanup)",
-        "superseded: all items completed via qdrant-bootstrap-hotfix, serve-ui-removal, qdrant-full-removal, docs-routing-cleanup"
-      ],
-      "blocker": "superseded by qdrant-bootstrap-hotfix, serve-ui-removal, qdrant-full-removal"
-    },
-    {
-      "id": "archon-repo-skill-evolution",
-      "title": "Phase 1 repo-local skill evolution foundation",
-      "status": "done",
-      "class": "feature",
-      "depends_on": [],
-      "acceptance_criteria": [
-        "cli.ts seeds .archon/skills/ on first install",
-        "cli.ts adds a repo-skill directive to consuming repo context when non-empty",
-        ".archon/rules/skill-format.md documents SKILL.md format and naming rules",
-        ".claude/skills/archon-skill-evolution/SKILL.md teaches the agent the system",
-        "hook-policy.mjs whitelists .archon/skills/** as a permitted write path"
-      ],
-      "verification": [
-        "npm test"
-      ],
-      "evidence": [
-        "commit 80f009e: feat: Phase 1 repo-local skill evolution foundation",
-        "commit 9dfb5d1: feat: whitelist .archon/skills/** in hook-policy"
-      ],
-      "blocker": null
-    },
-    {
-      "id": "qdrant-bootstrap-hotfix",
-      "title": "Add qdrant_collection default to unblock bootstrap (C1)",
-      "status": "done",
-      "class": "hotfix",
-      "depends_on": [],
-      "acceptance_criteria": [
-        "src/sql/migrations/013_qdrant_collection_default.sql exists",
-        "Migration sets qdrant_collection default ''",
-        "npm test passes",
-        "tsc --noEmit passes"
-      ],
-      "verification": [
-        "npm test",
-        "tsc --noEmit"
-      ],
-      "evidence": [
-        "migration 013_qdrant_collection_default.sql created; npm test and tsc --noEmit pass"
-      ],
-      "blocker": null
-    },
-    {
-      "id": "serve-ui-removal",
-      "title": "Remove serve-ui dead command and archon:ui script injection (B1)",
-      "status": "done",
-      "class": "chore",
-      "depends_on": [],
-      "acceptance_criteria": [
-        "src/admin/archon.ts contains no reference to serve-ui or uiServerPath",
-        "src/install/merge.ts does not inject archon:ui script",
-        "tests/install.test.ts has no archon:ui assertion",
-        "npm test passes",
-        "tsc --noEmit passes"
-      ],
-      "verification": [
-        "npm test",
-        "tsc --noEmit"
-      ],
-      "evidence": [
-        "dead serve-ui command and archon:ui script removed; npm test and tsc --noEmit pass"
-      ],
-      "blocker": null
-    },
-    {
-      "id": "qdrant-full-removal",
-      "title": "Drop qdrant columns and remove all dead Qdrant code from src/ (G1/I1/I3/I4/B2)",
-      "status": "done",
-      "class": "chore",
-      "depends_on": [
-        "qdrant-bootstrap-hotfix"
-      ],
-      "acceptance_criteria": [
-        "src/sql/migrations/014_drop_qdrant_columns.sql exists and drops both columns",
-        "src/domain/types.ts has no qdrantUrl or qdrantCollection fields",
-        "src/store/postgres-store.ts has no qdrant column references",
-        "src/admin.ts does not select qdrant columns",
-        "src/mcp/tools.ts archon_runtime_health description mentions no qdrant",
-        "audit-fixes status is done in task-queue.json",
-        "npm test passes",
-        "tsc --noEmit passes"
-      ],
-      "verification": [
-        "npm test",
-        "tsc --noEmit"
-      ],
-      "evidence": [
-        "migrations 013+014 created, qdrant types/store/admin/tools cleaned; npm test 166 pass, tsc --noEmit clean"
-      ],
-      "blocker": null
-    },
-    {
-      "id": "docs-routing-cleanup",
-      "title": "Fix CLAUDE.md routing gaps: git-conventions, skill/agent relationship, unrouted agents (G2/I2/G3)",
-      "status": "done",
-      "class": "chore",
-      "depends_on": [],
-      "acceptance_criteria": [
-        "CLAUDE.md Details section lists git-conventions.md",
-        "CLAUDE.md Recurring routing entry for agent-runtime names both skill and agent",
-        "CLAUDE.md Default role chain notes specialist-on-demand agents",
-        "tests/control-layer-contract.test.ts asserts git-conventions.md is listed",
-        "npm test passes"
-      ],
-      "verification": [
-        "npm test"
-      ],
-      "evidence": [
-        "CLAUDE.md routing gaps fixed, git-conventions.md surfaced, specialist agents listed; npm test passes"
       ],
       "blocker": null
     }
