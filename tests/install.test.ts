@@ -523,9 +523,12 @@ test("ci workflow routes the release posture through the release overlay gate", 
     /\n  windows-setup-smoke:[\s\S]*?(?=\n  [a-z0-9-]+:|\n$)/
   )?.[0] ?? "";
   assert.doesNotMatch(windowsJobBlock, /persist-credentials: false/);
-  assert.doesNotMatch(ciWorkflow, /- run: npm test/);
   assert.doesNotMatch(ciWorkflow, /- run: npm run check:quality/);
   assert.doesNotMatch(ciWorkflow, /- run: npm run check:coverage/);
+  // GAP-10: unit-tests job runs the full suite and is gated in required-checks
+  assert.match(ciWorkflow, /jobs:[\s\S]*\n  unit-tests:/);
+  assert.match(ciWorkflow, /- run: npm test/);
+  assert.match(ciWorkflow, /needs:[\s\S]*unit-tests/);
 });
 
 test("README frames archon as an opt-in overlay with production-oriented package checks", async () => {

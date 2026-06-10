@@ -2,6 +2,7 @@ import {
   classifyBashFailure,
   clearHookBlockerState,
   extractBashReferencedManagedPaths,
+  extractBashWriteTargets,
   extractToolCommand,
   getBashExitCode,
   isAllowedPath,
@@ -14,12 +15,15 @@ import {
   isTaskPacketPath,
   isVerificationCommand,
   isVerificationSatisfied,
+  normalizeToolOutput,
   parseApplyPatchTargets,
   persistHookBlockerState,
   persistVerificationCert,
+  qualifiesForVerificationCert,
   reviewArtifactPath,
   shouldHoldStop,
-  toRelativePath
+  toRelativePath,
+  validateReviewArtifact
 } from "./hook-utils.mjs";
 
 // Claude Code PreToolUse output: {decision: "block", reason: "..."} or {decision: "allow"}
@@ -70,6 +74,19 @@ function isAllowedTaskTarget(target, context) {
     Array.isArray(context.allowedTaskHandoffScope) &&
     context.allowedTaskHandoffScope.some((scope) => target === scope)
   );
+}
+
+// Resolves the write-target file path for tools that modify files.
+// Returns the raw path string (may be absolute) or empty string for non-write tools.
+// Callers must pass the result through toRelativePath before comparisons.
+function resolveWriteTargetPath(toolName, payload) {
+  if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit") {
+    return payload?.tool_input?.file_path ?? "";
+  }
+  if (toolName === "NotebookEdit") {
+    return payload?.tool_input?.notebook_path ?? "";
+  }
+  return "";
 }
 
 export function evaluatePermissionRequest(payload, context) {
@@ -140,10 +157,42 @@ export function evaluatePreToolUse(payload, context) {
         reason: `managed control-layer path ${managedTarget} requires an active archon task with explicit write scope`
       };
     }
+
+    // Bash write-escape-hatch gate: extract explicit write targets from the command
+    // and apply the same no-task and task-scope gates as Write/Edit.
+    const bashWriteTargets = extractBashWriteTargets(command, context.repoRoot);
+    if (bashWriteTargets.length > 0) {
+      // No-task gate: block substantive writes when no task is active.
+      if (!context.activeTaskId) {
+        const offending = bashWriteTargets.find((target) => isSubstantiveWriteTarget(target));
+        if (offending) {
+          return {
+            decision: "block",
+            reason: `write to ${offending} blocked (detected from bash write) — no active archon task. To unblock: create a task packet at .archon/work/tasks/task-<id>.md, set .archon/ACTIVE to task_id=<id> and state=active, then retry.`
+          };
+        }
+      }
+      // Task-scope gate: block writes to paths outside the declared write scope.
+      if (context.activeTaskId && context.allowedWriteScope.length > 0) {
+        const outOfScope = bashWriteTargets.find((target) => {
+          // .archon/skills/ is always exempt
+          if (target === ".archon/skills" || target.startsWith(".archon/skills/")) return false;
+          return !isAllowedTaskTarget(target, context);
+        });
+        if (outOfScope) {
+          const scopeSummary = context.allowedWriteScope.slice(0, 5).join(", ");
+          const truncated = context.allowedWriteScope.length > 5 ? ` (and ${context.allowedWriteScope.length - 5} more)` : "";
+          return {
+            decision: "block",
+            reason: `write to ${outOfScope} is outside active task ${context.activeTaskId} write scope. Allowed: ${scopeSummary}${truncated}. Expand the task packet's ## Allowed write scope to include this path if it is needed.`
+          };
+        }
+      }
+    }
   }
 
-  if (toolName === "Write" || toolName === "Edit") {
-    const rawFilePath = payload?.tool_input?.file_path ?? "";
+  if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit" || toolName === "NotebookEdit") {
+    const rawFilePath = resolveWriteTargetPath(toolName, payload);
     // Normalize to relative path — Claude Code may pass absolute paths.
     const filePath = toRelativePath(rawFilePath, context.repoRoot);
     if (filePath && isManagedPath(filePath) && !isManagedPathAllowed(filePath, context.allowedWriteScope)) {
@@ -166,10 +215,14 @@ export function evaluatePreToolUse(payload, context) {
     }
     // Task-scope gate: when a task is active and declares a non-empty write scope,
     // block writes to files outside that scope.
+    // Skip the scope gate for absolute paths that are outside the repo root — those
+    // are legitimately outside archon's jurisdiction (e.g. /tmp/foo.txt).
+    const filePathIsOutsideRepo = typeof filePath === "string" && filePath.startsWith("/");
     if (
       filePath &&
       context.activeTaskId &&
       context.allowedWriteScope.length > 0 &&
+      !filePathIsOutsideRepo &&
       !isAllowedTaskTarget(filePath, context)
     ) {
       const scopeSummary = context.allowedWriteScope.slice(0, 5).join(", ");
@@ -187,10 +240,10 @@ export function evaluatePreToolUse(payload, context) {
 export function evaluatePostToolUse(payload, context) {
   const toolName = payload?.tool_name;
 
-  if (toolName === "Write" || toolName === "Edit") {
+  if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit" || toolName === "NotebookEdit") {
     const isError = payload?.tool_response?.isError === true;
     if (isError && context.activeTaskId) {
-      const filePath = payload?.tool_input?.file_path ?? "unknown";
+      const filePath = resolveWriteTargetPath(toolName, payload) || "unknown";
       return {
         additionalContext: `Write/Edit failed for ${filePath}; verify file state before claiming the change complete`
       };
@@ -210,7 +263,14 @@ export function evaluatePostToolUse(payload, context) {
   if (exitCode === 0) {
     clearHookBlockerState(context.repoRoot);
     const command = extractToolCommand(payload);
-    if (isVerificationCommand(command) && context.activeTaskId && context.repoRoot) {
+    const toolResponse = payload?.tool_response ?? {};
+    const combinedOutput = [
+      normalizeToolOutput(toolResponse.stdout),
+      normalizeToolOutput(toolResponse.stderr)
+    ]
+      .filter(Boolean)
+      .join("\n");
+    if (qualifiesForVerificationCert(command, combinedOutput) && context.activeTaskId && context.repoRoot) {
       persistVerificationCert(context.repoRoot, context.activeTaskId, command);
     }
     return undefined;
@@ -315,8 +375,22 @@ export function evaluateStop(payload, context) {
     typeof payload?.last_assistant_message === "string" ? payload.last_assistant_message : "";
   const stopHookActive = payload?.stop_hook_active === true;
 
+  // Authority-mismatch gate: corrupted state should not silently release every gate.
+  // When mismatches exist and this is the first stop call (!stopHookActive), hold with an
+  // actionable message. When stopHookActive is true the first-stop hold is skipped, but we
+  // must still fall through to review/runtime/verification gates — they must never be
+  // releasable by a repeated stop alone. This mirrors the hookBlockerState pattern.
   if (Array.isArray(context.authorityMismatches) && context.authorityMismatches.length > 0) {
-    return undefined;
+    if (!stopHookActive) {
+      const kinds = context.authorityMismatches.map((m) => m.kind).join(", ");
+      return {
+        continue: false,
+        stopReason: `archon task state authority mismatch (${kinds}): reconcile .archon/ACTIVE with .archon/work/task-queue.json before the session closes`
+      };
+    }
+    // stopHookActive is true: the repeated mismatch hold itself is skipped, but we must
+    // still fall through to review/runtime/verification gates — they must never be
+    // releasable by a repeated stop alone.
   }
 
   if (context.continuationIntent === "defer_same_thread" || context.continuationIntent === "defer_fresh_run") {
@@ -331,16 +405,23 @@ export function evaluateStop(payload, context) {
     context.hookBlockerState && typeof context.hookBlockerState === "object" ? context.hookBlockerState : undefined;
   const activeTaskId = context.activeTaskId ?? context.queueCurrentTaskId;
   if (hookBlockerState && activeTaskId && hookBlockerState.activeTaskId === activeTaskId) {
-    if (stopHookActive) {
-      return undefined;
+    if (!stopHookActive) {
+      // First stop: hold with the blocker summary so the user knows the task failed.
+      return {
+        continue: false,
+        stopReason: hookBlockerState.summary
+      };
     }
-
-    return {
-      continue: false,
-      stopReason: hookBlockerState.summary
-    };
+    // stopHookActive is true: the repeated blocker hold itself is skipped, but we must
+    // still fall through to review/runtime/verification gates — they must never be
+    // releasable by a repeated stop alone.
   }
 
+  // NOTE on shouldHoldStop trust model:
+  // shouldHoldStop affects only the soft "in progress" hold below (taskShouldHold).
+  // Hard gates (review files, runtime offline, verification certs) are checked
+  // unconditionally when shouldHoldStop returns false. Prose patterns in the assistant
+  // message can release the soft hold but CANNOT bypass hard gates.
   const taskShouldHold =
     (context.activeTaskId || context.queueCurrentTaskId) && shouldHoldStop(lastAssistantMessage);
 
@@ -359,6 +440,20 @@ export function evaluateStop(payload, context) {
     };
   }
 
+  // Review content validation gate: review files exist but fail content checks.
+  if (
+    !taskShouldHold &&
+    context.activeTaskId &&
+    Array.isArray(context.invalidReviews) &&
+    context.invalidReviews.length > 0
+  ) {
+    const list = context.invalidReviews.join(", ");
+    return {
+      continue: false,
+      stopReason: `task ${context.activeTaskId} has review files that fail content validation: ${list}. Each review must reference the task id and role and contain a passed/approved status line.`
+    };
+  }
+
   if (
     !taskShouldHold &&
     context.runtimeConfigured &&
@@ -372,8 +467,25 @@ export function evaluateStop(payload, context) {
     };
   }
 
+  // Council review gate: task packet declares council required and outcome is not approved-class.
+  // This is a pre-implementation planning gate and fires before the verification cert gate so that
+  // missing council approval is the first actionable signal when both gates are unmet.
+  const APPROVED_COUNCIL_OUTCOMES = new Set(["approved", "approved_with_conditions", "exception_granted", "inherited"]);
+  if (
+    !taskShouldHold &&
+    context.activeTaskId &&
+    context.councilRequired === true &&
+    !APPROVED_COUNCIL_OUTCOMES.has(context.councilOutcome)
+  ) {
+    const outcomeLabel = typeof context.councilOutcome === "string" && context.councilOutcome ? context.councilOutcome : "unset";
+    return {
+      continue: false,
+      stopReason: `task ${context.activeTaskId} requires Design and Architecture Council review but the task packet council outcome is "${outcomeLabel}"; record an approved-class outcome in the ## Council review section before the session closes`
+    };
+  }
+
   // Verification cert gate: require at least one passing verification before session closes.
-  // Fires only when Claude signals completion, reviews pass, and runtime is reachable.
+  // Fires only when Claude signals completion, reviews pass, runtime is reachable, and council is approved.
   // Opt-out via ## Verification required: false in the task packet.
   if (!taskShouldHold && context.activeTaskId && context.verificationRequired !== false) {
     const passedCommands = context.verificationCert?.passedCommands ?? [];
@@ -391,9 +503,14 @@ export function evaluateStop(payload, context) {
         };
       }
     } else if (passedCommands.length === 0) {
+      let stopReason = `task ${context.activeTaskId} has no passing verification evidence. Run: npm run test  OR  bash scripts/check-archon-workflow.sh --task-id ${context.activeTaskId}`;
+      if (context.verificationOptOutRejected === true) {
+        const taskClassLabel = typeof context.taskClass === "string" && context.taskClass ? context.taskClass : "unset";
+        stopReason += ` (note: "## Verification required: false" was ignored — opt-out is only honored for task classes: docs_only, state_sync, memory_curation, scaffold_only; this task class is "${taskClassLabel}")`;
+      }
       return {
         continue: false,
-        stopReason: `task ${context.activeTaskId} has no passing verification evidence. Run: npm run test  OR  bash scripts/check-archon-workflow.sh --task-id ${context.activeTaskId}`
+        stopReason
       };
     }
   }

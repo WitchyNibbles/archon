@@ -42,7 +42,7 @@ local_live_check=bash scripts/check-archon-workflow-live.sh [--task-id <task-id>
 - use bounded investigation packets: owner role, question, read scope, forbidden write scope, evidence required, max output, stop condition
 - require task packets to declare explicit workflow artifact refs whenever they inherit a parent brief or plan, or when runtime authority may satisfy review gates before markdown review exports exist
 - do not activate a task unless its allowed write scope covers every required workflow export, or the task explicitly uses `review_exports=runtime_optional` under runtime authority
-- treat `strict` as the default reasoning mode for substantive work
+- treat `strict` as the default reasoning mode for substantive work (advisory — not runtime-enforced)
 - evidence first, then `solution_architect`, then `planner`, then explicit task packets, then specialist execution
 - substantive work completes only after `reviewer`, `qa_engineer`, and `security_reviewer` gates plus the workflow check
 - release-sensitive work also requires `release_readiness_required` quality-gate evidence
@@ -64,6 +64,8 @@ Effort levels:
 - `low`: trivial mechanical tasks
 
 Invoke skills with `/archon-<name>` (e.g. `/archon-intake`, `/archon-review`, `/archon-planning`).
+
+Model and effort routing is advisory guidance — it is not enforced by hooks or runtime.
 
 ## Autonomy loop
 
@@ -107,6 +109,7 @@ Specialist agents available on demand (invoke explicitly when the task domain ma
 - exceptions must be explicit, owned, and time-bounded — never indefinite
 - the council may not silently override user intent without user acceptance
 - trivial work, local bug fixes, and tasks covered by an approved parent council packet may bypass the council
+- the council outcome is enforced by the Stop hook via the task packet `## Council review` section; tasks with `### Required: true` or `council_review_required` in quality gates must record an approved-class outcome before the session closes
 
 ## Recurring control-layer routing
 

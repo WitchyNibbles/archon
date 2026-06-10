@@ -83,8 +83,15 @@ export function evaluateReviewDecision(
       continue;
     }
 
-    if (latestReview.identityAssurance !== "authenticated") {
+    if (latestReview.identityAssurance !== "authenticated" && latestReview.identityAssurance !== "seeded") {
       blockers.push(`required review provenance unauthenticated: ${requiredReview}`);
+      continue;
+    }
+
+    // Seeded reviews that structurally pass (state === "passed", no findings) satisfy
+    // the internal runtime decision gate. The standalone workflow-proof completion authority
+    // enforces the stricter authenticated-only rule separately.
+    if (latestReview.identityAssurance === "seeded" && latestReview.state === "passed" && latestReview.findings.length === 0) {
       continue;
     }
 

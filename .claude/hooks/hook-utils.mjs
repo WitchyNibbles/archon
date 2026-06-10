@@ -33,7 +33,26 @@ const readOnlyCommandSegmentPatterns = [
   /^(?:cat|nl|wc|head|tail|ls|find|rg)\b/,
   /^sed\s+-n\b/,
   /^(?:echo|printf)\b/,
-  /^git\s+show\b/
+  /^git\s+show\b/,
+  /^(?:grep|egrep|fgrep)\b/,
+  /^awk\b/,
+  /^diff\b/,
+  /^stat\b/,
+  /^file\b/,
+  /^which\b/,
+  /^jq\b/,
+  /^sort\b/,
+  /^uniq\b/,
+  /^cut\b/,
+  /^tr\b/,
+  /^git\s+log\b/,
+  /^git\s+diff\b/,
+  /^git\s+status\b/,
+  /^git\s+rev-parse\b/,
+  /^git\s+ls-files\b/,
+  /^git\s+blame\b/,
+  /^git\s+remote(?:\s+-v|\s*$)/,
+  /^git\s+branch\s+--show-current\b/
 ];
 const writeLikeCommandSegmentPatterns = [
   />/,
@@ -201,7 +220,7 @@ function firstNonEmptyLine(value) {
   return undefined;
 }
 
-function normalizeToolOutput(value) {
+export function normalizeToolOutput(value) {
   if (typeof value === "string") {
     return value;
   }
@@ -468,11 +487,16 @@ export async function readActiveTaskContext(options = {}) {
     authorityMismatches: [],
     requiredReviews: [],
     missingReviews: [],
+    invalidReviews: [],
     verificationRequired: true,
+    verificationOptOutRejected: false,
+    taskClass: undefined,
     requiredVerifications: [],
     verificationCert: undefined,
     runtimeConfigured: false,
-    runtimeConnected: false
+    runtimeConnected: false,
+    councilRequired: false,
+    councilOutcome: undefined
   };
   const runtimeContext = await readRuntimeAuthorityContext(resolvedRepoRoot);
   context.runtimeConfigured = runtimeContext !== undefined;
@@ -599,17 +623,39 @@ export async function readActiveTaskContext(options = {}) {
   const requiredRoles = parseRequiredReviews(taskMarkdown);
   context.requiredReviews = requiredRoles;
   context.missingReviews = [];
+  context.invalidReviews = [];
   for (const role of requiredRoles) {
     const relPath = reviewArtifactPath(context.activeTaskId, role);
-    const exists = await readTextIfExists(path.join(resolvedRepoRoot, relPath));
-    if (!exists) {
+    const content = await readTextIfExists(path.join(resolvedRepoRoot, relPath));
+    if (content === undefined) {
       context.missingReviews.push(relPath);
+    } else {
+      const validation = validateReviewArtifact(content, context.activeTaskId, role);
+      if (!validation.valid) {
+        context.invalidReviews.push(`${relPath} (${validation.reason})`);
+      }
     }
   }
 
-  context.verificationRequired = parseVerificationRequired(taskMarkdown);
+  const parsedVerificationRequired = parseVerificationRequired(taskMarkdown);
+  const parsedTaskClass = parseTaskClass(taskMarkdown);
+  context.taskClass = parsedTaskClass;
+  if (parsedVerificationRequired === false && !verificationExemptTaskClasses.includes(parsedTaskClass)) {
+    context.verificationRequired = true;
+    context.verificationOptOutRejected = true;
+  } else {
+    context.verificationRequired = parsedVerificationRequired;
+    context.verificationOptOutRejected = false;
+  }
   context.requiredVerifications = parseRequiredVerifications(taskMarkdown);
   context.verificationCert = readVerificationCert(resolvedRepoRoot, context.activeTaskId);
+
+  const councilInfo = parseCouncilReview(taskMarkdown);
+  const qualityGates = parseMarkdownListSection(taskMarkdown, "## Quality gates");
+  const hasCouncilGate = qualityGates.some((g) => g.trim() === "council_review_required");
+  context.councilRequired =
+    councilInfo.required === "true" || hasCouncilGate;
+  context.councilOutcome = councilInfo.outcome;
 
   return context;
 }
@@ -672,8 +718,30 @@ function parseContinuationIntentSection(markdown) {
   return continuationIntentValues.has(normalized) ? normalized : undefined;
 }
 
+const DEFAULT_REVIEW_ROLES = ["reviewer", "security_reviewer", "qa_engineer"];
+const VALID_ROLE_PATTERN = /^[a-z][a-z0-9_-]*$/;
+
 export function parseRequiredReviews(markdown) {
-  return parseMarkdownListSection(markdown, "## Required reviews").map((v) => v.trim());
+  const fromReviews = parseMarkdownListSection(markdown, "## Required reviews").map((v) => v.trim());
+  const fromSpecialist = parseMarkdownListSection(markdown, "## Required specialist roles").map((v) => v.trim());
+
+  // Merge and deduplicate
+  const merged = [...new Set([...fromReviews, ...fromSpecialist])];
+
+  // Keep only valid role identifiers (drops prose sentences from template instructional text)
+  const valid = merged.filter((entry) => VALID_ROLE_PATTERN.test(entry));
+
+  // Explicit opt-out: if any entry is exactly "none", return empty
+  if (valid.some((entry) => entry === "none")) {
+    return [];
+  }
+
+  // If no valid roles found (sections absent or prose-only), return the default trio
+  if (valid.length === 0) {
+    return DEFAULT_REVIEW_ROLES;
+  }
+
+  return valid;
 }
 
 export function reviewArtifactPath(taskId, role) {
@@ -813,6 +881,83 @@ export function readVerificationCert(repoRootPath, taskId) {
   return undefined;
 }
 
+// Patterns that disqualify a command from minting a cert even if it matches
+// verificationCommandPatterns (version/help/init invocations prove nothing).
+const verificationNoopPatterns = [
+  /\s--version\b/,
+  /\s--help\b/,
+  /(?:^|\s)-h\b(?![\w-])/,
+  /\btsc\s+--init\b/
+];
+
+export function qualifiesForVerificationCert(command, output) {
+  if (typeof command !== "string" || !isVerificationCommand(command)) {
+    return false;
+  }
+
+  // Disqualify version/help/init invocations — they prove nothing.
+  if (verificationNoopPatterns.some((p) => p.test(command))) {
+    return false;
+  }
+
+  const text = typeof output === "string" ? output : "";
+
+  // node test runner: npm test, npm run test, node ... --test, check:quality
+  if (
+    /\bnpm\s+(run\s+)?(test|check:[^\s]+)\b/.test(command) ||
+    /\bnode\b.*\s--test\b/.test(command)
+  ) {
+    // TAP summary: "# tests N" with N >= 1 AND "# fail 0"
+    const tapTests = /^# tests (\d+)/m.exec(text);
+    const tapFail = /^# fail (\d+)/m.exec(text);
+    if (tapTests && parseInt(tapTests[1], 10) >= 1 && tapFail && parseInt(tapFail[1], 10) === 0) {
+      return true;
+    }
+    // mocha-style: "N passing" with N >= 1
+    const mocha = /(\d+) passing/.exec(text);
+    if (mocha && parseInt(mocha[1], 10) >= 1) {
+      return true;
+    }
+    return false;
+  }
+
+  // vitest
+  if (/\bvitest\b/.test(command)) {
+    const m = /(\d+) passed/.exec(text);
+    return !!(m && parseInt(m[1], 10) >= 1);
+  }
+
+  // pytest / python -m pytest
+  if (/\bpytest\b/.test(command) || /\bpython\s+-m\s+pytest\b/.test(command)) {
+    const m = /(\d+) passed/.exec(text);
+    return !!(m && parseInt(m[1], 10) >= 1);
+  }
+
+  // go test
+  if (/\bgo\s+test\b/.test(command)) {
+    return /^ok\s/m.test(text);
+  }
+
+  // cargo test
+  if (/\bcargo\s+test\b/.test(command)) {
+    const m = /test result: ok\. (\d+) passed/.exec(text);
+    return !!(m && parseInt(m[1], 10) >= 1);
+  }
+
+  // tsc (typecheck): success is silence — no output requirement
+  if (/\btsc\b/.test(command)) {
+    return true;
+  }
+
+  // bash scripts/check-* and archon:verify: no output requirement (fail loudly on their own)
+  if (/\bbash\s+scripts\/check-/.test(command) || /\barchon:verify\b/.test(command)) {
+    return true;
+  }
+
+  // Unknown verification command — fail closed
+  return false;
+}
+
 export function parseVerificationRequired(markdown) {
   const lines = parseMarkdownListSection(markdown, "## Verification required");
   if (lines.length === 0) {
@@ -822,10 +967,105 @@ export function parseVerificationRequired(markdown) {
   return value !== "false" && value !== "no" && value !== "skip";
 }
 
+export const verificationExemptTaskClasses = ["docs_only", "state_sync", "memory_curation", "scaffold_only"];
+
+export function parseTaskClass(markdown) {
+  const lines = parseMarkdownListSection(markdown, "## Task class");
+  if (lines.length === 0) {
+    return undefined;
+  }
+  return lines[0].replace(/`/g, "").trim().toLowerCase() || undefined;
+}
+
 export function parseRequiredVerifications(markdown) {
   return parseMarkdownListSection(markdown, "## Required verifications")
     .map((v) => v.trim())
     .filter(Boolean);
+}
+
+const VERDICT_REGEX = /\b(?:status|verdict|outcome)\b[^a-z0-9\n]{0,5}(?:passed|pass|approved)\b/i;
+
+export function validateReviewArtifact(content, taskId, role) {
+  if (typeof content !== "string" || content.trim().length < 200) {
+    return { valid: false, reason: "review artifact too short to be a real review" };
+  }
+  if (!content.includes(taskId)) {
+    return { valid: false, reason: `does not reference task ${taskId}` };
+  }
+  if (!content.includes(role)) {
+    return { valid: false, reason: `does not reference role ${role}` };
+  }
+  if (!VERDICT_REGEX.test(content)) {
+    return { valid: false, reason: "missing a passed/approved status line" };
+  }
+  return { valid: true };
+}
+
+const COUNCIL_REQUIRED_TOKENS = new Set(["true", "false", "inherited"]);
+const COUNCIL_OUTCOME_TOKENS = new Set([
+  "pending",
+  "approved",
+  "approved_with_conditions",
+  "rework_required",
+  "exception_granted",
+  "rejected",
+  "inherited"
+]);
+
+export function parseCouncilReview(markdown) {
+  const lines = markdown.split(/\r?\n/);
+
+  // Find the ## Council review section
+  const councilStart = lines.findIndex((line) => line.trim() === "## Council review");
+  if (councilStart === -1) {
+    return { required: undefined, outcome: undefined };
+  }
+
+  // Find end of council section (next ## heading)
+  let councilEnd = lines.length;
+  for (let i = councilStart + 1; i < lines.length; i++) {
+    if (lines[i].trim().startsWith("## ") && !lines[i].trim().startsWith("### ")) {
+      councilEnd = i;
+      break;
+    }
+  }
+
+  const councilLines = lines.slice(councilStart, councilEnd);
+
+  let required;
+  let outcome;
+
+  // Parse ### Required sub-section
+  const requiredIdx = councilLines.findIndex((line) => line.trim() === "### Required");
+  if (requiredIdx !== -1) {
+    for (let i = requiredIdx + 1; i < councilLines.length; i++) {
+      const line = councilLines[i].trim();
+      if (line.startsWith("### ")) break;
+      if (line.length === 0) continue;
+      const normalized = line.replace(/`/g, "").replace(/^[*-]\s*/, "").trim().toLowerCase();
+      if (COUNCIL_REQUIRED_TOKENS.has(normalized)) {
+        required = normalized;
+        break;
+      }
+    }
+  }
+
+  // Parse ### Outcome sub-section
+  const outcomeIdx = councilLines.findIndex((line) => line.trim() === "### Outcome");
+  if (outcomeIdx !== -1) {
+    for (let i = outcomeIdx + 1; i < councilLines.length; i++) {
+      const line = councilLines[i].trim();
+      if (line.startsWith("### ")) break;
+      if (line.length === 0) continue;
+      const normalized = line.replace(/`/g, "").replace(/^[*-]\s*/, "").trim().toLowerCase();
+      if (COUNCIL_OUTCOME_TOKENS.has(normalized)) {
+        outcome = normalized;
+        break;
+      }
+    }
+  }
+
+  return { required, outcome };
 }
 
 export function isVerificationSatisfied(requiredCommand, passedCommands) {
@@ -859,6 +1099,149 @@ export function appendBypassLogEntry(repoRootPath, prompt) {
   } catch {
     // bypass logging is advisory — never let it break the hook
   }
+}
+
+// Best-effort extraction of file paths a bash command writes to.
+// Handles: > path, >> path, tee [-a] path, sed -i path, touch path, mkdir path,
+// cp src dest, mv src dest, and cat > path <<EOF (covered by > rule).
+// Drops: /dev/*, /tmp/*, paths outside repo root, $VARs, process substitutions, empty strings.
+// Returns deduped array of repo-relative paths.
+export function extractBashWriteTargets(command, repoRoot) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return [];
+  }
+
+  const stripped = stripHeredocBodies(command);
+  const segments = stripped.split(/&&|\|\||[;|]/).map((s) => s.trim()).filter(Boolean);
+  const results = new Set();
+
+  for (const seg of segments) {
+    // Clean io-discard redirects (2>&1, 2>/dev/null) so they don't interfere
+    const clean = seg
+      .replace(/\s+\d*>\/dev\/null\b/g, "")
+      .replace(/\s+\d*>&\d+\b/g, "")
+      .trim();
+
+    // > path or >> path (not fd>&N which were already stripped)
+    // Match > or >> followed by a path that is not /dev/* or $VAR or process substitution.
+    // Exclude => (arrow function) by requiring > is not immediately preceded by =.
+    // Exclude >= (comparison) by requiring > is not immediately followed by =.
+    const redirectPattern = /(?<![=])>>?(?!=)\s*([^\s;&|<>()$`][^\s;&|<>()$`]*)/g;
+    for (const m of clean.matchAll(redirectPattern)) {
+      const p = stripQuotes(m[1]);
+      addTarget(p, repoRoot, results);
+    }
+
+    // tee [-a] path [path ...]
+    const teeMatch = /\btee\s+(?:-a\s+)?(.+)$/.exec(clean);
+    if (teeMatch) {
+      const parts = teeMatch[1].trim().split(/\s+/);
+      // Skip flags like -a
+      for (const part of parts) {
+        if (part.startsWith("-")) continue;
+        const p = stripQuotes(part);
+        addTarget(p, repoRoot, results);
+      }
+    }
+
+    // sed -i[suffix] 's/a/b/' path  — take the last non-flag token that isn't the script
+    const sedMatch = /\bsed\s+-i\S*\s+(.+)$/.exec(clean);
+    if (sedMatch) {
+      const tokens = tokenize(sedMatch[1]);
+      // Skip sed script (starts with s/ or 's/ or is quoted expression, or looks like a sed expr)
+      // The path is the LAST token that looks like a filesystem path, not a sed expression
+      const pathTokens = tokens.filter((t) => {
+        const u = stripQuotes(t);
+        // Drop sed expressions: start with s/, y/, d, p, etc.
+        if (/^[sydigqQ]/.test(u) && (u.includes("/") ? u.split("/").length >= 3 : false)) return false;
+        // Drop flags that start with -
+        if (u.startsWith("-")) return false;
+        return true;
+      });
+      // Take only the last token as the path (sed operates on file args after the script)
+      if (pathTokens.length >= 2) {
+        // First token is the script expression, rest are paths
+        for (let i = 1; i < pathTokens.length; i++) {
+          addTarget(stripQuotes(pathTokens[i]), repoRoot, results);
+        }
+      } else if (pathTokens.length === 1) {
+        addTarget(stripQuotes(pathTokens[0]), repoRoot, results);
+      }
+    }
+
+    // touch path [path ...]
+    const touchMatch = /\btouch\s+(.+)$/.exec(clean);
+    if (touchMatch) {
+      for (const part of tokenize(touchMatch[1])) {
+        if (part.startsWith("-")) continue;
+        addTarget(stripQuotes(part), repoRoot, results);
+      }
+    }
+
+    // mkdir [-p] path [path ...]
+    const mkdirMatch = /\bmkdir\s+(.+)$/.exec(clean);
+    if (mkdirMatch) {
+      for (const part of tokenize(mkdirMatch[1])) {
+        if (part.startsWith("-")) continue;
+        addTarget(stripQuotes(part), repoRoot, results);
+      }
+    }
+
+    // cp src dest  — only the LAST arg is the write target
+    const cpMatch = /\bcp\s+(?:-\S+\s+)*(.+)$/.exec(clean);
+    if (cpMatch) {
+      const tokens = tokenize(cpMatch[1]).filter((t) => !t.startsWith("-"));
+      if (tokens.length >= 2) {
+        addTarget(stripQuotes(tokens[tokens.length - 1]), repoRoot, results);
+      }
+    }
+
+    // mv src dest — only the LAST arg is the write target
+    const mvMatch = /\bmv\s+(?:-\S+\s+)*(.+)$/.exec(clean);
+    if (mvMatch) {
+      const tokens = tokenize(mvMatch[1]).filter((t) => !t.startsWith("-"));
+      if (tokens.length >= 2) {
+        addTarget(stripQuotes(tokens[tokens.length - 1]), repoRoot, results);
+      }
+    }
+  }
+
+  return [...results];
+}
+
+function stripQuotes(s) {
+  if (typeof s !== "string") return "";
+  return s.replace(/^['"]|['"]$/g, "");
+}
+
+function tokenize(str) {
+  if (typeof str !== "string") return [];
+  return str.match(/(?:'[^']*'|"[^"]*"|\S+)/g) ?? [];
+}
+
+function addTarget(raw, repoRoot, set) {
+  if (!raw || raw.startsWith("$") || raw.startsWith("(") || raw.startsWith(">")) return;
+  if (raw === "/dev/null" || raw.startsWith("/dev/") || raw.startsWith("/tmp/")) return;
+  // Drop process substitutions and bash variables
+  if (/^\$[\w{(]/.test(raw)) return;
+
+  let resolved;
+  if (raw.startsWith("/")) {
+    // Absolute path — must be inside repo root to be tracked
+    if (typeof repoRoot === "string" && repoRoot.length > 0) {
+      const prefix = repoRoot.endsWith("/") ? repoRoot : `${repoRoot}/`;
+      if (!raw.startsWith(prefix)) return;
+      resolved = raw.slice(prefix.length);
+    } else {
+      return;
+    }
+  } else {
+    resolved = raw;
+  }
+
+  const normalized = normalizePath(resolved);
+  if (!normalized || normalized.length === 0) return;
+  set.add(normalized);
 }
 
 export function parseApplyPatchTargets(command) {
