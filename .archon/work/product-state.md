@@ -4,40 +4,50 @@
 
 ## Current phase
 
-Verification enforcement shipped.
+Archon remediation initiative (9 phases, from the Fable 5 audit). Phases p1–p7
+landed and verified; p8 and p9 are in progress. Brief:
+`.archon/work/briefs/brief-archon-remediation.md`.
 
 ## Active run
 
-None.
+`1443ac90-05f3-411e-ac44-cb7a04a719ac` (runtime authoritative). No task is
+currently claimed; next work is the p8/p9 remainders and the review
+orchestrator pass for p2–p9.
 
-## Last completed task
+## Phase status
 
-`verification-cert-enforcement` — added positive verification certificate mechanism
-to the hook system. Post-tool hook writes `.archon/work/daemon/verification-cert-<taskId>.json`
-when a verification command exits 0 with an active task. Stop hook requires the cert
-before allowing a task-active session to close. Opt-out via `## Verification required: false`
-in the task packet. `## Required verifications` section enables per-task required command
-declaration. 23 new tests; 190/190 total pass.
+- [x] p1 — Seal backdoors (done; runtime workflow proof seeded)
+- [x] p2 — Real review gate pipeline (done; commit e28ce8d)
+- [x] p3 — Fix the daemon (done; commit 312d3c2)
+- [x] p4 — Fix model routing (done)
+- [x] p5 — Real embeddings: Anthropic/Voyage API + ingestion pipeline (done; commit 581fc9d)
+- [x] p6 — Grafana MCP tool (done)
+- [x] p7 — Obsidian export (done; commits 23e6cdd, 65b025e; heading-regex
+      guard fixed in b7a8881)
+- [ ] p8 — Cut the bloat (in progress)
+  - done: `buildDaemonCliOutputSchema`/`buildCliSchedulerPrompt` deleted (e965751)
+  - done: `seed-modernization-proof` command, `coverage-ledger.ts` parity
+    matrix (863 lines, zero callers), and Codex naming debt
+    (`playwrightCodexConfigFragment`/`mergeCodexConfig` aliases,
+    `ARCHON_CODEX_*` env names) removed (c51f507)
+  - deferred/descoped: splitting `src/admin.ts` into smaller modules
+- [ ] p9 — Trust model honesty (in progress)
+  - done: `runtime_orchestrated_only` rename and trust-language cleanup (312d3c2)
+  - deferred: P9-T2 — waiver/assurance types and migrations 003/006/007/015
+    are still present; removal is intentionally deferred until P9-T2 scope is
+    clarified (do not delete without explicit scoping)
 
-## Acceptance criteria status
+## Verification
 
-- [x] Managed-path write gate (p1, p2)
-- [x] Design and Architecture Council gate (p2-dac)
-- [x] Bypass audit log (p5)
-- [x] Review gate at Stop (p3)
-- [x] Task-packet validation (p4)
-- [x] Stop hook hardening (p6)
-- [x] Hooks cleanup / heredoc false-positive (p7)
-- [x] Runtime health wired into session-start and stop (p8)
-- [x] CLAUDE.md workflow-contract comment tags (p9)
-- [x] Graphify replaces gitnexus as advisory repo-intelligence layer (p10)
-- [x] Hook false-positive on complete-task queue entries (p11)
-- [x] Working tree clean: gitignore, product-state, env (cleanup-1)
-- [x] Runtime workflow proofs seeded for cleanup-1 and qdrant-cleanup
-- [x] Qdrant fully removed from setup scripts, CI, and tests (qdrant-cleanup)
-- [x] Residual Qdrant dead code removed from src/ (audit-fixes)
-- [x] Positive verification certificate enforcement (verification-cert-enforcement)
+- `npm test`: 394/394 pass (modernization-seed test removed with its feature)
+- `npx tsc --noEmit`: clean
+- runtime/local state integrity: `consistent` (`admin.ts status`)
 
 ## Open risks
 
-None.
+- p2–p9 have no runtime review approvals recorded; `workflow-proof` fails for
+  them until the review orchestrator runs. p1's seeded reviews are rejected by
+  the P9 trust model, so p1's proof also needs re-recording through the
+  orchestrator path.
+- P9-T2 cleanup (waiver/assurance machinery and related migrations) remains
+  open and explicitly deferred.

@@ -1,6 +1,6 @@
 {
   "project_status": "active",
-  "current_task_id": "archon-remediation-p1",
+  "current_task_id": null,
   "tasks": [
     {
       "id": "audit-hardening",
@@ -17,7 +17,7 @@
       "id": "archon-remediation-p1",
       "title": "Seal backdoors",
       "status": "done",
-      "class": "feature",
+      "class": "security_sensitive",
       "depends_on": [],
       "acceptance_criteria": [],
       "verification": [
@@ -29,8 +29,8 @@
     {
       "id": "archon-remediation-p2",
       "title": "Real review gate pipeline",
-      "status": "pending",
-      "class": "feature",
+      "status": "done",
+      "class": "prototype_slice",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -38,14 +38,16 @@
       "verification": [
         "npm test"
       ],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "commit e28ce8d fix(p2/p5/p7): remediation bugfixes"
+      ],
+      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
     },
     {
       "id": "archon-remediation-p3",
       "title": "Fix the daemon",
-      "status": "pending",
-      "class": "feature",
+      "status": "done",
+      "class": "prototype_slice",
       "depends_on": [
         "archon-remediation-p2"
       ],
@@ -53,14 +55,16 @@
       "verification": [
         "npm test"
       ],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "commit 312d3c2 feat(p3/p9): fix daemon CLI + trust model cleanup"
+      ],
+      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
     },
     {
       "id": "archon-remediation-p4",
       "title": "Fix model routing",
-      "status": "pending",
-      "class": "feature",
+      "status": "done",
+      "class": "prototype_slice",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -69,13 +73,13 @@
         "npm test"
       ],
       "evidence": [],
-      "blocker": null
+      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
     },
     {
       "id": "archon-remediation-p5",
       "title": "Real embeddings",
-      "status": "pending",
-      "class": "feature",
+      "status": "done",
+      "class": "prototype_slice",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -83,14 +87,16 @@
       "verification": [
         "npm test"
       ],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "commit 581fc9d feat(p5): replace hash embeddings with Anthropic/Voyage API + ingestion pipeline"
+      ],
+      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
     },
     {
       "id": "archon-remediation-p6",
       "title": "Grafana MCP tool",
-      "status": "pending",
-      "class": "feature",
+      "status": "done",
+      "class": "prototype_slice",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -99,13 +105,13 @@
         "npm test"
       ],
       "evidence": [],
-      "blocker": null
+      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
     },
     {
       "id": "archon-remediation-p7",
       "title": "Obsidian export",
-      "status": "pending",
-      "class": "feature",
+      "status": "done",
+      "class": "prototype_slice",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -113,14 +119,17 @@
       "verification": [
         "npm test"
       ],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "commit 23e6cdd feat(p7): Obsidian vault exporter",
+        "commit 65b025e test(p7): add obsidian-exporter test suite — 17 tests"
+      ],
+      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
     },
     {
       "id": "archon-remediation-p8",
       "title": "Cut the bloat",
-      "status": "pending",
-      "class": "feature",
+      "status": "in_progress",
+      "class": "prototype_slice",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -128,14 +137,18 @@
       "verification": [
         "npm test"
       ],
-      "evidence": [],
+      "evidence": [
+        "commit e965751 feat(p8): remove buildDaemonCliOutputSchema and buildCliSchedulerPrompt dead functions",
+        "commit c51f507 fix(p8): remove seed-modernization-proof, coverage-ledger parity matrix, codex naming debt",
+        "remaining: admin.ts split into modules deferred/descoped"
+      ],
       "blocker": null
     },
     {
       "id": "archon-remediation-p9",
       "title": "Trust model honesty",
-      "status": "pending",
-      "class": "feature",
+      "status": "in_progress",
+      "class": "security_sensitive",
       "depends_on": [
         "archon-remediation-p2"
       ],
@@ -143,7 +156,10 @@
       "verification": [
         "npm test"
       ],
-      "evidence": [],
+      "evidence": [
+        "commit 312d3c2 feat(p3/p9): fix daemon CLI + trust model cleanup",
+        "remaining: P9-T2 waiver/assurance types and migrations cleanup (scope pending clarification)"
+      ],
       "blocker": null
     }
   ]
