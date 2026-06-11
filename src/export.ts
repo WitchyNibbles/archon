@@ -1,5 +1,5 @@
-// Thin CLI entry point for archon admin. Domain logic lives in the extracted
-// modules below; everything remains importable from this module (P8-T1 split).
+// Obsidian / docs export command surface.
+// Extracted verbatim from src/admin.ts (P8-T1 split). MOVE ONLY — no logic changes.
 import { access, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -132,207 +132,106 @@ import type { WorkspaceRecord } from "./domain/types.ts";
 import type { ExportDocsCommandResult } from "./docs-export/models.ts";
 import { PostgresStore } from "./store/postgres-store.ts";
 import type { ArchonStore as ArchonStoreContract } from "./store/types.ts";
-import { advanceActiveTaskCommand, checkpointCommand, coverageCommand, gapsCommand, githubDispatchCommand, opsCommand, repairTaskQueueCommand, reportCommand, resumeCommand, statusCommand, syncRuntimeExportsCommand } from "./workflow.ts";
-import { bootstrapProject, doctorCommand, health, migrate, reconcileRuntimeStateCommand, recoverCommand, refreshRepoContextCommand, verifyLiveMigrations, verifySetup } from "./runtime.ts";
-import { indexRepoMarkdownCommand, planContextCommand, refreshRetrievalCommand, runEmbeddingJobsCommand } from "./memory.ts";
-import { recordReviewCommand, saveReviewCommand, seedWorkflowProofCommand, verifyReviewIdentityCommand, workflowProofCommand } from "./review.ts";
-import { exportDocsCommand } from "./export.ts";
-import { daemonCommand, loopCommand, supervisorCommand, supervisorHistoryCommand } from "./daemon.ts";
-export * from "./workflow.ts";
-export * from "./runtime.ts";
-export * from "./memory.ts";
-export * from "./review.ts";
-export * from "./export.ts";
-export * from "./daemon.ts";
+import { collectCommandFreeText, resolveCommandFlag } from "./workflow.ts";
+import type { EnvShape } from "./workflow.ts";
+import { createRuntimeStore } from "./runtime.ts";
 
 
-async function main() {
-  await loadDotEnv();
-  const command = process.argv[2];
-  const args = process.argv.slice(3);
-
-  if (command === "migrate") {
-    await migrate();
-    return;
-  }
-
-  if (command === "health") {
-    await health();
-    return;
-  }
-
-  if (command === "bootstrap-project") {
-    await bootstrapProject();
-    return;
-  }
-
-  if (command === "verify-setup") {
-    await verifySetup();
-    return;
-  }
-
-  if (command === "verify-live-migrations") {
-    await verifyLiveMigrations();
-    return;
-  }
-
-  if (command === "run-embedding-jobs") {
-    await runEmbeddingJobsCommand();
-    return;
-  }
-
-  if (command === "refresh-retrieval") {
-    await refreshRetrievalCommand();
-    return;
-  }
-
-  if (command === "refresh-repo-context") {
-    await refreshRepoContextCommand(args);
-    return;
-  }
-
-  if (command === "repair-task-queue") {
-    await repairTaskQueueCommand(args);
-    return;
-  }
-
-  if (command === "verify-review-identity") {
-    await verifyReviewIdentityCommand();
-    return;
-  }
-
-  if (command === "record-review") {
-    await recordReviewCommand(args);
-    return;
-  }
-
-  if (command === "status") {
-    await statusCommand(args);
-    return;
-  }
-
-  if (command === "coverage") {
-    await coverageCommand(args);
-    return;
-  }
-
-  if (command === "gaps") {
-    await gapsCommand(args);
-    return;
-  }
-
-  if (command === "checkpoint") {
-    await checkpointCommand(args);
-    return;
-  }
-
-  if (command === "resume") {
-    await resumeCommand(args);
-    return;
-  }
-
-  if (command === "doctor") {
-    await doctorCommand(args);
-    return;
-  }
-
-  if (command === "ops") {
-    await opsCommand(args);
-    return;
-  }
-
-  if (command === "loop") {
-    await loopCommand(args);
-    return;
-  }
-
-  if (command === "recover") {
-    await recoverCommand(args);
-    return;
-  }
-
-  if (command === "report") {
-    await reportCommand(args);
-    return;
-  }
-
-  if (command === "workflow-proof") {
-    await workflowProofCommand(args);
-    return;
-  }
-
-  if (command === "seed-workflow-proof") {
-    await seedWorkflowProofCommand(args);
-    return;
-  }
-
-  if (command === "advance-active-task") {
-    await advanceActiveTaskCommand(args);
-    return;
-  }
-
-  if (command === "reconcile-runtime-state") {
-    await reconcileRuntimeStateCommand(args);
-    return;
-  }
-
-  if (command === "sync-runtime-exports") {
-    await syncRuntimeExportsCommand(args);
-    return;
-  }
-
-  if (command === "daemon") {
-    await daemonCommand(args);
-    return;
-  }
-
-  if (command === "supervisor") {
-    await supervisorCommand(args);
-    return;
-  }
-
-  if (command === "supervisor-history") {
-    await supervisorHistoryCommand(args);
-    return;
-  }
-
-  if (command === "plan-context") {
-    await planContextCommand(args);
-    return;
-  }
-
-  if (command === "export-docs" || command === "/export-docs") {
-    await exportDocsCommand(args);
-    return;
-  }
-
-  if (command === "github-dispatch") {
-    await githubDispatchCommand(args);
-    return;
-  }
-
-  if (command === "index-repo-markdown") {
-    await indexRepoMarkdownCommand();
-    return;
-  }
-
-  if (command === "save-review") {
-    await saveReviewCommand(args);
-    return;
-  }
-
-  throw new Error(`Unknown command: ${command ?? "<none>"}`);
+export interface ExecuteExportDocsCommandOptions {
+  cwd?: string | undefined;
+  env?: EnvShape | undefined;
+  now?: Date | undefined;
+  resolveObsidianConfig?: typeof resolveObsidianConfig | undefined;
+  validateObsidianConfig?: typeof validateObsidianConfig | undefined;
+  createWorklogProvider: (input: {
+    workspaceSlug: string;
+    projectSlug: string;
+  }) => WorklogProvider;
 }
 
 
-const isEntrypoint =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+export async function executeExportDocsCommandFromArgs(
+  args: readonly string[],
+  options: ExecuteExportDocsCommandOptions
+): Promise<ExportDocsCommandResult> {
+  const env = options.env ?? process.env;
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceSlug = resolveCommandFlag(args, "--workspace-slug") ?? env.ARCHON_WORKSPACE_SLUG;
+  const projectSlug = resolveCommandFlag(args, "--project-slug") ?? env.ARCHON_PROJECT_SLUG;
+
+  if (!workspaceSlug || !projectSlug) {
+    throw new Error("export-docs requires ARCHON_WORKSPACE_SLUG and ARCHON_PROJECT_SLUG or explicit flags");
+  }
+
+  const resolveObsidianConfigImpl = options.resolveObsidianConfig ?? resolveObsidianConfig;
+  const validateObsidianConfigImpl = options.validateObsidianConfig ?? validateObsidianConfig;
+  const config = resolveObsidianConfigImpl(env, {
+    cwd,
+    projectSlug
+  });
+  await validateObsidianConfigImpl(config);
+
+  const rawQuery = collectCommandFreeText(args, {
+    valueFlags: ["--workspace-slug", "--project-slug"],
+    booleanFlags: ["--overwrite"]
+  });
+  const request = parseExportDocsRequest(rawQuery, config, {
+    now: options.now
+  });
+  const provider = options.createWorklogProvider({
+    workspaceSlug,
+    projectSlug
+  });
+  const entries = await provider.getEntries(request);
+
+  if (entries.length === 0) {
+    const dateLabel =
+      request.dateFrom && request.dateTo && request.dateFrom === request.dateTo
+        ? request.dateFrom
+        : request.dateFrom && request.dateTo
+          ? `${request.dateFrom} to ${request.dateTo}`
+          : "the requested range";
+    return {
+      request,
+      message: `No matching worklog entries found for ${dateLabel}. No note was created.`,
+      matchedEntries: 0
+    };
+  }
+
+  const summary = new DocsSummarizer().summarize(entries, request);
+  const markdown = new ObsidianMarkdownRenderer().render(summary, request);
+  const writer = new ObsidianVaultWriter(config.vaultPath!);
+  const targetPath = await writer.writeNote(markdown, buildObsidianTargetPath(request, summary), args.includes("--overwrite"));
+  const vaultIndexPath = await writer.writeVaultIndex(
+    request.destination,
+    projectSlug,
+    request.dateFrom ?? new Date().toISOString().slice(0, 10)
+  );
+
+  return {
+    request,
+    summary,
+    targetPath,
+    vaultIndexPath,
+    message: `Exported Obsidian note:\n${targetPath}\nVault index updated:\n${vaultIndexPath}`,
+    matchedEntries: entries.length
+  };
+}
 
 
-if (isEntrypoint) {
-  main().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(message);
-    process.exitCode = 1;
+export async function exportDocsCommand(args: readonly string[]) {
+  await withClient(async (client) => {
+    const result = await executeExportDocsCommandFromArgs(args, {
+      cwd: process.cwd(),
+      env: process.env,
+      createWorklogProvider({ workspaceSlug, projectSlug }) {
+        return new RuntimeWorklogProvider(createRuntimeStore(client), {
+          workspaceSlug,
+          projectSlug
+        });
+      }
+    });
+
+    process.stdout.write(`${result.message}\n`);
   });
 }

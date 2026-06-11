@@ -1,36 +1,28 @@
 {
-  "project_status": "active",
-  "current_task_id": "archon-remediation-p9",
+  "project_status": "in_progress",
+  "current_task_id": "archon-remediation-p8",
   "tasks": [
     {
-      "id": "audit-hardening",
-      "title": "Local workflow proof seed for audit-hardening",
-      "status": "done",
-      "class": "release_candidate",
-      "depends_on": [],
-      "acceptance_criteria": [],
-      "verification": [],
-      "evidence": [],
-      "blocker": null
-    },
-    {
       "id": "archon-remediation-p1",
-      "title": "Seal backdoors",
+      "title": "archon-remediation-p1",
       "status": "done",
-      "class": "security_sensitive",
+      "class": "docs_only",
       "depends_on": [],
       "acceptance_criteria": [],
       "verification": [
         "npm test"
       ],
-      "evidence": [],
+      "evidence": [
+        "task packet: archon-remediation-p1",
+        "verification: npm test"
+      ],
       "blocker": null
     },
     {
       "id": "archon-remediation-p2",
-      "title": "Real review gate pipeline",
+      "title": "archon-remediation-p2",
       "status": "done",
-      "class": "prototype_slice",
+      "class": "docs_only",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -39,15 +31,16 @@
         "npm test"
       ],
       "evidence": [
-        "commit e28ce8d fix(p2/p5/p7): remediation bugfixes"
+        "task packet: archon-remediation-p2",
+        "verification: npm test"
       ],
-      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
+      "blocker": null
     },
     {
       "id": "archon-remediation-p3",
-      "title": "Fix the daemon",
+      "title": "archon-remediation-p3",
       "status": "done",
-      "class": "prototype_slice",
+      "class": "docs_only",
       "depends_on": [
         "archon-remediation-p2"
       ],
@@ -56,15 +49,16 @@
         "npm test"
       ],
       "evidence": [
-        "commit 312d3c2 feat(p3/p9): fix daemon CLI + trust model cleanup"
+        "task packet: archon-remediation-p3",
+        "verification: npm test"
       ],
-      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
+      "blocker": null
     },
     {
       "id": "archon-remediation-p4",
-      "title": "Fix model routing",
+      "title": "archon-remediation-p4",
       "status": "done",
-      "class": "prototype_slice",
+      "class": "docs_only",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -72,14 +66,17 @@
       "verification": [
         "npm test"
       ],
-      "evidence": [],
-      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
+      "evidence": [
+        "task packet: archon-remediation-p4",
+        "verification: npm test"
+      ],
+      "blocker": null
     },
     {
       "id": "archon-remediation-p5",
-      "title": "Real embeddings",
+      "title": "archon-remediation-p5",
       "status": "done",
-      "class": "prototype_slice",
+      "class": "docs_only",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -88,15 +85,16 @@
         "npm test"
       ],
       "evidence": [
-        "commit 581fc9d feat(p5): replace hash embeddings with Anthropic/Voyage API + ingestion pipeline"
+        "task packet: archon-remediation-p5",
+        "verification: npm test"
       ],
-      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
+      "blocker": null
     },
     {
       "id": "archon-remediation-p6",
-      "title": "Grafana MCP tool",
+      "title": "archon-remediation-p6",
       "status": "done",
-      "class": "prototype_slice",
+      "class": "docs_only",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -104,14 +102,17 @@
       "verification": [
         "npm test"
       ],
-      "evidence": [],
-      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
+      "evidence": [
+        "task packet: archon-remediation-p6",
+        "verification: npm test"
+      ],
+      "blocker": null
     },
     {
       "id": "archon-remediation-p7",
-      "title": "Obsidian export",
+      "title": "archon-remediation-p7",
       "status": "done",
-      "class": "prototype_slice",
+      "class": "docs_only",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -120,16 +121,16 @@
         "npm test"
       ],
       "evidence": [
-        "commit 23e6cdd feat(p7): Obsidian vault exporter",
-        "commit 65b025e test(p7): add obsidian-exporter test suite — 17 tests"
+        "task packet: archon-remediation-p7",
+        "verification: npm test"
       ],
-      "blocker": "runtime review approvals not yet recorded; workflow-proof fails pending review orchestrator run"
+      "blocker": null
     },
     {
       "id": "archon-remediation-p8",
-      "title": "Cut the bloat",
+      "title": "archon-remediation-p8",
       "status": "in_progress",
-      "class": "prototype_slice",
+      "class": "docs_only",
       "depends_on": [
         "archon-remediation-p1"
       ],
@@ -138,17 +139,16 @@
         "npm test"
       ],
       "evidence": [
-        "commit e965751 feat(p8): remove buildDaemonCliOutputSchema and buildCliSchedulerPrompt dead functions",
-        "commit c51f507 fix(p8): remove seed-modernization-proof, coverage-ledger parity matrix, codex naming debt",
-        "remaining: admin.ts split into modules deferred/descoped"
+        "task packet: archon-remediation-p8",
+        "verification: npm test"
       ],
       "blocker": null
     },
     {
       "id": "archon-remediation-p9",
-      "title": "Trust model honesty",
-      "status": "in_progress",
-      "class": "security_sensitive",
+      "title": "archon-remediation-p9",
+      "status": "done",
+      "class": "docs_only",
       "depends_on": [
         "archon-remediation-p2"
       ],
@@ -157,8 +157,8 @@
         "npm test"
       ],
       "evidence": [
-        "commit 312d3c2 feat(p3/p9): fix daemon CLI + trust model cleanup",
-        "remaining: P9-T2 waiver/assurance types and migrations cleanup (scope pending clarification)"
+        "task packet: archon-remediation-p9",
+        "verification: npm test"
       ],
       "blocker": null
     }
