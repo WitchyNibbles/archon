@@ -1,4 +1,5 @@
 ---
+name: build-resolver
 description: "Diagnoses and fixes build, typecheck, test, and setup failures with incremental verification."
 model: claude-sonnet-4-6
 effort: medium

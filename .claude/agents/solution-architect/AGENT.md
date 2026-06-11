@@ -1,4 +1,5 @@
 ---
+name: solution-architect
 description: "Designs system boundaries, architecture, data flow, and implementation sequencing for new products and major changes."
 model: claude-opus-4-8
 effort: high

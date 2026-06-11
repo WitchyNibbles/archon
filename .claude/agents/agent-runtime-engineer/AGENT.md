@@ -1,4 +1,5 @@
 ---
+name: agent-runtime-engineer
 description: "Owns agent orchestration, prompt/runtime contracts, tool surfaces, and execution-safety behavior."
 model: claude-sonnet-4-6
 effort: high
