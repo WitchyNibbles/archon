@@ -110,9 +110,16 @@ import type {
 import type { ArchonStore } from "../store/types.ts";
 import { assessTaskPacketReasoning } from "./reasoning-quality.ts";
 
+export interface HandoffLifecycleEvent {
+  runId: string;
+  taskId: string;
+  actor: string;
+}
+
 export interface ArchonCoreServiceOptions {
   resolveReviewActionContext?: ResolveReviewActionContext | undefined;
   reviewIdentityAssurance?: "authenticated" | "seeded" | undefined;
+  onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
 }
 
 export interface ExecuteReviewRecommendationResult {
@@ -583,11 +590,13 @@ export class ArchonCoreService {
   private readonly store: ArchonStore;
   private readonly resolveReviewActionContext?: ResolveReviewActionContext | undefined;
   private readonly reviewIdentityAssurance: "authenticated" | "seeded";
+  private readonly onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
     this.resolveReviewActionContext = options.resolveReviewActionContext;
     this.reviewIdentityAssurance = options.reviewIdentityAssurance ?? "authenticated";
+    this.onHandoff = options.onHandoff;
   }
 
   private async saveAutonomousExecutionState(
@@ -1369,6 +1378,13 @@ export class ArchonCoreService {
       createdAt: existingState?.createdAt ?? record.createdAt,
       updatedAt: record.createdAt
     });
+
+    if (this.onHandoff) {
+      await this.onHandoff({ runId, taskId, actor: handoff.actor }).catch(() => {
+        // ingestion errors must never block handoff completion
+      });
+    }
+
     return record;
   }
 
