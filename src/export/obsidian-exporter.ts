@@ -88,7 +88,7 @@ function parseTaskPacket(raw: string): ParsedTaskPacket {
   let currentSection = "";
   for (const line of raw.split(/\r?\n/)) {
     const heading = line.match(/^##\s+(.+)/);
-    if (heading) {
+    if (heading?.[1]) {
       currentSection = heading[1].trim().toLowerCase();
       sections.set(currentSection, []);
     } else if (currentSection) {
