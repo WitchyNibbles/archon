@@ -54,6 +54,7 @@ import {
 } from "./admin/status.ts";
 import { parseExportDocsRequest } from "./docs-export/parser.ts";
 import { resolveObsidianConfig, validateObsidianConfig } from "./docs-export/obsidian-config.ts";
+import { exportTaskToObsidian } from "./export/obsidian-exporter.ts";
 import { DocsSummarizer } from "./docs-export/summarizer.ts";
 import { ObsidianMarkdownRenderer } from "./docs-export/renderer.ts";
 import { ObsidianVaultWriter } from "./docs-export/obsidian-writer.ts";
@@ -8573,6 +8574,28 @@ export async function executeAdvanceActiveTaskCommandFromArgs(
   };
   await options.saveProjectRuntimeState(nextRuntimeState);
   await syncRuntimeWorkflowExports(options.cwd, nextRuntimeState);
+
+  // export task closure notes to Obsidian vault (best-effort — never throws)
+  const taskPacketPath = path.join(
+    options.cwd ?? process.cwd(),
+    ".archon",
+    "work",
+    "tasks",
+    `task-${activeTaskId}.md`
+  );
+  const reviewFindings = proof.latestReviews.map((r) => ({
+    role: r.reviewerRole,
+    outcome: r.state,
+    findings: r.findings
+  }));
+  exportTaskToObsidian(
+    { taskId: activeTaskId, taskPacketPath, reviewRecords: reviewFindings, commitList: [] },
+    { env, repoRoot: options.cwd }
+  ).catch((err: unknown) => {
+    process.stderr.write(
+      `[obsidian-exporter] unexpected error during export: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  });
 
   return {
     format,
