@@ -1034,7 +1034,7 @@ export interface MemoryEntryRecord {
   id: string;
   workspaceId: string;
   projectId?: string | undefined;
-  runId: string;
+  runId?: string | undefined;
   taskId?: string | undefined;
   scope: MemoryScope;
   entryType: MemoryType;

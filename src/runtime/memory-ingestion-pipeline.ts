@@ -1,16 +1,18 @@
-import { createHash } from "node:crypto";
-import { readdir, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { isAnthropicEmbeddingConfigured } from "./anthropic-embedding-provider.ts";
+import type { MemoryEntryRecord } from "../domain/types.ts";
 import type { QueueEmbeddingJobInput } from "../store/types.ts";
 
 const MEMORY_DIR_PATTERN = /\.md$/i;
 const EXCLUDED_FILES = new Set([".env", ".env.local", ".env.example"]);
-const MEMORY_INGESTION_SOURCE_TABLE = "artifacts" as const;
+const MEMORY_INGESTION_SOURCE_TABLE = "memory_entries" as const;
 
 export interface IngestionStore {
   queueEmbeddingJob(input: QueueEmbeddingJobInput): Promise<unknown>;
+  saveMemoryEntry(entry: MemoryEntryRecord): Promise<void>;
   getProjectContext(params: {
     workspaceSlug: string;
     projectSlug: string;
@@ -92,20 +94,37 @@ export async function ingestMemoryDirectory(
       continue;
     }
 
-    const docId = buildDocumentId("memory_dir", filePath);
-
     try {
+      const content = await readFile(filePath, "utf8");
+      const title = path.basename(filePath, ".md");
+      const entryId = randomUUID();
+      const entry: MemoryEntryRecord = {
+        id: entryId,
+        workspaceId: context.workspace.id,
+        projectId: context.project.id,
+        scope: "project",
+        entryType: "fact",
+        title,
+        content,
+        reviewer: "ingestion-pipeline",
+        actor: "ingestion-pipeline",
+        status: "approved",
+        sourcePath: filePath,
+        metadata: {},
+        createdAt: new Date().toISOString()
+      };
+      await options.store.saveMemoryEntry(entry);
       await options.store.queueEmbeddingJob({
         workspaceId: context.workspace.id,
         projectId: context.project.id,
         sourceTable: MEMORY_INGESTION_SOURCE_TABLE,
-        sourceId: docId,
+        sourceId: entryId,
         embeddingModel: options.embeddingModel
       });
       queued += 1;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      errors.push(`failed to queue ${filePath}: ${message.slice(0, 120)}`);
+      errors.push(`failed to ingest ${filePath}: ${message.slice(0, 120)}`);
     }
   }
 

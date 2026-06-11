@@ -84,30 +84,35 @@ interface ParsedTaskPacket {
 }
 
 function parseTaskPacket(raw: string): ParsedTaskPacket {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { goal: "", constraints: "", decisions: [], relatedTasks: [] };
+  const sections = new Map<string, string[]>();
+  let currentSection = "";
+  for (const line of raw.split(/\r?\n/)) {
+    const heading = line.match(/^##\s+(.+)/);
+    if (heading) {
+      currentSection = heading[1].trim().toLowerCase();
+      sections.set(currentSection, []);
+    } else if (currentSection) {
+      sections.get(currentSection)?.push(line);
+    }
   }
 
-  if (!parsed || typeof parsed !== "object") {
-    return { goal: "", constraints: "", decisions: [], relatedTasks: [] };
-  }
+  const sectionText = (name: string): string =>
+    (sections.get(name) ?? []).join("\n").trim();
 
-  const obj = parsed as Record<string, unknown>;
-  const goal = typeof obj.goal === "string" ? obj.goal.trim() : "";
-  const constraints = Array.isArray(obj.outOfScope)
-    ? (obj.outOfScope as unknown[]).map(String).join("\n")
-    : typeof obj.constraints === "string"
-      ? obj.constraints.trim()
-      : "";
+  const goal = sectionText("goal");
+  const constraints = sectionText("constraints") || sectionText("out of scope") || sectionText("allowed write scope");
 
-  const relatedTasks: string[] = Array.isArray(obj.dependencies)
-    ? (obj.dependencies as unknown[]).map(String).filter((v) => v.length > 0)
-    : [];
+  const decisionLines = sections.get("key decisions") ?? sections.get("decisions") ?? [];
+  const decisions = decisionLines
+    .map((l) => l.replace(/^[-*]\s*/, "").trim())
+    .filter((l) => l.length > 0);
 
-  return { goal, constraints, decisions: [], relatedTasks };
+  const depLines = sections.get("depends on") ?? sections.get("dependencies") ?? [];
+  const relatedTasks = depLines
+    .map((l) => l.replace(/^[-*`]\s*/g, "").replace(/`/g, "").trim())
+    .filter((l) => l.length > 0);
+
+  return { goal, constraints, decisions, relatedTasks };
 }
 
 // ─── note builders ────────────────────────────────────────────────────────────
@@ -269,12 +274,12 @@ async function readAgentMd(
   agentName: string,
   repoRoot?: string | undefined
 ): Promise<string | undefined> {
-  const safeAgent = sanitizeId(agentName);
+  const agentDir = sanitizeId(agentName).replace(/_/g, "-");
   const candidates = [
     ...(repoRoot
-      ? [path.join(repoRoot, ".claude", "agents", safeAgent, "AGENT.md")]
+      ? [path.join(repoRoot, ".claude", "agents", agentDir, "AGENT.md")]
       : []),
-    path.join(process.cwd(), ".claude", "agents", safeAgent, "AGENT.md")
+    path.join(process.cwd(), ".claude", "agents", agentDir, "AGENT.md")
   ];
 
   for (const candidate of candidates) {

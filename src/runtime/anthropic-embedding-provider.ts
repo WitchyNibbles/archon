@@ -2,7 +2,7 @@ import process from "node:process";
 import type { EmbeddingProvider } from "./embedding-runner.ts";
 
 const DEFAULT_EMBEDDING_MODEL = "voyage-3";
-const VOYAGE_API_URL = "https://api.anthropic.com/v1/embeddings";
+const VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings";
 const MAX_BATCH_SIZE = 128;
 
 export interface AnthropicEmbeddingClientLike {
@@ -33,8 +33,7 @@ export class HttpAnthropicEmbeddingClient implements AnthropicEmbeddingClientLik
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01"
+        "Authorization": `Bearer ${this.apiKey}`
       },
       body: JSON.stringify({
         model: input.model,
@@ -45,7 +44,7 @@ export class HttpAnthropicEmbeddingClient implements AnthropicEmbeddingClientLik
     if (!response.ok) {
       const body = await response.text().catch(() => "(unreadable)");
       throw new Error(
-        `Anthropic embeddings API returned ${response.status}: ${body.slice(0, 200)}`
+        `Voyage AI embeddings API returned ${response.status}: ${body.slice(0, 200)}`
       );
     }
 
@@ -63,7 +62,7 @@ function parseEmbeddingsResponse(data: unknown): {
     !("data" in data) ||
     !Array.isArray((data as Record<string, unknown>)["data"])
   ) {
-    throw new Error("Anthropic embeddings API returned an unexpected response shape");
+    throw new Error("Voyage AI embeddings API returned an unexpected response shape");
   }
 
   const items = (data as { data: unknown[] })["data"];
@@ -74,14 +73,14 @@ function parseEmbeddingsResponse(data: unknown): {
       !("embedding" in item) ||
       !Array.isArray((item as Record<string, unknown>)["embedding"])
     ) {
-      throw new Error(`Anthropic embeddings API: item ${index} missing embedding array`);
+      throw new Error(`Voyage AI embeddings API: item ${index} missing embedding array`);
     }
 
     const raw = (item as { embedding: unknown[] })["embedding"];
     const embedding = raw.map((value, vectorIndex) => {
       if (typeof value !== "number" || !Number.isFinite(value)) {
         throw new Error(
-          `Anthropic embeddings API: item ${index} embedding[${vectorIndex}] is not a finite number`
+          `Voyage AI embeddings API: item ${index} embedding[${vectorIndex}] is not a finite number`
         );
       }
       return value;
@@ -106,7 +105,7 @@ async function batchEmbed(
 
     if (response.embeddings.length !== batch.length) {
       throw new Error(
-        `Anthropic embeddings API returned ${response.embeddings.length} embeddings for ${batch.length} inputs`
+        `Voyage AI embeddings API returned ${response.embeddings.length} embeddings for ${batch.length} inputs`
       );
     }
 
@@ -121,7 +120,11 @@ async function batchEmbed(
 export function createAnthropicEmbeddingProvider(
   options: AnthropicEmbeddingProviderOptions = {}
 ): EmbeddingProvider {
-  const apiKey = options.apiKey ?? process.env["ANTHROPIC_API_KEY"] ?? "";
+  const apiKey =
+    options.apiKey ??
+    process.env["VOYAGE_API_KEY"] ??
+    process.env["ANTHROPIC_API_KEY"] ??
+    "";
   const model =
     options.model ??
     process.env["ARCHON_EMBEDDING_MODEL"] ??
@@ -153,5 +156,5 @@ export function createAnthropicEmbeddingProvider(
 
 export function isAnthropicEmbeddingConfigured(env?: NodeJS.ProcessEnv): boolean {
   const source = env ?? process.env;
-  return Boolean(source["ANTHROPIC_API_KEY"]?.trim());
+  return Boolean(source["VOYAGE_API_KEY"]?.trim() || source["ANTHROPIC_API_KEY"]?.trim());
 }

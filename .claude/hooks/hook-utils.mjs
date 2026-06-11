@@ -555,7 +555,7 @@ async function loadDbReviewContext(resolvedRepoRoot, taskId, requiredRoles) {
     rows.filter((r) => r.outcome === "passed").map((r) => r.role)
   );
   const failedRoles = rows
-    .filter((r) => r.outcome === "failed")
+    .filter((r) => r.outcome === "failed" || r.outcome === "blocked")
     .map((r) => r.role);
 
   const missingReviews = requiredRoles.filter(

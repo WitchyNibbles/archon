@@ -179,7 +179,7 @@ function runAdmin(args: string[]): { status: number | null; stdout: string; stde
     {
       encoding: "utf8",
       timeout: 10_000,
-      env: { ...process.env, ARCHON_CORE_DATABASE_URL: undefined }
+      env: { ...process.env, ARCHON_CORE_DATABASE_URL: "" }
     }
   );
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };

@@ -1,7 +1,7 @@
 import { access, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -13,6 +13,7 @@ import {
   runtimeModeFromProfile
 } from "./runtime/config.ts";
 import { createHashEmbeddingProvider } from "./runtime/hash-embedding-provider.ts";
+import { triggerTaskCloseIngestion } from "./runtime/memory-ingestion-pipeline.ts";
 import {
   createAnthropicEmbeddingProvider,
   isAnthropicEmbeddingConfigured
@@ -171,6 +172,22 @@ interface LoadedReviewIdentityAdapter {
   modulePath?: string | undefined;
   selectedBackend?: string | undefined;
   availableBackends: string[];
+}
+
+function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
+  const result = spawnSync("git", ["log", "--oneline", `-${limit}`], {
+    cwd,
+    encoding: "utf8",
+    timeout: 5000
+  });
+  if (result.status !== 0 || !result.stdout) return [];
+  return result.stdout.trim().split("\n").filter(Boolean).map((line) => {
+    const spaceIdx = line.indexOf(" ");
+    return {
+      hash: spaceIdx > 0 ? line.slice(0, spaceIdx) : line,
+      message: spaceIdx > 0 ? line.slice(spaceIdx + 1) : ""
+    };
+  });
 }
 
 async function migrate() {
@@ -8598,8 +8615,9 @@ export async function executeAdvanceActiveTaskCommandFromArgs(
     outcome: r.state,
     findings: r.findings
   }));
+  const commitList = getRecentCommits(options.cwd ?? process.cwd());
   exportTaskToObsidian(
-    { taskId: activeTaskId, taskPacketPath, reviewRecords: reviewFindings, commitList: [] },
+    { taskId: activeTaskId, taskPacketPath, reviewRecords: reviewFindings, commitList },
     { env, repoRoot: options.cwd }
   ).catch((err: unknown) => {
     process.stderr.write(
@@ -10969,6 +10987,10 @@ async function advanceActiveTaskCommand(args: readonly string[]) {
       }
     });
 
+    if (result.mode === "applied") {
+      triggerTaskCloseIngestion({ taskId: result.taskId, cwd: process.cwd(), store }).catch(() => {});
+    }
+
     if (format === "text") {
       process.stdout.write(`${formatAdvanceActiveTaskCommandResult(result)}\n`);
       return;
@@ -11979,7 +12001,7 @@ async function saveReviewCommand(args: readonly string[]) {
   const role = resolveCommandFlag(args, "--role");
   const outcome = resolveCommandFlag(args, "--outcome");
   const findings = resolveCommandFlag(args, "--findings") ?? "";
-  const source = resolveCommandFlag(args, "--source") ?? "self";
+  const source = resolveCommandFlag(args, "--source") ?? "orchestrator";
 
   if (!taskId) {
     throw new Error("save-review requires --task-id");
@@ -11990,8 +12012,8 @@ async function saveReviewCommand(args: readonly string[]) {
   if (!outcome || (outcome !== "passed" && outcome !== "failed")) {
     throw new Error("save-review requires --outcome <passed|failed>");
   }
-  if (source !== "orchestrator" && source !== "self") {
-    throw new Error("save-review requires --source <orchestrator|self>");
+  if (source !== "orchestrator") {
+    throw new Error("save-review only accepts --source orchestrator; self-attestation is not permitted");
   }
 
   const workspaceSlug = process.env.ARCHON_WORKSPACE_SLUG;
