@@ -11941,6 +11941,50 @@ async function repairTaskQueueCommand(args: readonly string[]) {
   console.log(JSON.stringify(await executeRepairTaskQueueCommandFromArgs(args)));
 }
 
+async function saveReviewCommand(args: readonly string[]) {
+  const taskId = resolveCommandFlag(args, "--task-id");
+  const role = resolveCommandFlag(args, "--role");
+  const outcome = resolveCommandFlag(args, "--outcome");
+  const findings = resolveCommandFlag(args, "--findings") ?? "";
+  const source = resolveCommandFlag(args, "--source") ?? "self";
+
+  if (!taskId) {
+    throw new Error("save-review requires --task-id");
+  }
+  if (!role) {
+    throw new Error("save-review requires --role");
+  }
+  if (!outcome || (outcome !== "passed" && outcome !== "failed")) {
+    throw new Error("save-review requires --outcome <passed|failed>");
+  }
+  if (source !== "orchestrator" && source !== "self") {
+    throw new Error("save-review requires --source <orchestrator|self>");
+  }
+
+  const workspaceSlug = process.env.ARCHON_WORKSPACE_SLUG;
+  const projectSlug = process.env.ARCHON_PROJECT_SLUG;
+  if (!workspaceSlug || !projectSlug) {
+    throw new Error("save-review requires ARCHON_WORKSPACE_SLUG and ARCHON_PROJECT_SLUG to be set");
+  }
+
+  const workspaceId = `workspace:${workspaceSlug}`;
+  const projectId = `project:${workspaceSlug}:${projectSlug}`;
+
+  await withClient(async (client) => {
+    const store = new PostgresStore(client);
+    await store.saveOrchestratorReview({
+      taskId,
+      role,
+      outcome,
+      findings,
+      workspaceId,
+      projectId
+    });
+  });
+
+  console.log(JSON.stringify({ saved: true, taskId, role, outcome, source }));
+}
+
 async function main() {
   await loadDotEnv();
   const command = process.argv[2];
@@ -12113,6 +12157,11 @@ async function main() {
 
   if (command === "index-repo-markdown") {
     await indexRepoMarkdownCommand();
+    return;
+  }
+
+  if (command === "save-review") {
+    await saveReviewCommand(args);
     return;
   }
 

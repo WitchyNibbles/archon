@@ -897,6 +897,50 @@ export class PostgresStore implements ArchonStore {
     return result.rows.map((row) => row.payload);
   }
 
+  async getOrchestratorReviews(taskId: string): Promise<{ role: string; outcome: string; source: string }[]> {
+    const result = await this.client.query<{ role: string; outcome: string; source: string }>(
+      `select
+         reviewer_role as role,
+         state as outcome,
+         source
+       from reviews
+       where task_id = $1
+         and source = 'orchestrator'
+       order by created_at asc`,
+      [taskId]
+    );
+    return result.rows;
+  }
+
+  async saveOrchestratorReview(input: {
+    taskId: string;
+    role: string;
+    outcome: string;
+    findings: string;
+    workspaceId: string;
+    projectId: string;
+  }): Promise<void> {
+    const id = `review-orch-${input.taskId}-${input.role}-${Date.now()}`;
+    await this.client.query(
+      `insert into reviews (
+         id, workspace_id, project_id, run_id, task_id, reviewer_role, actor, actor_role,
+         identity_assurance, state, severity, findings, waiver_reason, evidence_refs,
+         waiver_authority, source
+       )
+       values ($1, $2, $3, null, $4, $5, 'review-orchestrator', 'reviewer',
+               'authenticated', $6, 'none', $7, null, '{}', 'none', 'orchestrator')`,
+      [
+        id,
+        input.workspaceId,
+        input.projectId,
+        input.taskId,
+        input.role,
+        input.outcome,
+        [input.findings]
+      ]
+    );
+  }
+
   async saveApproval(approval: ApprovalRecord): Promise<void> {
     await this.client.query(
       `insert into approvals (

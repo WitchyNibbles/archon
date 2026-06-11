@@ -74,6 +74,7 @@
     ".claude/agents/product-strategist/AGENT.md",
     ".claude/agents/qa-engineer/AGENT.md",
     ".claude/agents/release-readiness/AGENT.md",
+    ".claude/agents/review-orchestrator/AGENT.md",
     ".claude/agents/reviewer/AGENT.md",
     ".claude/agents/security-reviewer/AGENT.md",
     ".claude/agents/solution-architect/AGENT.md",
