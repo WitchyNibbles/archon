@@ -44,7 +44,7 @@ fallback_blocked_paths=(
   ".env.archon.example"
   "docker-compose.archon.yml"
   "scripts/check-archon-happy-path.sh"
-  "scripts/check-archon-workflow.sh"
+  "scripts/check-archon-workflow.ts"
   "scripts/check-archon-workflow-live.sh"
   "scripts/check-archon-git-guard.sh"
   "scripts/check-archon-commit-msg.sh"

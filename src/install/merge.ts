@@ -82,7 +82,7 @@ const managedDotClaudeMdBlock = `${DOT_CLAUDE_BEGIN}
 - default sequence: evidence -> \`solution_architect\` -> \`planner\` -> task packet -> specialist owner -> \`reviewer\`, \`qa_engineer\`, \`security_reviewer\`
 - for council-reviewed work, require a written decision packet before critique and assign one explicit dissent owner
 - task packets need \`task_id\`, owner role, completion standard, required specialists, quality gates, write scope, acceptance criteria, verification steps, required reviews, security checks, and rollback notes
-- run \`bash scripts/check-archon-workflow.sh --task-id <task-id>\` before declaring substantive work complete
+- run \`node --experimental-strip-types scripts/check-archon-workflow.ts --task-id <task-id>\` before declaring substantive work complete
 - current task id must match \`.archon/ACTIVE\`, the current brief, the current plan/task, and required review files
 - unresolved \`CRITICAL\` or \`HIGH\` security findings block completion
 - markdown review files are evidence summaries, not reviewer authority
@@ -441,7 +441,7 @@ export function mergePackageJson(
   scripts["archon:upgrade-reasoning-workflow"] = `${archonEntry} upgrade-reasoning-workflow --target .`;
   scripts["archon:seed-happy-path-fixture"] = `${archonEntry} seed-happy-path-fixture --target .`;
   scripts["archon:check:happy-path"] = "bash scripts/check-archon-happy-path.sh";
-  scripts["archon:check-workflow"] = "bash scripts/check-archon-workflow.sh";
+  scripts["archon:check-workflow"] = "node --experimental-strip-types scripts/check-archon-workflow.ts";
   scripts["archon:verify:migrations:live"] = `${archonEntry} verify-live-migrations`;
   scripts["archon:verify:review-identity"] = `${archonEntry} verify-review-identity`;
   scripts["archon:verify:git-guard"] =

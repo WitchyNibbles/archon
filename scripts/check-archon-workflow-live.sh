@@ -149,4 +149,4 @@ if (seedFailure?.recoveryState === "stale_metadata") {
 EOF
 fi
 
-bash "$repo_root/scripts/check-archon-workflow.sh" --live --external-review-authority --repo-root "$repo_root" --task-id "$requested_task_id"
+node --experimental-strip-types "$repo_root/scripts/check-archon-workflow.ts" --live --external-review-authority --repo-root "$repo_root" --task-id "$requested_task_id"
