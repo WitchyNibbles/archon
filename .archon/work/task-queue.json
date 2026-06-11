@@ -1,6 +1,6 @@
 {
-  "project_status": "in_progress",
-  "current_task_id": "archon-remediation-p8",
+  "project_status": "approved",
+  "current_task_id": null,
   "tasks": [
     {
       "id": "archon-remediation-p1",
@@ -129,7 +129,7 @@
     {
       "id": "archon-remediation-p8",
       "title": "archon-remediation-p8",
-      "status": "in_progress",
+      "status": "done",
       "class": "docs_only",
       "depends_on": [
         "archon-remediation-p1"

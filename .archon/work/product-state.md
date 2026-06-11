@@ -4,50 +4,56 @@
 
 ## Current phase
 
-Archon remediation initiative (9 phases, from the Fable 5 audit). Phases p1–p7
-landed and verified; p8 and p9 are in progress. Brief:
+Archon remediation initiative (9 phases, from the Fable 5 audit) — **complete**.
+All nine phases are approved in the runtime with orchestrator-written reviews
+and pass `workflow-proof` with `runtime_authoritative` authority. Brief:
 `.archon/work/briefs/brief-archon-remediation.md`.
 
 ## Active run
 
-`1443ac90-05f3-411e-ac44-cb7a04a719ac` (runtime authoritative). No task is
-currently claimed; next work is the p8/p9 remainders and the review
-orchestrator pass for p2–p9.
+`d216a303-74d8-4a4d-8bd4-c1f23ff57b17` (runtime authoritative). All nine
+remediation tasks are approved; no task is currently claimed. The earlier
+seeded run `1443ac90` is superseded history — `workflow-proof --run-id latest`
+resolves every phase to `d216a303`.
 
 ## Phase status
 
-- [x] p1 — Seal backdoors (done; runtime workflow proof seeded)
-- [x] p2 — Real review gate pipeline (done; commit e28ce8d)
+- [x] p1 — Seal backdoors (done; commits c4a81d4, 5aef0c6; orchestrator
+      reviews recorded in run d216a303, replacing the rejected seeded proof)
+- [x] p2 — Real review gate pipeline (done; commits 4858a01, 2e1710d, e28ce8d)
 - [x] p3 — Fix the daemon (done; commit 312d3c2)
-- [x] p4 — Fix model routing (done)
+- [x] p4 — Fix model routing (done; commit a201656)
 - [x] p5 — Real embeddings: Anthropic/Voyage API + ingestion pipeline (done; commit 581fc9d)
-- [x] p6 — Grafana MCP tool (done)
+- [x] p6 — Grafana MCP tool (done; commit eb8e4da)
 - [x] p7 — Obsidian export (done; commits 23e6cdd, 65b025e; heading-regex
       guard fixed in b7a8881)
-- [ ] p8 — Cut the bloat (in progress)
-  - done: `buildDaemonCliOutputSchema`/`buildCliSchedulerPrompt` deleted (e965751)
-  - done: `seed-modernization-proof` command, `coverage-ledger.ts` parity
-    matrix (863 lines, zero callers), and Codex naming debt
-    (`playwrightCodexConfigFragment`/`mergeCodexConfig` aliases,
-    `ARCHON_CODEX_*` env names) removed (c51f507)
-  - deferred/descoped: splitting `src/admin.ts` into smaller modules
-- [ ] p9 — Trust model honesty (in progress)
-  - done: `runtime_orchestrated_only` rename and trust-language cleanup (312d3c2)
-  - deferred: P9-T2 — waiver/assurance types and migrations 003/006/007/015
-    are still present; removal is intentionally deferred until P9-T2 scope is
-    clarified (do not delete without explicit scoping)
+- [x] p8 — Cut the bloat (done)
+  - `buildDaemonCliOutputSchema`/`buildCliSchedulerPrompt` deleted (e965751)
+  - `seed-modernization-proof` command, `coverage-ledger.ts` parity matrix,
+    and Codex naming debt removed (c51f507)
+  - `check-archon-workflow.sh` replaced with TypeScript wrapper (525adf6)
+  - `src/admin.ts` split into six domain modules — 11,616 → 338 lines, public
+    import surface unchanged via re-exports (0f5260c)
+- [x] p9 — Trust model honesty (done)
+  - `runtime_orchestrated_only` rename and trust-language cleanup (312d3c2)
+  - P9-T2: identity theater deleted — `identity_assurance`/`waiver_authority`
+    columns, waiver types, and migrations 005/006/007/015 removed; forward
+    migration 019 backfills `source` and drops the legacy columns (cbf232c)
 
 ## Verification
 
-- `npm test`: 394/394 pass (modernization-seed test removed with its feature)
+- `npm test`: 395/395 pass
 - `npx tsc --noEmit`: clean
+- `workflow-proof --run-id latest` for p1–p9: all `runtime_authoritative`,
+  task status `approved`, reviews and approvals orchestrator-written
 - runtime/local state integrity: `consistent` (`admin.ts status`)
 
 ## Open risks
 
-- p2–p9 have no runtime review approvals recorded; `workflow-proof` fails for
-  them until the review orchestrator runs. p1's seeded reviews are rejected by
-  the P9 trust model, so p1's proof also needs re-recording through the
-  orchestrator path.
-- P9-T2 cleanup (waiver/assurance machinery and related migrations) remains
-  open and explicitly deferred.
+- None blocking. Remediation initiative is closed.
+- Follow-up (non-blocking): `src/daemon.ts` (5,500 lines), `src/workflow.ts`
+  (2,222), and `src/runtime.ts` (2,189) exceed the repo 800-line file guidance
+  and are candidates for further decomposition in a future hygiene pass.
+- Follow-up (non-blocking): `npm run check:workflow` local advisory check
+  expects an `AGENTS.md` file that does not exist in this repo; the runtime
+  `workflow-proof` completion authority is unaffected.
