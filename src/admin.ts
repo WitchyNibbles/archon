@@ -4003,73 +4003,6 @@ async function clearDaemonAppAutomationRequest(cwd: string): Promise<void> {
   });
 }
 
-function buildCliSchedulerPrompt(input: Parameters<typeof buildAppAutomationPrompt>[0]): string {
-  return `${buildAppAutomationPrompt(input)}Return a final response that matches the provided output schema when the scheduled Codex CLI run completes.\n`;
-}
-
-function buildDaemonCliOutputSchema(): Record<string, unknown> {
-  return {
-    type: "object",
-    properties: {
-      summary: { type: "string" },
-      status: {
-        type: "string",
-        enum: ["completed", "blocked", "needs_review", "needs_followup"]
-      },
-      blockers: {
-        type: "array",
-        items: { type: "string" }
-      },
-      checkpoint: {
-        type: "object",
-        properties: {
-          evidence_refs: {
-            type: "array",
-            items: { type: "string" }
-          },
-          next_actions: {
-            type: "array",
-            items: { type: "string" }
-          },
-          active_targets: {
-            type: "array",
-            items: { type: "string" }
-          },
-          open_gaps: {
-            type: "array",
-            items: { type: "string" }
-          },
-          compressed_context_summary: { type: "string" },
-          compressed_context_ref: { type: "string" },
-          compressed_context_source_refs: {
-            type: "array",
-            items: { type: "string" }
-          }
-        },
-        required: ["evidence_refs"],
-        additionalProperties: false
-      },
-      scope_request: {
-        type: "object",
-        properties: {
-          blocked_paths: {
-            type: "array",
-            items: { type: "string" }
-          },
-          requested_write_scope: {
-            type: "array",
-            items: { type: "string" }
-          },
-          reason: { type: "string" }
-        },
-        required: ["blocked_paths", "requested_write_scope"],
-        additionalProperties: false
-      }
-    },
-    required: ["summary", "status", "blockers"],
-    additionalProperties: false
-  };
-}
 
 function convertSupportedCronScheduleToSystemdOnCalendar(schedule: string): string | undefined {
   switch (schedule.trim()) {
@@ -4107,7 +4040,6 @@ async function writeDaemonCliSchedulerRequest(
 ): Promise<{
   requestPath: string;
   promptPath: string;
-  outputSchemaPath: string;
   runnable: boolean;
   manualReviewRequired: boolean;
 }> {
@@ -4115,8 +4047,7 @@ async function writeDaemonCliSchedulerRequest(
   await mkdir(daemonDir, { recursive: true });
   const requestPath = ".archon/work/daemon/cli-scheduler-request.json";
   const promptPath = ".archon/work/daemon/cli-scheduler-prompt.txt";
-  const outputSchemaPath = ".archon/work/daemon/cli-scheduler-output-schema.json";
-  const prompt = buildCliSchedulerPrompt({
+  const prompt = buildAppAutomationPrompt({
     envelope: input.envelope,
     cwd
   });
@@ -4195,7 +4126,6 @@ async function writeDaemonCliSchedulerRequest(
   return {
     requestPath,
     promptPath,
-    outputSchemaPath,
     runnable,
     manualReviewRequired
   };
@@ -4206,9 +4136,6 @@ async function clearDaemonCliSchedulerRequest(cwd: string): Promise<void> {
     force: true
   });
   await rm(path.join(cwd, ".archon", "work", "daemon", "cli-scheduler-prompt.txt"), {
-    force: true
-  });
-  await rm(path.join(cwd, ".archon", "work", "daemon", "cli-scheduler-output-schema.json"), {
     force: true
   });
 }
