@@ -1,4 +1,5 @@
 ---
+name: product-strategist
 description: "Turns raw ideas into a product brief, scope boundaries, user flows, milestones, and acceptance criteria."
 model: claude-opus-4-8
 effort: high

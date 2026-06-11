@@ -1,4 +1,5 @@
 ---
+name: docs-researcher
 description: "Verifies APIs, framework behavior, release notes, and standards from official or primary sources."
 model: claude-haiku-4-5-20251001
 effort: medium
