@@ -14,6 +14,10 @@ import {
 } from "./runtime/config.ts";
 import { createHashEmbeddingProvider } from "./runtime/hash-embedding-provider.ts";
 import {
+  createAnthropicEmbeddingProvider,
+  isAnthropicEmbeddingConfigured
+} from "./runtime/anthropic-embedding-provider.ts";
+import {
   captureRepoMarkdownSnapshot,
   DEFAULT_REPO_MARKDOWN_INCLUDE_PATHS,
   indexRepoMarkdown
@@ -452,6 +456,12 @@ async function verifyLiveMigrations() {
 async function createEmbeddingProvider(env: EnvShape = process.env): Promise<EmbeddingProvider> {
   const providerModulePath = env.ARCHON_EMBEDDING_PROVIDER_MODULE;
   if (!providerModulePath) {
+    if (isAnthropicEmbeddingConfigured(env)) {
+      return createAnthropicEmbeddingProvider({
+        apiKey: env.ANTHROPIC_API_KEY,
+        model: env.ARCHON_EMBEDDING_MODEL?.trim() || undefined
+      });
+    }
     return createHashEmbeddingProvider({
       model: env.ARCHON_EMBEDDING_MODEL?.trim() || undefined
     });
