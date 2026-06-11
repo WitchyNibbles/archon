@@ -145,8 +145,7 @@ function reviewContext(
 ): ReviewActionContext {
   return {
     actor: overrides.actor ?? `${actorRole}-actor`,
-    actorRole,
-    waiverAuthority: overrides.waiverAuthority ?? "none"
+    actorRole
   };
 }
 
@@ -208,11 +207,7 @@ function createEvalService(overrides: {
     const actorBinding = principalBinding.actors.find((binding) => binding.actor === actor);
     const nextActorBinding = {
       actor,
-      roles: [context.actorRole],
-      waiverAuthorities:
-        context.waiverAuthority && context.waiverAuthority !== "none"
-          ? [context.waiverAuthority]
-          : undefined
+      roles: [context.actorRole]
     };
 
     if (!actorBinding) {
@@ -221,7 +216,6 @@ function createEvalService(overrides: {
     }
 
     actorBinding.roles = nextActorBinding.roles;
-    actorBinding.waiverAuthorities = nextActorBinding.waiverAuthorities;
   }
 
   const service = new ArchonCoreService(
@@ -240,8 +234,7 @@ function createEvalService(overrides: {
                 };
               const context = registeredContexts.get(input.actor) ?? {
                 actor: input.actor,
-                actorRole: deriveActorRole(input.actor),
-                waiverAuthority: "none" as const
+                actorRole: deriveActorRole(input.actor)
               };
               upsertBinding(input.actor, context, principal);
               return principal;
@@ -1018,7 +1011,7 @@ export async function runOrchestrationBaseline(): Promise<OrchestrationEvalRepor
       (review) => review.runId === run.id && review.taskId === "plan" && review.reviewerRole === "qa_engineer",
       (review) => ({
         ...review,
-        identityAssurance: "legacy_backfill"
+        source: "self"
       })
     );
 

@@ -86,7 +86,7 @@ const managedDotClaudeMdBlock = `${DOT_CLAUDE_BEGIN}
 - current task id must match \`.archon/ACTIVE\`, the current brief, the current plan/task, and required review files
 - unresolved \`CRITICAL\` or \`HIGH\` security findings block completion
 - markdown review files are evidence summaries, not reviewer authority
-- authenticated reviewer identity and waiver authority must come from runtime policy or another authenticated principal-binding source
+- trusted reviewer identity and waivers must come from runtime orchestrator-written records or another runtime-trusted principal-binding source
 - branch from updated \`origin/main\` before task or plan work and prefer \`feature/\`, \`bugfix/\`, \`hotfix/\`, \`release/\`, \`chore/\`, \`refactor/\`, \`docs/\`, \`test/\`, \`ci/\`, or \`perf/\` prefixes unless a consuming repo overrides them
 - keep \`codex\` out of branch names, commit subjects, PR titles, and PR bodies
 - package owns \`src/\`, \`scripts/\`, \`.agents/\`, \`.claude/\`, \`.archon/rules/\`, and \`.archon/templates/\`

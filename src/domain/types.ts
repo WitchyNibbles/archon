@@ -25,7 +25,11 @@ export const taskStatuses = [
 export const reviewSeverities = ["low", "medium", "high", "critical"] as const;
 export const reviewStates = ["pending", "passed", "blocked", "waived"] as const;
 export const approvalDecisions = ["approved", "blocked", "waived"] as const;
-export const identityAssurances = ["authenticated", "legacy_backfill", "seeded"] as const;
+// Review/approval provenance: who wrote the record.
+// "orchestrator" = orchestrator-written DB record (trusted gate authority)
+// "seed" = synthetic local proof seed (never trusted as completion authority)
+// "self" = written by the task agent itself (never trusted for gates)
+export const reviewSources = ["orchestrator", "seed", "self"] as const;
 export const memoryScopes = ["global", "project"] as const;
 export const memoryTypes = ["fact", "decision", "pattern", "lesson"] as const;
 export const memoryStatuses = ["proposed", "approved", "rejected"] as const;
@@ -74,7 +78,6 @@ export const reasoningVerificationKinds = [
 export const reasoningVerificationStatuses = ["passed", "failed", "pending", "skipped"] as const;
 export const retrievalRoles = agentRoleIds;
 export const requiredGateReviews = ["reviewer", "security_reviewer", "qa_engineer"] as const;
-export const reviewWaiverAuthorities = ["none", "manager", "security_exception"] as const;
 export const uiSurfaces = ["none", "visual_change", "interactive_flow"] as const;
 export const qualityGates = [
   "council_review_required",
@@ -248,7 +251,7 @@ export type TaskStatus = (typeof taskStatuses)[number];
 export type ReviewSeverity = (typeof reviewSeverities)[number];
 export type ReviewState = (typeof reviewStates)[number];
 export type ApprovalDecision = (typeof approvalDecisions)[number];
-export type IdentityAssurance = (typeof identityAssurances)[number];
+export type ReviewSource = (typeof reviewSources)[number];
 export type UiSurface = (typeof uiSurfaces)[number];
 export type MemoryScope = (typeof memoryScopes)[number];
 export type MemoryType = (typeof memoryTypes)[number];
@@ -266,7 +269,6 @@ export type ReasoningVerificationKind = (typeof reasoningVerificationKinds)[numb
 export type ReasoningVerificationStatus = (typeof reasoningVerificationStatuses)[number];
 export type RetrievalRole = (typeof retrievalRoles)[number];
 export type GateReviewRole = (typeof requiredGateReviews)[number];
-export type ReviewWaiverAuthority = (typeof reviewWaiverAuthorities)[number];
 export type QualityGate = (typeof qualityGates)[number];
 export type RoutingRecommendationKind = (typeof routingRecommendationKinds)[number];
 export type ExecutionDirectiveKind = (typeof executionDirectiveKinds)[number];
@@ -479,13 +481,11 @@ export interface ReviewInput {
 export interface ReviewActionContext {
   actor: string;
   actorRole: RetrievalRole;
-  waiverAuthority?: ReviewWaiverAuthority | undefined;
 }
 
 declare const trustedReviewActionContextBrand: unique symbol;
 
 export interface TrustedReviewActionContext extends ReviewActionContext {
-  identityAssurance: "authenticated";
   readonly [trustedReviewActionContextBrand]: true;
 }
 
@@ -1008,13 +1008,12 @@ export interface ReviewRecord {
   reviewerRole: GateReviewRole;
   actor: string;
   actorRole: RetrievalRole;
-  identityAssurance: IdentityAssurance;
+  source: ReviewSource;
   state: ReviewState;
   severity: ReviewSeverity;
   findings: string[];
   waiverReason?: string | undefined;
   evidenceRefs?: string[] | undefined;
-  waiverAuthority: ReviewWaiverAuthority;
   createdAt: string;
 }
 
@@ -1024,7 +1023,7 @@ export interface ApprovalRecord {
   taskId: string;
   actor: string;
   actorRole: RetrievalRole;
-  identityAssurance: IdentityAssurance;
+  source: ReviewSource;
   decision: ApprovalDecision;
   rationale: string;
   createdAt: string;
