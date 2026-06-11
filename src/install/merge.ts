@@ -416,7 +416,6 @@ export function mergePackageJson(
   scripts["archon:checkpoint"] = `${archonEntry} checkpoint --format text`;
   scripts["archon:resume"] = `${archonEntry} resume --format text`;
   scripts["archon:seed-workflow-proof"] = `${archonEntry} seed-workflow-proof`;
-  scripts["archon:seed-modernization-proof"] = `${archonEntry} seed-modernization-proof`;
   scripts["archon:advance-active-task"] = `${archonEntry} advance-active-task --format text`;
   scripts["archon:reconcile"] = `${archonEntry} reconcile-runtime-state --apply --format text`;
   scripts["archon:sync-runtime-exports"] = `${archonEntry} sync-runtime-exports --format text`;
@@ -484,9 +483,3 @@ export function dotClaudeMdManagedBlock(): string {
 // Backward-compatibility aliases (devgod names → archon names)
 export const mergeAgentsMd = mergeClaudeMd;
 export const mergeDotAgentsMd = mergeDotClaudeMd;
-export const playwrightCodexConfigFragment = playwrightMcpConfigFragment;
-export const grafanaCodexConfigFragment = grafanaMcpConfigFragment;
-
-// mergeCodexConfig: devgod used TOML; archon uses JSON (mergeClaudeSettings + mergeMcpJson).
-// For backward compatibility, alias to mergeClaudeSettings which merges JSON settings.
-export const mergeCodexConfig = mergeClaudeSettings;

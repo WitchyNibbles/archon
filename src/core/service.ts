@@ -52,10 +52,6 @@ import {
   runRequiresAutonomousExecution,
   selectAutonomousNextTarget
 } from "../runtime/autonomous-execution.ts";
-import {
-  buildCoverageLedgerArtifacts,
-  type CoverageLedgerArtifacts
-} from "../runtime/coverage-ledger.ts";
 import { generateRepoInventory } from "../runtime/repo-inventory.ts";
 import { buildRuntimeTraceRegistry } from "../runtime/runtime-trace-registry.ts";
 import { annotateConflictSignals, isProvenancedSearchResult } from "./search-memory-results.ts";
@@ -1060,16 +1056,6 @@ export class ArchonCoreService {
     });
 
     return nextState;
-  }
-
-  async exportCoverageLedger(runId: string): Promise<CoverageLedgerArtifacts> {
-    const snapshot = await this.getStatus(runId);
-    const state = snapshot.autonomousExecution?.state;
-    if (!state?.manifest) {
-      throw new Error("coverage ledger export requires an autonomous execution manifest");
-    }
-
-    return buildCoverageLedgerArtifacts(state);
   }
 
   async getRuntimeTraceRegistry(runId: string): Promise<RuntimeTraceRegistrySummary> {
