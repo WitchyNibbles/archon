@@ -469,6 +469,107 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
   }
 }
 
+// Query orchestrator review records from the DB for a given task.
+// Returns array of {role, outcome, source} rows where source='orchestrator'.
+// Creates its own pg connection. Falls back silently if DB is unavailable.
+async function queryOrchestratorReviews(resolvedRepoRoot, taskId) {
+  const dotEnv = parseDotEnv(
+    await readTextIfExists(path.join(resolvedRepoRoot, ".env"))
+  );
+  const connectionString =
+    process.env.ARCHON_CORE_DATABASE_URL || dotEnv.ARCHON_CORE_DATABASE_URL;
+
+  if (!connectionString || !taskId) {
+    return [];
+  }
+
+  let client;
+  try {
+    const pgModule = await import("pg");
+    const Client = pgModule.Client ?? pgModule.default?.Client;
+    if (!Client) {
+      return [];
+    }
+
+    client = new Client({ connectionString });
+    await client.connect();
+
+    const result = await client.query(
+      `select reviewer_role as role, state as outcome, source
+       from reviews
+       where task_id = $1 and source = 'orchestrator'
+       order by created_at asc`,
+      [taskId]
+    );
+
+    return result.rows.map((row) => ({
+      role: typeof row.role === "string" ? row.role : "",
+      outcome: typeof row.outcome === "string" ? row.outcome : "",
+      source: "orchestrator"
+    }));
+  } catch {
+    // DB query failed — return empty so caller falls back to markdown check
+    return [];
+  } finally {
+    if (client) {
+      try {
+        await client.end();
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
+}
+
+// Build review context from markdown files (offline fallback).
+async function loadMarkdownReviewContext(resolvedRepoRoot, taskId, requiredRoles) {
+  const missingReviews = [];
+  const invalidReviews = [];
+  for (const role of requiredRoles) {
+    const relPath = reviewArtifactPath(taskId, role);
+    const content = await readTextIfExists(path.join(resolvedRepoRoot, relPath));
+    if (content === undefined) {
+      missingReviews.push(relPath);
+    } else {
+      const validation = validateReviewArtifact(content, taskId, role);
+      if (!validation.valid) {
+        invalidReviews.push(`${relPath} (${validation.reason})`);
+      }
+    }
+  }
+  return { missingReviews, invalidReviews };
+}
+
+// Build review context from DB orchestrator records.
+// source='self' records are ignored — only source='orchestrator' is trusted.
+// Returns null if no orchestrator records exist, so caller can decide to fall back.
+async function loadDbReviewContext(resolvedRepoRoot, taskId, requiredRoles) {
+  const rows = await queryOrchestratorReviews(resolvedRepoRoot, taskId);
+
+  // If DB returned nothing (offline or no records), return null to signal fallback
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const passedRoles = new Set(
+    rows.filter((r) => r.outcome === "passed").map((r) => r.role)
+  );
+  const failedRoles = rows
+    .filter((r) => r.outcome === "failed")
+    .map((r) => r.role);
+
+  const missingReviews = requiredRoles.filter(
+    (role) => !passedRoles.has(role) && !failedRoles.includes(role)
+  );
+
+  // Map failed roles to the same path-like format for UI consistency
+  const invalidReviews = failedRoles
+    .filter((role) => requiredRoles.includes(role))
+    .map((role) => `${reviewArtifactPath(taskId, role)} (orchestrator review outcome: failed)`);
+
+  return { missingReviews, invalidReviews };
+}
+
 export async function readActiveTaskContext(options = {}) {
   const resolvedRepoRoot =
     options && typeof options.repoRoot === "string" && options.repoRoot.trim().length > 0
@@ -624,17 +725,19 @@ export async function readActiveTaskContext(options = {}) {
   context.requiredReviews = requiredRoles;
   context.missingReviews = [];
   context.invalidReviews = [];
-  for (const role of requiredRoles) {
-    const relPath = reviewArtifactPath(context.activeTaskId, role);
-    const content = await readTextIfExists(path.join(resolvedRepoRoot, relPath));
-    if (content === undefined) {
-      context.missingReviews.push(relPath);
-    } else {
-      const validation = validateReviewArtifact(content, context.activeTaskId, role);
-      if (!validation.valid) {
-        context.invalidReviews.push(`${relPath} (${validation.reason})`);
-      }
+
+  if (requiredRoles.length > 0) {
+    // When runtime is connected, query DB for trusted orchestrator records.
+    // Fall back to markdown file check when offline or when DB has no records.
+    let reviewContext = null;
+    if (context.runtimeConnected) {
+      reviewContext = await loadDbReviewContext(resolvedRepoRoot, context.activeTaskId, requiredRoles);
     }
+    if (!reviewContext) {
+      reviewContext = await loadMarkdownReviewContext(resolvedRepoRoot, context.activeTaskId, requiredRoles);
+    }
+    context.missingReviews = reviewContext.missingReviews;
+    context.invalidReviews = reviewContext.invalidReviews;
   }
 
   const parsedVerificationRequired = parseVerificationRequired(taskMarkdown);
