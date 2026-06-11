@@ -1,4 +1,5 @@
 ---
+name: memory-curator
 description: "Captures durable project memory from completed work: decisions, patterns, lessons, and stable preferences."
 model: claude-haiku-4-5-20251001
 effort: medium

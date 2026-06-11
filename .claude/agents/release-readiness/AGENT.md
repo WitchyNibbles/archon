@@ -1,4 +1,5 @@
 ---
+name: release-readiness
 description: "Blocks package, migration, installer, and rollout changes that are not ready to ship."
 model: claude-sonnet-4-6
 effort: high

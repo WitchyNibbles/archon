@@ -1,4 +1,5 @@
 ---
+name: context-manager
 description: "Assembles retrieval context for agents: queries Qdrant, .archon/memory/, Postgres runtime records, and the Obsidian vault. Prioritizes canonical files over semantic hints."
 model: claude-haiku-4-5-20251001
 effort: medium

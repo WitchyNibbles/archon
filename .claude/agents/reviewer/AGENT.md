@@ -1,4 +1,5 @@
 ---
+name: reviewer
 description: "Reviews changes for correctness, regressions, and missing tests separate from security review."
 model: claude-sonnet-4-6
 effort: high

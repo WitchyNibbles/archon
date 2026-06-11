@@ -1,4 +1,5 @@
 ---
+name: compliance-reviewer
 description: "Reviews compliance-sensitive workflows, policy controls, auditability, and regulated-surface risks."
 model: claude-sonnet-4-6
 effort: high
