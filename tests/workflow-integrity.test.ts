@@ -692,7 +692,7 @@ function buildSeedHarness() {
   const store = new MemoryStore();
   const seededService = new ArchonCoreService(store, {
     resolveReviewActionContext: createWorkflowProofSeedResolver(),
-    reviewIdentityAssurance: "seeded"
+    reviewSource: "seed"
   });
   return { store, seededService };
 }
@@ -748,25 +748,25 @@ async function runSuccessfulSeed(
   return { runId: result.runId };
 }
 
-test("workflow integrity: seed flow records reviews with identityAssurance seeded", async () => {
+test("workflow integrity: seed flow records reviews with source seed", async () => {
   const { store, seededService } = buildSeedHarness();
   const { runId } = await runSuccessfulSeed(store, seededService, "task-seed-assurance");
 
   const reviews = await store.getReviews(runId, "task-seed-assurance");
   assert.ok(reviews.length > 0, "expected at least one recorded review");
   for (const review of reviews) {
-    assert.equal(review.identityAssurance, "seeded", `review for ${review.reviewerRole} should be seeded`);
+    assert.equal(review.source, "seed", `review for ${review.reviewerRole} should carry seed provenance`);
   }
 });
 
-test("workflow integrity: seed flow records approvals with identityAssurance seeded", async () => {
+test("workflow integrity: seed flow records approvals with source seed", async () => {
   const { store, seededService } = buildSeedHarness();
   const { runId } = await runSuccessfulSeed(store, seededService, "task-seed-approval-assurance");
 
   const approvals = await store.getApprovals(runId, "task-seed-approval-assurance");
   assert.ok(approvals.length > 0, "expected at least one recorded approval");
   for (const approval of approvals) {
-    assert.equal(approval.identityAssurance, "seeded", `approval should carry seeded assurance`);
+    assert.equal(approval.source, "seed", `approval should carry seed provenance`);
   }
 });
 
@@ -801,7 +801,7 @@ test("workflow integrity: standalone workflow-proof in default mode rejects seed
       }),
     (err: unknown) => {
       assert.ok(err instanceof Error, "expected an Error");
-      assert.match(err.message, /required review provenance is not authenticated/i);
+      assert.match(err.message, /required review provenance is not orchestrator-written/i);
       return true;
     }
   );
@@ -816,8 +816,8 @@ test("workflow integrity: standalone workflow-proof in default mode rejects seed
 
   const approvals = await store.getApprovals(runId, "task-approval-gate");
   assert.ok(
-    approvals.some((a) => a.identityAssurance === "seeded"),
-    "at least one approval should be seeded"
+    approvals.some((a) => a.source === "seed"),
+    "at least one approval should carry seed provenance"
   );
 
   await assert.rejects(
@@ -839,7 +839,7 @@ test("workflow integrity: standalone workflow-proof in default mode rejects seed
       // The review provenance gate fires before the approval gate.
       assert.match(
         err.message,
-        /provenance is not authenticated|must be authenticated approved/i
+        /provenance is not orchestrator-written|must be orchestrator-written approved/i
       );
       return true;
     }

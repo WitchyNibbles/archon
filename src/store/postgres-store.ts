@@ -848,9 +848,9 @@ export class PostgresStore implements ArchonStore {
     await this.client.query(
       `insert into reviews (
          id, workspace_id, project_id, run_id, task_id, reviewer_role, actor, actor_role,
-         identity_assurance, state, severity, findings, waiver_reason, evidence_refs, waiver_authority
+         source, state, severity, findings, waiver_reason, evidence_refs
        )
-       select $1, r.workspace_id, r.project_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+       select $1, r.workspace_id, r.project_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
        from runs r
        where r.id = $2`,
       [
@@ -860,13 +860,12 @@ export class PostgresStore implements ArchonStore {
         review.reviewerRole,
         review.actor,
         review.actorRole,
-        review.identityAssurance,
+        review.source,
         review.state,
         review.severity,
         review.findings,
         review.waiverReason ?? null,
-        review.evidenceRefs ?? [],
-        review.waiverAuthority
+        review.evidenceRefs ?? []
       ]
     );
   }
@@ -880,13 +879,12 @@ export class PostgresStore implements ArchonStore {
           'reviewerRole', reviewer_role,
           'actor', actor,
           'actorRole', actor_role,
-          'identityAssurance', identity_assurance,
+          'source', source,
           'state', state,
           'severity', severity,
           'findings', findings,
           'waiverReason', waiver_reason,
           'evidenceRefs', evidence_refs,
-          'waiverAuthority', waiver_authority,
           'createdAt', created_at
        ) as payload
        from reviews
@@ -926,11 +924,10 @@ export class PostgresStore implements ArchonStore {
     await this.client.query(
       `insert into reviews (
          id, workspace_id, project_id, run_id, task_id, reviewer_role, actor, actor_role,
-         identity_assurance, state, severity, findings, waiver_reason, evidence_refs,
-         waiver_authority, source
+         state, severity, findings, waiver_reason, evidence_refs, source
        )
        values ($1, $2, $3, null, $4, $5, 'review-orchestrator', 'reviewer',
-               'seeded', $6, 'low', $7, null, '{}', 'none', 'orchestrator')`,
+               $6, 'low', $7, null, '{}', 'orchestrator')`,
       [
         id,
         input.workspaceId,
@@ -946,7 +943,7 @@ export class PostgresStore implements ArchonStore {
   async saveApproval(approval: ApprovalRecord): Promise<void> {
     await this.client.query(
       `insert into approvals (
-         id, workspace_id, project_id, run_id, task_id, actor, actor_role, identity_assurance, decision, rationale
+         id, workspace_id, project_id, run_id, task_id, actor, actor_role, source, decision, rationale
        )
        select $1, r.workspace_id, r.project_id, $2, $3, $4, $5, $6, $7, $8
        from runs r
@@ -957,7 +954,7 @@ export class PostgresStore implements ArchonStore {
         approval.taskId,
         approval.actor,
         approval.actorRole,
-        approval.identityAssurance,
+        approval.source,
         approval.decision,
         approval.rationale
       ]
@@ -972,7 +969,7 @@ export class PostgresStore implements ArchonStore {
           'taskId', task_id,
           'actor', actor,
           'actorRole', actor_role,
-          'identityAssurance', identity_assurance,
+          'source', source,
           'decision', decision,
           'rationale', rationale,
           'createdAt', created_at

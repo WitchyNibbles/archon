@@ -337,8 +337,8 @@ async function verifySetup() {
            or (table_name = 'memory_entries' and column_name in ('metadata'))
            or (table_name = 'handoffs' and column_name in ('owner_role', 'completion_standard', 'execution_evidence', 'quality_gate_evidence'))
            or
-           (table_name = 'reviews' and column_name in ('actor', 'actor_role', 'waiver_authority', 'identity_assurance'))
-           or (table_name = 'approvals' and column_name in ('actor', 'actor_role', 'identity_assurance'))
+           (table_name = 'reviews' and column_name in ('actor', 'actor_role', 'source'))
+           or (table_name = 'approvals' and column_name in ('actor', 'actor_role', 'source'))
          )`
     );
 
@@ -351,11 +351,10 @@ async function verifySetup() {
       "handoffs.quality_gate_evidence",
       "reviews.actor",
       "reviews.actor_role",
-      "reviews.waiver_authority",
-      "reviews.identity_assurance",
+      "reviews.source",
       "approvals.actor",
       "approvals.actor_role",
-      "approvals.identity_assurance"
+      "approvals.source"
     ]);
 
     for (const row of columnsResult.rows) {
@@ -987,7 +986,7 @@ interface ExecuteReportCommandOptions extends ExecuteStatusCommandOptions {
     createdAt: string;
     actor: string;
     actorRole: RetrievalRole;
-    identityAssurance: "authenticated" | "legacy_backfill" | "seeded";
+    source: "orchestrator" | "seed" | "self";
     decision: string;
   }[]>;
   getLoopHistory?: ((runId: string, limit: number) => Promise<readonly SearchMemoryResult[]>) | undefined;
@@ -7294,10 +7293,10 @@ export async function executeWorkflowProofCommandFromArgs(
   }
 
   if (options.integrityCheckMode !== "allow_seed_failure_recovery") {
-    const seededReviews = latestReviews.filter((review) => review.identityAssurance !== "authenticated");
-    if (seededReviews.length > 0) {
-      const details = seededReviews.map((review) => `reviewer=${review.identityAssurance}`).join(", ");
-      throw new Error(`Task ${taskId} required review provenance is not authenticated: ${details}`);
+    const untrustedReviews = latestReviews.filter((review) => review.source !== "orchestrator");
+    if (untrustedReviews.length > 0) {
+      const details = untrustedReviews.map((review) => `reviewer=${review.source}`).join(", ");
+      throw new Error(`Task ${taskId} required review provenance is not orchestrator-written: ${details}`);
     }
   }
 
@@ -7308,12 +7307,12 @@ export async function executeWorkflowProofCommandFromArgs(
     throw new Error(`Task ${taskId} is missing a runtime approval record`);
   }
   const allowSeededApproval = options.integrityCheckMode === "allow_seed_failure_recovery";
-  const approvalAssuranceOk =
-    latestApproval.identityAssurance === "authenticated" ||
-    (allowSeededApproval && latestApproval.identityAssurance === "seeded");
-  if (!approvalAssuranceOk || latestApproval.decision !== "approved") {
+  const approvalProvenanceOk =
+    latestApproval.source === "orchestrator" ||
+    (allowSeededApproval && latestApproval.source === "seed");
+  if (!approvalProvenanceOk || latestApproval.decision !== "approved") {
     throw new Error(
-      `Task ${taskId} latest runtime approval must be authenticated approved, found ${latestApproval.identityAssurance} ${latestApproval.decision}`
+      `Task ${taskId} latest runtime approval must be orchestrator-written approved, found ${latestApproval.source} ${latestApproval.decision}`
     );
   }
 
@@ -10294,7 +10293,7 @@ async function seedWorkflowProofCommand(args: readonly string[]) {
     const store = new PostgresStore(client);
     const service = new ArchonCoreService(store, {
       resolveReviewActionContext: createWorkflowProofSeedResolver(),
-      reviewIdentityAssurance: "seeded"
+      reviewSource: "seed"
     });
     const result = await executeSeedWorkflowProofCommandFromArgs(args, {
       cwd: process.cwd(),

@@ -1,6 +1,6 @@
 {
   "project_status": "active",
-  "current_task_id": null,
+  "current_task_id": "archon-remediation-p9",
   "tasks": [
     {
       "id": "audit-hardening",

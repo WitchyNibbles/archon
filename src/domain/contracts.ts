@@ -1,7 +1,6 @@
 import {
   type HandoffInput,
   type GateReviewRole,
-  type IdentityAssurance,
   type IntakeRequestInput,
   type IntakeSummary,
   type MemoryPromotionInput,
@@ -11,7 +10,6 @@ import {
   type TrustedReviewActionContext,
   type RetrievalMetadata,
   type RetrievalRole,
-  type ReviewWaiverAuthority,
   type SearchMemoryInput,
   type StopGoDecision,
   type CompletionStandard,
@@ -25,7 +23,6 @@ import {
   type QualityGate,
   type UiSurface,
   completionStandards,
-  identityAssurances,
   qualityGates,
   reasoningAttemptOutcomes,
   reasoningConfidenceLevels,
@@ -36,7 +33,6 @@ import {
   reasoningWorkflowModes,
   reviewSeverities,
   reviewStates,
-  reviewWaiverAuthorities,
   requiredGateReviews,
   uiSurfaces,
   retrievalRoles,
@@ -50,8 +46,6 @@ const retrievalRoleSet = new Set<string>(retrievalRoles);
 const requiredGateReviewSet = new Set<string>(requiredGateReviews);
 const reviewSeveritySet = new Set<string>(reviewSeverities);
 const reviewStateSet = new Set<string>(reviewStates);
-const reviewWaiverAuthoritySet = new Set<string>(reviewWaiverAuthorities);
-const identityAssuranceSet = new Set<string>(identityAssurances);
 const completionStandardSet = new Set<string>(completionStandards);
 const uiSurfaceSet = new Set<string>(uiSurfaces);
 const qualityGateSet = new Set<string>(qualityGates);
@@ -219,14 +213,6 @@ export function isReviewState(value: string): value is ReviewInput["state"] {
   return reviewStateSet.has(value);
 }
 
-export function isReviewWaiverAuthority(value: string): value is ReviewWaiverAuthority {
-  return reviewWaiverAuthoritySet.has(value);
-}
-
-export function isIdentityAssurance(value: string): value is IdentityAssurance {
-  return identityAssuranceSet.has(value);
-}
-
 export function isCompletionStandard(value: string): value is CompletionStandard {
   return completionStandardSet.has(value);
 }
@@ -362,20 +348,18 @@ function validateReasoningVerdict(verdict: ReasoningVerdict | undefined, label: 
   return errors;
 }
 
+// Waiver capability is derived from the actor role recorded by the orchestrator:
+// manager-track roles (planner, solution_architect) may waive reviewer and qa gates;
+// only the security_reviewer role may waive the security gate.
 export function canActorWaiveReview(input: {
   actorRole: RetrievalRole;
   reviewerRole: GateReviewRole;
-  waiverAuthority: ReviewWaiverAuthority;
 }): boolean {
-  if (input.waiverAuthority === "manager") {
-    return managerWaiverRoles.has(input.actorRole) && input.reviewerRole !== "security_reviewer";
+  if (input.reviewerRole === "security_reviewer") {
+    return input.actorRole === "security_reviewer";
   }
 
-  if (input.waiverAuthority === "security_exception") {
-    return input.actorRole === "security_reviewer" && input.reviewerRole === "security_reviewer";
-  }
-
-  return false;
+  return managerWaiverRoles.has(input.actorRole);
 }
 
 export function defaultRetrievalRoles(): RetrievalRole[] {
@@ -809,7 +793,6 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
   }
 
   const normalizedActor = context.actor.trim();
-  const waiverAuthority = context.waiverAuthority ?? "none";
 
   if (normalizedActor.length === 0) {
     errors.push("review actor is required");
@@ -829,10 +812,6 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
 
   if (!isReviewSeverity(review.severity)) {
     errors.push(`review severity must be one of: ${reviewSeverities.join(", ")}`);
-  }
-
-  if (!isReviewWaiverAuthority(waiverAuthority)) {
-    errors.push(`waiverAuthority must be one of: ${reviewWaiverAuthorities.join(", ")}`);
   }
 
   if (!Array.isArray(review.findings)) {
@@ -869,25 +848,17 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
       errors.push("waived reviews require waiverReason");
     }
 
-    if (waiverAuthority === "none") {
-      errors.push("waived reviews require waiverAuthority");
-    } else if (
+    if (
       isRetrievalRole(context.actorRole) &&
       isGateReviewRole(review.reviewerRole) &&
-      isReviewWaiverAuthority(waiverAuthority) &&
       !canActorWaiveReview({
         actorRole: context.actorRole,
-        reviewerRole: review.reviewerRole,
-        waiverAuthority
+        reviewerRole: review.reviewerRole
       })
     ) {
       errors.push(`actorRole ${context.actorRole} is not allowed to waive ${review.reviewerRole}`);
     }
   } else {
-    if (waiverAuthority !== "none") {
-      errors.push("non-waived reviews must use waiverAuthority none");
-    }
-
     if (isRetrievalRole(context.actorRole) && context.actorRole !== review.reviewerRole) {
       errors.push(`actorRole ${context.actorRole} cannot record ${review.reviewerRole} review state ${review.state}`);
     }
@@ -897,7 +868,7 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
 }
 
 export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
-  if (review.identityAssurance !== "authenticated") {
+  if (review.source !== "orchestrator") {
     return false;
   }
 
@@ -917,10 +888,6 @@ export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
     return false;
   }
 
-  if (!isReviewWaiverAuthority(review.waiverAuthority)) {
-    return false;
-  }
-
   if (review.state === "passed") {
     if (review.findings.length > 0) {
       return false;
@@ -933,7 +900,7 @@ export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
       return false;
     }
 
-    return review.actorRole === review.reviewerRole && review.waiverAuthority === "none";
+    return review.actorRole === review.reviewerRole;
   }
 
   if (review.state !== "waived") {
@@ -944,14 +911,9 @@ export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
     return false;
   }
 
-  if (review.waiverAuthority === "none") {
-    return false;
-  }
-
   return canActorWaiveReview({
     actorRole: review.actorRole,
-    reviewerRole: review.reviewerRole,
-    waiverAuthority: review.waiverAuthority
+    reviewerRole: review.reviewerRole
   });
 }
 

@@ -114,7 +114,10 @@ export interface HandoffLifecycleEvent {
 
 export interface ArchonCoreServiceOptions {
   resolveReviewActionContext?: ResolveReviewActionContext | undefined;
-  reviewIdentityAssurance?: "authenticated" | "seeded" | undefined;
+  // Provenance recorded on reviews/approvals written through this service.
+  // "orchestrator" (default) marks orchestrator-written records; "seed" marks
+  // synthetic local proof seeds that are never trusted as completion authority.
+  reviewSource?: "orchestrator" | "seed" | undefined;
   onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
 }
 
@@ -585,13 +588,13 @@ function deriveRunStatus(tasks: readonly TaskRecord[]): RunRecord["status"] {
 export class ArchonCoreService {
   private readonly store: ArchonStore;
   private readonly resolveReviewActionContext?: ResolveReviewActionContext | undefined;
-  private readonly reviewIdentityAssurance: "authenticated" | "seeded";
+  private readonly reviewSource: "orchestrator" | "seed";
   private readonly onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
     this.resolveReviewActionContext = options.resolveReviewActionContext;
-    this.reviewIdentityAssurance = options.reviewIdentityAssurance ?? "authenticated";
+    this.reviewSource = options.reviewSource ?? "orchestrator";
     this.onHandoff = options.onHandoff;
   }
 
@@ -1410,13 +1413,12 @@ export class ArchonCoreService {
       reviewerRole: review.reviewerRole,
       actor: context.actor,
       actorRole: context.actorRole,
-      identityAssurance: this.reviewIdentityAssurance,
+      source: this.reviewSource,
       state: review.state,
       severity: review.severity,
       findings: [...review.findings],
       waiverReason: review.waiverReason,
       evidenceRefs: [...(review.evidenceRefs ?? [])],
-      waiverAuthority: context.waiverAuthority ?? "none",
       createdAt: timestamp()
     };
 
@@ -1430,7 +1432,7 @@ export class ArchonCoreService {
       taskId,
       actor: context.actor,
       actorRole: context.actorRole,
-      identityAssurance: this.reviewIdentityAssurance,
+      source: this.reviewSource,
       decision: decision.decision,
       rationale:
         decision.blockers.length > 0 ? decision.blockers.join("; ") : "All required reviews passed",
