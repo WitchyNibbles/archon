@@ -17,7 +17,7 @@ Goal: ship the smallest clean increment without bypassing gates.
 6. Move completed work into `reviewer`, `qa_engineer`, and `security_reviewer` handoff.
 7. Capture owner role, completion standard, specialist evidence, and quality-gate evidence.
 8. The manager persists review gate files under `.archon/work/reviews/` when the reviewer roles are read-only.
-9. Run `bash scripts/check-archon-workflow.sh --task-id <task-id>` before claiming the substantive slice is complete.
+9. Run `node --experimental-strip-types scripts/check-archon-workflow.ts --task-id <task-id>` before claiming the substantive slice is complete.
 10. Promote only reviewed durable memory.
 
 ## Agent routing

@@ -774,8 +774,8 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
       overwriteManaged: true
     },
     {
-      source: path.join(sourceRoot, "scripts/check-archon-workflow.sh"),
-      target: "scripts/check-archon-workflow.sh",
+      source: path.join(sourceRoot, "scripts/check-archon-workflow.ts"),
+      target: "scripts/check-archon-workflow.ts",
       overwriteManaged: true
     },
     {
@@ -2253,7 +2253,7 @@ export async function scaffoldWorkflowArtifacts(options: WorkflowScaffoldOptions
     nextSteps: [
       "Fill in the brief and task packet with real request, scope, and verification details.",
       "Run specialists and replace pending review skeletons with real gate output.",
-      `Run bash scripts/check-archon-workflow.sh --task-id ${options.taskId} after required reviews pass.`,
+      `Run node --experimental-strip-types scripts/check-archon-workflow.ts --task-id ${options.taskId} after required reviews pass.`,
       `Use npm run archon:check:happy-path -- --task-id ${options.taskId} only after the workflow is review-complete.`
     ]
   };
@@ -2343,7 +2343,7 @@ export async function upgradeReasoningWorkflowArtifacts(options: {
       nextSteps: [
         "Task already contains reasoning hardening sections.",
         `If you want to rewrite the task packet in ${options.mode} mode anyway, rerun with --force.`,
-        `Run bash scripts/check-archon-workflow.sh --task-id ${options.taskId} after updating the content.`
+        `Run node --experimental-strip-types scripts/check-archon-workflow.ts --task-id ${options.taskId} after updating the content.`
       ]
     };
   }
@@ -2362,7 +2362,7 @@ export async function upgradeReasoningWorkflowArtifacts(options: {
     nextSteps: [
       `Fill the backfilled reasoning attempt, verification, and verdict sections with real evidence for ${options.taskId}.`,
       `If this task should hard-block on reasoning quality, keep mode \`${options.mode}\` and add passed critic verification plus a supported verdict.`,
-      `Run bash scripts/check-archon-workflow.sh --task-id ${options.taskId} after the upgraded packet is complete.`
+      `Run node --experimental-strip-types scripts/check-archon-workflow.ts --task-id ${options.taskId} after the upgraded packet is complete.`
     ]
   };
 }

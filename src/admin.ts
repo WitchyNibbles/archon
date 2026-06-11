@@ -432,8 +432,8 @@ async function verifyLiveMigrations() {
       targetRoot: fixtureRoot
     });
 
-    const driftTarget = path.join(fixtureRoot, "scripts", "check-archon-workflow.sh");
-    const driftedContent = `${await readFile(driftTarget, "utf8")}# local drift\n`;
+    const driftTarget = path.join(fixtureRoot, "scripts", "check-archon-workflow.ts");
+    const driftedContent = `${await readFile(driftTarget, "utf8")}// local drift\n`;
     await writeFile(driftTarget, driftedContent, "utf8");
     await rm(path.join(fixtureRoot, ".archon", "install-manifest.json"));
 

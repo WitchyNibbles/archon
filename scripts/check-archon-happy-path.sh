@@ -92,7 +92,7 @@ done
 
 bindings_file="$repo_root/.archon/review-identity-bindings.json"
 adapter_file="$repo_root/archon/review-identity-adapter.ts"
-workflow_export_file="$repo_root/scripts/check-archon-workflow.sh"
+workflow_export_file="$repo_root/scripts/check-archon-workflow.ts"
 package_file="$repo_root/package.json"
 playwright_config_file="$repo_root/.archon/playwright/mcp.json"
 playwright_vision_config_file="$repo_root/.archon/playwright/mcp.vision.json"

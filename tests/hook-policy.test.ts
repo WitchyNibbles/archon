@@ -1145,13 +1145,16 @@ test("evaluateStop: required verification missing → stop held naming missing c
     activeTaskId: "task-1",
     missingReviews: [],
     verificationRequired: true,
-    requiredVerifications: ["npm run test", "bash scripts/check-archon-workflow.sh"],
+    requiredVerifications: ["npm run test", "node --experimental-strip-types scripts/check-archon-workflow.ts"],
     verificationCert: CERT_PRESENT
   };
   const result = evaluateStop(stopPayload(COMPLETION_MSG), ctx);
   assert.ok(result, "expected stop to be held");
   assert.equal(result.continue, false);
-  assert.ok(result.stopReason.includes("bash scripts/check-archon-workflow.sh"), `stopReason should name missing command: ${result.stopReason}`);
+  assert.ok(
+    result.stopReason.includes("node --experimental-strip-types scripts/check-archon-workflow.ts"),
+    `stopReason should name missing command: ${result.stopReason}`
+  );
 });
 
 test("evaluateStop: mid-task message + no cert → shouldHoldStop fires, verification gate silent", () => {
@@ -1340,8 +1343,15 @@ test("GAP-1: tsc --noEmit exit 0 with empty output DOES qualify for cert (typech
   assert.equal(qualifiesForVerificationCert("tsc --noEmit", ""), true);
 });
 
-test("GAP-1: bash scripts/check-archon-workflow.sh exit 0 DOES qualify for cert", () => {
-  assert.equal(qualifiesForVerificationCert("bash scripts/check-archon-workflow.sh", ""), true);
+test("GAP-1: node --experimental-strip-types scripts/check-archon-workflow.ts exit 0 DOES qualify for cert", () => {
+  assert.equal(
+    qualifiesForVerificationCert("node --experimental-strip-types scripts/check-archon-workflow.ts", ""),
+    true
+  );
+});
+
+test("GAP-1: bash scripts/check-archon-happy-path.sh exit 0 DOES qualify for cert", () => {
+  assert.equal(qualifiesForVerificationCert("bash scripts/check-archon-happy-path.sh", ""), true);
 });
 
 // ─── GAP-1: evaluatePostToolUse cert-minting with output evidence ─────────────

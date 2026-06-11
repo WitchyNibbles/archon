@@ -36,7 +36,7 @@ cat > "$fixture_root/.codex/hooks.json" <<'EOF'
 EOF
 
 cat > "$fixture_root/package.json" <<'EOF'
-{"scripts":{"archon:check-workflow":"bash scripts/check-archon-workflow.sh"}}
+{"scripts":{"archon:check-workflow":"node --experimental-strip-types scripts/check-archon-workflow.ts"}}
 EOF
 
 cat > "$fixture_root/.archon/ACTIVE" <<EOF
@@ -133,9 +133,9 @@ Synthetic ${full_role} output.
 EOF
 done
 
-cp "$repo_root/scripts/check-archon-workflow.sh" "$fixture_root/scripts/check-archon-workflow.sh"
+cp "$repo_root/scripts/check-archon-workflow.ts" "$fixture_root/scripts/check-archon-workflow.ts"
 
-positive_output="$(bash "$fixture_root/scripts/check-archon-workflow.sh" --repo-root "$fixture_root" --task-id "$task_id")"
+positive_output="$(node --experimental-strip-types "$fixture_root/scripts/check-archon-workflow.ts" --repo-root "$fixture_root" --task-id "$task_id")"
 printf '%s\n' "$positive_output" | grep -Fq "archon workflow artifact check passed" || {
   printf 'positive fixture did not pass as expected\n' >&2
   exit 1
@@ -202,7 +202,7 @@ Synthetic waived qa output.
 EOF
 rm "$fixture_root/.archon/work/reviews/review-$task_id-qa.md"
 
-waived_output="$(bash "$fixture_root/scripts/check-archon-workflow.sh" --repo-root "$fixture_root" --task-id "$task_id")"
+waived_output="$(node --experimental-strip-types "$fixture_root/scripts/check-archon-workflow.ts" --repo-root "$fixture_root" --task-id "$task_id")"
 printf '%s\n' "$waived_output" | grep -Fq "archon workflow artifact check passed" || {
   printf 'waived fixture did not pass as expected\n' >&2
   exit 1
@@ -269,7 +269,7 @@ Synthetic waived security output with runtime review citation.
 EOF
 rm "$fixture_root/.archon/work/reviews/review-$task_id-security.md"
 
-security_waiver_output="$(bash "$fixture_root/scripts/check-archon-workflow.sh" --repo-root "$fixture_root" --task-id "$task_id")"
+security_waiver_output="$(node --experimental-strip-types "$fixture_root/scripts/check-archon-workflow.ts" --repo-root "$fixture_root" --task-id "$task_id")"
 printf '%s\n' "$security_waiver_output" | grep -Fq "archon workflow artifact check passed" || {
   printf 'security waiver fixture did not pass as expected\n' >&2
   exit 1
@@ -335,7 +335,7 @@ None.
 Synthetic high severity security output.
 EOF
 
-if bash "$fixture_root/scripts/check-archon-workflow.sh" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
+if node --experimental-strip-types "$fixture_root/scripts/check-archon-workflow.ts" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
   printf 'high severity security review fixture unexpectedly passed\n' >&2
   exit 1
 fi
@@ -400,7 +400,7 @@ None.
 Synthetic critical severity security output.
 EOF
 
-if bash "$fixture_root/scripts/check-archon-workflow.sh" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
+if node --experimental-strip-types "$fixture_root/scripts/check-archon-workflow.ts" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
   printf 'critical severity security review fixture unexpectedly passed\n' >&2
   exit 1
 fi
@@ -525,7 +525,7 @@ Synthetic invalid reviewer waiver reason.
 Synthetic invalid reviewer waiver output.
 EOF
 
-if bash "$fixture_root/scripts/check-archon-workflow.sh" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
+if node --experimental-strip-types "$fixture_root/scripts/check-archon-workflow.ts" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
   printf 'invalid reviewer waiver fixture unexpectedly passed\n' >&2
   exit 1
 fi
@@ -590,7 +590,7 @@ None.
 Invalid provenance summary output.
 EOF
 
-if bash "$fixture_root/scripts/check-archon-workflow.sh" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
+if node --experimental-strip-types "$fixture_root/scripts/check-archon-workflow.ts" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
   printf 'invalid provenance fixture unexpectedly passed\n' >&2
   exit 1
 fi
@@ -663,14 +663,14 @@ cat > "$fixture_root/.archon/work/briefs/brief-unrelated-task.md" <<'EOF'
 `task-unrelated`
 EOF
 
-pass_with_unrelated="$(bash "$fixture_root/scripts/check-archon-workflow.sh" --repo-root "$fixture_root" --task-id "$task_id")"
+pass_with_unrelated="$(node --experimental-strip-types "$fixture_root/scripts/check-archon-workflow.ts" --repo-root "$fixture_root" --task-id "$task_id")"
 printf '%s\n' "$pass_with_unrelated" | grep -Fq "archon workflow artifact check passed" || {
   printf 'unrelated-newer-artifact fixture did not pass as expected\n' >&2
   exit 1
 }
 
 rm "$fixture_root/.archon/work/reviews/review-$task_id-security_reviewer.md"
-if bash "$fixture_root/scripts/check-archon-workflow.sh" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
+if node --experimental-strip-types "$fixture_root/scripts/check-archon-workflow.ts" --repo-root "$fixture_root" --task-id "$task_id" >/dev/null 2>&1; then
   printf 'negative fixture unexpectedly passed\n' >&2
   exit 1
 fi

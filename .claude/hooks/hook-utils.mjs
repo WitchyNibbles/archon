@@ -26,6 +26,7 @@ const verificationCommandPatterns = [
   /\btsc\b/,
   /\bnode\b.*\s--test\b/,
   /\bbash\s+scripts\/check-/,
+  /\bnode\s+(?:--experimental-strip-types\s+)?scripts\/check-/,
   /\barchon:verify\b/
 ];
 const readOnlyCommandSegmentPatterns = [
@@ -1052,8 +1053,12 @@ export function qualifiesForVerificationCert(command, output) {
     return true;
   }
 
-  // bash scripts/check-* and archon:verify: no output requirement (fail loudly on their own)
-  if (/\bbash\s+scripts\/check-/.test(command) || /\barchon:verify\b/.test(command)) {
+  // bash/node scripts/check-* and archon:verify: no output requirement (fail loudly on their own)
+  if (
+    /\bbash\s+scripts\/check-/.test(command) ||
+    /\bnode\s+(?:--experimental-strip-types\s+)?scripts\/check-/.test(command) ||
+    /\barchon:verify\b/.test(command)
+  ) {
     return true;
   }
 
