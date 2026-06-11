@@ -1,3 +1,2 @@
-task_id=archon-remediation-p8
 workflow=archon
-state=active
+state=idle
