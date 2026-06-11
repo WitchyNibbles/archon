@@ -101,18 +101,13 @@ import type { ResolveReviewActionContext } from "./core/review-context.ts";
 import { annotateConflictSignals } from "./core/search-memory-results.ts";
 import type {
   ApprovalRecord,
-  ArchitectureDecisionRecord,
   AutonomousExecutionState,
   CheckpointRecord,
-  ComprehensionSummary,
   ContinuationAction,
   CoverageGapRecord,
   CoverageItemRecord,
-  DuplicateFamilyRecord,
   HandoffInput,
   IntakeRequestInput,
-  MigrationLedgerEntryRecord,
-  ParityRequirementRecord,
   ProjectRuntimeStateRecord,
   ProgressProofRecord,
   RecoveryApplyResult,
@@ -129,8 +124,7 @@ import type {
   SearchMemoryResult,
   RunStatusSnapshot,
   TaskPacketInput,
-  TaskStatus,
-  UnderstandingMapRecord
+  TaskStatus
 } from "./domain/types.ts";
 import type { WorkspaceRecord } from "./domain/types.ts";
 import type { ExportDocsCommandResult } from "./docs-export/models.ts";
@@ -1054,40 +1048,6 @@ export interface SeedWorkflowProofResult extends WorkflowProofResult {
   mode: "local_workflow_proof_seed";
   workspaceSlug: string;
   projectSlug: string;
-}
-
-interface ExecuteSeedModernizationProofCommandOptions extends ExecuteSeedWorkflowProofCommandOptions {
-  configureAutonomousExecution: (
-    runId: string,
-    input: Pick<AutonomousExecutionState, "profile" | "phase" | "manifest">
-  ) => Promise<unknown>;
-  upsertCoverageItems: (runId: string, items: CoverageItemRecord[]) => Promise<unknown>;
-  upsertUnderstandingMaps: (runId: string, maps: UnderstandingMapRecord[]) => Promise<unknown>;
-  upsertRuntimeTraces: (
-    runId: string,
-    traces: NonNullable<AutonomousExecutionState["runtimeTraces"]>
-  ) => Promise<unknown>;
-  upsertDuplicateFamilies: (runId: string, records: DuplicateFamilyRecord[]) => Promise<unknown>;
-  upsertArchitectureDecisions: (runId: string, records: ArchitectureDecisionRecord[]) => Promise<unknown>;
-  upsertMigrationLedgerEntries: (runId: string, records: MigrationLedgerEntryRecord[]) => Promise<unknown>;
-  upsertParityRequirements: (runId: string, records: ParityRequirementRecord[]) => Promise<unknown>;
-}
-
-export interface SeedModernizationProofResult extends WorkflowProofResult {
-  mode: "local_modernization_proof_seed";
-  workspaceSlug: string;
-  projectSlug: string;
-  autonomous: {
-    profile: AutonomousExecutionState["profile"];
-    phase: AutonomousExecutionState["phase"];
-    readinessScope: ComprehensionSummary["readinessScope"];
-    rewriteReadiness: ComprehensionSummary["rewriteReadiness"];
-    missingArtifactKinds: ComprehensionSummary["missingArtifactKinds"];
-    duplicateFamilyCount: number;
-    architectureDecisionCount: number;
-    migrationLedgerCount: number;
-    parityRequirementCount: number;
-  };
 }
 
 interface ExecuteReconcileRuntimeStateCommandOptions extends ExecuteLoopCommandOptions {
@@ -7534,180 +7494,6 @@ function buildWorkflowProofSeedTaskPacket(taskId: string): TaskPacketInput {
   };
 }
 
-function buildModernizationProofSeedTaskPacket(taskId: string): TaskPacketInput {
-  return {
-    taskId,
-    title: `Local modernization proof seed for ${taskId}`,
-    ownerRole: "qa_engineer",
-    completionStandard: "specialist_verified",
-    requiredSpecialistRoles: ["qa_engineer", "reviewer", "security_reviewer"],
-    qualityGates: [
-      "coverage_ledger_required",
-      "progress_proof_required",
-      "setup_replay_required",
-      "release_readiness_required"
-    ],
-    goal: `Seed authoritative runtime modernization proof for ${taskId}`,
-    inputs: ["installed repo workflow artifacts", "runtime store", "modernization evidence scaffold"],
-    outputs: ["approved modernization proof run", "ready modernization summary"],
-    dependencies: [],
-    allowedWriteScope: [".archon/work", "runtime://authoritative-state"],
-    outOfScope: ["production deploys", "destructive data migration"],
-    acceptanceCriteria: [
-      `workflow-proof resolves ${taskId} from the latest runtime run`,
-      "status reports modernization_program rewrite readiness as ready",
-      "duplicate-family, architecture, migration, and parity evidence are present in runtime state"
-    ],
-    verificationSteps: [
-      `node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id ${taskId}`,
-      "node --experimental-strip-types src/admin.ts status",
-      "node --experimental-strip-types src/admin.ts report --format json"
-    ],
-    uiSurface: "none",
-    playwrightRequired: false,
-    requiredReviews: ["reviewer", "security_reviewer", "qa_engineer"],
-    securityChecks: [
-      "use the trusted review-context resolver",
-      "keep the seed path explicit and local-development oriented",
-      "do not leak package-repo runtime state into the installed target"
-    ],
-    antiPatterns: ["profile-limited rewrite claims", "summary-only modernization evidence"],
-    rollbackNotes: "delete the seeded runtime run if local modernization proof state must be reset",
-    handoffFormat: "summary + verification evidence + modernization readiness"
-  };
-}
-
-function buildModernizationUnderstandingMaps(now: string): UnderstandingMapRecord[] {
-  return [
-    "repo_map",
-    "subsystems",
-    "route_map",
-    "model_map",
-    "integration_map",
-    "authz_map",
-    "config_coupling",
-    "runtime_side_effects",
-    "domain_map",
-    "symbol_graph",
-    "call_graph",
-    "dependency_graph",
-    "invariant_ledger",
-    "duplicate_families",
-    "architecture_decisions",
-    "migration_ledger",
-    "parity_matrix"
-  ].map((kind) => ({
-    kind,
-    itemCount: 1,
-    analyzedCount: 1,
-    sourceRefs: ["seed://modernization-proof"],
-    evidenceRefs: ["seed://modernization-proof"],
-    updatedAt: now
-  }));
-}
-
-function buildModernizationCoverageItems(now: string): CoverageItemRecord[] {
-  return [
-    {
-      id: "service:modernization-proof-core",
-      category: "services",
-      state: "validated",
-      criticality: "critical",
-      sources: ["seed://modernization-proof"],
-      dependencies: ["model:migration-ledger", "graph:call-graph"],
-      callsiteCount: 3,
-      callsitesAnalyzed: 3,
-      runtimeTraced: true,
-      businessRules: ["modernization planning must preserve all validated invariants"],
-      evidenceRefs: ["seed://modernization-proof"],
-      verificationRefs: ["seed://modernization-proof"],
-      lastUpdatedAt: now
-    }
-  ];
-}
-
-function buildModernizationDuplicateFamilies(now: string): DuplicateFamilyRecord[] {
-  return [
-    {
-      familyId: "duplicate:modernization-proof",
-      capability: "workflow modernization readiness",
-      members: [
-        {
-          itemId: "service:modernization-proof-core",
-          kind: "shared_core",
-          role: "runtime readiness coordinator"
-        },
-        {
-          itemId: "model:migration-ledger",
-          kind: "intentional_variant",
-          role: "schema transition verifier"
-        }
-      ],
-      sharedAbstraction: "ModernizationProofAdapter",
-      intentionalVariants: ["migration ledger retains rollout metadata while readiness summary stays operator-facing"],
-      accidentalDivergences: [],
-      centralizationCandidate: "centralize modernization proof derivation behind ModernizationProofAdapter",
-      parityRequirements: ["prove installed harness and package runtime derive equivalent modernization readiness"],
-      evidenceRefs: ["seed://modernization-proof"],
-      verificationRefs: ["seed://modernization-proof"],
-      lastUpdatedAt: now
-    }
-  ];
-}
-
-function buildModernizationArchitectureDecisions(now: string): ArchitectureDecisionRecord[] {
-  return [
-    {
-      decisionId: "adr:installed-modernization-proof",
-      title: "Installed modernization proof remains behind runtime-backed boundaries",
-      status: "accepted",
-      options: ["status-only heuristic proof", "runtime-backed modernization proof seed"],
-      chosenOption: "runtime-backed modernization proof seed",
-      boundedContexts: ["installed-harness", "modernization-analysis"],
-      consistencyNeeds: ["single rewrite readiness model", "single review authority"],
-      rationale: ["installed repos must surface the same rewrite-readiness contract as the package runtime"],
-      evidenceRefs: ["seed://modernization-proof"],
-      verificationRefs: ["seed://modernization-proof"],
-      lastUpdatedAt: now
-    }
-  ];
-}
-
-function buildModernizationMigrationLedger(now: string): MigrationLedgerEntryRecord[] {
-  return [
-    {
-      entryId: "migration:installed-modernization-proof",
-      boundedContext: "modernization-analysis",
-      sourceModels: ["legacy_workflow_reports"],
-      targetModels: ["modernization_readiness_records"],
-      strategy: "expand_contract",
-      consistencyClass: "strong",
-      ownership: "backend_engineer",
-      rolloutSteps: ["add readiness records", "backfill modernization evidence", "cut reads to readiness records"],
-      rollbackPlan: ["restore reads to legacy workflow reports", "leave additive schema in place"],
-      evidenceRefs: ["seed://modernization-proof"],
-      verificationRefs: ["seed://modernization-proof"],
-      lastUpdatedAt: now
-    }
-  ];
-}
-
-function buildModernizationParityRequirements(now: string): ParityRequirementRecord[] {
-  return [
-    {
-      requirementId: "parity:installed-modernization-proof",
-      capability: "installed modernization proof",
-      status: "planned",
-      legacyRefs: ["legacy_workflow_reports.readiness"],
-      targetRefs: ["modernization_readiness_records.readiness"],
-      acceptanceChecks: ["prove installed target and package runtime expose the same rewrite-readiness result"],
-      evidenceRefs: ["seed://modernization-proof"],
-      verificationRefs: ["seed://modernization-proof"],
-      lastUpdatedAt: now
-    }
-  ];
-}
-
 export async function executeSeedWorkflowProofCommandFromArgs(
   args: readonly string[],
   options: ExecuteSeedWorkflowProofCommandOptions
@@ -7816,187 +7602,6 @@ export async function executeSeedWorkflowProofCommandFromArgs(
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     await options.failTask?.(run.id, resolvedTaskId, `workflow proof seed failed: ${reason}`);
-    throw error;
-  }
-}
-
-export async function executeSeedModernizationProofCommandFromArgs(
-  args: readonly string[],
-  options: ExecuteSeedModernizationProofCommandOptions
-): Promise<SeedModernizationProofResult> {
-  const env = options.env ?? process.env;
-  const workspaceSlug = resolveCommandFlag(args, "--workspace-slug") ?? env.ARCHON_WORKSPACE_SLUG;
-  const projectSlug = resolveCommandFlag(args, "--project-slug") ?? env.ARCHON_PROJECT_SLUG;
-
-  if (!workspaceSlug || !projectSlug) {
-    throw new Error("seed-modernization-proof requires ARCHON_WORKSPACE_SLUG and ARCHON_PROJECT_SLUG or explicit flags");
-  }
-
-  const projectContext = await options.getProjectContext({
-    workspaceSlug,
-    projectSlug
-  });
-  if (!projectContext) {
-    throw new Error(`Project ${workspaceSlug}/${projectSlug} is not bootstrapped`);
-  }
-
-  const explicitTaskId = resolveCommandFlag(args, "--task-id");
-  const projectRuntimeState = await options.getProjectRuntimeState(projectContext.project.id);
-  const resolvedTaskId = explicitTaskId ?? projectRuntimeState?.activeTaskId;
-
-  if (!resolvedTaskId) {
-    throw new Error("seed-modernization-proof requires --task-id or an active runtime task");
-  }
-
-  const run = await options.intakeRequest({
-    workspaceSlug,
-    projectSlug,
-    actor: "archon-local-seed-manager",
-    title: `Seed modernization proof for ${resolvedTaskId}`,
-    request: `Create a local authoritative modernization-proof runtime run for ${resolvedTaskId}.`
-  });
-  try {
-    await options.createTaskGraph(run.id, [buildModernizationProofSeedTaskPacket(resolvedTaskId)]);
-    await options.claimTask(run.id, resolvedTaskId, "qa_engineer");
-    await options.submitHandoff(run.id, resolvedTaskId, {
-      actor: "qa_engineer",
-      ownerRole: "qa_engineer",
-      completionStandard: "specialist_verified",
-      summary: `Seeded local modernization-proof runtime state for ${resolvedTaskId}.`,
-      changedFiles: [".archon/ACTIVE"],
-      blockers: [],
-      verificationNotes: ["runtime modernization proof seeded locally"],
-      executionEvidence: ["task graph created", "task claimed", "handoff submitted", "autonomous evidence seeded"],
-      qualityGateEvidence: ["seed command test coverage", "installed repo modernization replay path"],
-      contextRefs: [`brief://${resolvedTaskId}`, "seed://modernization-proof"]
-    });
-
-    await options.recordReview(run.id, resolvedTaskId, "reviewer-actor", {
-      reviewerRole: "reviewer",
-      state: "passed",
-      severity: "low",
-      findings: []
-    });
-    await options.recordReview(run.id, resolvedTaskId, "security-actor", {
-      reviewerRole: "security_reviewer",
-      state: "passed",
-      severity: "low",
-      findings: []
-    });
-    await options.recordReview(run.id, resolvedTaskId, "qa-actor", {
-      reviewerRole: "qa_engineer",
-      state: "passed",
-      severity: "low",
-      findings: []
-    });
-
-    const now = new Date().toISOString();
-    await options.configureAutonomousExecution(run.id, {
-      profile: "modernization_program",
-      phase: "modernization_strategy",
-      manifest: {
-        runId: run.id,
-        profile: "modernization_program",
-        requiredCategories: ["services"],
-        thresholds: {
-          criticalItemCoverage: 0.9,
-          criticalItemValidation: 0.75,
-          callsiteCoverage: 0.9,
-          runtimeTraceCoverage: 0.85,
-          inventoryCompleteness: 1,
-          businessRuleCoverage: 0.9,
-          maxContradictionGapCount: 0,
-          maxOpenBlockers: 0
-        }
-      }
-    });
-    await options.upsertCoverageItems(run.id, buildModernizationCoverageItems(now));
-    await options.upsertUnderstandingMaps(run.id, buildModernizationUnderstandingMaps(now));
-    await options.upsertRuntimeTraces(run.id, [
-      {
-        traceId: "trace:modernization-proof-core",
-        targetId: "service:modernization-proof-core",
-        kind: "side_effect",
-        risky: true,
-        sideEffects: ["persists modernization artifact evidence"],
-        evidenceRefs: ["seed://modernization-proof"],
-        createdAt: now
-      }
-    ]);
-    await options.upsertDuplicateFamilies(run.id, buildModernizationDuplicateFamilies(now));
-    await options.upsertArchitectureDecisions(run.id, buildModernizationArchitectureDecisions(now));
-    await options.upsertMigrationLedgerEntries(run.id, buildModernizationMigrationLedger(now));
-    await options.upsertParityRequirements(run.id, buildModernizationParityRequirements(now));
-
-    const proof = await executeWorkflowProofCommandFromArgs(
-      ["--run-id", run.id, "--task-id", resolvedTaskId],
-      {
-        env,
-        integrityCheckMode: "allow_seed_failure_recovery",
-        getProjectRuntimeState: options.getProjectRuntimeState,
-        getStatusSnapshot: options.getStatusSnapshot,
-        getReviews: options.getReviews,
-        getApprovals: options.getApprovals
-      }
-    );
-
-    const status = await options.getStatusSnapshot(run.id);
-    const comprehensionSummary = status.autonomousExecution?.comprehensionSummary;
-    const phaseReadiness = status.autonomousExecution?.phaseReadiness;
-    if (!status.autonomousExecution || !comprehensionSummary || !phaseReadiness) {
-      throw new Error("seed-modernization-proof expected autonomous execution to be configured");
-    }
-    if (status.autonomousExecution.state.profile !== "modernization_program") {
-      throw new Error(
-        `seed-modernization-proof expected modernization_program profile, found ${status.autonomousExecution.state.profile}`
-      );
-    }
-    if (comprehensionSummary.rewriteReadiness !== "ready") {
-      throw new Error(
-        `seed-modernization-proof expected ready rewrite readiness, found ${comprehensionSummary.rewriteReadiness}: ${comprehensionSummary.missingEvidence.join("; ")}`
-      );
-    }
-    if (phaseReadiness.status !== "ready") {
-      throw new Error(`seed-modernization-proof expected ready phase readiness, found ${phaseReadiness.status}`);
-    }
-
-    const refreshedRuntimeState =
-      (await options.getProjectRuntimeState(projectContext.project.id)) ?? projectRuntimeState;
-    const nextRuntimeState: ProjectRuntimeStateRecord = {
-      projectId: projectContext.project.id,
-      workspaceId: projectContext.workspace.id,
-      activeRunId: run.id,
-      activeTaskId: resolvedTaskId,
-      taskQueue: alignQueueToActiveTask(refreshedRuntimeState?.taskQueue, resolvedTaskId),
-      productState: refreshedRuntimeState?.productState ?? buildDefaultProductState(),
-      lastVerifiedRunId: proof.runId,
-      metadata: clearSeedFailureMetadata(refreshedRuntimeState?.metadata),
-      createdAt: refreshedRuntimeState?.createdAt ?? new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    await options.saveProjectRuntimeState(nextRuntimeState);
-    await syncRuntimeWorkflowExports(options.cwd, nextRuntimeState);
-
-    return {
-      mode: "local_modernization_proof_seed",
-      workspaceSlug,
-      projectSlug,
-      autonomous: {
-        profile: status.autonomousExecution.state.profile,
-        phase: status.autonomousExecution.state.phase,
-        readinessScope: comprehensionSummary.readinessScope,
-        rewriteReadiness: comprehensionSummary.rewriteReadiness,
-        missingArtifactKinds: comprehensionSummary.missingArtifactKinds,
-        duplicateFamilyCount: comprehensionSummary.duplicateFamilyCount,
-        architectureDecisionCount: comprehensionSummary.architectureDecisionCount,
-        migrationLedgerCount: comprehensionSummary.migrationLedgerCount,
-        parityRequirementCount: comprehensionSummary.parityRequirementCount
-      },
-      ...proof
-    };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    await options.failTask?.(run.id, resolvedTaskId, `modernization proof seed failed: ${reason}`);
     throw error;
   }
 }
@@ -10736,81 +10341,6 @@ async function seedWorkflowProofCommand(args: readonly string[]) {
   });
 }
 
-async function seedModernizationProofCommand(args: readonly string[]) {
-  await withClient(async (client) => {
-    const store = new PostgresStore(client);
-    const service = new ArchonCoreService(store, {
-      resolveReviewActionContext: createWorkflowProofSeedResolver()
-    });
-    const result = await executeSeedModernizationProofCommandFromArgs(args, {
-      cwd: process.cwd(),
-      env: process.env,
-      getProjectContext(params) {
-        return store.getProjectContext(params);
-      },
-      getProjectRuntimeState(projectId) {
-        return store.getProjectRuntimeState(projectId);
-      },
-      saveProjectRuntimeState(state) {
-        return store.saveProjectRuntimeState(state);
-      },
-      intakeRequest(input) {
-        return service.intakeRequest(input);
-      },
-      createTaskGraph(runId, taskPackets) {
-        return service.createTaskGraph(runId, taskPackets);
-      },
-      claimTask(runId, taskId, actor) {
-        return service.claimTask(runId, taskId, actor);
-      },
-      submitHandoff(runId, taskId, handoff) {
-        return service.submitHandoff(runId, taskId, handoff);
-      },
-      recordReview(runId, taskId, actor, review) {
-        return service.recordReview(runId, taskId, actor, review);
-      },
-      failTask(runId, taskId, reason) {
-        return service.failTask(runId, taskId, reason);
-      },
-      configureAutonomousExecution(runId, input) {
-        return service.configureAutonomousExecution(runId, input);
-      },
-      upsertCoverageItems(runId, items) {
-        return service.upsertCoverageItems(runId, items);
-      },
-      upsertUnderstandingMaps(runId, maps) {
-        return service.upsertUnderstandingMaps(runId, maps);
-      },
-      upsertRuntimeTraces(runId, traces) {
-        return service.upsertRuntimeTraces(runId, traces);
-      },
-      upsertDuplicateFamilies(runId, records) {
-        return service.upsertDuplicateFamilies(runId, records);
-      },
-      upsertArchitectureDecisions(runId, records) {
-        return service.upsertArchitectureDecisions(runId, records);
-      },
-      upsertMigrationLedgerEntries(runId, records) {
-        return service.upsertMigrationLedgerEntries(runId, records);
-      },
-      upsertParityRequirements(runId, records) {
-        return service.upsertParityRequirements(runId, records);
-      },
-      getStatusSnapshot(runId) {
-        return service.getStatus(runId);
-      },
-      getReviews(runId, taskId) {
-        return store.getReviews(runId, taskId);
-      },
-      getApprovals(runId, taskId) {
-        return store.getApprovals(runId, taskId);
-      }
-    });
-
-    console.log(JSON.stringify(result));
-  });
-}
-
 async function advanceActiveTaskCommand(args: readonly string[]) {
   await withClient(async (client) => {
     const store = new PostgresStore(client);
@@ -12014,11 +11544,6 @@ async function main() {
 
   if (command === "seed-workflow-proof") {
     await seedWorkflowProofCommand(args);
-    return;
-  }
-
-  if (command === "seed-modernization-proof") {
-    await seedModernizationProofCommand(args);
     return;
   }
 

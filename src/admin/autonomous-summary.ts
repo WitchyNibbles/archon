@@ -526,11 +526,11 @@ export function resolveContinuationCapabilities(
     return fallback;
   };
 
-  const appAll = parseEnabled(env.ARCHON_CODEX_APP_AUTOMATION, false);
+  const appAll = parseEnabled(env.ARCHON_CLAUDE_APP_AUTOMATION, false);
   return {
-    claudeAppThreadAutomation: parseEnabled(env.ARCHON_CODEX_APP_THREAD_AUTOMATION, appAll),
-    claudeAppStandaloneAutomation: parseEnabled(env.ARCHON_CODEX_APP_STANDALONE_AUTOMATION, appAll),
-    claudeCliScheduler: parseEnabled(env.ARCHON_CODEX_CLI_SCHEDULER, true)
+    claudeAppThreadAutomation: parseEnabled(env.ARCHON_CLAUDE_APP_THREAD_AUTOMATION, appAll),
+    claudeAppStandaloneAutomation: parseEnabled(env.ARCHON_CLAUDE_APP_STANDALONE_AUTOMATION, appAll),
+    claudeCliScheduler: parseEnabled(env.ARCHON_CLAUDE_CLI_SCHEDULER, true)
   };
 }
 

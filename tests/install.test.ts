@@ -9,14 +9,13 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { auditMaintainerOnlyPublishedPaths } from "../src/install/maintainer-boundary.ts";
 import {
-  grafanaCodexConfigFragment,
+  grafanaMcpConfigFragment,
   mergeAgentsMd,
   mergeDotAgentsMd,
-  mergeCodexConfig,
   mergeClaudeSettings,
   mergeGitignore,
   mergePackageJson,
-  playwrightCodexConfigFragment
+  playwrightMcpConfigFragment
 } from "../src/install/merge.ts";
 import {
   installDevgodIntoProject,
@@ -181,9 +180,9 @@ test("mergeClaudeSettings enforces autoAcceptEdits and permissions from source",
   assert.deepEqual(merged.permissions?.allow, ["Bash"]);
 });
 
-test("mergeCodexConfig adds Playwright MCP settings with standard and vision profiles", () => {
-  // In archon, playwrightCodexConfigFragment returns JSON for .mcp.json
-  const fragment = playwrightCodexConfigFragment();
+test("playwrightMcpConfigFragment adds Playwright MCP settings with standard and vision profiles", () => {
+  // playwrightMcpConfigFragment returns JSON for .mcp.json
+  const fragment = playwrightMcpConfigFragment();
   const parsed = JSON.parse(fragment) as { mcpServers?: Record<string, unknown> };
 
   assert.ok(parsed.mcpServers?.playwright, "expected playwright mcp server");
@@ -195,9 +194,9 @@ test("mergeCodexConfig adds Playwright MCP settings with standard and vision pro
   assert.ok(JSON.stringify(pwv.args ?? []).includes(".archon/playwright/mcp.vision.json"));
 });
 
-test("mergeCodexConfig adds Grafana MCP settings without overwriting existing project config", () => {
-  // In archon, grafanaCodexConfigFragment returns JSON for .mcp.json
-  const fragment = grafanaCodexConfigFragment();
+test("grafanaMcpConfigFragment adds Grafana MCP settings without overwriting existing project config", () => {
+  // grafanaMcpConfigFragment returns JSON for .mcp.json
+  const fragment = grafanaMcpConfigFragment();
   const parsed = JSON.parse(fragment) as { mcpServers?: Record<string, unknown> };
 
   assert.ok(parsed.mcpServers?.grafana, "expected grafana mcp server");
@@ -250,10 +249,6 @@ test("mergePackageJson adds archon dependency and scripts without removing exist
   assert.equal(
     merged.scripts["archon:seed-workflow-proof"],
     "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts seed-workflow-proof"
-  );
-  assert.equal(
-    merged.scripts["archon:seed-modernization-proof"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts seed-modernization-proof"
   );
   assert.equal(
     merged.scripts["archon:advance-active-task"],
@@ -1816,10 +1811,6 @@ test("installDevgodIntoProject seeds scaffolding but not live work or reviewed m
   assert.match(
     targetPackageJson.scripts["archon:seed-workflow-proof"],
     /node_modules\/archon\/src\/admin\/archon\.ts seed-workflow-proof/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:seed-modernization-proof"],
-    /node_modules\/archon\/src\/admin\/archon\.ts seed-modernization-proof/
   );
   assert.match(targetPackageJson.scripts.archon, /node_modules\/archon\/src\/admin\/archon\.ts/);
   assert.match(
