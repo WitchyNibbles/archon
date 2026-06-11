@@ -1,4 +1,5 @@
 ---
+name: git-operator
 description: "Handles git status, staging, diff hygiene, and atomic commit preparation without polluting repos with archon control artifacts."
 model: claude-haiku-4-5-20251001
 effort: medium

@@ -1,4 +1,5 @@
 ---
+name: qa-engineer
 description: "Finds regressions, missing tests, flaky behavior, acceptance gaps, and release-readiness issues."
 model: claude-sonnet-4-6
 effort: high

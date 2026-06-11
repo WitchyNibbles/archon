@@ -1,4 +1,5 @@
 ---
+name: database-specialist
 description: "Owns schema migrations, query optimization, index design, and data-system correctness for PostgreSQL-backed workflows."
 model: claude-sonnet-4-6
 effort: high

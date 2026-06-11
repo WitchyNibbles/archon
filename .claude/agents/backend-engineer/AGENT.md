@@ -1,4 +1,5 @@
 ---
+name: backend-engineer
 description: "Implements and reviews APIs, services, auth, data models, jobs, and server-side correctness."
 model: claude-sonnet-4-6
 effort: high

@@ -1,4 +1,5 @@
 ---
+name: product-analyst
 description: "Analyzes product signals, metrics, evidence quality, and decision-making tradeoffs."
 model: claude-sonnet-4-6
 effort: high
