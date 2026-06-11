@@ -2726,146 +2726,82 @@ async function withDaemonLock<T>(cwd: string, fn: () => Promise<T>): Promise<T> 
   }
 }
 
-async function runCodexTurnViaCli(input: RunCodexTurnInput): Promise<RunCodexTurnResult> {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "archon-daemon-schema-"));
-  const schemaPath = path.join(tempDir, "daemon-output.schema.json");
-  await writeFile(
-    schemaPath,
-    JSON.stringify(
-      {
-        type: "object",
-        properties: {
-          summary: { type: "string" },
-          status: {
-            type: "string",
-            enum: ["completed", "blocked", "needs_review", "needs_followup"]
-          },
-          blockers: {
-            type: "array",
-            items: { type: "string" }
-          },
-          checkpoint: {
-            type: "object",
-            properties: {
-              evidence_refs: {
-                type: "array",
-                items: { type: "string" }
-              },
-              next_actions: {
-                type: "array",
-                items: { type: "string" }
-              },
-              active_targets: {
-                type: "array",
-                items: { type: "string" }
-              },
-              open_gaps: {
-                type: "array",
-                items: { type: "string" }
-              },
-              compressed_context_summary: { type: "string" },
-              compressed_context_ref: { type: "string" },
-              compressed_context_source_refs: {
-                type: "array",
-                items: { type: "string" }
-              }
-            },
-            required: ["evidence_refs"],
-            additionalProperties: false
-          },
-          scope_request: {
-            type: "object",
-            properties: {
-              blocked_paths: {
-                type: "array",
-                items: { type: "string" }
-              },
-              requested_write_scope: {
-                type: "array",
-                items: { type: "string" }
-              },
-              reason: { type: "string" }
-            },
-            required: ["blocked_paths", "requested_write_scope"],
-            additionalProperties: false
-          }
-        },
-        required: ["summary", "status", "blockers"],
-        additionalProperties: false
-      },
-      null,
-      2
-    ),
-    "utf8"
-  );
+export function parseClaudeStreamJsonOutput(
+  stdout: string,
+  initialSessionId?: string | undefined
+): { sessionId: string | undefined; finalMessage: string | undefined } {
+  let sessionId = initialSessionId;
+  let finalMessage: string | undefined;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
 
-  const args = input.sessionId
-    ? ["exec", "resume", input.sessionId, input.prompt, "--json", "--output-schema", schemaPath]
-    : ["exec", input.prompt, "--json", "--output-schema", schemaPath];
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      // Fail closed: skip unparseable lines rather than throwing
+      continue;
+    }
 
-  try {
-    const child = spawn(input.claudeBin, args, {
-      cwd: input.cwd,
-      env: input.env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", (code) => resolve(code ?? 1));
-    });
-
-    let sessionId = input.sessionId;
-    let finalMessage: string | undefined;
-    for (const line of stdout.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("{")) {
-        continue;
+    const eventType = event.type;
+    if (eventType === "system") {
+      if (typeof event.session_id === "string") {
+        sessionId = event.session_id;
       }
-
-      try {
-        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-        if (parsed.type === "thread.started" && typeof parsed.thread_id === "string") {
-          sessionId = parsed.thread_id;
-        }
-        if (parsed.type === "item.completed") {
-          const item = parsed.item;
-          if (item && typeof item === "object" && (item as Record<string, unknown>).type === "agent_message") {
-            const text = (item as Record<string, unknown>).text;
-            if (typeof text === "string" && text.trim().length > 0) {
-              finalMessage = text.trim();
+    } else if (eventType === "assistant") {
+      const msg = event.message as Record<string, unknown> | undefined;
+      if (msg && Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block && typeof block === "object") {
+            const b = block as Record<string, unknown>;
+            if (b.type === "text" && typeof b.text === "string" && b.text.trim().length > 0) {
+              finalMessage = b.text.trim();
             }
           }
         }
-      } catch {
-        // Ignore non-JSONL or partial lines; the daemon only needs best-effort session/message extraction.
+      }
+    } else if (eventType === "result") {
+      if (typeof event.session_id === "string") {
+        sessionId = event.session_id;
+      }
+      if (typeof event.result === "string" && event.result.trim().length > 0) {
+        finalMessage = event.result.trim();
       }
     }
-
-    if (exitCode !== 0) {
-      const reason = stderr.trim() || stdout.trim() || `codex exited with code ${exitCode}`;
-      throw new Error(`codex exec failed: ${reason}`);
-    }
-
-    return {
-      sessionId,
-      finalMessage,
-      stdout,
-      stderr,
-      exitCode
-    };
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    // Unknown event types are intentionally ignored to stay forward-compatible
   }
+  return { sessionId, finalMessage };
+}
+
+async function runCodexTurnViaCli(input: RunCodexTurnInput): Promise<RunCodexTurnResult> {
+  const args = input.sessionId
+    ? ["--resume", input.sessionId, "-p", input.prompt, "--output-format", "stream-json"]
+    : ["-p", input.prompt, "--output-format", "stream-json"];
+
+  const child = spawn(input.claudeBin, args, {
+    cwd: input.cwd,
+    env: input.env,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => resolve(code ?? 1));
+  });
+
+  if (exitCode !== 0) {
+    const reason = stderr.trim() || stdout.trim() || `claude -p exited with code ${exitCode}`;
+    throw new Error(`claude -p failed: ${reason}`);
+  }
+
+  const { sessionId, finalMessage } = parseClaudeStreamJsonOutput(stdout, input.sessionId);
+  return { sessionId, finalMessage, stdout, stderr, exitCode };
 }
 
 export function buildDaemonTaskPacketFingerprint(packet: TaskPacketInput | undefined): string | undefined {
@@ -4185,11 +4121,6 @@ async function writeDaemonCliSchedulerRequest(
     cwd
   });
   await writeFile(path.join(cwd, promptPath), prompt, "utf8");
-  await writeFile(
-    path.join(cwd, outputSchemaPath),
-    `${JSON.stringify(buildDaemonCliOutputSchema(), null, 2)}\n`,
-    "utf8"
-  );
 
   const requiresResumeSession =
     input.envelope.continuationIntent === "defer_same_thread" && input.envelope.targetMode === "same_thread";
@@ -4197,21 +4128,20 @@ async function writeDaemonCliSchedulerRequest(
   const manualReviewRequired = !runnable;
   const commandCore =
     requiresResumeSession && input.sessionId
-      ? `codex exec resume ${input.sessionId} "$(cat ${promptPath})" --json --output-schema ${outputSchemaPath}`
-      : `codex exec "$(cat ${promptPath})" --json --output-schema ${outputSchemaPath}`;
+      ? `claude --resume ${input.sessionId} -p "$(cat ${promptPath})" --output-format stream-json`
+      : `claude -p "$(cat ${promptPath})" --output-format stream-json`;
   const shellCommand = runnable ? `cd ${JSON.stringify(cwd)} && ${commandCore}` : undefined;
   const systemdOnCalendar =
     input.envelope.scheduleKind === "cron"
       ? convertSupportedCronScheduleToSystemdOnCalendar(input.envelope.schedule)
       : undefined;
   const request = {
-    tool: "codex",
+    tool: "claude",
     request: {
-      subcommand: "exec",
+      subcommand: "p",
       resumeSessionId: input.sessionId ?? undefined,
       promptPath,
-      outputSchemaPath,
-      json: true,
+      outputFormat: "stream-json",
       cwd,
       runnable
     },
@@ -4249,13 +4179,13 @@ async function writeDaemonCliSchedulerRequest(
       continuationIntent: input.envelope.continuationIntent,
       notes: manualReviewRequired
         ? [
-            "No persisted Codex session id was available for a same-thread CLI resume.",
+            "No persisted session id was available for a same-thread CLI resume.",
             "Review this handoff manually before converting it into a fresh-run scheduler job or another automation owner."
           ]
         : [
             requiresResumeSession
-              ? "This handoff uses codex exec resume to preserve the same-thread continuation context."
-              : "This handoff uses a fresh codex exec run for deferred continuation.",
+              ? "This handoff uses claude --resume to preserve the same-thread continuation context."
+              : "This handoff uses a fresh claude -p run for deferred continuation.",
             "Install one of the launcher hints under your preferred local scheduler."
           ],
       generatedAt: input.updatedAt

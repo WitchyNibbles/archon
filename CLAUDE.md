@@ -25,7 +25,7 @@ task_queue=project_runtime_state.task_queue
 product_state=project_runtime_state.product_state
 required_review_roles=reviewer,qa_engineer,security_reviewer
 release_candidate_quality_gate=release_readiness_required
-review_authority=runtime_authenticated_only
+review_authority=runtime_orchestrated_only
 workflow_check=npx tsx ./src/admin.ts workflow-proof --run-id latest --task-id <task-id>
 workflow_check_scope=runtime_authority_only
 review_artifact_trust=runtime_records_only
@@ -136,7 +136,7 @@ Key routing shortcuts:
 - unresolved `CRITICAL` or `HIGH` security findings block completion
 - missing required review, specialist evidence, quality-gate evidence, or verification evidence blocks completion
 - runtime workflow proof is the completion authority; exported markdown remains evidence
-- trusted reviewer identity and waivers must come from runtime or another authenticated source
+- trusted reviewer identity and waivers must come from runtime (orchestrator-written DB records) or another trusted orchestrator source
 - current task id must align across `.archon/ACTIVE`, brief, plan/task, and review artifacts
 - workers must not edit `CLAUDE.md`, `.claude/`, or `.archon/memory/` unless the task packet assigns that scope
 

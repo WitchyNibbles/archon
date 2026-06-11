@@ -930,7 +930,7 @@ export class PostgresStore implements ArchonStore {
          waiver_authority, source
        )
        values ($1, $2, $3, null, $4, $5, 'review-orchestrator', 'reviewer',
-               'authenticated', $6, 'low', $7, null, '{}', 'none', 'orchestrator')`,
+               'seeded', $6, 'low', $7, null, '{}', 'none', 'orchestrator')`,
       [
         id,
         input.workspaceId,
