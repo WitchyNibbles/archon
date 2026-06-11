@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   ApprovalRecord,
   HandoffRecord,
@@ -920,7 +921,8 @@ export class PostgresStore implements ArchonStore {
     workspaceId: string;
     projectId: string;
   }): Promise<void> {
-    const id = `review-orch-${input.taskId}-${input.role}-${Date.now()}`;
+    const id = randomUUID();
+    const state = input.outcome === "passed" ? "passed" : "blocked";
     await this.client.query(
       `insert into reviews (
          id, workspace_id, project_id, run_id, task_id, reviewer_role, actor, actor_role,
@@ -928,14 +930,14 @@ export class PostgresStore implements ArchonStore {
          waiver_authority, source
        )
        values ($1, $2, $3, null, $4, $5, 'review-orchestrator', 'reviewer',
-               'authenticated', $6, 'none', $7, null, '{}', 'none', 'orchestrator')`,
+               'authenticated', $6, 'low', $7, null, '{}', 'none', 'orchestrator')`,
       [
         id,
         input.workspaceId,
         input.projectId,
         input.taskId,
         input.role,
-        input.outcome,
+        state,
         [input.findings]
       ]
     );
@@ -995,7 +997,7 @@ export class PostgresStore implements ArchonStore {
         entry.id,
         entry.workspaceId,
         entry.projectId ?? null,
-        entry.runId,
+        entry.runId ?? null,
         entry.taskId ?? null,
         entry.scope,
         entry.entryType,
