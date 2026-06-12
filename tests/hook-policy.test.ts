@@ -231,7 +231,9 @@ test("Write to src/index.ts with no active task is blocked by no-task write gate
   assert.ok(result, "expected a block response");
   assert.equal(result.decision, "block");
   assert.match(result.reason, /no active archon task/i);
-  assert.match(result.reason, /\.archon\/work\/tasks\//i);
+  // Finding 1 fix: the unblock instruction must name the sanctioned cold-start
+  // command, not the previously-impossible manual task-packet write.
+  assert.match(result.reason, /init-task/i);
 });
 
 test("Write to .archon/work/tasks/task-foo.md with no active task is blocked (managed path)", () => {
@@ -410,10 +412,12 @@ test("Write to src/ with active task but any scope is allowed (no scope restrict
   assert.ok(result === undefined || result.decision !== "block");
 });
 
-test("no-task gate block reason is actionable (names bootstrap path to unblock)", () => {
+test("no-task gate block reason is actionable (names sanctioned cold-start command)", () => {
   const result = evaluatePreToolUse(writePayload("src/index.ts"), emptyContext());
   assert.ok(result?.reason);
-  assert.match(result.reason, /\.archon\/work\/tasks\//i);
+  // Finding 1 fix: the actionable unblock path is the runtime cold-start command
+  // or pointing .archon/ACTIVE at an existing task — not a manual managed-path write.
+  assert.match(result.reason, /init-task/i);
   assert.match(result.reason, /\.archon\/ACTIVE/i);
 });
 
