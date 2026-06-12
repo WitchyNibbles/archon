@@ -426,6 +426,7 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
     const result = await client.query(
       `
         select
+          active_run_id,
           active_task_id,
           task_queue->>'current_task_id' as current_task_id
         from project_runtime_state
@@ -450,10 +451,41 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
         : typeof row.current_task_id === "string" && row.current_task_id.trim().length > 0
           ? row.current_task_id.trim()
           : undefined;
+    const activeRunId =
+      typeof row.active_run_id === "string" && row.active_run_id.trim().length > 0
+        ? row.active_run_id.trim()
+        : undefined;
+
+    // Finding 5 fix: read the active task's write scope from the authoritative
+    // runtime task record, not from the on-disk markdown packet (which a worker
+    // could edit to widen its own scope). `undefined` means "not found" so the
+    // caller falls back to markdown; an array (even empty) is authoritative.
+    let allowedWriteScope;
+    if (activeRunId && activeTaskId) {
+      try {
+        const scopeResult = await client.query(
+          `select allowed_write_scope
+           from tasks
+           where run_id = $1 and task_key = $2
+           limit 1`,
+          [activeRunId, activeTaskId]
+        );
+        const scopeRow = scopeResult.rows[0];
+        if (scopeRow && Array.isArray(scopeRow.allowed_write_scope)) {
+          allowedWriteScope = scopeRow.allowed_write_scope
+            .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+            .map((entry) => entry.trim());
+        }
+      } catch {
+        // leave allowedWriteScope undefined so the caller falls back to markdown
+      }
+    }
 
     return {
+      activeRunId,
       activeTaskId,
       queueCurrentTaskId,
+      allowedWriteScope,
       runtimeConnected: true
     };
   } catch {
@@ -709,11 +741,22 @@ export async function readActiveTaskContext(options = {}) {
   const taskMarkdown = await readTextIfExists(
     path.join(resolvedRepoRoot, ".archon", "work", "tasks", `task-${context.activeTaskId}.md`)
   );
+
+  // Finding 5 fix: the runtime task record is the authority for write scope when
+  // the runtime is connected; the markdown packet is only the offline fallback.
+  // This also lets an active task created purely in the runtime (no packet file
+  // on disk yet) carry its scope, instead of silently getting an empty scope.
+  const markdownScope = taskMarkdown ? parseAllowedWriteScopeSection(taskMarkdown) : [];
+  context.allowedWriteScope = resolveActiveWriteScope({
+    runtimeConnected: context.runtimeConnected,
+    runtimeScope: runtimeContext?.allowedWriteScope,
+    markdownScope
+  });
+
   if (!taskMarkdown) {
     return context;
   }
 
-  context.allowedWriteScope = parseAllowedWriteScopeSection(taskMarkdown);
   context.allowedTaskHandoffScope = parseAllowedTaskHandoffScopeSection(taskMarkdown);
   context.continuationIntent = parseContinuationIntentSection(taskMarkdown);
   context.hookBlockerState = await readHookBlockerState(
@@ -850,6 +893,24 @@ export function parseRequiredReviews(markdown) {
 
 export function reviewArtifactPath(taskId, role) {
   return `.archon/work/reviews/review-${taskId}-${role}.md`;
+}
+
+// Decide the enforced write scope for the active task.
+//
+// Finding 5 fix: when the runtime is connected it is the authority for the
+// active task's allowed write scope. The markdown packet on disk (which a worker
+// could edit) is only a fallback for the offline case. This prevents a worker
+// from widening its own write scope by editing its own task packet markdown.
+//
+// `runtimeScope === undefined` means the runtime did not provide a scope (task
+// row missing or query failed) — fall back to markdown. An explicit array
+// (including an empty array) is authoritative and is never widened by markdown.
+export function resolveActiveWriteScope({ runtimeConnected, runtimeScope, markdownScope }) {
+  const md = Array.isArray(markdownScope) ? markdownScope : [];
+  if (runtimeConnected && Array.isArray(runtimeScope)) {
+    return runtimeScope;
+  }
+  return md;
 }
 
 // Claude Code tool calls pass absolute file_path values; scope entries are relative.
@@ -1392,10 +1453,16 @@ export function extractBashReferencedManagedPaths(command) {
     return [];
   }
 
+  // Strip heredoc bodies before scanning so that documentation, scripts, or data
+  // written into a heredoc that merely MENTION a managed path do not trip the
+  // guard. An actual write target (e.g. `cat > .claude/x <<EOF`) keeps the
+  // redirect outside the body, so real managed writes remain detected.
+  const scanned = stripHeredocBodies(command);
+
   const matches = [];
   for (const prefix of managedPathPrefixes) {
     const plainPrefix = prefix.replace(/\/$/, "");
-    if (command.includes(prefix) || command.includes(plainPrefix)) {
+    if (scanned.includes(prefix) || scanned.includes(plainPrefix)) {
       matches.push(plainPrefix);
     }
   }
