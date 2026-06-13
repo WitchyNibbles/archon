@@ -1,4 +1,5 @@
 ---
+name: infra-engineer
 description: "Designs and reviews deployment, environments, secrets handling, CI/CD, observability, and operational safety."
 model: claude-sonnet-4-6
 effort: high

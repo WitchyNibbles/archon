@@ -12,7 +12,7 @@ task_queue=project_runtime_state.task_queue
 product_state=project_runtime_state.product_state
 required_review_roles=reviewer,qa_engineer,security_reviewer
 release_candidate_quality_gate=release_readiness_required
-review_authority=runtime_authenticated_only
+review_authority=runtime_orchestrated_only
 workflow_check=node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts workflow-proof --run-id latest --task-id <task-id>
 workflow_check_scope=runtime_authority_only
 review_artifact_trust=runtime_records_only
@@ -82,11 +82,11 @@ const managedDotClaudeMdBlock = `${DOT_CLAUDE_BEGIN}
 - default sequence: evidence -> \`solution_architect\` -> \`planner\` -> task packet -> specialist owner -> \`reviewer\`, \`qa_engineer\`, \`security_reviewer\`
 - for council-reviewed work, require a written decision packet before critique and assign one explicit dissent owner
 - task packets need \`task_id\`, owner role, completion standard, required specialists, quality gates, write scope, acceptance criteria, verification steps, required reviews, security checks, and rollback notes
-- run \`bash scripts/check-archon-workflow.sh --task-id <task-id>\` before declaring substantive work complete
+- run \`node --experimental-strip-types scripts/check-archon-workflow.ts --task-id <task-id>\` before declaring substantive work complete
 - current task id must match \`.archon/ACTIVE\`, the current brief, the current plan/task, and required review files
 - unresolved \`CRITICAL\` or \`HIGH\` security findings block completion
 - markdown review files are evidence summaries, not reviewer authority
-- authenticated reviewer identity and waiver authority must come from runtime policy or another authenticated principal-binding source
+- trusted reviewer identity and waivers must come from runtime orchestrator-written records or another runtime-trusted principal-binding source
 - branch from updated \`origin/main\` before task or plan work and prefer \`feature/\`, \`bugfix/\`, \`hotfix/\`, \`release/\`, \`chore/\`, \`refactor/\`, \`docs/\`, \`test/\`, \`ci/\`, or \`perf/\` prefixes unless a consuming repo overrides them
 - keep \`codex\` out of branch names, commit subjects, PR titles, and PR bodies
 - package owns \`src/\`, \`scripts/\`, \`.agents/\`, \`.claude/\`, \`.archon/rules/\`, and \`.archon/templates/\`
@@ -416,7 +416,6 @@ export function mergePackageJson(
   scripts["archon:checkpoint"] = `${archonEntry} checkpoint --format text`;
   scripts["archon:resume"] = `${archonEntry} resume --format text`;
   scripts["archon:seed-workflow-proof"] = `${archonEntry} seed-workflow-proof`;
-  scripts["archon:seed-modernization-proof"] = `${archonEntry} seed-modernization-proof`;
   scripts["archon:advance-active-task"] = `${archonEntry} advance-active-task --format text`;
   scripts["archon:reconcile"] = `${archonEntry} reconcile-runtime-state --apply --format text`;
   scripts["archon:sync-runtime-exports"] = `${archonEntry} sync-runtime-exports --format text`;
@@ -442,7 +441,7 @@ export function mergePackageJson(
   scripts["archon:upgrade-reasoning-workflow"] = `${archonEntry} upgrade-reasoning-workflow --target .`;
   scripts["archon:seed-happy-path-fixture"] = `${archonEntry} seed-happy-path-fixture --target .`;
   scripts["archon:check:happy-path"] = "bash scripts/check-archon-happy-path.sh";
-  scripts["archon:check-workflow"] = "bash scripts/check-archon-workflow.sh";
+  scripts["archon:check-workflow"] = "node --experimental-strip-types scripts/check-archon-workflow.ts";
   scripts["archon:verify:migrations:live"] = `${archonEntry} verify-live-migrations`;
   scripts["archon:verify:review-identity"] = `${archonEntry} verify-review-identity`;
   scripts["archon:verify:git-guard"] =
@@ -484,9 +483,3 @@ export function dotClaudeMdManagedBlock(): string {
 // Backward-compatibility aliases (devgod names → archon names)
 export const mergeAgentsMd = mergeClaudeMd;
 export const mergeDotAgentsMd = mergeDotClaudeMd;
-export const playwrightCodexConfigFragment = playwrightMcpConfigFragment;
-export const grafanaCodexConfigFragment = grafanaMcpConfigFragment;
-
-// mergeCodexConfig: devgod used TOML; archon uses JSON (mergeClaudeSettings + mergeMcpJson).
-// For backward compatibility, alias to mergeClaudeSettings which merges JSON settings.
-export const mergeCodexConfig = mergeClaudeSettings;

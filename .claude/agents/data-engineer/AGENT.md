@@ -1,4 +1,5 @@
 ---
+name: data-engineer
 description: "Designs and implements data pipelines, schemas, transformations, and data-system reliability safeguards."
 model: claude-sonnet-4-6
 effort: high

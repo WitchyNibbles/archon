@@ -676,7 +676,7 @@ function buildTimeline(input: {
         kind: "review_recorded",
         taskId: task.packet.taskId,
         title: `${review.reviewerRole} ${review.state}`,
-        detail: [review.actor, review.identityAssurance]
+        detail: [review.actor, review.source]
       });
     }
 
@@ -687,7 +687,7 @@ function buildTimeline(input: {
         kind: "approval_recorded",
         taskId: task.packet.taskId,
         title: `${approval.decision} by ${approval.actor}`,
-        detail: [approval.actorRole, approval.identityAssurance]
+        detail: [approval.actorRole, approval.source]
       });
     }
   }

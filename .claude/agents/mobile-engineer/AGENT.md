@@ -1,4 +1,5 @@
 ---
+name: mobile-engineer
 description: "Implements and reviews mobile-specific product behavior, interaction flows, and platform constraints."
 model: claude-sonnet-4-6
 effort: high

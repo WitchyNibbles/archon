@@ -121,9 +121,9 @@ test("hook-wiring: pre-tool, no active task, Write to src/x.ts → blocked with 
   }
 });
 
-// ─── Case 2: no active task, Write to .archon/work/tasks/task-foo.md → allowed ─
+// ─── Case 2: no active task, Write to .archon/work/tasks/task-foo.md → blocked (managed path) ─
 
-test("hook-wiring: pre-tool, no active task, Write to .archon/work/tasks/task-foo.md → not blocked", () => {
+test("hook-wiring: pre-tool, no active task, Write to .archon/work/tasks/task-foo.md → blocked", () => {
   const fixture = makeFixture();
   try {
     const payload = {
@@ -133,9 +133,12 @@ test("hook-wiring: pre-tool, no active task, Write to .archon/work/tasks/task-fo
     };
     const { status, parsed } = runHook("archon-pre-tool.mjs", payload);
     assert.strictEqual(status, 0, "hook must exit 0");
-    // No block: either empty stdout (no decision) or decision !== "block"
-    const isBlocked = parsed !== null && parsed.decision === "block";
-    assert.ok(!isBlocked, `task-packet write should not be blocked, got: ${JSON.stringify(parsed)}`);
+    // .archon/work/tasks/ is now a managed path — must be blocked without active task scope
+    assert.ok(parsed !== null && parsed.decision === "block", `task-packet write should be blocked, got: ${JSON.stringify(parsed)}`);
+    assert.ok(
+      typeof parsed!.reason === "string" && /requires an active archon task/i.test(parsed!.reason as string),
+      `reason should mention managed path requirement, got: ${parsed!.reason}`
+    );
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
   }

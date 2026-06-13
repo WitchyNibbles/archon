@@ -1,4 +1,5 @@
 ---
+name: observability-engineer
 description: "Owns observability gate: Grafana dashboards, distributed tracing, SLI/SLO design, alerting, and log-signal quality."
 model: claude-sonnet-4-6
 effort: high

@@ -1,4 +1,5 @@
 ---
+name: ux-researcher
 description: "Investigates user flows, evidence of friction, and experience-quality tradeoffs."
 model: claude-sonnet-4-6
 effort: high

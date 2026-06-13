@@ -1,24 +1,164 @@
 {
-  "project_status": "idle",
+  "project_status": "approved",
   "current_task_id": null,
   "tasks": [
     {
-      "id": "audit-hardening",
-      "title": "Local workflow proof seed for audit-hardening",
+      "id": "archon-remediation-p1",
+      "title": "archon-remediation-p1",
       "status": "done",
-      "class": "release_candidate",
+      "class": "docs_only",
       "depends_on": [],
-      "acceptance_criteria": [
-        "workflow-proof resolves audit-hardening from the latest runtime run",
-        "required reviewer, qa, and security reviews are recorded as authenticated approvals"
-      ],
+      "acceptance_criteria": [],
       "verification": [
-        "node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id audit-hardening"
+        "npm test"
       ],
       "evidence": [
-        "task packet: audit-hardening",
-        "verification: node --experimental-strip-types src/admin.ts workflow-proof --run-id latest --task-id audit-hardening",
-        "quality gate: release_readiness_required"
+        "task packet: archon-remediation-p1",
+        "verification: npm test"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p2",
+      "title": "archon-remediation-p2",
+      "status": "done",
+      "class": "docs_only",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "task packet: archon-remediation-p2",
+        "verification: npm test"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p3",
+      "title": "archon-remediation-p3",
+      "status": "done",
+      "class": "docs_only",
+      "depends_on": [
+        "archon-remediation-p2"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "task packet: archon-remediation-p3",
+        "verification: npm test"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p4",
+      "title": "archon-remediation-p4",
+      "status": "done",
+      "class": "docs_only",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "task packet: archon-remediation-p4",
+        "verification: npm test"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p5",
+      "title": "archon-remediation-p5",
+      "status": "done",
+      "class": "docs_only",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "task packet: archon-remediation-p5",
+        "verification: npm test"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p6",
+      "title": "archon-remediation-p6",
+      "status": "done",
+      "class": "docs_only",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "task packet: archon-remediation-p6",
+        "verification: npm test"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p7",
+      "title": "archon-remediation-p7",
+      "status": "done",
+      "class": "docs_only",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "task packet: archon-remediation-p7",
+        "verification: npm test"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p8",
+      "title": "archon-remediation-p8",
+      "status": "done",
+      "class": "docs_only",
+      "depends_on": [
+        "archon-remediation-p1"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "task packet: archon-remediation-p8",
+        "verification: npm test"
+      ],
+      "blocker": null
+    },
+    {
+      "id": "archon-remediation-p9",
+      "title": "archon-remediation-p9",
+      "status": "done",
+      "class": "docs_only",
+      "depends_on": [
+        "archon-remediation-p2"
+      ],
+      "acceptance_criteria": [],
+      "verification": [
+        "npm test"
+      ],
+      "evidence": [
+        "task packet: archon-remediation-p9",
+        "verification: npm test"
       ],
       "blocker": null
     }

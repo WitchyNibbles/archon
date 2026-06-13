@@ -6,7 +6,6 @@ import path from "node:path";
 import {
   createWorkflowProofSeedResolver,
   executeDoctorRepairCommandFromArgs,
-  executeSeedModernizationProofCommandFromArgs,
   executeSeedWorkflowProofCommandFromArgs,
   executeStatusCommandFromArgs,
   executeWorkflowProofCommandFromArgs
@@ -189,113 +188,6 @@ test("workflow integrity: proof seeding failure cleans up lock-bearing partial s
   });
   assert.equal(report.integrity.runtimeState?.seedFailure?.taskId, "task-proof");
   assert.match(String(report.integrity.runtimeState?.seedFailure?.reason ?? ""), /review persistence exploded/i);
-});
-
-test("workflow integrity: modernization proof seeding failure cleans up lock-bearing partial state", async () => {
-  const store = new MemoryStore();
-  const service = new ArchonCoreService(store);
-  const configurationFailure = new Error("modernization configuration exploded");
-  await store.ensureProjectContext({
-    workspaceSlug: "team",
-    projectSlug: "archon"
-  });
-
-  await assert.rejects(
-    () =>
-      executeSeedModernizationProofCommandFromArgs(
-        ["--workspace-slug", "team", "--project-slug", "archon", "--task-id", "task-modernization"],
-        {
-          env: process.env,
-          intakeRequest(input) {
-            return service.intakeRequest(input);
-          },
-          getProjectContext(params) {
-            return store.getProjectContext(params);
-          },
-          getProjectRuntimeState(projectId) {
-            return store.getProjectRuntimeState(projectId);
-          },
-          saveProjectRuntimeState(state) {
-            return store.saveProjectRuntimeState(state);
-          },
-          createTaskGraph(runId, tasks) {
-            return service.createTaskGraph(runId, tasks);
-          },
-          claimTask(runId, taskId, actor) {
-            return service.claimTask(runId, taskId, actor);
-          },
-          submitHandoff(runId, taskId, handoff) {
-            return service.submitHandoff(runId, taskId, handoff);
-          },
-          async recordReview() {
-            return undefined;
-          },
-          failTask(runId, taskId, reason) {
-            return service.failTask(runId, taskId, reason);
-          },
-          async configureAutonomousExecution() {
-            throw configurationFailure;
-          },
-          async upsertCoverageItems() {
-            throw new Error("unexpected coverage upsert after configuration failure");
-          },
-          async upsertUnderstandingMaps() {
-            throw new Error("unexpected understanding upsert after configuration failure");
-          },
-          async upsertRuntimeTraces() {
-            throw new Error("unexpected trace upsert after configuration failure");
-          },
-          async upsertDuplicateFamilies() {
-            throw new Error("unexpected duplicate-family upsert after configuration failure");
-          },
-          async upsertArchitectureDecisions() {
-            throw new Error("unexpected architecture-decision upsert after configuration failure");
-          },
-          async upsertMigrationLedgerEntries() {
-            throw new Error("unexpected migration-ledger upsert after configuration failure");
-          },
-          async upsertParityRequirements() {
-            throw new Error("unexpected parity upsert after configuration failure");
-          },
-          getStatusSnapshot(runId) {
-            return service.getStatus(runId);
-          },
-          getReviews(runId, taskId) {
-            return store.getReviews(runId, taskId);
-          },
-          getApprovals(runId, taskId) {
-            return store.getApprovals(runId, taskId);
-          }
-        }
-      ),
-    configurationFailure
-  );
-
-  const latestRun = await store.findLatestRun({ workspaceSlug: "team", projectSlug: "archon" });
-  assert.ok(latestRun);
-  const snapshot = await service.getStatus(latestRun.id);
-  const seededTask = snapshot.tasks.find((task) => task.packet.taskId === "task-modernization");
-  assert.ok(seededTask);
-  assert.notEqual(seededTask.status, "review_blocked");
-  assert.deepEqual(snapshot.activeLocks, []);
-  const projectContext = await store.getProjectContext({ workspaceSlug: "team", projectSlug: "archon" });
-  assert.ok(projectContext);
-  const runtimeState = await store.getProjectRuntimeState(projectContext.project.id);
-  assert.equal(runtimeState?.activeTaskId, undefined);
-  assert.equal(runtimeState?.metadata?.seedFailure?.taskId, "task-modernization");
-  assert.match(String(runtimeState?.metadata?.seedFailure?.reason ?? ""), /modernization configuration exploded/i);
-
-  const report = await executeStatusCommandFromArgs(["--run-id", latestRun.id], {
-    env: process.env,
-    getStatusSnapshot(runId) {
-      return service.getStatus(runId);
-    },
-    getProjectRuntimeState(projectId) {
-      return store.getProjectRuntimeState(projectId);
-    }
-  });
-  assert.equal(report.integrity.runtimeState?.seedFailure?.taskId, "task-modernization");
-  assert.match(String(report.integrity.runtimeState?.seedFailure?.reason ?? ""), /modernization configuration exploded/i);
 });
 
 test("workflow integrity: status surfaces contradictory local completion claims over runtime authority", async () => {
@@ -800,7 +692,7 @@ function buildSeedHarness() {
   const store = new MemoryStore();
   const seededService = new ArchonCoreService(store, {
     resolveReviewActionContext: createWorkflowProofSeedResolver(),
-    reviewIdentityAssurance: "seeded"
+    reviewSource: "seed"
   });
   return { store, seededService };
 }
@@ -856,25 +748,25 @@ async function runSuccessfulSeed(
   return { runId: result.runId };
 }
 
-test("workflow integrity: seed flow records reviews with identityAssurance seeded", async () => {
+test("workflow integrity: seed flow records reviews with source seed", async () => {
   const { store, seededService } = buildSeedHarness();
   const { runId } = await runSuccessfulSeed(store, seededService, "task-seed-assurance");
 
   const reviews = await store.getReviews(runId, "task-seed-assurance");
   assert.ok(reviews.length > 0, "expected at least one recorded review");
   for (const review of reviews) {
-    assert.equal(review.identityAssurance, "seeded", `review for ${review.reviewerRole} should be seeded`);
+    assert.equal(review.source, "seed", `review for ${review.reviewerRole} should carry seed provenance`);
   }
 });
 
-test("workflow integrity: seed flow records approvals with identityAssurance seeded", async () => {
+test("workflow integrity: seed flow records approvals with source seed", async () => {
   const { store, seededService } = buildSeedHarness();
   const { runId } = await runSuccessfulSeed(store, seededService, "task-seed-approval-assurance");
 
   const approvals = await store.getApprovals(runId, "task-seed-approval-assurance");
   assert.ok(approvals.length > 0, "expected at least one recorded approval");
   for (const approval of approvals) {
-    assert.equal(approval.identityAssurance, "seeded", `approval should carry seeded assurance`);
+    assert.equal(approval.source, "seed", `approval should carry seed provenance`);
   }
 });
 
@@ -909,7 +801,7 @@ test("workflow integrity: standalone workflow-proof in default mode rejects seed
       }),
     (err: unknown) => {
       assert.ok(err instanceof Error, "expected an Error");
-      assert.match(err.message, /required review provenance is not authenticated/i);
+      assert.match(err.message, /required review provenance is not orchestrator-written/i);
       return true;
     }
   );
@@ -924,8 +816,8 @@ test("workflow integrity: standalone workflow-proof in default mode rejects seed
 
   const approvals = await store.getApprovals(runId, "task-approval-gate");
   assert.ok(
-    approvals.some((a) => a.identityAssurance === "seeded"),
-    "at least one approval should be seeded"
+    approvals.some((a) => a.source === "seed"),
+    "at least one approval should carry seed provenance"
   );
 
   await assert.rejects(
@@ -947,7 +839,7 @@ test("workflow integrity: standalone workflow-proof in default mode rejects seed
       // The review provenance gate fires before the approval gate.
       assert.match(
         err.message,
-        /provenance is not authenticated|must be authenticated approved/i
+        /provenance is not orchestrator-written|must be orchestrator-written approved/i
       );
       return true;
     }

@@ -1,17 +1,17 @@
 # Review Identity Policy
 
-Review and waiver authority must come from authenticated principal binding, not from request-body role claims.
+Review and waiver authority must come from orchestrator-resolved principal bindings (runtime-trusted, orchestrator-written DB records), not from request-body role claims. Principal bindings name which actors may act in which review roles; they do not imply cryptographic or external authentication.
 
 ## Required rules
 
-- authenticate the caller before invoking `recordReview`
+- verify the caller through the repo-owned adapter before invoking `recordReview`
 - resolve review authority through `createReviewActionContextResolver(...)`
-- resolve authenticated principals through a repo-owned adapter built with `createReviewPrincipalAdapter(...)` or an audited equivalent
+- resolve principals through a repo-owned adapter built with `createReviewPrincipalAdapter(...)` or an audited equivalent
 - keep review identity bindings in a server-owned, reviewed file
 - keep review identity fixtures in a reviewed file and run `npm run archon:verify:review-identity` before trusting review actions
 - use `record-review` only with a live adapter module and a reviewed live bindings file
 - when one adapter module exposes multiple reviewed backends, select exactly one live backend with `ARCHON_REVIEW_IDENTITY_BACKEND`
-- bind each principal to explicit `actor` names, allowed review `roles`, and optional `waiverAuthorities`
+- bind each principal to explicit `actor` names, allowed review `roles`, and an optional `canWaive` flag
 - fail closed when the principal is unverified, missing, unbound, or requests an unauthorized review role
 - treat waiver authority as narrow policy; do not infer it from general admin access
 - store binding changes in git review like any other authz policy change

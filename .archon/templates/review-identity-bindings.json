@@ -21,7 +21,7 @@
         {
           "actor": "replace-with-release-manager-actor",
           "roles": ["qa_engineer"],
-          "waiverAuthorities": ["manager"]
+          "canWaive": true
         }
       ]
     }

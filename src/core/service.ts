@@ -52,10 +52,6 @@ import {
   runRequiresAutonomousExecution,
   selectAutonomousNextTarget
 } from "../runtime/autonomous-execution.ts";
-import {
-  buildCoverageLedgerArtifacts,
-  type CoverageLedgerArtifacts
-} from "../runtime/coverage-ledger.ts";
 import { generateRepoInventory } from "../runtime/repo-inventory.ts";
 import { buildRuntimeTraceRegistry } from "../runtime/runtime-trace-registry.ts";
 import { annotateConflictSignals, isProvenancedSearchResult } from "./search-memory-results.ts";
@@ -110,9 +106,19 @@ import type {
 import type { ArchonStore } from "../store/types.ts";
 import { assessTaskPacketReasoning } from "./reasoning-quality.ts";
 
+export interface HandoffLifecycleEvent {
+  runId: string;
+  taskId: string;
+  actor: string;
+}
+
 export interface ArchonCoreServiceOptions {
   resolveReviewActionContext?: ResolveReviewActionContext | undefined;
-  reviewIdentityAssurance?: "authenticated" | "seeded" | undefined;
+  // Provenance recorded on reviews/approvals written through this service.
+  // "orchestrator" (default) marks orchestrator-written records; "seed" marks
+  // synthetic local proof seeds that are never trusted as completion authority.
+  reviewSource?: "orchestrator" | "seed" | undefined;
+  onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
 }
 
 export interface ExecuteReviewRecommendationResult {
@@ -582,12 +588,14 @@ function deriveRunStatus(tasks: readonly TaskRecord[]): RunRecord["status"] {
 export class ArchonCoreService {
   private readonly store: ArchonStore;
   private readonly resolveReviewActionContext?: ResolveReviewActionContext | undefined;
-  private readonly reviewIdentityAssurance: "authenticated" | "seeded";
+  private readonly reviewSource: "orchestrator" | "seed";
+  private readonly onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
     this.resolveReviewActionContext = options.resolveReviewActionContext;
-    this.reviewIdentityAssurance = options.reviewIdentityAssurance ?? "authenticated";
+    this.reviewSource = options.reviewSource ?? "orchestrator";
+    this.onHandoff = options.onHandoff;
   }
 
   private async saveAutonomousExecutionState(
@@ -1053,16 +1061,6 @@ export class ArchonCoreService {
     return nextState;
   }
 
-  async exportCoverageLedger(runId: string): Promise<CoverageLedgerArtifacts> {
-    const snapshot = await this.getStatus(runId);
-    const state = snapshot.autonomousExecution?.state;
-    if (!state?.manifest) {
-      throw new Error("coverage ledger export requires an autonomous execution manifest");
-    }
-
-    return buildCoverageLedgerArtifacts(state);
-  }
-
   async getRuntimeTraceRegistry(runId: string): Promise<RuntimeTraceRegistrySummary> {
     const snapshot = await this.getStatus(runId);
     const state = snapshot.autonomousExecution?.state;
@@ -1369,6 +1367,13 @@ export class ArchonCoreService {
       createdAt: existingState?.createdAt ?? record.createdAt,
       updatedAt: record.createdAt
     });
+
+    if (this.onHandoff) {
+      await this.onHandoff({ runId, taskId, actor: handoff.actor }).catch(() => {
+        // ingestion errors must never block handoff completion
+      });
+    }
+
     return record;
   }
 
@@ -1408,13 +1413,12 @@ export class ArchonCoreService {
       reviewerRole: review.reviewerRole,
       actor: context.actor,
       actorRole: context.actorRole,
-      identityAssurance: this.reviewIdentityAssurance,
+      source: this.reviewSource,
       state: review.state,
       severity: review.severity,
       findings: [...review.findings],
       waiverReason: review.waiverReason,
       evidenceRefs: [...(review.evidenceRefs ?? [])],
-      waiverAuthority: context.waiverAuthority ?? "none",
       createdAt: timestamp()
     };
 
@@ -1428,7 +1432,7 @@ export class ArchonCoreService {
       taskId,
       actor: context.actor,
       actorRole: context.actorRole,
-      identityAssurance: this.reviewIdentityAssurance,
+      source: this.reviewSource,
       decision: decision.decision,
       rationale:
         decision.blockers.length > 0 ? decision.blockers.join("; ") : "All required reviews passed",

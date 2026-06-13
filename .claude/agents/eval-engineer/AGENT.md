@@ -1,4 +1,5 @@
 ---
+name: eval-engineer
 description: "Builds and reviews benchmarks, graders, datasets, regression evidence, and measurable quality signals."
 model: claude-sonnet-4-6
 effort: high

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..", "..");
 
-const managedPathPrefixes = ["CLAUDE.md", ".claude/", ".archon/memory/"];
+const managedPathPrefixes = ["CLAUDE.md", ".claude/", ".archon/memory/", ".archon/work/tasks/", ".archon/work/reviews/", ".archon/work/daemon/"];
 const destructiveCommandPatterns = [
   /\bgit\s+reset\s+--hard\b/,
   /\bgit\s+checkout\s+--\b/,
@@ -26,6 +26,7 @@ const verificationCommandPatterns = [
   /\btsc\b/,
   /\bnode\b.*\s--test\b/,
   /\bbash\s+scripts\/check-/,
+  /\bnode\s+(?:--experimental-strip-types\s+)?scripts\/check-/,
   /\barchon:verify\b/
 ];
 const readOnlyCommandSegmentPatterns = [
@@ -425,6 +426,7 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
     const result = await client.query(
       `
         select
+          active_run_id,
           active_task_id,
           task_queue->>'current_task_id' as current_task_id
         from project_runtime_state
@@ -449,10 +451,47 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
         : typeof row.current_task_id === "string" && row.current_task_id.trim().length > 0
           ? row.current_task_id.trim()
           : undefined;
+    const activeRunId =
+      typeof row.active_run_id === "string" && row.active_run_id.trim().length > 0
+        ? row.active_run_id.trim()
+        : undefined;
+
+    // Finding 5 fix: read the active task's write scope from the authoritative
+    // runtime task record, not from the on-disk markdown packet (which a worker
+    // could edit to widen its own scope). `undefined` means "not found" so the
+    // caller falls back to markdown; an array (even empty) is authoritative.
+    let allowedWriteScope;
+    let councilOutcome;
+    if (activeRunId && activeTaskId) {
+      try {
+        const taskRow = await client.query(
+          `select allowed_write_scope, payload->>'councilOutcome' as council_outcome
+           from tasks
+           where run_id = $1 and task_key = $2
+           limit 1`,
+          [activeRunId, activeTaskId]
+        );
+        const row2 = taskRow.rows[0];
+        if (row2 && Array.isArray(row2.allowed_write_scope)) {
+          allowedWriteScope = row2.allowed_write_scope
+            .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+            .map((entry) => entry.trim());
+        }
+        // #14 fix: council outcome from the authoritative runtime task record.
+        if (row2 && typeof row2.council_outcome === "string" && row2.council_outcome.trim().length > 0) {
+          councilOutcome = row2.council_outcome.trim();
+        }
+      } catch {
+        // leave fields undefined so the caller falls back to markdown
+      }
+    }
 
     return {
+      activeRunId,
       activeTaskId,
       queueCurrentTaskId,
+      allowedWriteScope,
+      councilOutcome,
       runtimeConnected: true
     };
   } catch {
@@ -467,6 +506,132 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
       }
     }
   }
+}
+
+// Query orchestrator review records from the DB for a given task.
+// Returns array of {role, outcome, source} rows where source='orchestrator'.
+// Creates its own pg connection. Falls back silently if DB is unavailable.
+//
+// Two-authorities fix: when a runId is known, restrict to reviews for that run (or
+// run-agnostic Stop-hook reviews with run_id IS NULL), so a stale passed review from
+// a DIFFERENT run can no longer satisfy the Stop-hook gate while workflow-proof would
+// reject it. This narrows the divergence between the two review authorities.
+// Pure, testable builder for the Stop-hook orchestrator-review query.
+// When a runId is known the query is strictly run-scoped (`run_id = $2`) — there is
+// NO `run_id is null` escape hatch, because a null-run review row (written by the
+// `save-review` path) would otherwise satisfy the gate for every run forever, which a
+// stray review could exploit. Run-agnostic (task-only) lookup is used only when no
+// run id is available (offline / legacy state).
+export function buildOrchestratorReviewQuery(taskId, runId) {
+  if (typeof runId === "string" && runId.trim().length > 0) {
+    return {
+      sql: `select reviewer_role as role, state as outcome, source
+             from reviews
+             where task_id = $1 and source = 'orchestrator' and run_id = $2
+             order by created_at asc`,
+      params: [taskId, runId.trim()]
+    };
+  }
+  return {
+    sql: `select reviewer_role as role, state as outcome, source
+             from reviews
+             where task_id = $1 and source = 'orchestrator'
+             order by created_at asc`,
+    params: [taskId]
+  };
+}
+
+async function queryOrchestratorReviews(resolvedRepoRoot, taskId, runId) {
+  const dotEnv = parseDotEnv(
+    await readTextIfExists(path.join(resolvedRepoRoot, ".env"))
+  );
+  const connectionString =
+    process.env.ARCHON_CORE_DATABASE_URL || dotEnv.ARCHON_CORE_DATABASE_URL;
+
+  if (!connectionString || !taskId) {
+    return [];
+  }
+
+  let client;
+  try {
+    const pgModule = await import("pg");
+    const Client = pgModule.Client ?? pgModule.default?.Client;
+    if (!Client) {
+      return [];
+    }
+
+    client = new Client({ connectionString });
+    await client.connect();
+
+    const { sql, params } = buildOrchestratorReviewQuery(taskId, runId);
+    const result = await client.query(sql, params);
+
+    return result.rows.map((row) => ({
+      role: typeof row.role === "string" ? row.role : "",
+      outcome: typeof row.outcome === "string" ? row.outcome : "",
+      source: "orchestrator"
+    }));
+  } catch {
+    // DB query failed — return empty so caller falls back to markdown check
+    return [];
+  } finally {
+    if (client) {
+      try {
+        await client.end();
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
+}
+
+// Build review context from markdown files (offline fallback).
+async function loadMarkdownReviewContext(resolvedRepoRoot, taskId, requiredRoles) {
+  const missingReviews = [];
+  const invalidReviews = [];
+  for (const role of requiredRoles) {
+    const relPath = reviewArtifactPath(taskId, role);
+    const content = await readTextIfExists(path.join(resolvedRepoRoot, relPath));
+    if (content === undefined) {
+      missingReviews.push(relPath);
+    } else {
+      const validation = validateReviewArtifact(content, taskId, role);
+      if (!validation.valid) {
+        invalidReviews.push(`${relPath} (${validation.reason})`);
+      }
+    }
+  }
+  return { missingReviews, invalidReviews };
+}
+
+// Build review context from DB orchestrator records.
+// source='self' records are ignored — only source='orchestrator' is trusted.
+// Returns null if no orchestrator records exist, so caller can decide to fall back.
+async function loadDbReviewContext(resolvedRepoRoot, taskId, requiredRoles, runId) {
+  const rows = await queryOrchestratorReviews(resolvedRepoRoot, taskId, runId);
+
+  // If DB returned nothing (offline or no records), return null to signal fallback
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const passedRoles = new Set(
+    rows.filter((r) => r.outcome === "passed").map((r) => r.role)
+  );
+  const failedRoles = rows
+    .filter((r) => r.outcome === "failed" || r.outcome === "blocked")
+    .map((r) => r.role);
+
+  const missingReviews = requiredRoles.filter(
+    (role) => !passedRoles.has(role) && !failedRoles.includes(role)
+  );
+
+  // Map failed roles to the same path-like format for UI consistency
+  const invalidReviews = failedRoles
+    .filter((role) => requiredRoles.includes(role))
+    .map((role) => `${reviewArtifactPath(taskId, role)} (orchestrator review outcome: failed)`);
+
+  return { missingReviews, invalidReviews };
 }
 
 export async function readActiveTaskContext(options = {}) {
@@ -607,11 +772,22 @@ export async function readActiveTaskContext(options = {}) {
   const taskMarkdown = await readTextIfExists(
     path.join(resolvedRepoRoot, ".archon", "work", "tasks", `task-${context.activeTaskId}.md`)
   );
+
+  // Finding 5 fix: the runtime task record is the authority for write scope when
+  // the runtime is connected; the markdown packet is only the offline fallback.
+  // This also lets an active task created purely in the runtime (no packet file
+  // on disk yet) carry its scope, instead of silently getting an empty scope.
+  const markdownScope = taskMarkdown ? parseAllowedWriteScopeSection(taskMarkdown) : [];
+  context.allowedWriteScope = resolveActiveWriteScope({
+    runtimeConnected: context.runtimeConnected,
+    runtimeScope: runtimeContext?.allowedWriteScope,
+    markdownScope
+  });
+
   if (!taskMarkdown) {
     return context;
   }
 
-  context.allowedWriteScope = parseAllowedWriteScopeSection(taskMarkdown);
   context.allowedTaskHandoffScope = parseAllowedTaskHandoffScopeSection(taskMarkdown);
   context.continuationIntent = parseContinuationIntentSection(taskMarkdown);
   context.hookBlockerState = await readHookBlockerState(
@@ -624,17 +800,24 @@ export async function readActiveTaskContext(options = {}) {
   context.requiredReviews = requiredRoles;
   context.missingReviews = [];
   context.invalidReviews = [];
-  for (const role of requiredRoles) {
-    const relPath = reviewArtifactPath(context.activeTaskId, role);
-    const content = await readTextIfExists(path.join(resolvedRepoRoot, relPath));
-    if (content === undefined) {
-      context.missingReviews.push(relPath);
-    } else {
-      const validation = validateReviewArtifact(content, context.activeTaskId, role);
-      if (!validation.valid) {
-        context.invalidReviews.push(`${relPath} (${validation.reason})`);
-      }
+
+  if (requiredRoles.length > 0) {
+    // When runtime is connected, query DB for trusted orchestrator records.
+    // Fall back to markdown file check when offline or when DB has no records.
+    let reviewContext = null;
+    if (context.runtimeConnected) {
+      reviewContext = await loadDbReviewContext(
+        resolvedRepoRoot,
+        context.activeTaskId,
+        requiredRoles,
+        runtimeContext?.activeRunId
+      );
     }
+    if (!reviewContext) {
+      reviewContext = await loadMarkdownReviewContext(resolvedRepoRoot, context.activeTaskId, requiredRoles);
+    }
+    context.missingReviews = reviewContext.missingReviews;
+    context.invalidReviews = reviewContext.invalidReviews;
   }
 
   const parsedVerificationRequired = parseVerificationRequired(taskMarkdown);
@@ -655,7 +838,14 @@ export async function readActiveTaskContext(options = {}) {
   const hasCouncilGate = qualityGates.some((g) => g.trim() === "council_review_required");
   context.councilRequired =
     councilInfo.required === "true" || hasCouncilGate;
-  context.councilOutcome = councilInfo.outcome;
+  // #14 fix: when the runtime is connected, the council outcome is authoritative from
+  // the runtime task record (orchestrator-written), not from the markdown a worker can
+  // edit. Markdown is honored only offline.
+  context.councilOutcome = resolveCouncilOutcome({
+    runtimeConnected: context.runtimeConnected,
+    runtimeOutcome: runtimeContext?.councilOutcome,
+    markdownOutcome: councilInfo.outcome
+  });
 
   return context;
 }
@@ -746,6 +936,24 @@ export function parseRequiredReviews(markdown) {
 
 export function reviewArtifactPath(taskId, role) {
   return `.archon/work/reviews/review-${taskId}-${role}.md`;
+}
+
+// Decide the enforced write scope for the active task.
+//
+// Finding 5 fix: when the runtime is connected it is the authority for the
+// active task's allowed write scope. The markdown packet on disk (which a worker
+// could edit) is only a fallback for the offline case. This prevents a worker
+// from widening its own write scope by editing its own task packet markdown.
+//
+// `runtimeScope === undefined` means the runtime did not provide a scope (task
+// row missing or query failed) — fall back to markdown. An explicit array
+// (including an empty array) is authoritative and is never widened by markdown.
+export function resolveActiveWriteScope({ runtimeConnected, runtimeScope, markdownScope }) {
+  const md = Array.isArray(markdownScope) ? markdownScope : [];
+  if (runtimeConnected && Array.isArray(runtimeScope)) {
+    return runtimeScope;
+  }
+  return md;
 }
 
 // Claude Code tool calls pass absolute file_path values; scope entries are relative.
@@ -890,6 +1098,43 @@ const verificationNoopPatterns = [
   /\btsc\s+--init\b/
 ];
 
+// #10 fix: a verification command joined to other commands with a shell control
+// operator can mask a real failure or inject a fake test summary into stdout while
+// still exiting 0 (e.g. `npm test || echo "# fail 0"`, `npm test | cat`,
+// `npm test; echo "# tests 1"`). Such a command must never mint a verification cert;
+// the operator must run the verify command standalone for it to count.
+export function commandHasShellChaining(command) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return false;
+  }
+  let s = stripHeredocBodies(command);
+  // Drop quoted strings so operators inside string literals are not counted.
+  s = s.replace(/'[^']*'/g, "").replace(/"[^"]*"/g, "");
+  // Drop fd/file redirects so `2>&1`, `>out`, `<in` are not mistaken for operators.
+  // The filename charclass excludes shell metacharacters so an operator immediately
+  // adjacent to a redirect target (e.g. `>>log&&echo`) is NOT swallowed into the
+  // filename (security: that would hide the `&&`).
+  s = s.replace(/\d*>&\d+/g, "").replace(/\d*>>?\s*[^\s|&;<>]+/g, "").replace(/<\s*[^\s|&;<>]+/g, "");
+  // Any shell separator means the verify command is not the sole determinant of the
+  // exit code / stdout. Newlines and carriage returns separate commands in a bash
+  // script body just like `;`, so they count too (security: a multi-line body can
+  // run the real test then echo a forged TAP summary).
+  return /(\|\||&&|;|\||&|\n|\r)/.test(s);
+}
+
+// #14 fix: the council outcome must come from the authoritative runtime when it is
+// connected, NOT from the on-disk task packet markdown a worker can edit. `undefined`
+// runtime outcome means "no orchestrator-recorded outcome" → not approved. Markdown is
+// only honored offline (documented boundary).
+export function resolveCouncilOutcome({ runtimeConnected, runtimeOutcome, markdownOutcome }) {
+  if (runtimeConnected) {
+    return typeof runtimeOutcome === "string" && runtimeOutcome.trim().length > 0
+      ? runtimeOutcome.trim()
+      : undefined;
+  }
+  return markdownOutcome;
+}
+
 export function qualifiesForVerificationCert(command, output) {
   if (typeof command !== "string" || !isVerificationCommand(command)) {
     return false;
@@ -897,6 +1142,12 @@ export function qualifiesForVerificationCert(command, output) {
 
   // Disqualify version/help/init invocations — they prove nothing.
   if (verificationNoopPatterns.some((p) => p.test(command))) {
+    return false;
+  }
+
+  // #10 fix: reject shell-chained verification commands — they can mask failure
+  // or inject a forged summary while exiting 0.
+  if (commandHasShellChaining(command)) {
     return false;
   }
 
@@ -949,8 +1200,12 @@ export function qualifiesForVerificationCert(command, output) {
     return true;
   }
 
-  // bash scripts/check-* and archon:verify: no output requirement (fail loudly on their own)
-  if (/\bbash\s+scripts\/check-/.test(command) || /\barchon:verify\b/.test(command)) {
+  // bash/node scripts/check-* and archon:verify: no output requirement (fail loudly on their own)
+  if (
+    /\bbash\s+scripts\/check-/.test(command) ||
+    /\bnode\s+(?:--experimental-strip-types\s+)?scripts\/check-/.test(command) ||
+    /\barchon:verify\b/.test(command)
+  ) {
     return true;
   }
 
@@ -1075,7 +1330,7 @@ export function isVerificationSatisfied(requiredCommand, passedCommands) {
   const normalized = requiredCommand.trim().toLowerCase();
   return passedCommands.some((entry) => {
     const passed = (typeof entry.command === "string" ? entry.command : "").trim().toLowerCase();
-    return passed.includes(normalized) || normalized.includes(passed);
+    return passed === normalized;
   });
 }
 
@@ -1284,10 +1539,16 @@ export function extractBashReferencedManagedPaths(command) {
     return [];
   }
 
+  // Strip heredoc bodies before scanning so that documentation, scripts, or data
+  // written into a heredoc that merely MENTION a managed path do not trip the
+  // guard. An actual write target (e.g. `cat > .claude/x <<EOF`) keeps the
+  // redirect outside the body, so real managed writes remain detected.
+  const scanned = stripHeredocBodies(command);
+
   const matches = [];
   for (const prefix of managedPathPrefixes) {
     const plainPrefix = prefix.replace(/\/$/, "");
-    if (command.includes(prefix) || command.includes(plainPrefix)) {
+    if (scanned.includes(prefix) || scanned.includes(plainPrefix)) {
       matches.push(plainPrefix);
     }
   }
