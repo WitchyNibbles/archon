@@ -1,4 +1,5 @@
 ---
+name: ml-engineer
 description: "Owns model-integrated behavior, evaluation rigor, and ML-specific product or inference risks."
 model: claude-sonnet-4-6
 effort: high

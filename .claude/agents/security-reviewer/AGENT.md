@@ -1,4 +1,5 @@
 ---
+name: security-reviewer
 description: "Reviews threats, auth, trust boundaries, abuse cases, dependency risks, and secure implementation choices."
 model: claude-sonnet-4-6
 effort: high

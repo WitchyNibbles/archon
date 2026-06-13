@@ -168,7 +168,7 @@ export function evaluatePreToolUse(payload, context) {
         if (offending) {
           return {
             decision: "block",
-            reason: `write to ${offending} blocked (detected from bash write) — no active archon task. To unblock: create a task packet at .archon/work/tasks/task-<id>.md, set .archon/ACTIVE to task_id=<id> and state=active, then retry.`
+            reason: `write to ${offending} blocked (detected from bash write) — no active archon task. To unblock: register an initiative via \`npm run archon -- init-task --id <id> --title "<title>" --scope <comma,paths>\` (or point .archon/ACTIVE at an existing task), then retry.`
           };
         }
       }
@@ -210,7 +210,7 @@ export function evaluatePreToolUse(payload, context) {
     if (filePath && !context.activeTaskId && isSubstantiveWriteTarget(filePath)) {
       return {
         decision: "block",
-        reason: `write to ${filePath} blocked — no active archon task. To unblock: create a task packet at .archon/work/tasks/task-<id>.md, set .archon/ACTIVE to task_id=<id> and state=active, then retry.`
+        reason: `write to ${filePath} blocked — no active archon task. To unblock: register an initiative via \`npm run archon -- init-task --id <id> --title "<title>" --scope <comma,paths>\` (or point .archon/ACTIVE at an existing task), then retry.`
       };
     }
     // Task-scope gate: when a task is active and declares a non-empty write scope,

@@ -1,4 +1,5 @@
 ---
+name: planner
 description: "Owns intake synthesis, task decomposition, staffing, checkpoints, and gate enforcement for archon."
 model: claude-opus-4-8
 effort: high

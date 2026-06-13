@@ -21,8 +21,7 @@
         },
         "context": {
           "actor": "replace-with-review-actor",
-          "actorRole": "reviewer",
-          "waiverAuthority": "none"
+          "actorRole": "reviewer"
         }
       }
     },

@@ -1,28 +1,47 @@
 import process from "node:process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createGrafanaClient } from "./client.ts";
+import { createGrafanaClient, type ArchonGrafanaQueryOptions } from "./client.ts";
 import { loadDevgodEnvFile } from "./config.ts";
 import { createGrafanaMcpToolDefinitions } from "./tools.ts";
 
-export function createGrafanaMcpServer() {
-  const client = createGrafanaClient();
+export interface GrafanaMcpServerOptions {
+  /** Override options for archon_grafana_query (e.g. to inject a mock fetch in tests). */
+  queryOptions?: ArchonGrafanaQueryOptions;
+}
+
+export function createGrafanaMcpServer(options: GrafanaMcpServerOptions = {}) {
+  // Defer createGrafanaClient so the server can start even without a full Grafana config.
+  // The devgod_* tools that require a live client will throw at call time if not configured;
+  // archon_grafana_query handles missing config gracefully via executeArchonGrafanaQuery.
+  let client: ReturnType<typeof createGrafanaClient> | undefined;
+
+  function getClient() {
+    if (!client) {
+      client = createGrafanaClient();
+    }
+    return client;
+  }
+
   const server = new McpServer({
     name: "archon-grafana",
     version: "0.1.0"
   });
 
-  for (const tool of createGrafanaMcpToolDefinitions({
-    testConnection() {
-      return client.testConnection();
+  for (const tool of createGrafanaMcpToolDefinitions(
+    {
+      testConnection() {
+        return getClient().testConnection();
+      },
+      listDatasources() {
+        return getClient().listDatasources();
+      },
+      queryLogs(input) {
+        return getClient().queryLogs(input);
+      }
     },
-    listDatasources() {
-      return client.listDatasources();
-    },
-    queryLogs(input) {
-      return client.queryLogs(input);
-    }
-  })) {
+    options.queryOptions ?? {}
+  )) {
     server.registerTool(
       tool.name,
       {

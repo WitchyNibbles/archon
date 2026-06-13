@@ -445,6 +445,20 @@ export const agentCatalog = {
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "everything-claude-code:backend-patterns"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "runbooks", "benchmark artifacts", "Grafana config at src/grafana/"]
+  },
+  review_orchestrator: {
+    label: "Review Orchestrator",
+    description: "Spawns reviewer, qa_engineer, and security_reviewer agents and writes their findings to the DB as trusted orchestrator records.",
+    class: "quality",
+    availability: "core_required",
+    shipsAgentArtifact: true,
+    artifactPath: ".claude/agents/review-orchestrator/AGENT.md",
+    model: "sonnet",
+    effort: "high",
+    canOwnTasks: true,
+    canSatisfySpecialistRequirement: false,
+    defaultSkillIds: ["archon-review", "archon-qa-verification", "verification-loop"],
+    retrievalGuidance: ["approved memory", "repo rules", "task packets", "review artifacts"]
   }
 } as const satisfies Record<string, AgentCatalogEntry>;
 

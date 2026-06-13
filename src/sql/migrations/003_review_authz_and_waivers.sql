@@ -18,16 +18,6 @@ where actor_role is null;
 alter table reviews
   alter column actor_role set not null;
 
-alter table reviews
-  add column if not exists waiver_authority text not null default 'none';
-
-alter table reviews
-  drop constraint if exists reviews_waiver_authority_check;
-
-alter table reviews
-  add constraint reviews_waiver_authority_check
-  check (waiver_authority in ('none', 'manager', 'security_exception'));
-
 alter table approvals
   add column if not exists actor_role text;
 

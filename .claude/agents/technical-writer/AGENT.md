@@ -1,4 +1,5 @@
 ---
+name: technical-writer
 description: "Owns clear operator docs, onboarding guides, release notes, and high-signal technical writing."
 model: claude-haiku-4-5-20251001
 effort: medium

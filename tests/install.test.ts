@@ -9,14 +9,13 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { auditMaintainerOnlyPublishedPaths } from "../src/install/maintainer-boundary.ts";
 import {
-  grafanaCodexConfigFragment,
+  grafanaMcpConfigFragment,
   mergeAgentsMd,
   mergeDotAgentsMd,
-  mergeCodexConfig,
   mergeClaudeSettings,
   mergeGitignore,
   mergePackageJson,
-  playwrightCodexConfigFragment
+  playwrightMcpConfigFragment
 } from "../src/install/merge.ts";
 import {
   installDevgodIntoProject,
@@ -76,7 +75,7 @@ async function writeHealthcheckNodeStub(binDir: string): Promise<void> {
   );
 }
 
-const driftFixtureTarget = "scripts/check-archon-workflow.sh";
+const driftFixtureTarget = "scripts/check-archon-workflow.ts";
 
 function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -181,9 +180,9 @@ test("mergeClaudeSettings enforces autoAcceptEdits and permissions from source",
   assert.deepEqual(merged.permissions?.allow, ["Bash"]);
 });
 
-test("mergeCodexConfig adds Playwright MCP settings with standard and vision profiles", () => {
-  // In archon, playwrightCodexConfigFragment returns JSON for .mcp.json
-  const fragment = playwrightCodexConfigFragment();
+test("playwrightMcpConfigFragment adds Playwright MCP settings with standard and vision profiles", () => {
+  // playwrightMcpConfigFragment returns JSON for .mcp.json
+  const fragment = playwrightMcpConfigFragment();
   const parsed = JSON.parse(fragment) as { mcpServers?: Record<string, unknown> };
 
   assert.ok(parsed.mcpServers?.playwright, "expected playwright mcp server");
@@ -195,9 +194,9 @@ test("mergeCodexConfig adds Playwright MCP settings with standard and vision pro
   assert.ok(JSON.stringify(pwv.args ?? []).includes(".archon/playwright/mcp.vision.json"));
 });
 
-test("mergeCodexConfig adds Grafana MCP settings without overwriting existing project config", () => {
-  // In archon, grafanaCodexConfigFragment returns JSON for .mcp.json
-  const fragment = grafanaCodexConfigFragment();
+test("grafanaMcpConfigFragment adds Grafana MCP settings without overwriting existing project config", () => {
+  // grafanaMcpConfigFragment returns JSON for .mcp.json
+  const fragment = grafanaMcpConfigFragment();
   const parsed = JSON.parse(fragment) as { mcpServers?: Record<string, unknown> };
 
   assert.ok(parsed.mcpServers?.grafana, "expected grafana mcp server");
@@ -252,10 +251,6 @@ test("mergePackageJson adds archon dependency and scripts without removing exist
     "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts seed-workflow-proof"
   );
   assert.equal(
-    merged.scripts["archon:seed-modernization-proof"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts seed-modernization-proof"
-  );
-  assert.equal(
     merged.scripts["archon:advance-active-task"],
     "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts advance-active-task --format text"
   );
@@ -283,7 +278,10 @@ test("mergePackageJson adds archon dependency and scripts without removing exist
     merged.scripts["archon:loop"],
     "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts loop --format text"
   );
-  assert.equal(merged.scripts["archon:check-workflow"], "bash scripts/check-archon-workflow.sh");
+  assert.equal(
+    merged.scripts["archon:check-workflow"],
+    "node --experimental-strip-types scripts/check-archon-workflow.ts"
+  );
   assert.equal(
     merged.scripts["archon:report"],
     "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts report --format markdown"
@@ -614,7 +612,7 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     "scripts/check-quality.sh",
     "scripts/check-archon-happy-path.sh",
     "scripts/check-archon-workflow-live.sh",
-    "scripts/check-archon-workflow.sh",
+    "scripts/check-archon-workflow.ts",
     "scripts/install-archon.ps1",
     "scripts/install-archon.sh",
     "scripts/setup-archon.ps1",
@@ -1232,7 +1230,7 @@ test("upgradeDevgodInProject dry-run reports managed drift without writing", asy
     assert.equal(summary.plannedBackups.length, 1);
     assert.match(
       summary.plannedBackups[0],
-      /^\.archon\/install-backups\/.+\/scripts\/check-archon-workflow\.sh$/
+      /^\.archon\/install-backups\/.+\/scripts\/check-archon-workflow\.ts$/
     );
     assert.equal(await readFile(path.join(targetRoot, driftFixtureTarget), "utf8"), driftedContent);
     assert.equal(await readFile(unmanagedFile, "utf8"), "leave me alone\n");
@@ -1261,7 +1259,7 @@ test("upgradeDevgodInProject apply restores managed drift and backs it up", asyn
     assert.equal(summary.mode, "apply");
     assert.ok(summary.updated.includes(driftFixtureTarget));
     assert.equal(summary.backups.length, 1);
-    assert.match(summary.backups[0], /^\.archon\/install-backups\/.+\/scripts\/check-archon-workflow\.sh$/);
+    assert.match(summary.backups[0], /^\.archon\/install-backups\/.+\/scripts\/check-archon-workflow\.ts$/);
 
     const backupContent = await readFile(path.join(targetRoot, summary.backups[0]), "utf8");
     assert.equal(backupContent, driftedContent);
@@ -1752,7 +1750,7 @@ test("installDevgodIntoProject seeds scaffolding but not live work or reviewed m
   assert.match(taskQueueTemplate, /"project_status": "not_started"/);
 
   const installedWorkflowChecker = await readFile(
-    path.join(targetRoot, "scripts/check-archon-workflow.sh"),
+    path.join(targetRoot, "scripts/check-archon-workflow.ts"),
     "utf8"
   );
   assert.match(installedWorkflowChecker, /archon workflow artifact check passed/);
@@ -1761,7 +1759,7 @@ test("installDevgodIntoProject seeds scaffolding but not live work or reviewed m
     path.join(targetRoot, "scripts/check-archon-workflow-live.sh"),
     "utf8"
   );
-  assert.match(installedLiveWorkflowChecker, /scripts\/check-archon-workflow\.sh/);
+  assert.match(installedLiveWorkflowChecker, /scripts\/check-archon-workflow\.ts/);
 
   const installedAgents = [
     ".claude/agents/build-resolver/AGENT.md",
@@ -1816,10 +1814,6 @@ test("installDevgodIntoProject seeds scaffolding but not live work or reviewed m
   assert.match(
     targetPackageJson.scripts["archon:seed-workflow-proof"],
     /node_modules\/archon\/src\/admin\/archon\.ts seed-workflow-proof/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:seed-modernization-proof"],
-    /node_modules\/archon\/src\/admin\/archon\.ts seed-modernization-proof/
   );
   assert.match(targetPackageJson.scripts.archon, /node_modules\/archon\/src\/admin\/archon\.ts/);
   assert.match(
@@ -2420,13 +2414,18 @@ test("workflow live wrapper forwards the active task id to the workflow checker"
     };
     await writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2) + "\n", "utf8");
 
-    await writeExecutable(
-      path.join(targetRoot, "scripts", "check-archon-workflow.sh"),
+    await writeFile(
+      path.join(targetRoot, "scripts", "check-archon-workflow.ts"),
       [
-        "#!/usr/bin/env bash",
-        "set -euo pipefail",
-        'printf "%s\\n" "$*" > "${ARCHON_WORKFLOW_CHECK_ARGS_LOG:?missing workflow args log}"'
-      ].join("\n")
+        'import fs from "node:fs";',
+        'const logPath = process.env.ARCHON_WORKFLOW_CHECK_ARGS_LOG;',
+        'if (!logPath) {',
+        '  throw new Error("missing workflow args log");',
+        '}',
+        'fs.writeFileSync(logPath, `${process.argv.slice(2).join(" ")}\\n`, "utf8");',
+        ""
+      ].join("\n"),
+      "utf8"
     );
 
     await writeFile(
@@ -2665,7 +2664,7 @@ test("npm pack dry run includes the new agent, skill, and retrieval policy surfa
     "scripts/check-archon-branch-name.sh",
     "scripts/check-archon-commit-msg.sh",
     "scripts/check-archon-git-guard.sh",
-    "scripts/check-archon-workflow.sh",
+    "scripts/check-archon-workflow.ts",
     "scripts/check-archon-workflow-live.sh",
     "scripts/check-quality.sh",
     "scripts/archon-session-start.sh",

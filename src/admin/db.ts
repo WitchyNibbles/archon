@@ -37,7 +37,7 @@ function applyDotEnvText(raw: string, env: NodeJS.ProcessEnv): void {
     }
 
     const [key, ...rest] = trimmed.split("=");
-    if (!key || env[key]) {
+    if (!key || key in env) {
       continue;
     }
 

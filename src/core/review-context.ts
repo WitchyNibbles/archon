@@ -5,14 +5,12 @@ import type {
   RetrievalRole,
   ReviewActionContext,
   ReviewState,
-  TrustedReviewActionContext,
-  ReviewWaiverAuthority
+  TrustedReviewActionContext
 } from "../domain/types.ts";
-import { reviewStates, retrievalRoles as retrievalRoleValues, reviewWaiverAuthorities as waiverAuthorityValues } from "../domain/types.ts";
-import { deriveWaiverContext } from "./review-context-waiver.ts";
+import { reviewStates, retrievalRoles as retrievalRoleValues } from "../domain/types.ts";
+import { canActorWaiveReview } from "../domain/contracts.ts";
 
 const retrievalRoleSet = new Set<string>(retrievalRoleValues);
-const reviewWaiverAuthoritySet = new Set<string>(waiverAuthorityValues);
 const trustedReviewActionContexts = new WeakSet<object>();
 
 export interface ReviewActionContextResolverInput {
@@ -39,7 +37,9 @@ export interface AuthenticatedPrincipal {
 export interface ReviewIdentityActorBinding {
   actor: string;
   roles: RetrievalRole[];
-  waiverAuthorities?: Exclude<ReviewWaiverAuthority, "none">[] | undefined;
+  // When true, this actor may waive gates its roles are allowed to waive
+  // (see canActorWaiveReview). Defaults to false.
+  canWaive?: boolean | undefined;
 }
 
 export interface ReviewPrincipalBinding {
@@ -121,18 +121,12 @@ function isRetrievalRole(value: string): value is RetrievalRole {
   return retrievalRoleSet.has(value);
 }
 
-function isReviewWaiverAuthority(value: string): value is ReviewWaiverAuthority {
-  return reviewWaiverAuthoritySet.has(value);
-}
-
 function createTrustedReviewActionContextInternal(
   context: ReviewActionContext
 ): TrustedReviewActionContext {
   const trustedContext = Object.freeze({
     actor: context.actor,
-    actorRole: context.actorRole,
-    waiverAuthority: context.waiverAuthority ?? "none",
-    identityAssurance: "authenticated" as const
+    actorRole: context.actorRole
   });
 
   trustedReviewActionContexts.add(trustedContext);
@@ -148,12 +142,7 @@ export function createTrustedReviewActionContext(
 export function isTrustedReviewActionContext(
   context: ReviewActionContext | TrustedReviewActionContext | Record<string, unknown>
 ): context is TrustedReviewActionContext {
-  return (
-    typeof context === "object" &&
-    context !== null &&
-    (context as Record<string, unknown>).identityAssurance === "authenticated" &&
-    trustedReviewActionContexts.has(context)
-  );
+  return typeof context === "object" && context !== null && trustedReviewActionContexts.has(context);
 }
 
 export function toReviewActionContextSnapshot(
@@ -161,8 +150,7 @@ export function toReviewActionContextSnapshot(
 ): ReviewActionContext {
   return {
     actor: context.actor,
-    actorRole: context.actorRole,
-    waiverAuthority: context.waiverAuthority
+    actorRole: context.actorRole
   };
 }
 
@@ -289,15 +277,8 @@ export function validateReviewIdentityBindings(bindings: ReviewIdentityBindings)
         }
       }
 
-      const waiverAuthorities = uniqueTrimmed(actorBinding.waiverAuthorities);
-      if (waiverAuthorities.length !== (actorBinding.waiverAuthorities?.length ?? 0)) {
-        errors.push(`${actorLabel}: waiverAuthorities must not contain empty or duplicate values`);
-      }
-
-      for (const authority of waiverAuthorities) {
-        if (!isReviewWaiverAuthority(authority) || authority === "none") {
-          errors.push(`${actorLabel}: invalid waiver authority ${authority}`);
-        }
+      if (actorBinding.canWaive !== undefined && typeof actorBinding.canWaive !== "boolean") {
+        errors.push(`${actorLabel}: canWaive must be a boolean when present`);
       }
     });
   });
@@ -389,13 +370,6 @@ export function validateReviewIdentityFixtures<AuthContext>(
         errors.push(`${fixtureLabel}: invalid expect.context.actorRole ${fixture.expect.context.actorRole}`);
       }
 
-      if (
-        !isReviewWaiverAuthority(fixture.expect.context.waiverAuthority ?? "none")
-      ) {
-        errors.push(
-          `${fixtureLabel}: invalid expect.context.waiverAuthority ${fixture.expect.context.waiverAuthority}`
-        );
-      }
     }
 
     if (fixture.expect.outcome === "deny") {
@@ -464,7 +438,25 @@ export function createReviewActionContextResolver(
     const actorBinding = resolveActorBinding(principal, bindings, input.actor);
 
     if (input.reviewState === "waived") {
-      return createTrustedReviewActionContextInternal(deriveWaiverContext(actorBinding, input.reviewerRole));
+      const waiverRoles = actorBinding.canWaive
+        ? actorBinding.roles.filter((actorRole) =>
+            canActorWaiveReview({ actorRole, reviewerRole: input.reviewerRole })
+          )
+        : [];
+
+      if (waiverRoles.length === 0) {
+        throw new Error(`Actor ${actorBinding.actor} is not allowed to waive ${input.reviewerRole}`);
+      }
+
+      const waiverRole = waiverRoles[0]!;
+      if (waiverRoles.some((role) => role !== waiverRole)) {
+        throw new Error(`Actor ${actorBinding.actor} has ambiguous waiver authority for ${input.reviewerRole}`);
+      }
+
+      return createTrustedReviewActionContextInternal({
+        actor: actorBinding.actor,
+        actorRole: waiverRole
+      });
     }
 
     if (!actorBinding.roles.includes(input.reviewerRole)) {
@@ -473,8 +465,7 @@ export function createReviewActionContextResolver(
 
     return createTrustedReviewActionContextInternal({
       actor: actorBinding.actor,
-      actorRole: input.reviewerRole,
-      waiverAuthority: "none"
+      actorRole: input.reviewerRole
     });
   };
 }
