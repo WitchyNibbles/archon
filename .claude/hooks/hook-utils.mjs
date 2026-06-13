@@ -461,23 +461,28 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
     // could edit to widen its own scope). `undefined` means "not found" so the
     // caller falls back to markdown; an array (even empty) is authoritative.
     let allowedWriteScope;
+    let councilOutcome;
     if (activeRunId && activeTaskId) {
       try {
-        const scopeResult = await client.query(
-          `select allowed_write_scope
+        const taskRow = await client.query(
+          `select allowed_write_scope, payload->>'councilOutcome' as council_outcome
            from tasks
            where run_id = $1 and task_key = $2
            limit 1`,
           [activeRunId, activeTaskId]
         );
-        const scopeRow = scopeResult.rows[0];
-        if (scopeRow && Array.isArray(scopeRow.allowed_write_scope)) {
-          allowedWriteScope = scopeRow.allowed_write_scope
+        const row2 = taskRow.rows[0];
+        if (row2 && Array.isArray(row2.allowed_write_scope)) {
+          allowedWriteScope = row2.allowed_write_scope
             .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
             .map((entry) => entry.trim());
         }
+        // #14 fix: council outcome from the authoritative runtime task record.
+        if (row2 && typeof row2.council_outcome === "string" && row2.council_outcome.trim().length > 0) {
+          councilOutcome = row2.council_outcome.trim();
+        }
       } catch {
-        // leave allowedWriteScope undefined so the caller falls back to markdown
+        // leave fields undefined so the caller falls back to markdown
       }
     }
 
@@ -486,6 +491,7 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
       activeTaskId,
       queueCurrentTaskId,
       allowedWriteScope,
+      councilOutcome,
       runtimeConnected: true
     };
   } catch {
@@ -505,7 +511,37 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
 // Query orchestrator review records from the DB for a given task.
 // Returns array of {role, outcome, source} rows where source='orchestrator'.
 // Creates its own pg connection. Falls back silently if DB is unavailable.
-async function queryOrchestratorReviews(resolvedRepoRoot, taskId) {
+//
+// Two-authorities fix: when a runId is known, restrict to reviews for that run (or
+// run-agnostic Stop-hook reviews with run_id IS NULL), so a stale passed review from
+// a DIFFERENT run can no longer satisfy the Stop-hook gate while workflow-proof would
+// reject it. This narrows the divergence between the two review authorities.
+// Pure, testable builder for the Stop-hook orchestrator-review query.
+// When a runId is known the query is strictly run-scoped (`run_id = $2`) — there is
+// NO `run_id is null` escape hatch, because a null-run review row (written by the
+// `save-review` path) would otherwise satisfy the gate for every run forever, which a
+// stray review could exploit. Run-agnostic (task-only) lookup is used only when no
+// run id is available (offline / legacy state).
+export function buildOrchestratorReviewQuery(taskId, runId) {
+  if (typeof runId === "string" && runId.trim().length > 0) {
+    return {
+      sql: `select reviewer_role as role, state as outcome, source
+             from reviews
+             where task_id = $1 and source = 'orchestrator' and run_id = $2
+             order by created_at asc`,
+      params: [taskId, runId.trim()]
+    };
+  }
+  return {
+    sql: `select reviewer_role as role, state as outcome, source
+             from reviews
+             where task_id = $1 and source = 'orchestrator'
+             order by created_at asc`,
+    params: [taskId]
+  };
+}
+
+async function queryOrchestratorReviews(resolvedRepoRoot, taskId, runId) {
   const dotEnv = parseDotEnv(
     await readTextIfExists(path.join(resolvedRepoRoot, ".env"))
   );
@@ -527,13 +563,8 @@ async function queryOrchestratorReviews(resolvedRepoRoot, taskId) {
     client = new Client({ connectionString });
     await client.connect();
 
-    const result = await client.query(
-      `select reviewer_role as role, state as outcome, source
-       from reviews
-       where task_id = $1 and source = 'orchestrator'
-       order by created_at asc`,
-      [taskId]
-    );
+    const { sql, params } = buildOrchestratorReviewQuery(taskId, runId);
+    const result = await client.query(sql, params);
 
     return result.rows.map((row) => ({
       role: typeof row.role === "string" ? row.role : "",
@@ -576,8 +607,8 @@ async function loadMarkdownReviewContext(resolvedRepoRoot, taskId, requiredRoles
 // Build review context from DB orchestrator records.
 // source='self' records are ignored — only source='orchestrator' is trusted.
 // Returns null if no orchestrator records exist, so caller can decide to fall back.
-async function loadDbReviewContext(resolvedRepoRoot, taskId, requiredRoles) {
-  const rows = await queryOrchestratorReviews(resolvedRepoRoot, taskId);
+async function loadDbReviewContext(resolvedRepoRoot, taskId, requiredRoles, runId) {
+  const rows = await queryOrchestratorReviews(resolvedRepoRoot, taskId, runId);
 
   // If DB returned nothing (offline or no records), return null to signal fallback
   if (rows.length === 0) {
@@ -775,7 +806,12 @@ export async function readActiveTaskContext(options = {}) {
     // Fall back to markdown file check when offline or when DB has no records.
     let reviewContext = null;
     if (context.runtimeConnected) {
-      reviewContext = await loadDbReviewContext(resolvedRepoRoot, context.activeTaskId, requiredRoles);
+      reviewContext = await loadDbReviewContext(
+        resolvedRepoRoot,
+        context.activeTaskId,
+        requiredRoles,
+        runtimeContext?.activeRunId
+      );
     }
     if (!reviewContext) {
       reviewContext = await loadMarkdownReviewContext(resolvedRepoRoot, context.activeTaskId, requiredRoles);
@@ -802,7 +838,14 @@ export async function readActiveTaskContext(options = {}) {
   const hasCouncilGate = qualityGates.some((g) => g.trim() === "council_review_required");
   context.councilRequired =
     councilInfo.required === "true" || hasCouncilGate;
-  context.councilOutcome = councilInfo.outcome;
+  // #14 fix: when the runtime is connected, the council outcome is authoritative from
+  // the runtime task record (orchestrator-written), not from the markdown a worker can
+  // edit. Markdown is honored only offline.
+  context.councilOutcome = resolveCouncilOutcome({
+    runtimeConnected: context.runtimeConnected,
+    runtimeOutcome: runtimeContext?.councilOutcome,
+    markdownOutcome: councilInfo.outcome
+  });
 
   return context;
 }
@@ -1055,6 +1098,43 @@ const verificationNoopPatterns = [
   /\btsc\s+--init\b/
 ];
 
+// #10 fix: a verification command joined to other commands with a shell control
+// operator can mask a real failure or inject a fake test summary into stdout while
+// still exiting 0 (e.g. `npm test || echo "# fail 0"`, `npm test | cat`,
+// `npm test; echo "# tests 1"`). Such a command must never mint a verification cert;
+// the operator must run the verify command standalone for it to count.
+export function commandHasShellChaining(command) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return false;
+  }
+  let s = stripHeredocBodies(command);
+  // Drop quoted strings so operators inside string literals are not counted.
+  s = s.replace(/'[^']*'/g, "").replace(/"[^"]*"/g, "");
+  // Drop fd/file redirects so `2>&1`, `>out`, `<in` are not mistaken for operators.
+  // The filename charclass excludes shell metacharacters so an operator immediately
+  // adjacent to a redirect target (e.g. `>>log&&echo`) is NOT swallowed into the
+  // filename (security: that would hide the `&&`).
+  s = s.replace(/\d*>&\d+/g, "").replace(/\d*>>?\s*[^\s|&;<>]+/g, "").replace(/<\s*[^\s|&;<>]+/g, "");
+  // Any shell separator means the verify command is not the sole determinant of the
+  // exit code / stdout. Newlines and carriage returns separate commands in a bash
+  // script body just like `;`, so they count too (security: a multi-line body can
+  // run the real test then echo a forged TAP summary).
+  return /(\|\||&&|;|\||&|\n|\r)/.test(s);
+}
+
+// #14 fix: the council outcome must come from the authoritative runtime when it is
+// connected, NOT from the on-disk task packet markdown a worker can edit. `undefined`
+// runtime outcome means "no orchestrator-recorded outcome" → not approved. Markdown is
+// only honored offline (documented boundary).
+export function resolveCouncilOutcome({ runtimeConnected, runtimeOutcome, markdownOutcome }) {
+  if (runtimeConnected) {
+    return typeof runtimeOutcome === "string" && runtimeOutcome.trim().length > 0
+      ? runtimeOutcome.trim()
+      : undefined;
+  }
+  return markdownOutcome;
+}
+
 export function qualifiesForVerificationCert(command, output) {
   if (typeof command !== "string" || !isVerificationCommand(command)) {
     return false;
@@ -1062,6 +1142,12 @@ export function qualifiesForVerificationCert(command, output) {
 
   // Disqualify version/help/init invocations — they prove nothing.
   if (verificationNoopPatterns.some((p) => p.test(command))) {
+    return false;
+  }
+
+  // #10 fix: reject shell-chained verification commands — they can mask failure
+  // or inject a forged summary while exiting 0.
+  if (commandHasShellChaining(command)) {
     return false;
   }
 

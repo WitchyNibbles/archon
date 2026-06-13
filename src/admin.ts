@@ -133,6 +133,7 @@ import type { ExportDocsCommandResult } from "./docs-export/models.ts";
 import { PostgresStore } from "./store/postgres-store.ts";
 import type { ArchonStore as ArchonStoreContract } from "./store/types.ts";
 import { initTaskCommand } from "./admin/init-task.ts";
+import { recordCouncilCommand } from "./admin/record-council.ts";
 import { advanceActiveTaskCommand, checkpointCommand, coverageCommand, gapsCommand, githubDispatchCommand, opsCommand, repairTaskQueueCommand, reportCommand, resumeCommand, statusCommand, syncRuntimeExportsCommand } from "./workflow.ts";
 import { bootstrapProject, doctorCommand, health, migrate, reconcileRuntimeStateCommand, recoverCommand, refreshRepoContextCommand, verifyLiveMigrations, verifySetup } from "./runtime.ts";
 import { indexRepoMarkdownCommand, planContextCommand, refreshRetrievalCommand, runEmbeddingJobsCommand } from "./memory.ts";
@@ -324,6 +325,14 @@ async function main() {
 
   if (command === "init-task") {
     await initTaskCommand(args, {
+      withClient: (fn) => withClient((client) => fn(client)),
+      createStore: (client) => new PostgresStore(client as ConstructorParameters<typeof PostgresStore>[0])
+    });
+    return;
+  }
+
+  if (command === "record-council") {
+    await recordCouncilCommand(args, {
       withClient: (fn) => withClient((client) => fn(client)),
       createStore: (client) => new PostgresStore(client as ConstructorParameters<typeof PostgresStore>[0])
     });
