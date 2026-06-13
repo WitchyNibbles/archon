@@ -918,20 +918,25 @@ export class PostgresStore implements ArchonStore {
     findings: string;
     workspaceId: string;
     projectId: string;
+    runId?: string | null | undefined;
   }): Promise<void> {
     const id = randomUUID();
     const state = input.outcome === "passed" ? "passed" : "blocked";
+    // Two-authorities fix: persist the run id so the Stop-hook's run-scoped review
+    // query can no longer be satisfied by a run-agnostic (null) review row that
+    // would otherwise apply to every run.
     await this.client.query(
       `insert into reviews (
          id, workspace_id, project_id, run_id, task_id, reviewer_role, actor, actor_role,
          state, severity, findings, waiver_reason, evidence_refs, source
        )
-       values ($1, $2, $3, null, $4, $5, 'review-orchestrator', 'reviewer',
-               $6, 'low', $7, null, '{}', 'orchestrator')`,
+       values ($1, $2, $3, $4, $5, $6, 'review-orchestrator', 'reviewer',
+               $7, 'low', $8, null, '{}', 'orchestrator')`,
       [
         id,
         input.workspaceId,
         input.projectId,
+        input.runId ?? null,
         input.taskId,
         input.role,
         state,

@@ -454,6 +454,10 @@ export interface TaskPacketInput {
   reasoningVerifications?: ReasoningVerification[] | undefined;
   reasoningVerdict?: ReasoningVerdict | undefined;
   reasoningQuality?: ReasoningQualityBlock | undefined;
+  // #14 fix: orchestrator-recorded Design & Architecture Council outcome. When the
+  // runtime is connected this is the authoritative council outcome for the Stop-hook
+  // gate; the on-disk packet markdown is only the offline fallback.
+  councilOutcome?: string | undefined;
 }
 
 export interface HandoffInput {

@@ -1337,17 +1337,22 @@ export async function saveReviewCommand(args: readonly string[]) {
   const workspaceId = `workspace:${workspaceSlug}`;
   const projectId = `project:${workspaceSlug}:${projectSlug}`;
 
-  await withClient(async (client) => {
+  const runId = await withClient(async (client) => {
     const store = new PostgresStore(client);
+    // Resolve the active run so the review is run-scoped (two-authorities fix).
+    const state = await store.getProjectRuntimeState(projectId);
+    const activeRunId = state?.activeRunId;
     await store.saveOrchestratorReview({
       taskId,
       role,
       outcome,
       findings,
       workspaceId,
-      projectId
+      projectId,
+      runId: activeRunId
     });
+    return activeRunId;
   });
 
-  console.log(JSON.stringify({ saved: true, taskId, role, outcome, source }));
+  console.log(JSON.stringify({ saved: true, taskId, role, outcome, source, runId: runId ?? null }));
 }
