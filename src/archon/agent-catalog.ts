@@ -16,6 +16,72 @@ export interface AgentCatalogEntry {
   retrievalGuidance: readonly string[];
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4: Specialist Subagent extensions
+// ---------------------------------------------------------------------------
+
+export interface AgentContextPolicyRef {
+  /** Percentage at which the agent should request a handoff. */
+  handoffPct: 70;
+  /** Percentage at which the agent should emit a context warning. */
+  warningPct: 60;
+  /** Percentage at which the agent must stop immediately. */
+  hardStopPct: 80;
+}
+
+export type AllowedWriteScopeMode = "read_only" | "explicit" | "inherited_subset";
+
+export interface SubagentSpecialty {
+  /** Unique identifier for this specialty within the parent agent. */
+  id: string;
+  /** Short human-readable label. */
+  label: string;
+  /** What this subagent specialty does. */
+  description: string;
+  /** Model alias to use when spawning. */
+  defaultModel: "opus" | "sonnet" | "haiku";
+  /** Effort level to apply when spawning. */
+  defaultEffort: "high" | "medium" | "low";
+  /** Tool names the subagent may call. */
+  allowedTools: readonly string[];
+  /** Tool names the subagent may never call (optional). */
+  disallowedTools?: readonly string[] | undefined;
+  /** Write scope mode: read_only means no writes; explicit means explicit list; inherited_subset means subset of parent. */
+  allowedWriteScopeMode: AllowedWriteScopeMode;
+  /** Maximum turns before the subagent must return a result packet. */
+  maxTurns: number;
+  /** JSON Schema describing the expected output packet (informational). */
+  outputSchema: string;
+}
+
+export interface AgentSpawnPolicy {
+  canSpawnSubagents: boolean;
+  allowedSubagentTypes: readonly string[];
+  maxChildDepth: number;
+  maxConcurrentChildren: number;
+  maxTotalChildrenPerTask: number;
+  requiresWorktreeIsolation?: boolean | undefined;
+}
+
+/** V2 extends AgentCatalogEntry with optional Phase 4 fields. */
+export interface AgentCatalogEntryV2 extends AgentCatalogEntry {
+  contextPolicy?: AgentContextPolicyRef | undefined;
+  spawnPolicy?: AgentSpawnPolicy | undefined;
+  subagentSpecialties?: readonly SubagentSpecialty[] | undefined;
+}
+
+/**
+ * Default spawn policy applied to agents that can spawn subagents.
+ * Child depth limit of 2, max 3 concurrent children, max 8 total per task.
+ */
+export const defaultArchonSpawnPolicy: AgentSpawnPolicy = {
+  canSpawnSubagents: true,
+  allowedSubagentTypes: [],
+  maxChildDepth: 2,
+  maxConcurrentChildren: 3,
+  maxTotalChildrenPerTask: 8
+} as const;
+
 export const agentCatalog = {
   planner: {
     label: "Planner",
@@ -85,7 +151,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-execution", "everything-claude-code:backend-patterns", "everything-claude-code:api-design", "everything-claude-code:tdd-workflow"],
-    retrievalGuidance: ["approved memory", "repo rules", "runbooks", "reviewed retrieval notes"]
+    retrievalGuidance: ["approved memory", "repo rules", "runbooks", "reviewed retrieval notes"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["codebase_scout", "test_writer", "patch_writer"],
+      maxChildDepth: 2,
+      maxConcurrentChildren: 3,
+      maxTotalChildrenPerTask: 8
+    },
+    subagentSpecialties: [
+      {
+        id: "codebase_scout",
+        label: "Codebase Scout",
+        description: "Read-only exploration of the codebase to map call sites, dependencies, and invariants before writing.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "test_writer",
+        label: "Test Writer",
+        description: "Writes tests under tests/ matching the scope declared by the parent backend_engineer.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Write", "Edit", "Bash"],
+        allowedWriteScopeMode: "explicit",
+        maxTurns: 30,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "patch_writer",
+        label: "Patch Writer",
+        description: "Applies a bounded patch to src/ within the parent's allowed write scope.",
+        defaultModel: "sonnet",
+        defaultEffort: "high",
+        allowedTools: ["Read", "Write", "Edit", "Bash"],
+        allowedWriteScopeMode: "inherited_subset",
+        maxTurns: 40,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   frontend_designer: {
     label: "Frontend Designer",
@@ -145,7 +253,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-review"],
-    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "task packets", "review artifacts"]
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "task packets", "review artifacts"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["diff_slicer", "invariant_checker", "edge_case_hunter"],
+      maxChildDepth: 2,
+      maxConcurrentChildren: 3,
+      maxTotalChildrenPerTask: 8
+    },
+    subagentSpecialties: [
+      {
+        id: "diff_slicer",
+        label: "Diff Slicer",
+        description: "Read-only analysis of a git diff to identify changed surfaces and call sites.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "invariant_checker",
+        label: "Invariant Checker",
+        description: "Read-only verification that code invariants and type contracts hold across the changed surface.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "edge_case_hunter",
+        label: "Edge Case Hunter",
+        description: "Read-only exploration that enumerates missing test coverage and untested edge cases.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   build_resolver: {
     label: "Build Resolver",
@@ -173,7 +323,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["caveman", "everything-claude-code:security-review", "everything-claude-code:security-scan", "archon-docs-research"],
-    retrievalGuidance: ["approved memory", "repo rules", "incident notes", "review artifacts"]
+    retrievalGuidance: ["approved memory", "repo rules", "incident notes", "review artifacts"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["trust_boundary_mapper", "exploit_scenario_builder", "secrets_scanner"],
+      maxChildDepth: 2,
+      maxConcurrentChildren: 3,
+      maxTotalChildrenPerTask: 8
+    },
+    subagentSpecialties: [
+      {
+        id: "trust_boundary_mapper",
+        label: "Trust Boundary Mapper",
+        description: "Read-only mapping of trust boundaries, privilege transitions, and cross-boundary data flows.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "exploit_scenario_builder",
+        label: "Exploit Scenario Builder",
+        description: "Read-only red-team analysis enumerating concrete abuse cases for the current change surface.",
+        defaultModel: "sonnet",
+        defaultEffort: "high",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "secrets_scanner",
+        label: "Secrets Scanner",
+        description: "Read-only scan for hardcoded secrets, tokens, and credential patterns in changed files.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   qa_engineer: {
     label: "QA Engineer",
@@ -290,7 +482,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["caveman", "claude-api", "archon-agent-runtime", "anthropic-mcp-builder", "mcp-server-patterns", "verification-loop", "everything-claude-code:agentic-engineering", "everything-claude-code:continuous-agent-loop"],
-    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "runtime traces", "tooling integration notes"]
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "runtime traces", "tooling integration notes"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["hook_contract_checker", "runtime_trace_reader", "agent_prompt_linter"],
+      maxChildDepth: 2,
+      maxConcurrentChildren: 3,
+      maxTotalChildrenPerTask: 8
+    },
+    subagentSpecialties: [
+      {
+        id: "hook_contract_checker",
+        label: "Hook Contract Checker",
+        description: "Read-only verification that hook I/O contracts are consistent with the calling agent surface.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "runtime_trace_reader",
+        label: "Runtime Trace Reader",
+        description: "Read-only analysis of runtime traces to detect deadlocks, missing stop conditions, and continuation loops.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "agent_prompt_linter",
+        label: "Agent Prompt Linter",
+        description: "Read-only lint pass over agent prompt files to flag missing exit conditions and unsafe tool grants.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   mobile_engineer: {
     label: "Mobile Engineer",
@@ -460,7 +694,7 @@ export const agentCatalog = {
     defaultSkillIds: ["archon-review", "archon-qa-verification", "verification-loop"],
     retrievalGuidance: ["approved memory", "repo rules", "task packets", "review artifacts"]
   }
-} as const satisfies Record<string, AgentCatalogEntry>;
+} as const satisfies Record<string, AgentCatalogEntryV2>;
 
 export type AgentRoleId = keyof typeof agentCatalog;
 
