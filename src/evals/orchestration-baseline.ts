@@ -10,9 +10,18 @@ import type {
   AutonomousExecutionState,
   ReviewActionContext,
   ReviewRecord,
-  TaskPacketInput
+  TaskPacketInput,
+  ContextSample
 } from "../domain/types.ts";
 import { MemoryStore } from "../store/memory-store.ts";
+import { AgenticLoopController } from "../runtime/agentic-loop.ts";
+import type { AgenticLoopStoreLike, TaskSummary } from "../runtime/agentic-loop.ts";
+import { ContinuationContextBuilder } from "../runtime/continuation-context.ts";
+import type { HandoffStoreLike } from "../runtime/handoff-controller.ts";
+import type { HandoffRecord } from "../store/agent-runtime-store.ts";
+import { SubtaskScheduler } from "../runtime/subtask-scheduler.ts";
+import type { SubtaskStoreLike, ParentInvocationStoreLike, ParentInvocationRef } from "../runtime/subtask-scheduler.ts";
+import { DebateController } from "../runtime/debate-controller.ts";
 
 type OrchestrationEvalArea = "gate" | "lifecycle" | "state" | "trust";
 type EvalAuthorityLabel = "derived_only";
@@ -1406,6 +1415,257 @@ export async function runOrchestrationBaseline(): Promise<OrchestrationEvalRepor
           plan.directive.kind === "continue_analysis"
             ? `directive=${plan.directive.kind} target=${plan.directive.targetId} source=${plan.directive.source}`
             : `directive=${plan.directive.kind}`
+      })
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 6 eval group 1: context handoff baseline
+  // Feed a fake context sample at 72% → LoopAction must be "handoff_required".
+  // ---------------------------------------------------------------------------
+  {
+    const runId = "eval-run-ctx-handoff";
+    const taskId = "eval-task-ctx-handoff";
+
+    // Minimal in-memory mock of AgenticLoopStoreLike — no DB required.
+    const contextSamples = new Map<string, { usedPercentage: number; sampledAt: string }>();
+    const handoffFlags = new Map<string, boolean>();
+
+    const mockLoopStore: AgenticLoopStoreLike = {
+      async recordContextSample(data) {
+        contextSamples.set(data.invocationId, {
+          usedPercentage: data.usedPercentage ?? 0,
+          sampledAt: data.sampledAt ?? new Date().toISOString()
+        });
+      },
+      async getLatestContextSample(invocationId) {
+        const s = contextSamples.get(invocationId);
+        if (s === undefined) return undefined;
+        return {
+          invocationId,
+          runId,
+          taskId,
+          source: "sdk" as const,
+          usedPercentage: s.usedPercentage,
+          sampledAt: s.sampledAt,
+          raw: {}
+        } satisfies ContextSample;
+      },
+      async hasCommittedHandoff(invocationId) {
+        return handoffFlags.get(invocationId) ?? false;
+      },
+      async getNextTask() { return null; },
+      async createInvocation(data) { return `inv-${data.taskId}`; },
+      async updateInvocationStatus() { /* no-op */ },
+      async getInvocationStatus() { return undefined; },
+      async getActiveTask() { return null; },
+      async getActiveInvocation() { return null; },
+      async countPendingHandoffs() { return 0; }
+    };
+
+    const controller = new AgenticLoopController(mockLoopStore, { runId });
+    const action = await controller.onContextSample("inv-eval-1", 72);
+
+    cases.push(
+      buildResult({
+        id: "phase6_context_handoff_baseline",
+        area: "gate",
+        passed: action === "handoff_required",
+        details: `onContextSample(72%) returned: ${action}`
+      })
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 6 eval group 2: continuation after handoff
+  // Simulate a committed handoff → build continuation bundle → verify prompt
+  // contains summary and next_actions.
+  // ---------------------------------------------------------------------------
+  {
+    const runId = "eval-run-continuation";
+    const taskId = "eval-task-continuation";
+
+    const fakeHandoffRecord: HandoffRecord = {
+      id: "handoff-eval-123",
+      runId,
+      taskId,
+      fromInvocationId: "inv-from",
+      toInvocationId: undefined,
+      fromRole: "backend_engineer",
+      toRole: "backend_engineer",
+      reason: "context_threshold_70",
+      status: "in_progress",
+      contextUsedPct: 72,
+      authorityLabel: "runtime_authoritative",
+      createdAt: new Date().toISOString(),
+      consumedAt: undefined,
+      packet: {
+        schemaVersion: 1,
+        handoffId: "handoff-eval-123",
+        runId,
+        taskId,
+        fromInvocationId: "inv-from",
+        fromRole: "backend_engineer",
+        toRole: "backend_engineer",
+        reason: "context_threshold_70",
+        contextUsedPct: 72,
+        status: "in_progress",
+        summary: "Completed initial scaffolding of the runtime module",
+        scope: { allowedWriteScope: ["src/runtime/"], touchedPaths: ["src/runtime/agentic-loop.ts"] },
+        decisions: [],
+        openQuestions: [],
+        evidenceRefs: ["tests/phase6-agentic-loop.test.ts"],
+        nextActions: ["run npm test", "fix any tsc errors"],
+        risks: [],
+        createdAt: new Date().toISOString()
+      }
+    };
+
+    const mockHandoffStore: HandoffStoreLike = {
+      async createHandoff(data) {
+        return { ...fakeHandoffRecord, id: data.id };
+      },
+      async getLatestUnconsumedHandoff() {
+        return fakeHandoffRecord;
+      },
+      async markHandoffConsumed() { /* no-op */ },
+      async updateAgentInvocationStatus() { /* no-op */ }
+    };
+
+    const builder = new ContinuationContextBuilder(mockHandoffStore);
+    const bundle = await builder.buildBundle({ runId, taskId, role: "backend_engineer" });
+
+    const hasSummary = bundle.continuationPrompt.includes("Completed initial scaffolding");
+    const hasNextActions = bundle.nextActions.length > 0 && bundle.nextActions[0] === "run npm test";
+
+    cases.push(
+      buildResult({
+        id: "phase6_continuation_after_handoff",
+        area: "lifecycle",
+        passed: hasSummary && hasNextActions,
+        details: `hasSummary=${hasSummary} hasNextActions=${hasNextActions} nextActions=${JSON.stringify(bundle.nextActions)}`
+      })
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 6 eval group 3: subagent spawn denied beyond depth
+  // depth=3 parent → childDepth=4 > maxChildDepth=2 → SpawnOutcome.ok=false
+  // ---------------------------------------------------------------------------
+  {
+    const parentId = "inv-parent-depth3";
+    const taskId = "eval-task-depth";
+    const runId = "eval-run-depth";
+
+    const parentRef: ParentInvocationRef = {
+      status: "running",
+      taskId,
+      runId,
+      allowedWriteScope: ["src/"],
+      depth: 3,
+      spawnPolicy: {
+        canSpawnSubagents: true,
+        allowedSubagentTypes: ["codebase_scout"],
+        maxChildDepth: 2,
+        maxConcurrentChildren: 3,
+        maxTotalChildrenPerTask: 10
+      }
+    };
+
+    const mockInvocationStore: ParentInvocationStoreLike = {
+      async getInvocation(id) {
+        return id === parentId ? parentRef : undefined;
+      }
+    };
+
+    const mockSubtaskStore: SubtaskStoreLike = {
+      async createSubtask(data) {
+        return {
+          id: data.id,
+          runId: data.runId,
+          taskId: data.taskId,
+          parentInvocationId: data.parentInvocationId,
+          subagentType: data.subagentType,
+          title: data.title,
+          prompt: data.prompt,
+          allowedTools: data.allowedTools,
+          allowedWriteScope: data.allowedWriteScope,
+          status: data.status,
+          createdAt: new Date().toISOString()
+        };
+      },
+      async updateSubtaskResult() { /* no-op */ },
+      async listSubtasksForTask() { return []; }
+    };
+
+    const scheduler = new SubtaskScheduler(mockSubtaskStore, mockInvocationStore);
+    const outcome = await scheduler.requestSubtask(parentId, {
+      subagentType: "codebase_scout",
+      title: "scout",
+      prompt: "analyze codebase",
+      allowedTools: ["Read"],
+      allowedWriteScope: [],
+      maxTurns: 10,
+      stopCondition: "when done"
+    });
+
+    const denied = !outcome.ok;
+    const hasDepthMessage = !outcome.ok && outcome.reason.toLowerCase().includes("depth");
+
+    cases.push(
+      buildResult({
+        id: "phase6_subagent_spawn_denied_beyond_depth",
+        area: "gate",
+        passed: denied && hasDepthMessage,
+        details: `ok=${outcome.ok} reason=${outcome.ok ? "n/a" : outcome.reason}`
+      })
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 6 eval group 4: debate skipped for trivial trigger
+  // shouldDebate({ kind: "trivial_edit" }) must return false.
+  // ---------------------------------------------------------------------------
+  {
+    const mockDebateStore = {
+      async createDebateSession() { throw new Error("should not be called"); },
+      async addDebateArgument() { throw new Error("should not be called"); },
+      async updateDebateDecision() { throw new Error("should not be called"); }
+    };
+
+    const debateController = new DebateController(mockDebateStore);
+    const result = debateController.shouldDebate({ kind: "trivial_edit" });
+
+    cases.push(
+      buildResult({
+        id: "phase6_debate_skipped_for_trivial_trigger",
+        area: "gate",
+        passed: result === false,
+        details: `shouldDebate("trivial_edit") = ${result}`
+      })
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 6 eval group 5: debate required for architecture trigger
+  // shouldDebate({ kind: "architecture_significant" }) must return true.
+  // ---------------------------------------------------------------------------
+  {
+    const mockDebateStore = {
+      async createDebateSession() { throw new Error("should not be called"); },
+      async addDebateArgument() { throw new Error("should not be called"); },
+      async updateDebateDecision() { throw new Error("should not be called"); }
+    };
+
+    const debateController = new DebateController(mockDebateStore);
+    const result = debateController.shouldDebate({ kind: "architecture_significant" });
+
+    cases.push(
+      buildResult({
+        id: "phase6_debate_required_for_architecture_trigger",
+        area: "gate",
+        passed: result === true,
+        details: `shouldDebate("architecture_significant") = ${result}`
       })
     );
   }
