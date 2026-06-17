@@ -1,4 +1,6 @@
 import type { FreshnessGateDecision } from "../runtime/freshness-gate.ts";
+import { ContextBudgetMonitor, defaultArchonContextPolicy } from "../runtime/context-budget.ts";
+import type { ContextBudgetState, ContextBudgetStoreLike } from "../runtime/context-budget.ts";
 import { assessFreshness } from "../runtime/freshness-gate.ts";
 import type {
   RunExecutionPlan,
@@ -256,6 +258,49 @@ export interface OperatorStatusReport {
     } | undefined;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Context Status — Phase 2
+// ---------------------------------------------------------------------------
+
+export interface ContextStatusObservation {
+  invocationId: string;
+  state: ContextBudgetState;
+  usedPercentage: number | undefined;
+  sampledAt: string | undefined;
+  hasCommittedHandoff: boolean;
+  policy: {
+    handoffPct: number;
+    warningPct: number;
+    hardStopPct: number;
+  };
+  summary: string;
+}
+
+export async function buildContextStatusObservation(
+  invocationId: string,
+  store: ContextBudgetStoreLike
+): Promise<ContextStatusObservation> {
+  const monitor = new ContextBudgetMonitor(store);
+  const sample = await store.getLatestContextSample(invocationId);
+  const state = await monitor.getStateFromStore(invocationId);
+  const hasCommittedHandoff = await store.hasCommittedHandoff(invocationId);
+  const summary = await monitor.buildStatusSummary(invocationId);
+
+  return {
+    invocationId,
+    state,
+    usedPercentage: sample?.usedPercentage,
+    sampledAt: sample?.sampledAt,
+    hasCommittedHandoff,
+    policy: { ...defaultArchonContextPolicy },
+    summary
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function emptyTaskBuckets(): Record<TaskStatus, string[]> {
   return {
