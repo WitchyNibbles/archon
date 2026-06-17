@@ -246,6 +246,53 @@ export const phaseReadinessBlockerKinds = [
   "retry_budget_exhausted"
 ] as const;
 
+// ---------------------------------------------------------------------------
+// Agentic Loop Runtime — Phase 1 enums
+// ---------------------------------------------------------------------------
+
+export const agentKinds = [
+  "root_manager",
+  "specialist_owner",
+  "subagent",
+  "reviewer",
+  "debate_participant"
+] as const;
+
+export const agentInvocationStatuses = [
+  "created",
+  "running",
+  "handoff_requested",
+  "handoff_written",
+  "completed",
+  "blocked",
+  "failed"
+] as const;
+
+export const handoffReasons = [
+  "context_threshold_70",
+  "role_boundary",
+  "blocked",
+  "review_required",
+  "manual",
+  "precompact_fallback",
+  "crash_recovery"
+] as const;
+
+export const contextSampleSources = [
+  "sdk",
+  "statusline",
+  "transcript",
+  "auto",
+  "precompact"
+] as const;
+
+export const debateModes = [
+  "independent_vote",
+  "structured_debate",
+  "council_review",
+  "red_team_review"
+] as const;
+
 export type RunStatus = (typeof runStatuses)[number];
 export type TaskStatus = (typeof taskStatuses)[number];
 export type ReviewSeverity = (typeof reviewSeverities)[number];
@@ -1328,4 +1375,156 @@ export interface RecoveryApplyResult {
   appliedActionIds: string[];
   skippedActionIds: string[];
   snapshot: RunStatusSnapshot;
+}
+
+// ---------------------------------------------------------------------------
+// Agentic Loop Runtime — Phase 1 type aliases
+// ---------------------------------------------------------------------------
+
+export type AgentKind = (typeof agentKinds)[number];
+export type AgentInvocationStatus = (typeof agentInvocationStatuses)[number];
+export type HandoffReason = (typeof handoffReasons)[number];
+export type ContextSampleSource = (typeof contextSampleSources)[number];
+export type DebateMode = (typeof debateModes)[number];
+
+// ---------------------------------------------------------------------------
+// Agentic Loop Runtime — Phase 1 interfaces
+// ---------------------------------------------------------------------------
+
+export interface AgentInvocation {
+  id: string;
+  runId: string;
+  taskId: string;
+  parentInvocationId?: string | undefined;
+  role: string;
+  agentKind: AgentKind;
+  model: string;
+  effort: string;
+  status: AgentInvocationStatus;
+  contextPolicyId: string;
+  sessionId?: string | undefined;
+  transcriptPath?: string | undefined;
+  startedAt: string;
+  endedAt?: string | undefined;
+  metadata: Record<string, unknown>;
+}
+
+export interface ContextSample {
+  id?: number | undefined;
+  invocationId: string;
+  runId: string;
+  taskId: string;
+  source: ContextSampleSource;
+  usedPercentage?: number | undefined;
+  remainingPercentage?: number | undefined;
+  currentUsageTokens?: number | undefined;
+  contextWindowSize?: number | undefined;
+  sampledAt: string;
+  raw: Record<string, unknown>;
+}
+
+export interface HandoffScopeBlock {
+  allowedWriteScope: string[];
+  touchedPaths: string[];
+  lockedPaths?: string[] | undefined;
+}
+
+export interface HandoffDecision {
+  decision: string;
+  rationale: string;
+}
+
+export interface HandoffRisk {
+  severity: "low" | "medium" | "high" | "critical";
+  risk: string;
+  mitigation: string;
+}
+
+export interface HandoffSubagentResult {
+  subtaskId: string;
+  role: string;
+  status: string;
+  summary: string;
+}
+
+export interface HandoffPacket {
+  schemaVersion: 1;
+  handoffId: string;
+  runId: string;
+  taskId: string;
+  fromInvocationId: string;
+  fromRole: string;
+  toRole: string;
+  reason: HandoffReason;
+  contextUsedPct?: number | undefined;
+  status: string;
+  summary: string;
+  scope: HandoffScopeBlock;
+  decisions: HandoffDecision[];
+  openQuestions: string[];
+  evidenceRefs: string[];
+  nextActions: string[];
+  risks: HandoffRisk[];
+  subagentResults?: HandoffSubagentResult[] | undefined;
+  createdAt: string;
+}
+
+export interface Subtask {
+  id: string;
+  runId: string;
+  taskId: string;
+  parentInvocationId: string;
+  childInvocationId?: string | undefined;
+  subagentType: string;
+  title: string;
+  prompt: string;
+  allowedTools: string[];
+  allowedWriteScope: string[];
+  status: string;
+  resultPacket?: Record<string, unknown> | undefined;
+  createdAt: string;
+  completedAt?: string | undefined;
+}
+
+export interface DebateSession {
+  id: string;
+  runId: string;
+  taskId?: string | undefined;
+  topic: string;
+  triggerKind: string;
+  status: string;
+  decision?: Record<string, unknown> | undefined;
+  createdAt: string;
+  completedAt?: string | undefined;
+}
+
+export interface DebateArgument {
+  id: string;
+  debateSessionId: string;
+  round: number;
+  role: string;
+  position: string;
+  evidenceRefs: string[];
+  critiques: string[];
+  vote?: string | undefined;
+  createdAt: string;
+}
+
+export interface ContextPolicy {
+  policyId: string;
+  handoffPct: number;
+  warningPct: number;
+  hardStopPct: number;
+  maxTurns?: number | undefined;
+  maxOutputTokens?: number | undefined;
+  appliesTo: "all_archon_agents";
+}
+
+export interface AgentSpawnPolicy {
+  canSpawnSubagents: boolean;
+  allowedSubagentTypes: readonly string[];
+  maxChildDepth: number;
+  maxConcurrentChildren: number;
+  maxTotalChildrenPerTask: number;
+  requiresWorktreeIsolation?: boolean | undefined;
 }
