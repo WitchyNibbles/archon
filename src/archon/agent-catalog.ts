@@ -95,7 +95,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-planning", "archon-intake", "everything-claude-code:planner"],
-    retrievalGuidance: ["approved memory", "reviewed briefs", "reviewed plans", "repo rules"]
+    retrievalGuidance: ["approved memory", "reviewed briefs", "reviewed plans", "repo rules"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["scope_cartographer", "dependency_mapper", "acceptance_criteria_analyst"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "scope_cartographer",
+        label: "Scope Cartographer",
+        description: "Read-only mapping of what is in and out of scope for the current task, flagging scope creep risks.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "dependency_mapper",
+        label: "Dependency Mapper",
+        description: "Read-only analysis of task and module dependencies to surface ordering constraints and blockers.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "acceptance_criteria_analyst",
+        label: "Acceptance Criteria Analyst",
+        description: "Read-only review that acceptance criteria are specific, falsifiable, and cover the stated goal.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   product_strategist: {
     label: "Product Strategist",
@@ -109,7 +151,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-product-framing", "archon-intake", "everything-claude-code:market-research"],
-    retrievalGuidance: ["approved briefs", "approved memory", "repo rules", "cited external research"]
+    retrievalGuidance: ["approved briefs", "approved memory", "repo rules", "cited external research"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["user_value_checker", "risk_value_tradeoff_analyst", "persona_reader"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "user_value_checker",
+        label: "User Value Checker",
+        description: "Read-only analysis of whether the proposed feature delivers clear, measurable user value.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "risk_value_tradeoff_analyst",
+        label: "Risk-Value Tradeoff Analyst",
+        description: "Read-only enumeration of risks vs. user value delivered, surfacing whether scope is worth the cost.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "persona_reader",
+        label: "Persona Reader",
+        description: "Read-only review that user personas and jobs-to-be-done are grounded in evidence, not assumptions.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   solution_architect: {
     label: "Solution Architect",
@@ -123,7 +207,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-architecture", "everything-claude-code:backend-patterns", "everything-claude-code:security-review", "everything-claude-code:agentic-engineering"],
-    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "architecture notes"]
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "architecture notes"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["interface_contract_mapper", "architecture_risk_scout", "alternative_design_dissenter"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "interface_contract_mapper",
+        label: "Interface Contract Mapper",
+        description: "Read-only enumeration of all public interfaces and their contracts, flagging missing or implicit contracts.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "architecture_risk_scout",
+        label: "Architecture Risk Scout",
+        description: "Read-only identification of architectural risks including coupling, scalability bottlenecks, and operational hazards.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "alternative_design_dissenter",
+        label: "Alternative Design Dissenter",
+        description: "Read-only adversarial review that argues for at least one serious alternative architecture and names tradeoffs.",
+        defaultModel: "sonnet",
+        defaultEffort: "high",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   docs_researcher: {
     label: "Docs Researcher",
@@ -137,7 +263,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-docs-research", "documentation-lookup", "everything-claude-code:search-first"],
-    retrievalGuidance: ["approved memory", "repo rules", "approved briefs", "local technical notes"]
+    retrievalGuidance: ["approved memory", "repo rules", "approved briefs", "local technical notes"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["source_verifier", "api_doc_reader", "version_change_scout"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "source_verifier",
+        label: "Source Verifier",
+        description: "Read-only verification that claims made in research are backed by primary or official sources.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "api_doc_reader",
+        label: "API Doc Reader",
+        description: "Read-only deep dive into official API documentation to surface undocumented constraints and edge cases.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "version_change_scout",
+        label: "Version Change Scout",
+        description: "Read-only scan for breaking changes, deprecations, and migration notes across relevant version bumps.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   backend_engineer: {
     label: "Backend Engineer",
@@ -207,7 +375,60 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-frontend-taste", "archon-design-system", "everything-claude-code:frontend-patterns", "web-design-guidelines"],
-    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "reviewed UI artifacts"]
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "reviewed UI artifacts"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["component_scout", "accessibility_probe", "visual_consistency_checker", "interaction_test_writer"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "component_scout",
+        label: "Component Scout",
+        description: "Read-only survey of existing UI components to identify reuse opportunities before writing new ones.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "accessibility_probe",
+        label: "Accessibility Probe",
+        description: "Read-only check for semantic HTML, ARIA usage, keyboard navigation, and contrast requirements.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "visual_consistency_checker",
+        label: "Visual Consistency Checker",
+        description: "Read-only review that the UI follows the project design system tokens, spacing, and component conventions.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "interaction_test_writer",
+        label: "Interaction Test Writer",
+        description: "Writes interaction tests for UI components under the parent designer's allowed write scope.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Write", "Edit", "Bash"],
+        allowedWriteScopeMode: "inherited_subset",
+        maxTurns: 25,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   git_operator: {
     label: "Git Operator",
@@ -225,7 +446,49 @@ export const agentCatalog = {
       "superpowers-using-git-worktrees",
       "superpowers-finishing-development-branch"
     ],
-    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "task packets", "git status and diff evidence"]
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "task packets", "git status and diff evidence"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["commit_slicer", "diff_hygiene_checker", "branch_policy_checker"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "commit_slicer",
+        label: "Commit Slicer",
+        description: "Read-only analysis of staged changes to propose atomic commit boundaries and ordering.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "diff_hygiene_checker",
+        label: "Diff Hygiene Checker",
+        description: "Read-only review of the diff for debug code, commented-out blocks, and accidental file inclusions.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "branch_policy_checker",
+        label: "Branch Policy Checker",
+        description: "Read-only verification that branch naming, base branch, and merge strategy comply with repo conventions.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 10,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   infra_engineer: {
     label: "Infrastructure Engineer",
@@ -239,7 +502,60 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-infra-ops", "archon-setup", "archon-release-readiness", "everything-claude-code:deployment-patterns", "everything-claude-code:docker-patterns"],
-    retrievalGuidance: ["approved memory", "repo rules", "setup notes", "runbooks", "incident learnings"]
+    retrievalGuidance: ["approved memory", "repo rules", "setup notes", "runbooks", "incident learnings"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["ci_probe", "dockerfile_checker", "env_contract_checker", "deploy_risk_checker"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "ci_probe",
+        label: "CI Probe",
+        description: "Read-only analysis of CI pipeline configuration to identify gaps, missing jobs, and unsafe step ordering.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "dockerfile_checker",
+        label: "Dockerfile Checker",
+        description: "Read-only review of Dockerfiles for image hygiene, layer caching, and security baseline issues.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "env_contract_checker",
+        label: "Env Contract Checker",
+        description: "Read-only verification that all required environment variables are declared and documented.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "deploy_risk_checker",
+        label: "Deploy Risk Checker",
+        description: "Read-only assessment of deploy risk: migration ordering, rollback safety, and traffic cut-over strategy.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   reviewer: {
     label: "Reviewer",
@@ -384,7 +700,49 @@ export const agentCatalog = {
       "everything-claude-code:e2e-testing",
       "verification-loop"
     ],
-    retrievalGuidance: ["approved memory", "repo rules", "review gates", "eval artifacts"]
+    retrievalGuidance: ["approved memory", "repo rules", "review gates", "eval artifacts"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["test_evidence_auditor", "e2e_flow_runner", "regression_probe"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "test_evidence_auditor",
+        label: "Test Evidence Auditor",
+        description: "Read-only audit of test artifacts to verify coverage claims and flag missing or shallow evidence.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "e2e_flow_runner",
+        label: "E2E Flow Runner",
+        description: "Executes end-to-end flows for critical user paths and reports pass/fail with reproduction steps.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 30,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "regression_probe",
+        label: "Regression Probe",
+        description: "Read-only check for behavioral regressions across the test suite related to the changed surface.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   "tdd-guide": {
     label: "TDD Guide",
@@ -468,7 +826,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-technical-writing", "documentation-lookup", "everything-claude-code:article-writing"],
-    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "reviewed technical notes", "release notes"]
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "reviewed technical notes", "release notes"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["operator_doc_reviewer", "release_note_drafter", "example_validator"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "operator_doc_reviewer",
+        label: "Operator Doc Reviewer",
+        description: "Read-only review of operator documentation for accuracy, completeness, and runbook coverage.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "release_note_drafter",
+        label: "Release Note Drafter",
+        description: "Drafts user-facing release notes from the diff and commit history for the current release slice.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "inherited_subset",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "example_validator",
+        label: "Example Validator",
+        description: "Read-only check that code examples in documentation are syntactically correct and match the current API.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   agent_runtime_engineer: {
     label: "Agent Runtime Engineer",
@@ -636,7 +1036,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["caveman", "everything-claude-code:postgres-patterns", "everything-claude-code:database-migrations", "verification-loop"],
-    retrievalGuidance: ["approved memory", "repo rules", "schema notes", "reviewed plans", "migration artifacts"]
+    retrievalGuidance: ["approved memory", "repo rules", "schema notes", "reviewed plans", "migration artifacts"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["migration_safety_checker", "query_plan_reader", "index_design_checker"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "migration_safety_checker",
+        label: "Migration Safety Checker",
+        description: "Read-only review of migration files for lock contention, rollback viability, and data-loss risks.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "query_plan_reader",
+        label: "Query Plan Reader",
+        description: "Read-only analysis of EXPLAIN output and query patterns to identify sequential scans and N+1 risks.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "index_design_checker",
+        label: "Index Design Checker",
+        description: "Read-only assessment of index coverage, redundancy, and selectivity for current query patterns.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   performance_engineer: {
     label: "Performance Engineer",
@@ -650,7 +1092,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "everything-claude-code:backend-patterns"],
-    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "benchmark artifacts", "profiling notes"]
+    retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "benchmark artifacts", "profiling notes"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["benchmark_runner", "hot_path_profiler", "regression_comparator"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "benchmark_runner",
+        label: "Benchmark Runner",
+        description: "Executes benchmarks and records latency, throughput, and memory metrics for the current change surface.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "hot_path_profiler",
+        label: "Hot Path Profiler",
+        description: "Read-only analysis of execution hot paths to identify the highest-impact optimization targets.",
+        defaultModel: "sonnet",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 20,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "regression_comparator",
+        label: "Regression Comparator",
+        description: "Read-only comparison of current benchmark results against the baseline to detect performance regressions.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   context_manager: {
     label: "Context Manager",
@@ -664,7 +1148,49 @@ export const agentCatalog = {
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
     defaultSkillIds: ["archon-context-retrieval", "archon-memory", "everything-claude-code:search-first", "everything-claude-code:iterative-retrieval"],
-    retrievalGuidance: ["all retrieval layers", ".archon/memory/", "Postgres runtime records", "Obsidian vault", "graphify knowledge graph"]
+    retrievalGuidance: ["all retrieval layers", ".archon/memory/", "Postgres runtime records", "Obsidian vault", "graphify knowledge graph"],
+    spawnPolicy: {
+      canSpawnSubagents: true,
+      allowedSubagentTypes: ["memory_reader", "graph_retrieval_scout", "runtime_history_summarizer"],
+      maxChildDepth: 1,
+      maxConcurrentChildren: 2,
+      maxTotalChildrenPerTask: 6
+    },
+    subagentSpecialties: [
+      {
+        id: "memory_reader",
+        label: "Memory Reader",
+        description: "Read-only retrieval from .archon/memory/ to surface relevant durable facts for the current task.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "graph_retrieval_scout",
+        label: "Graph Retrieval Scout",
+        description: "Read-only query of the graphify knowledge graph to locate entity relationships relevant to the current task.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      },
+      {
+        id: "runtime_history_summarizer",
+        label: "Runtime History Summarizer",
+        description: "Read-only summary of Postgres runtime records for the current run to reconstruct prior invocation context.",
+        defaultModel: "haiku",
+        defaultEffort: "medium",
+        allowedTools: ["Read", "Bash"],
+        allowedWriteScopeMode: "read_only",
+        maxTurns: 15,
+        outputSchema: "SubagentResultPacketV1"
+      }
+    ]
   },
   observability_engineer: {
     label: "Observability Engineer",

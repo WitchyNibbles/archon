@@ -131,6 +131,7 @@ import type {
 import type { WorkspaceRecord } from "./domain/types.ts";
 import type { ExportDocsCommandResult } from "./docs-export/models.ts";
 import { PostgresStore } from "./store/postgres-store.ts";
+import { AgentRuntimeStore } from "./store/agent-runtime-store.ts";
 import type { ArchonStore as ArchonStoreContract } from "./store/types.ts";
 import { alignQueueToActiveTask, buildDefaultProductState, maybeContinueWorkflowAfterProof, pathExists, repoRoot, resolveCommandFlag, resolveRunIdForCommand, syncRuntimeWorkflowExports } from "./workflow.ts";
 import type { EnvShape } from "./workflow.ts";
@@ -1209,6 +1210,7 @@ export function parseExpectedReviewTarget(target: string): {
 export async function workflowProofCommand(args: readonly string[]) {
   await withClient(async (client) => {
     const store = new PostgresStore(client);
+    const agentStore = new AgentRuntimeStore(client);
     const service = new ArchonCoreService(store);
     const result = await executeWorkflowProofCommandFromArgs(args, {
       cwd: process.cwd(),
@@ -1238,7 +1240,7 @@ export async function workflowProofCommand(args: readonly string[]) {
         return store.getApprovals(runId, taskId);
       },
       getAgentHandoffCheck(taskId) {
-        return store.checkHandoffPresenceForTask(taskId);
+        return agentStore.checkHandoffPresenceForTask(taskId);
       }
     });
 

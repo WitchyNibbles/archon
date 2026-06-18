@@ -6,6 +6,7 @@
 //
 // Separated from postgres-store.ts to keep that file under the 800-line limit.
 
+import { randomUUID } from "node:crypto";
 import type { SqlClient } from "./postgres-store.ts";
 import type {
   AgentInvocation,
@@ -14,6 +15,7 @@ import type {
   DebateSession,
   DebateArgument
 } from "../domain/types.ts";
+import type { TaskSummary } from "../runtime/agentic-loop.ts";
 
 function now(): string {
   return new Date().toISOString();
@@ -801,5 +803,205 @@ export class AgentRuntimeStore {
     const hasHandoff = handoffResult.rows.length > 0;
 
     return { hasInvocations: true, hasContextThreshold: true, hasHandoff };
+  }
+
+  /**
+   * Returns a snapshot of agentic runtime state for a given task for status display.
+   * Queries agent_invocations, agent_context_samples, and agent_handoffs.
+   * Returns undefined if no invocations exist for the task.
+   */
+  async getAgenticStateForTask(taskId: string): Promise<{
+    contextPct: number | undefined;
+    contextBudgetState: string | undefined;
+    handoffState: "committed" | "pending" | "none";
+    handoffCommittedAt: string | undefined;
+    subagentsActive: number;
+  } | undefined> {
+    const invResult = await this.client.query(
+      `select 1 from agent_invocations where task_id = $1 limit 1`,
+      [taskId]
+    );
+    if (invResult.rows.length === 0) return undefined;
+
+    const [sampleResult, handoffResult, activeResult] = await Promise.all([
+      this.client.query(
+        `select used_percentage, budget_state
+         from agent_context_samples
+         where task_id = $1
+         order by sampled_at desc
+         limit 1`,
+        [taskId]
+      ),
+      this.client.query(
+        `select committed_at
+         from agent_handoffs
+         where task_id = $1
+         order by committed_at desc
+         limit 1`,
+        [taskId]
+      ),
+      this.client.query(
+        `select count(*) as cnt
+         from agent_invocations
+         where task_id = $1 and status = 'active'`,
+        [taskId]
+      )
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const latestSample = sampleResult.rows[0] as { used_percentage: number | null; budget_state: string | null } | undefined;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const latestHandoff = handoffResult.rows[0] as { committed_at: string | null } | undefined;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const activeCount = Number((activeResult.rows[0] as { cnt: string } | undefined)?.cnt ?? 0);
+
+    return {
+      contextPct: latestSample?.used_percentage ?? undefined,
+      contextBudgetState: latestSample?.budget_state ?? undefined,
+      handoffState: latestHandoff
+        ? latestHandoff.committed_at
+          ? "committed"
+          : "pending"
+        : "none",
+      handoffCommittedAt: latestHandoff?.committed_at ?? undefined,
+      subagentsActive: activeCount
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // AgenticLoopStoreLike bridge methods
+  // -------------------------------------------------------------------------
+
+  /**
+   * Return the next ready task for the given run, or null if none.
+   * Maps to AgenticLoopStoreLike.getNextTask.
+   */
+  async getNextTask(runId: string): Promise<TaskSummary | null> {
+    const result = await this.client.query(
+      `select task_key as id, title, status
+       from tasks
+       where run_id = $1::uuid and status = 'ready'
+       order by created_at asc
+       limit 1`,
+      [runId]
+    );
+    const row = result.rows[0] as { id: string; title: string; status: string } | undefined;
+    if (row === undefined) return null;
+    return { id: row.id, title: row.title, status: row.status };
+  }
+
+  /**
+   * Create an agent invocation record with status "running".
+   * Returns the new invocationId.
+   * Maps to AgenticLoopStoreLike.createInvocation.
+   */
+  async createInvocation(data: {
+    runId: string;
+    taskId: string;
+    role: string;
+    startedAt: string;
+  }): Promise<string> {
+    const id = randomUUID();
+    await this.createAgentInvocation({
+      id,
+      runId: data.runId,
+      taskId: data.taskId,
+      role: data.role,
+      agentKind: "specialist_owner",
+      model: "sonnet",
+      effort: "high",
+      status: "running",
+      contextPolicyId: "default",
+      startedAt: data.startedAt
+    });
+    return id;
+  }
+
+  /**
+   * Update the status of an invocation record.
+   * Maps to AgenticLoopStoreLike.updateInvocationStatus.
+   */
+  async updateInvocationStatus(
+    invocationId: string,
+    status: string,
+    metadata?: Record<string, unknown> | undefined
+  ): Promise<void> {
+    await this.updateAgentInvocationStatus(
+      invocationId,
+      status as AgentInvocation["status"],
+      metadata
+    );
+  }
+
+  /**
+   * Return the current status string of an invocation, or undefined.
+   * Maps to AgenticLoopStoreLike.getInvocationStatus.
+   */
+  async getInvocationStatus(invocationId: string): Promise<string | undefined> {
+    const inv = await this.getInvocationById(invocationId);
+    return inv?.status;
+  }
+
+  /**
+   * Return the taskId for the given invocation, or undefined.
+   * Maps to AgenticLoopStoreLike.getInvocationTaskId.
+   */
+  async getInvocationTaskId(invocationId: string): Promise<string | undefined> {
+    const result = await this.client.query(
+      `select task_id from agent_invocations where id = $1`,
+      [invocationId]
+    );
+    const row = result.rows[0] as { task_id: string } | undefined;
+    return row?.task_id;
+  }
+
+  /**
+   * Return the currently active (in_progress) task for a run, or null.
+   * Maps to AgenticLoopStoreLike.getActiveTask.
+   */
+  async getActiveTask(runId: string): Promise<TaskSummary | null> {
+    const result = await this.client.query(
+      `select task_key as id, title, status
+       from tasks
+       where run_id = $1::uuid and status = 'in_progress'
+       order by updated_at desc
+       limit 1`,
+      [runId]
+    );
+    const row = result.rows[0] as { id: string; title: string; status: string } | undefined;
+    if (row === undefined) return null;
+    return { id: row.id, title: row.title, status: row.status };
+  }
+
+  /**
+   * Return the currently active (running) invocation ID for a run, or null.
+   * Maps to AgenticLoopStoreLike.getActiveInvocation.
+   */
+  async getActiveInvocation(runId: string): Promise<string | null> {
+    const result = await this.client.query(
+      `select id
+       from agent_invocations
+       where run_id = $1::uuid and status = 'running'
+       order by started_at desc
+       limit 1`,
+      [runId]
+    );
+    const row = result.rows[0] as { id: string } | undefined;
+    return row?.id ?? null;
+  }
+
+  /**
+   * Count pending (unconsumed) handoffs for a run.
+   * Maps to AgenticLoopStoreLike.countPendingHandoffs.
+   */
+  async countPendingHandoffs(runId: string): Promise<number> {
+    const result = await this.client.query(
+      `select count(*) as cnt
+       from agent_handoffs
+       where run_id = $1::uuid and consumed_at is null`,
+      [runId]
+    );
+    const row = result.rows[0] as { cnt: string } | undefined;
+    return Number(row?.cnt ?? 0);
   }
 }
