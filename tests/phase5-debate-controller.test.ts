@@ -350,3 +350,45 @@ test("buildDebateReport includes topic and outcome in output", () => {
   assert.ok(report.includes("evidence-001"), "evidence ref missing from report");
   assert.ok(report.includes("# Debate Report"), "report header missing");
 });
+
+// ---------------------------------------------------------------------------
+// Test 14: ARCHON_DEBATE_GATE=disabled feature flag
+// ---------------------------------------------------------------------------
+
+test("DebateController: shouldDebate returns false for all kinds when ARCHON_DEBATE_GATE=disabled", () => {
+  const { controller } = makeController();
+
+  const prev = process.env.ARCHON_DEBATE_GATE;
+  try {
+    process.env.ARCHON_DEBATE_GATE = "disabled";
+    // Normally architecture_significant would return true
+    assert.equal(controller.shouldDebate({ kind: "architecture_significant" }), false);
+    assert.equal(controller.shouldDebate({ kind: "security_trust_boundary" }), false);
+    assert.equal(controller.shouldDebate({ kind: "migration_data_loss" }), false);
+    // Skip-list kinds should also remain false
+    assert.equal(controller.shouldDebate({ kind: "trivial_edit" }), false);
+  } finally {
+    if (prev === undefined) {
+      delete process.env.ARCHON_DEBATE_GATE;
+    } else {
+      process.env.ARCHON_DEBATE_GATE = prev;
+    }
+  }
+});
+
+test("DebateController: shouldDebate returns true for required kinds when ARCHON_DEBATE_GATE is unset", () => {
+  const { controller } = makeController();
+
+  const prev = process.env.ARCHON_DEBATE_GATE;
+  try {
+    delete process.env.ARCHON_DEBATE_GATE;
+    assert.equal(controller.shouldDebate({ kind: "architecture_significant" }), true);
+    assert.equal(controller.shouldDebate({ kind: "trivial_edit" }), false);
+  } finally {
+    if (prev === undefined) {
+      delete process.env.ARCHON_DEBATE_GATE;
+    } else {
+      process.env.ARCHON_DEBATE_GATE = prev;
+    }
+  }
+});

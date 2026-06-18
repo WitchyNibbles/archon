@@ -754,4 +754,52 @@ export class AgentRuntimeStore {
       metadata: (row.metadata ?? {}) as Record<string, unknown>
     };
   }
+
+  /**
+   * AC11 handoff presence check.
+   *
+   * Returns:
+   *   hasInvocations — true if any agent_invocations rows exist for this task (managed run)
+   *   hasContextThreshold — true if any context sample for the task has used_percentage >= 70
+   *   hasHandoff — true if at least one agent_handoffs row exists for the task with
+   *                reason = 'context_threshold_70' or 'precompact_fallback'
+   */
+  async checkHandoffPresenceForTask(taskId: string): Promise<{
+    hasInvocations: boolean;
+    hasContextThreshold: boolean;
+    hasHandoff: boolean;
+  }> {
+    const invResult = await this.client.query(
+      `select 1 from agent_invocations where task_id = $1 limit 1`,
+      [taskId]
+    );
+    const hasInvocations = invResult.rows.length > 0;
+
+    if (!hasInvocations) {
+      return { hasInvocations: false, hasContextThreshold: false, hasHandoff: false };
+    }
+
+    const sampleResult = await this.client.query(
+      `select 1 from agent_context_samples
+       where task_id = $1 and used_percentage >= 70
+       limit 1`,
+      [taskId]
+    );
+    const hasContextThreshold = sampleResult.rows.length > 0;
+
+    if (!hasContextThreshold) {
+      return { hasInvocations: true, hasContextThreshold: false, hasHandoff: false };
+    }
+
+    const handoffResult = await this.client.query(
+      `select 1 from agent_handoffs
+       where task_id = $1
+         and reason in ('context_threshold_70', 'precompact_fallback')
+       limit 1`,
+      [taskId]
+    );
+    const hasHandoff = handoffResult.rows.length > 0;
+
+    return { hasInvocations: true, hasContextThreshold: true, hasHandoff };
+  }
 }

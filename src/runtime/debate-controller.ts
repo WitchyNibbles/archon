@@ -127,6 +127,9 @@ export class DebateController {
   // -------------------------------------------------------------------------
 
   shouldDebate(trigger: DebateTrigger): boolean {
+    // ARCHON_DEBATE_GATE=disabled → treat every trigger as a skip-list match (rollout stage 5)
+    if (process.env.ARCHON_DEBATE_GATE === "disabled") return false;
+
     if (DEBATE_REQUIRED_KINDS.has(trigger.kind)) return true;
     if (DEBATE_SKIPPED_KINDS.has(trigger.kind)) return false;
     // Exhaustive fallback: unknown kinds default to no debate

@@ -475,6 +475,12 @@ export interface ExecuteWorkflowProofCommandOptions {
   getStatusSnapshot: (runId: string) => Promise<RunStatusSnapshot>;
   getReviews: (runId: string, taskId: string) => Promise<readonly ReviewRecord[]>;
   getApprovals: (runId: string, taskId: string) => Promise<readonly ApprovalRecord[]>;
+  /** AC11: check whether a threshold-crossing invocation committed a handoff. Optional — only fires when provided. */
+  getAgentHandoffCheck?: ((taskId: string) => Promise<{
+    hasInvocations: boolean;
+    hasContextThreshold: boolean;
+    hasHandoff: boolean;
+  }>) | undefined;
 }
 
 
@@ -978,6 +984,18 @@ export async function executeWorkflowProofCommandFromArgs(
     }
   }
 
+  // AC11: if a managed invocation crossed the 70% context threshold, a handoff
+  // must have been committed before workflow-proof can pass.
+  if (options.getAgentHandoffCheck) {
+    const handoffCheck = await options.getAgentHandoffCheck(taskId);
+    if (handoffCheck.hasInvocations && handoffCheck.hasContextThreshold && !handoffCheck.hasHandoff) {
+      throw new Error(
+        `Task ${taskId} workflow-proof blocked (AC11): context threshold was crossed but no handoff was committed. ` +
+        `Ensure the agent called archon_handoff_prepare + archon_handoff_commit before stopping.`
+      );
+    }
+  }
+
   const continuation = await maybeContinueWorkflowAfterProof(
     {
       runId,
@@ -1218,6 +1236,9 @@ export async function workflowProofCommand(args: readonly string[]) {
       },
       getApprovals(runId, taskId) {
         return store.getApprovals(runId, taskId);
+      },
+      getAgentHandoffCheck(taskId) {
+        return store.checkHandoffPresenceForTask(taskId);
       }
     });
 

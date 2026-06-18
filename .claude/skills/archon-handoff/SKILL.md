@@ -43,28 +43,48 @@ Write an ordered list of remaining actions.  Each step must be:
 
 ### 4. Commit the handoff
 
-Call `mcp__archon__create_handoff` with:
+Use the two-step prepare → commit flow:
+
+**Step 4a — prepare** (marks the invocation as handoff_requested and returns a packet template):
+
+Call `mcp__archon__archon_handoff_prepare` with:
 
 ```json
 {
   "invocationId": "<current invocation id>",
   "taskId": "<active task id>",
-  "summary": "<plain text summary of completed work>",
-  "nextSteps": ["<step 1>", "<step 2>", "..."],
-  "artifacts": ["<path1>", "<path2>", "..."]
+  "reason": "context_threshold_70"
 }
 ```
+
+**Step 4b — commit** (validates and persists the full handoff packet):
+
+Call `mcp__archon__archon_handoff_commit` with:
+
+```json
+{
+  "invocationId": "<current invocation id>",
+  "taskId": "<active task id>",
+  "reason": "context_threshold_70",
+  "summary": "<plain text summary of completed work>",
+  "nextSteps": ["<step 1>", "<step 2>", "..."],
+  "artifacts": ["<path1>", "<path2>", "..."],
+  "metadata": {}
+}
+```
+
+The commit call returns `{ "handoffId": "<artifact-id>" }`. Record this id.
 
 ### 5. Update task state
 
 Write a brief note to `.archon/work/product-state.md` recording:
 - What was completed in this invocation.
-- The handoff artifact id (returned by `mcp__archon__create_handoff`).
+- The handoff artifact id (returned by `mcp__archon__archon_handoff_commit`).
 
 ### 6. Stop
 
 Output the handoff artifact id and stop. Do NOT attempt further tool calls.
-The successor agent will read the handoff via `mcp__archon__get_handoff`.
+The successor agent will read the handoff via `mcp__archon__archon_context_bundle`.
 
 ## Output contract
 
