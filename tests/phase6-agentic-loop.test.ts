@@ -111,6 +111,13 @@ describe("phase6 agentic loop controller", () => {
     assert.strictEqual(invocations.get(invocationId), "running");
   });
 
+  it("onContextSample at 30% returns continue", async () => {
+    const { store } = buildMockStore();
+    const controller = new AgenticLoopController(store, { runId: "run-4a" });
+    const action = await controller.onContextSample("inv-continue", 30);
+    assert.strictEqual(action, "continue");
+  });
+
   it("onContextSample at 69% returns warn", async () => {
     const { store } = buildMockStore();
     const controller = new AgenticLoopController(store, { runId: "run-4" });

@@ -238,6 +238,87 @@ test("finalizeDecision rejects when evidenceRefs is empty", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// getSession — retrieve session by ID
+// ---------------------------------------------------------------------------
+
+test("getSession returns the session record when store has getDebateSession and session is found", async () => {
+  const { controller, store } = makeController();
+
+  const session = await controller.start({
+    runId: "run_get_001",
+    topic: "Session retrieval test",
+    triggerKind: "high_uncertainty"
+  });
+
+  const retrieved = await controller.getSession(session.id);
+
+  assert.ok(retrieved !== null, "Expected a non-null session record");
+  assert.equal(retrieved?.id, session.id);
+  assert.equal(retrieved?.topic, "Session retrieval test");
+  assert.equal(retrieved?.status, "open");
+});
+
+test("getSession returns null when session is not found", async () => {
+  const { controller } = makeController();
+
+  const result = await controller.getSession("nonexistent_session_id");
+
+  assert.equal(result, null, "Expected null for a session ID that does not exist");
+});
+
+// ---------------------------------------------------------------------------
+// addArgument — empty position
+// ---------------------------------------------------------------------------
+
+test("addArgument rejects when position is whitespace-only", async () => {
+  const { controller } = makeController();
+
+  await assert.rejects(
+    () =>
+      controller.addArgument("session_001", {
+        role: "planner",
+        round: 1,
+        position: "   "
+      }),
+    /position.*must be non-empty/i
+  );
+});
+
+// ---------------------------------------------------------------------------
+// finalizeDecision — invalid outcome and empty dissent owner
+// ---------------------------------------------------------------------------
+
+test("finalizeDecision rejects when outcome is an invalid value", async () => {
+  const { controller } = makeController();
+
+  await assert.rejects(
+    () =>
+      controller.finalizeDecision("session_001", {
+        outcome: "invalid_value" as "approved",
+        vote: { approve: 1, rework: 0, reject: 0 },
+        dissent: { owner: "planner", summary: "Some dissent" },
+        evidenceRefs: ["ref-001"]
+      }),
+    /invalid outcome/i
+  );
+});
+
+test("finalizeDecision rejects when dissent owner is empty string", async () => {
+  const { controller } = makeController();
+
+  await assert.rejects(
+    () =>
+      controller.finalizeDecision("session_001", {
+        outcome: "approved",
+        vote: { approve: 3, rework: 0, reject: 0 },
+        dissent: { owner: "", summary: "Minority view" },
+        evidenceRefs: ["ref-001"]
+      }),
+    /dissent\.owner.*must be non-empty/i
+  );
+});
+
+// ---------------------------------------------------------------------------
 // buildDebateReport — output content
 // ---------------------------------------------------------------------------
 

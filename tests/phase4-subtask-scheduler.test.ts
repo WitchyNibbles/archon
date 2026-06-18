@@ -167,6 +167,74 @@ function defaultSpec() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 0a: getSubtaskDepth — invocation found
+// ---------------------------------------------------------------------------
+
+test("SubtaskScheduler: getSubtaskDepth returns parent.depth + 1 when invocation is found", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  invStore.register("inv_depth", makeParentRef({ depth: 2 }));
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+  const depth = await scheduler.getSubtaskDepth("inv_depth");
+
+  assert.strictEqual(depth, 3, `Expected depth 3 (parent.depth 2 + 1), got ${depth}`);
+});
+
+// ---------------------------------------------------------------------------
+// Test 0b: getSubtaskDepth — invocation not found
+// ---------------------------------------------------------------------------
+
+test("SubtaskScheduler: getSubtaskDepth returns undefined when invocation is not found", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  // No registration — invocation does not exist.
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+  const depth = await scheduler.getSubtaskDepth("inv_missing");
+
+  assert.strictEqual(depth, undefined, `Expected undefined for missing invocation, got ${depth}`);
+});
+
+// ---------------------------------------------------------------------------
+// Test 0c: requestSubtask — parent not found
+// ---------------------------------------------------------------------------
+
+test("SubtaskScheduler: requestSubtask rejects when parent invocation is not found", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  // No invocation registered.
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+  const outcome = await scheduler.requestSubtask("inv_nonexistent", defaultSpec());
+
+  assert.ok(!outcome.ok, "Expected ok=false for missing parent");
+  assert.ok(
+    !outcome.ok && (outcome.reason.toLowerCase().includes("not found") || outcome.reason.toLowerCase().includes("parent")),
+    `Expected reason to mention 'not found' or 'parent', got: ${!outcome.ok ? outcome.reason : ""}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test 0d: requestSubtask — parent not running
+// ---------------------------------------------------------------------------
+
+test("SubtaskScheduler: requestSubtask rejects when parent status is 'completed' (not running)", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  invStore.register("inv_completed", makeParentRef({ status: "completed" }));
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+  const outcome = await scheduler.requestSubtask("inv_completed", defaultSpec());
+
+  assert.ok(!outcome.ok, "Expected ok=false for non-running parent");
+  assert.ok(
+    !outcome.ok && (outcome.reason.toLowerCase().includes("not running") || outcome.reason.toLowerCase().includes("status")),
+    `Expected reason to mention 'not running' or 'status', got: ${!outcome.ok ? outcome.reason : ""}`
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Test 1: Valid spawn
 // ---------------------------------------------------------------------------
 
