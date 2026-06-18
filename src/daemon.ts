@@ -138,6 +138,9 @@ import { buildRuntimeExecutionConnectionFailure, executeReconcileRuntimeStateCom
 import type { ExecuteDoctorCommandOptions, ExecuteRuntimePreflightCommandOptions, ReconcileRuntimeStateCommandResult } from "./runtime.ts";
 import { bindingsUsePlaceholderContent, closeWorkflowProofCoverageGaps, createLiveReviewIdentityAdapter, executeRecordReviewCommand, executeWorkflowProofCommandFromArgs, isRepoTemplateReviewIdentityPath, normalizeRecordReviewCommandInput, parseExpectedReviewTarget, resolveRequiredReviewIdentityFilePath } from "./review.ts";
 import type { ExecuteRecordReviewCommandFromArgsOptions, ExecuteRecordReviewCommandOptions, RecordReviewCommandInput, RecordReviewCommandResult } from "./review.ts";
+import { AgentRuntimeStore } from "./store/agent-runtime-store.ts";
+import { AgenticLoopController } from "./runtime/agentic-loop.ts";
+import { ContinuationContextBuilder } from "./runtime/continuation-context.ts";
 
 
 export function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
@@ -3090,7 +3093,15 @@ export async function loopCommand(args: readonly string[]) {
   try {
     await withClient(async (client) => {
       const store = new PostgresStore(client);
+      const agentStore = new AgentRuntimeStore(client);
       const service = new ArchonCoreService(store);
+      const continuationBuilder = new ContinuationContextBuilder(agentStore);
+
+      async function buildContinuationBundle(runId: string, taskId: string, role: string): Promise<string> {
+        const bundle = await continuationBuilder.buildBundle({ runId, taskId, role });
+        return bundle.continuationPrompt;
+      }
+
       const { format, result } = await executeLoopCommandFromArgs(args, {
         cwd: process.cwd(),
         env: process.env,
@@ -3113,6 +3124,19 @@ export async function loopCommand(args: readonly string[]) {
           return service.applyRecovery(runId, actionIds, { staleAfterHours });
         },
         async executeDirectiveStep(runId, input) {
+          // Agentic loop wiring: on dispatch_owner, record an invocation and build
+          // a continuation bundle before the service claims the task.
+          const loopController = new AgenticLoopController(agentStore, { runId });
+          const currentPlan = await service.getExecutionPlan(runId, {
+            staleAfterHours: input.staleAfterHours
+          });
+          if (currentPlan.directive.kind === "dispatch_owner") {
+            const rec = currentPlan.directive.recommendation;
+            const role = rec.targetRole ?? input.ownerActor ?? "specialist_owner";
+            await loopController.startInvocation(rec.taskId, role);
+            await buildContinuationBundle(runId, rec.taskId, role);
+          }
+
           const executeReviewRecommendation =
             input.reviewCommands.length > 0
               ? createQueuedLoopReviewExecutor(

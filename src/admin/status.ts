@@ -257,6 +257,17 @@ export interface OperatorStatusReport {
       queueCurrentTaskId: string | null;
     } | undefined;
   };
+  agenticState?: AgenticStateForTask | undefined;
+}
+
+export interface AgenticStateForTask {
+  authorityLabel: "runtime_authoritative";
+  taskId: string;
+  contextPct: number | undefined;
+  contextBudgetState: string | undefined;
+  handoffState: "committed" | "pending" | "none";
+  handoffCommittedAt: string | undefined;
+  subagentsActive: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +344,7 @@ export function buildOperatorStatusReport(input: {
   reviewIdentity: ReviewIdentityStatusObservation;
   graphify: GraphifyStatusObservation;
   integrity?: OperatorStatusReport["integrity"] | undefined;
+  agenticState?: AgenticStateForTask | undefined;
   now?: string | undefined;
   staleAfterDays?: number | undefined;
 }): OperatorStatusReport {
@@ -453,6 +465,7 @@ export function buildOperatorStatusReport(input: {
       authorityLabel: "derived_only",
       status: "unavailable",
       contradictions: []
-    }
+    },
+    agenticState: input.agenticState
   };
 }

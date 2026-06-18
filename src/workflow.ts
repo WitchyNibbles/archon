@@ -54,6 +54,7 @@ import { buildOperatorDashboardReport, formatOperatorDashboardReport } from "./a
 import { inspectGraphifyStatus, type GraphifyStatusObservation } from "./admin/graphify.ts";
 import {
   buildOperatorStatusReport,
+  type AgenticStateForTask,
   type DaemonContinuationStatusObservation,
   type DaemonOperatorHandoffObservation,
   type DaemonSupervisorStatusObservation,
@@ -164,6 +165,13 @@ export interface ExecuteStatusCommandOptions {
   getStatusSnapshot: (runId: string) => Promise<RunStatusSnapshot>;
   getExecutionPlan?: ((runId: string, staleAfterHours: number) => Promise<RunExecutionPlan>) | undefined;
   getProjectRuntimeState?: ((projectId: string) => Promise<ProjectRuntimeStateRecord | undefined>) | undefined;
+  getAgenticStateForTask?: ((taskId: string) => Promise<{
+    contextPct: number | undefined;
+    contextBudgetState: string | undefined;
+    handoffState: "committed" | "pending" | "none";
+    handoffCommittedAt: string | undefined;
+    subagentsActive: number;
+  } | undefined>) | undefined;
 }
 
 
@@ -887,6 +895,19 @@ export async function executeStatusCommandFromArgs(
     }
   }
 
+  const activeTaskId = runtimeState?.activeTaskId ?? null;
+  let agenticState: AgenticStateForTask | undefined;
+  if (activeTaskId && options.getAgenticStateForTask) {
+    const raw = await options.getAgenticStateForTask(activeTaskId);
+    if (raw) {
+      agenticState = {
+        authorityLabel: "runtime_authoritative",
+        taskId: activeTaskId,
+        ...raw
+      };
+    }
+  }
+
   return buildOperatorStatusReport({
     snapshot,
     executionPlan,
@@ -921,6 +942,7 @@ export async function executeStatusCommandFromArgs(
           status: "unavailable",
           contradictions: []
         },
+    agenticState,
     staleAfterDays
   });
 }
