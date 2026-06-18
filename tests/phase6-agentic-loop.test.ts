@@ -24,6 +24,7 @@ function buildMockStore(opts: {
   contextSamples: Map<string, number>;
 } {
   const invocations = new Map<string, string>(); // invocationId → status
+  const invocationTaskIds = new Map<string, string>(); // invocationId → taskId
   const contextSamples = new Map<string, number>(); // invocationId → usedPercentage
 
   const store: AgenticLoopStoreLike = {
@@ -56,6 +57,7 @@ function buildMockStore(opts: {
     async createInvocation(data) {
       const invocationId = `inv-${data.taskId}-${Date.now()}`;
       invocations.set(invocationId, "running");
+      invocationTaskIds.set(invocationId, data.taskId);
       return invocationId;
     },
     async updateInvocationStatus(invocationId, status) {
@@ -63,6 +65,9 @@ function buildMockStore(opts: {
     },
     async getInvocationStatus(invocationId) {
       return invocations.get(invocationId);
+    },
+    async getInvocationTaskId(invocationId) {
+      return invocationTaskIds.get(invocationId);
     },
     async getActiveTask() {
       return opts.activeTask ?? null;

@@ -36,6 +36,7 @@ create table if not exists agent_invocations (
   context_policy_id    text        not null,
   session_id           text,
   transcript_path      text,
+  depth                integer     not null default 0,
   started_at           timestamptz not null default now(),
   ended_at             timestamptz,
   metadata             jsonb       not null default '{}'::jsonb
