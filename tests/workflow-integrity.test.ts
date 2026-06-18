@@ -845,3 +845,129 @@ test("workflow integrity: standalone workflow-proof in default mode rejects seed
     }
   );
 });
+
+// ---------------------------------------------------------------------------
+// AC11: handoff presence check in workflow-proof
+// ---------------------------------------------------------------------------
+
+test("workflow integrity: AC11 — proof passes when no managed invocations exist (getAgentHandoffCheck not provided)", async () => {
+  // Without getAgentHandoffCheck, the AC11 check is simply skipped (opt-in gate).
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ac11-no-hook");
+
+  // Should not throw: no getAgentHandoffCheck provided
+  await executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ac11-no-hook"], {
+    env: process.env,
+    integrityCheckMode: "allow_seed_failure_recovery",
+    getStatusSnapshot(id) {
+      return seededService.getStatus(id);
+    },
+    getReviews(id, tid) {
+      return store.getReviews(id, tid);
+    },
+    getApprovals(id, tid) {
+      return store.getApprovals(id, tid);
+    }
+    // getAgentHandoffCheck deliberately omitted
+  });
+});
+
+test("workflow integrity: AC11 — proof passes when no invocations exist for the task", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ac11-no-invocations");
+
+  // Should not throw: hasInvocations=false → check skipped
+  await executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ac11-no-invocations"], {
+    env: process.env,
+    integrityCheckMode: "allow_seed_failure_recovery",
+    getStatusSnapshot(id) {
+      return seededService.getStatus(id);
+    },
+    getReviews(id, tid) {
+      return store.getReviews(id, tid);
+    },
+    getApprovals(id, tid) {
+      return store.getApprovals(id, tid);
+    },
+    getAgentHandoffCheck(_taskId) {
+      return Promise.resolve({ hasInvocations: false, hasContextThreshold: false, hasHandoff: false });
+    }
+  });
+});
+
+test("workflow integrity: AC11 — proof passes when threshold crossed and handoff committed", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ac11-handoff-present");
+
+  // Should not throw: threshold crossed AND handoff committed
+  await executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ac11-handoff-present"], {
+    env: process.env,
+    integrityCheckMode: "allow_seed_failure_recovery",
+    getStatusSnapshot(id) {
+      return seededService.getStatus(id);
+    },
+    getReviews(id, tid) {
+      return store.getReviews(id, tid);
+    },
+    getApprovals(id, tid) {
+      return store.getApprovals(id, tid);
+    },
+    getAgentHandoffCheck(_taskId) {
+      return Promise.resolve({ hasInvocations: true, hasContextThreshold: true, hasHandoff: true });
+    }
+  });
+});
+
+test("workflow integrity: AC11 — proof fails when threshold crossed and no handoff committed", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ac11-missing-handoff");
+
+  await assert.rejects(
+    () =>
+      executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ac11-missing-handoff"], {
+        env: process.env,
+        integrityCheckMode: "allow_seed_failure_recovery",
+        getStatusSnapshot(id) {
+          return seededService.getStatus(id);
+        },
+        getReviews(id, tid) {
+          return store.getReviews(id, tid);
+        },
+        getApprovals(id, tid) {
+          return store.getApprovals(id, tid);
+        },
+        getAgentHandoffCheck(_taskId) {
+          return Promise.resolve({ hasInvocations: true, hasContextThreshold: true, hasHandoff: false });
+        }
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "expected an Error");
+      assert.match(err.message, /AC11/i);
+      assert.match(err.message, /handoff/i);
+      return true;
+    }
+  );
+});
+
+test("workflow integrity: AC11 — proof passes when threshold NOT crossed (no handoff needed)", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ac11-below-threshold");
+
+  // Should not throw: threshold not crossed → no handoff required
+  await executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ac11-below-threshold"], {
+    env: process.env,
+    integrityCheckMode: "allow_seed_failure_recovery",
+    getStatusSnapshot(id) {
+      return seededService.getStatus(id);
+    },
+    getReviews(id, tid) {
+      return store.getReviews(id, tid);
+    },
+    getApprovals(id, tid) {
+      return store.getApprovals(id, tid);
+    },
+    getAgentHandoffCheck(_taskId) {
+      return Promise.resolve({ hasInvocations: true, hasContextThreshold: false, hasHandoff: false });
+    }
+  });
+});

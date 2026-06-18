@@ -296,3 +296,40 @@ test("hook-wiring: session-start with no .archon state → empty stdout, exit 0 
     fs.rmSync(fixture, { recursive: true, force: true });
   }
 });
+
+// ─── Case 8: pre-compact with no context-guard → exits 0, no output ──────────
+
+test("hook-wiring: pre-compact with no context-guard → exits 0, no output", () => {
+  // When there is no .archon/work/context-guard.json, the hook should do nothing
+  // and exit cleanly. This is the common case (no managed invocation active).
+  const fixture = makeFixture();
+  try {
+    const payload = { cwd: fixture };
+    const { status, stdout, stderr } = runHook("archon-pre-compact.mjs", payload);
+    // Should exit 0 (not crash) and produce no stdout decision
+    assert.strictEqual(status, 0, `hook must exit 0, stderr: ${stderr}`);
+    assert.strictEqual(stdout.trim(), "", `expected no stdout when no context-guard present, got: ${stdout}`);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("hook-wiring: pre-compact with handoff_written guard → exits 0, no output", () => {
+  // When context-guard shows handoff_written, the hook should skip (handoff already committed).
+  const fixture = makeFixture({
+    ".archon/work/context-guard.json": JSON.stringify({
+      invocationId: "inv_test_001",
+      state: "handoff_written",
+      contextPct: 75,
+      updatedAt: new Date().toISOString()
+    })
+  });
+  try {
+    const payload = { cwd: fixture };
+    const { status, stdout, stderr } = runHook("archon-pre-compact.mjs", payload);
+    assert.strictEqual(status, 0, `hook must exit 0, stderr: ${stderr}`);
+    assert.strictEqual(stdout.trim(), "", `expected no stdout when handoff already written, got: ${stdout}`);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});

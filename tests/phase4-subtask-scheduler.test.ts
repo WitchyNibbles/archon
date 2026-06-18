@@ -501,3 +501,53 @@ test("SubtaskScheduler: getPendingSubtasks returns only pending subtasks for the
     assert.equal(s.taskId, "task_001");
   }
 });
+
+// ---------------------------------------------------------------------------
+// Test 11: ARCHON_SUBAGENTS=disabled feature flag
+// ---------------------------------------------------------------------------
+
+test("SubtaskScheduler: returns SpawnError immediately when ARCHON_SUBAGENTS=disabled", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  invStore.register("inv_001", makeParentRef());
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+
+  const prev = process.env.ARCHON_SUBAGENTS;
+  try {
+    process.env.ARCHON_SUBAGENTS = "disabled";
+    const outcome = await scheduler.requestSubtask("inv_001", defaultSpec());
+    assert.ok(!outcome.ok, "Expected ok=false when ARCHON_SUBAGENTS=disabled");
+    assert.ok(
+      !outcome.ok && outcome.reason.includes("disabled"),
+      `Expected reason to mention disabled, got: ${!outcome.ok ? outcome.reason : ""}`
+    );
+  } finally {
+    if (prev === undefined) {
+      delete process.env.ARCHON_SUBAGENTS;
+    } else {
+      process.env.ARCHON_SUBAGENTS = prev;
+    }
+  }
+});
+
+test("SubtaskScheduler: allows spawn when ARCHON_SUBAGENTS is unset", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  invStore.register("inv_001", makeParentRef());
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+
+  const prev = process.env.ARCHON_SUBAGENTS;
+  try {
+    delete process.env.ARCHON_SUBAGENTS;
+    const outcome = await scheduler.requestSubtask("inv_001", defaultSpec());
+    assert.ok(outcome.ok, `Expected ok=true when ARCHON_SUBAGENTS is unset, got: ${!outcome.ok ? outcome.reason : ""}`);
+  } finally {
+    if (prev === undefined) {
+      delete process.env.ARCHON_SUBAGENTS;
+    } else {
+      process.env.ARCHON_SUBAGENTS = prev;
+    }
+  }
+});

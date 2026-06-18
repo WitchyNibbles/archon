@@ -143,6 +143,11 @@ export class SubtaskScheduler {
    *   6. Child allowedWriteScope must be a subset of parent allowedWriteScope (unless parent scope is empty = read-only applies).
    */
   async requestSubtask(parentInvocationId: string, spec: SubtaskSpec): Promise<SpawnOutcome> {
+    // ARCHON_SUBAGENTS=disabled → reject all spawn requests immediately (rollout stage 4)
+    if (process.env.ARCHON_SUBAGENTS === "disabled") {
+      return { ok: false, reason: "Subagent spawning is disabled (ARCHON_SUBAGENTS=disabled)." };
+    }
+
     const parent = await this.invocationStore.getInvocation(parentInvocationId);
 
     if (parent === undefined) {
