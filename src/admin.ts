@@ -54,11 +54,13 @@ import { buildOperatorDashboardReport, formatOperatorDashboardReport } from "./a
 import { inspectGraphifyStatus, type GraphifyStatusObservation } from "./admin/graphify.ts";
 import {
   buildOperatorStatusReport,
+  buildContextStatusObservation,
   type DaemonContinuationStatusObservation,
   type DaemonOperatorHandoffObservation,
   type DaemonSupervisorStatusObservation,
   type ReviewIdentityStatusObservation
 } from "./admin/status.ts";
+import { AgentRuntimeStore } from "./store/agent-runtime-store.ts";
 import { parseExportDocsRequest } from "./docs-export/parser.ts";
 import { resolveObsidianConfig, validateObsidianConfig } from "./docs-export/obsidian-config.ts";
 import { exportTaskToObsidian } from "./export/obsidian-exporter.ts";
@@ -335,6 +337,26 @@ async function main() {
     await recordCouncilCommand(args, {
       withClient: (fn) => withClient((client) => fn(client)),
       createStore: (client) => new PostgresStore(client as ConstructorParameters<typeof PostgresStore>[0])
+    });
+    return;
+  }
+
+  if (command === "context-status") {
+    const invocationId = args[0];
+    if (!invocationId) {
+      throw new Error("context-status requires an invocation-id argument");
+    }
+    await withClient(async (client) => {
+      const store = new AgentRuntimeStore(client as ConstructorParameters<typeof AgentRuntimeStore>[0]);
+      // Build a ContextBudgetStoreLike adapter that wraps AgentRuntimeStore.
+      const budgetStore = {
+        recordContextSample: (data: Parameters<typeof store.recordContextSample>[0]) =>
+          store.recordContextSample(data),
+        getLatestContextSample: (id: string) => store.getLatestContextSample(id),
+        hasCommittedHandoff: async (_id: string) => false
+      };
+      const obs = await buildContextStatusObservation(invocationId, budgetStore);
+      process.stdout.write(JSON.stringify(obs, null, 2) + "\n");
     });
     return;
   }
