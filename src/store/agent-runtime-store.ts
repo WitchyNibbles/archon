@@ -654,6 +654,141 @@ export class AgentRuntimeStore {
     }));
   }
 
+  /**
+   * Return invocations that crossed the handoff threshold, have no end state,
+   * and have no committed handoff — presumed crashed and eligible for a
+   * crash_recovery continuation (TDD §20).
+   */
+  async listRecoverableInvocations(
+    runId: string,
+    handoffPct: number
+  ): Promise<
+    {
+      invocationId: string;
+      runId: string;
+      taskId: string;
+      role: string;
+      contextUsedPct?: number | undefined;
+    }[]
+  > {
+    // Only `running` invocations are treated as crash orphans. `handoff_requested`
+    // is deliberately excluded: recoverCrashedInvocation calls prepare() first
+    // (which flips status to handoff_requested) before commit() inserts the
+    // handoff row. Restricting detection to `running` means once recovery starts
+    // the invocation no longer matches this query, closing the prepare→commit
+    // double-recovery window for the sequential daemon loop.
+    //
+    // The `not exists (... agent_handoffs ...)` clause is intentionally unscoped
+    // by handoff status: any prior handoff (committed or consumed) means this
+    // invocation already transferred its work to a successor invocation, so it is
+    // not an orphan — the successor, if it also crashes, is detected on its own id.
+    const result = await this.client.query(
+      `select i.id, i.run_id, i.task_id, i.role,
+              (select max(s.used_percentage)
+                 from agent_context_samples s
+                where s.invocation_id = i.id) as max_used_pct
+         from agent_invocations i
+        where i.run_id = $1
+          and i.ended_at is null
+          and i.status = 'running'
+          and exists (
+            select 1 from agent_context_samples s
+             where s.invocation_id = i.id
+               and s.used_percentage >= $2
+          )
+          and not exists (
+            select 1 from agent_handoffs h
+             where h.from_invocation_id = i.id
+          )
+        order by i.started_at asc`,
+      [runId, handoffPct]
+    );
+    return result.rows.map((row) => {
+      const rawPct = row.max_used_pct;
+      const contextUsedPct =
+        rawPct === null || rawPct === undefined ? undefined : Number(rawPct);
+      return {
+        invocationId: row.id as string,
+        runId: row.run_id as string,
+        taskId: row.task_id as string,
+        role: row.role as string,
+        contextUsedPct
+      };
+    });
+  }
+
+  /**
+   * Aggregate agentic-runtime counters for a run from the invocation, handoff,
+   * context-sample, subtask, and debate tables (§19.1 observability).
+   */
+  async getAgenticMetrics(
+    runId: string,
+    handoffPct: number
+  ): Promise<{
+    invocationsTotal: number;
+    invocationsByStatus: { label: string; count: number }[];
+    handoffsTotal: number;
+    handoffsByReason: { label: string; count: number }[];
+    contextThresholdCrossedTotal: number;
+    subtasksTotal: number;
+    subtasksByStatus: { label: string; count: number }[];
+    debateSessionsTotal: number;
+    debateSessionsByStatus: { label: string; count: number }[];
+  }> {
+    const toLabeled = (rows: Record<string, unknown>[]): { label: string; count: number }[] =>
+      rows.map((row) => ({
+        label: String(row.label ?? "unknown"),
+        count: Number(row.count ?? 0)
+      }));
+    const sum = (rows: { count: number }[]): number =>
+      rows.reduce((total, row) => total + row.count, 0);
+
+    const [invocations, handoffs, thresholdCrossed, subtasks, debates] = await Promise.all([
+      this.client.query(
+        `select status as label, count(*)::int as count
+           from agent_invocations where run_id = $1 group by status order by status`,
+        [runId]
+      ),
+      this.client.query(
+        `select reason as label, count(*)::int as count
+           from agent_handoffs where run_id = $1 group by reason order by reason`,
+        [runId]
+      ),
+      this.client.query(
+        `select count(distinct invocation_id)::int as count
+           from agent_context_samples where run_id = $1 and used_percentage >= $2`,
+        [runId, handoffPct]
+      ),
+      this.client.query(
+        `select s.status as label, count(*)::int as count
+           from agent_subtasks s where s.run_id = $1 group by s.status order by s.status`,
+        [runId]
+      ),
+      this.client.query(
+        `select status as label, count(*)::int as count
+           from agent_debate_sessions where run_id = $1 group by status order by status`,
+        [runId]
+      )
+    ]);
+
+    const invocationsByStatus = toLabeled(invocations.rows);
+    const handoffsByReason = toLabeled(handoffs.rows);
+    const subtasksByStatus = toLabeled(subtasks.rows);
+    const debateSessionsByStatus = toLabeled(debates.rows);
+
+    return {
+      invocationsTotal: sum(invocationsByStatus),
+      invocationsByStatus,
+      handoffsTotal: sum(handoffsByReason),
+      handoffsByReason,
+      contextThresholdCrossedTotal: Number(thresholdCrossed.rows[0]?.count ?? 0),
+      subtasksTotal: sum(subtasksByStatus),
+      subtasksByStatus,
+      debateSessionsTotal: sum(debateSessionsByStatus),
+      debateSessionsByStatus
+    };
+  }
+
   async listHandoffsForTask(runId: string, taskId: string): Promise<HandoffRecord[]> {
     const result = await this.client.query(
       `select id, run_id, task_id, from_invocation_id, to_invocation_id,

@@ -141,6 +141,8 @@ import type { ExecuteRecordReviewCommandFromArgsOptions, ExecuteRecordReviewComm
 import { AgentRuntimeStore } from "./store/agent-runtime-store.ts";
 import { AgenticLoopController } from "./runtime/agentic-loop.ts";
 import { ContinuationContextBuilder } from "./runtime/continuation-context.ts";
+import { recoverOrphanedInvocations } from "./runtime/crash-recovery.ts";
+import { resolveArchonContextPolicy } from "./runtime/context-budget.ts";
 
 
 export function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
@@ -1466,6 +1468,63 @@ export async function clearDaemonAutomationEnvelope(cwd: string): Promise<void> 
 }
 
 
+const DAEMON_CONTINUATION_CONTEXT_RELATIVE_PATH =
+  ".archon/work/daemon/continuation-context.txt";
+
+
+/**
+ * Persist the compact continuation bundle so it survives until the next
+ * invocation consumes it. The agentic loop builds this bundle when it dispatches
+ * a task owner; without persistence the prompt would be discarded and the
+ * continuation would lose its runtime-authoritative context (AC5/FR-11).
+ */
+export async function writeDaemonContinuationContext(
+  cwd: string,
+  continuationPrompt: string
+): Promise<string> {
+  const daemonDir = path.join(cwd, ".archon", "work", "daemon");
+  await mkdir(daemonDir, { recursive: true });
+  await writeFile(
+    path.join(cwd, DAEMON_CONTINUATION_CONTEXT_RELATIVE_PATH),
+    `${continuationPrompt.trim()}\n`,
+    "utf8"
+  );
+  return DAEMON_CONTINUATION_CONTEXT_RELATIVE_PATH;
+}
+
+
+/** Read the persisted continuation bundle, or undefined when none exists. */
+export async function readDaemonContinuationContext(
+  cwd: string
+): Promise<string | undefined> {
+  try {
+    const raw = await readFile(
+      path.join(cwd, DAEMON_CONTINUATION_CONTEXT_RELATIVE_PATH),
+      "utf8"
+    );
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "";
+    if (code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+
+/** Remove the persisted continuation bundle once it has been consumed. */
+export async function clearDaemonContinuationContext(cwd: string): Promise<void> {
+  await rm(path.join(cwd, DAEMON_CONTINUATION_CONTEXT_RELATIVE_PATH), {
+    force: true
+  });
+}
+
+
 export async function readDaemonAutomationEnvelope(
   cwd: string
 ): Promise<
@@ -1596,6 +1655,13 @@ export function buildAppAutomationPrompt(input: {
     activeTaskId: string;
   };
   cwd: string;
+  /**
+   * Compact continuation context assembled from the latest handoff packet by
+   * ContinuationContextBuilder. When present it is injected verbatim so the
+   * resumed invocation starts from durable runtime state rather than re-reading
+   * the prior transcript. Omitted when no prior handoff exists.
+   */
+  continuationContext?: string | undefined;
 }): string {
   const lines = [
     `Resume deferred archon work for workspace ${input.envelope.workspaceSlug} project ${input.envelope.projectSlug}.`,
@@ -1612,6 +1678,14 @@ export function buildAppAutomationPrompt(input: {
   ];
   if (input.envelope.nextActions.length > 0) {
     lines.push(`Next actions: ${input.envelope.nextActions.join("; ")}`);
+  }
+  const continuationContext = input.continuationContext?.trim();
+  if (continuationContext) {
+    lines.push(
+      "",
+      "Compact continuation context from prior handoff (runtime-authoritative — do not relitigate decisions already recorded here):",
+      continuationContext
+    );
   }
   return `${lines.join("\n")}\n`;
 }
@@ -1656,10 +1730,17 @@ export async function writeDaemonAppAutomationRequest(
     input.envelope.scheduleKind === "rrule"
       ? input.envelope.schedule
       : convertSupportedCronScheduleToRrule(input.envelope.schedule);
+  const continuationContext = await readDaemonContinuationContext(cwd);
   const prompt = buildAppAutomationPrompt({
     envelope: input.envelope,
-    cwd
+    cwd,
+    ...(continuationContext ? { continuationContext } : {})
   });
+  // The bundle is now captured in the prompt; clear the sidecar so it is never
+  // re-injected into a later run for a different task.
+  if (continuationContext) {
+    await clearDaemonContinuationContext(cwd);
+  }
   const executionEnvironment =
     input.envelope.provider === "claude_app_standalone_automation"
       ? await detectGitAutomationExecutionEnvironment(cwd)
@@ -1779,10 +1860,17 @@ export async function writeDaemonCliSchedulerRequest(
   await mkdir(daemonDir, { recursive: true });
   const requestPath = ".archon/work/daemon/cli-scheduler-request.json";
   const promptPath = ".archon/work/daemon/cli-scheduler-prompt.txt";
+  const continuationContext = await readDaemonContinuationContext(cwd);
   const prompt = buildAppAutomationPrompt({
     envelope: input.envelope,
-    cwd
+    cwd,
+    ...(continuationContext ? { continuationContext } : {})
   });
+  // The bundle is now captured in the prompt; clear the sidecar so it is never
+  // re-injected into a later run for a different task.
+  if (continuationContext) {
+    await clearDaemonContinuationContext(cwd);
+  }
   await writeFile(path.join(cwd, promptPath), prompt, "utf8");
 
   const requiresResumeSession =
@@ -3099,6 +3187,10 @@ export async function loopCommand(args: readonly string[]) {
 
       async function buildContinuationBundle(runId: string, taskId: string, role: string): Promise<string> {
         const bundle = await continuationBuilder.buildBundle({ runId, taskId, role });
+        // Persist the bundle so the next invocation's resume prompt can consume
+        // it. Without this the prompt would be discarded and the continuation
+        // would lose its runtime-authoritative context (AC5/FR-11).
+        await writeDaemonContinuationContext(process.cwd(), bundle.continuationPrompt);
         return bundle.continuationPrompt;
       }
 
@@ -3124,6 +3216,19 @@ export async function loopCommand(args: readonly string[]) {
           return service.applyRecovery(runId, actionIds, { staleAfterHours });
         },
         async executeDirectiveStep(runId, input) {
+          // Crash recovery: before doing anything, synthesize crash_recovery
+          // handoffs for invocations that crossed the threshold but never handed
+          // off (TDD §20). Best-effort — never block the loop on recovery.
+          try {
+            await recoverOrphanedInvocations(agentStore, runId, {
+              handoffPct: resolveArchonContextPolicy().handoffPct
+            });
+          } catch (recoveryError) {
+            process.stderr.write(
+              `[archon-loop] crash recovery skipped: ${String(recoveryError)}\n`
+            );
+          }
+
           // Agentic loop wiring: on dispatch_owner, record an invocation and build
           // a continuation bundle before the service claims the task.
           const loopController = new AgenticLoopController(agentStore, { runId });
