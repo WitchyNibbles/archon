@@ -376,7 +376,37 @@ test("SubtaskScheduler: recordResult rejects completed packet with empty evidenc
 });
 
 // ---------------------------------------------------------------------------
-// Test 9: getPendingSubtasks
+// Test 9: Path traversal rejection
+// ---------------------------------------------------------------------------
+
+test("SubtaskScheduler: rejects child write scope containing path traversal segments", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  // Parent allows src/auth/** writes
+  invStore.register(
+    "inv_001",
+    makeParentRef({ allowedWriteScope: ["src/auth/**"] })
+  );
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+  // Child requests a path that uses ".." to escape the allowed scope
+  const outcome = await scheduler.requestSubtask("inv_001", {
+    ...defaultSpec(),
+    subagentType: "patch_writer",
+    allowedWriteScope: ["src/auth/../../secrets/key"]
+  });
+
+  // After normalization "src/auth/../../secrets/key" → "secrets/key" which still
+  // contains ".." in intermediate form; the traversal guard must reject it.
+  assert.ok(!outcome.ok, "Expected ok=false for path traversal in write scope");
+  assert.ok(
+    !outcome.ok && (outcome.reason.includes("scope") || outcome.reason.includes("write")),
+    `Expected scope error, got: ${!outcome.ok ? outcome.reason : ""}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test 10: getPendingSubtasks
 // ---------------------------------------------------------------------------
 
 test("SubtaskScheduler: getPendingSubtasks returns only pending subtasks for the task", async () => {

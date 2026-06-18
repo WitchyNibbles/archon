@@ -36,6 +36,8 @@ export interface CreateAgentInvocationInput {
   contextPolicyId: string;
   sessionId?: string | undefined;
   transcriptPath?: string | undefined;
+  /** Spawn depth — 0 for root invocations, parent.depth + 1 for child invocations. */
+  depth?: number | undefined;
   startedAt?: string | undefined;
   metadata?: Record<string, unknown> | undefined;
 }
@@ -141,13 +143,14 @@ export class AgentRuntimeStore {
   async createAgentInvocation(data: CreateAgentInvocationInput): Promise<AgentInvocation> {
     const startedAt = data.startedAt ?? now();
     const metadata = data.metadata ?? {};
+    const depth = data.depth ?? 0;
 
     await this.client.query(
       `insert into agent_invocations
          (id, run_id, task_id, parent_invocation_id, role, agent_kind, model,
           effort, status, context_policy_id, session_id, transcript_path,
-          started_at, metadata)
-       values ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          depth, started_at, metadata)
+       values ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         data.id,
         data.runId,
@@ -161,6 +164,7 @@ export class AgentRuntimeStore {
         data.contextPolicyId,
         data.sessionId ?? null,
         data.transcriptPath ?? null,
+        depth,
         startedAt,
         JSON.stringify(metadata)
       ]

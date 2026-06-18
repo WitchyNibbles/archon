@@ -14,6 +14,7 @@
 //   - Result packets are validated against SubagentResultPacketV1Schema.
 
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { SubagentResultPacketV1Schema } from "../domain/handoff-schemas.ts";
 import type { AgentSpawnPolicy } from "../archon/agent-catalog.ts";
 import type { Subtask } from "../domain/types.ts";
@@ -321,26 +322,38 @@ export class SubtaskScheduler {
   /**
    * Returns true if childPath is covered by parentPath.
    * Coverage rules:
-   *   - Exact string match always covers.
-   *   - parentPath ending in "/**" covers any childPath that starts with the prefix.
-   *   - parentPath ending in "/*" covers direct children (no nested slashes).
+   *   - Both paths are normalized via path.posix.normalize() first.
+   *   - Any path that contains ".." after normalization is rejected (returns false).
+   *   - parentPath "." covers everything.
+   *   - Exact match always covers.
+   *   - parentPath ending in "/**" covers any childPath under the prefix directory.
+   *   - parentPath ending in "/*" covers direct children only (no nested slashes).
+   *   - Bare directory parentPath covers any childPath that starts with parentPath + "/".
    */
   private pathCoveredBy(childPath: string, parentPath: string): boolean {
-    if (childPath === parentPath) return true;
+    const normalizedChild = path.posix.normalize(childPath);
+    const normalizedParent = path.posix.normalize(parentPath);
 
-    if (parentPath.endsWith("/**")) {
-      const prefix = parentPath.slice(0, -3);
-      return childPath.startsWith(prefix);
+    // Reject path traversal after normalization
+    if (normalizedChild.includes("..") || normalizedParent.includes("..")) return false;
+
+    if (normalizedParent === "." || normalizedParent === normalizedChild) return true;
+
+    if (normalizedParent.endsWith("/**")) {
+      // removes "**", keeps trailing "/"  e.g. "src/**" → "src/"
+      const prefix = normalizedParent.slice(0, -2);
+      return normalizedChild.startsWith(prefix);
     }
 
-    if (parentPath.endsWith("/*")) {
-      const prefix = parentPath.slice(0, -2);
-      if (!childPath.startsWith(prefix)) return false;
-      const rest = childPath.slice(prefix.length);
-      // Direct child: no more slashes in remainder
-      return rest.length > 0 && !rest.includes("/");
+    if (normalizedParent.endsWith("/*")) {
+      // removes "*", keeps trailing "/"  e.g. "src/*" → "src/"
+      const prefix = normalizedParent.slice(0, -1);
+      const remainder = normalizedChild.slice(prefix.length);
+      return normalizedChild.startsWith(prefix) && remainder.length > 0 && !remainder.includes("/");
     }
 
-    return false;
+    // Exact directory match — child must be directly under parent/
+    const dirPrefix = normalizedParent.endsWith("/") ? normalizedParent : normalizedParent + "/";
+    return normalizedChild.startsWith(dirPrefix);
   }
 }

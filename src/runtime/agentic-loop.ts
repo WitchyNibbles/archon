@@ -91,6 +91,12 @@ export interface AgenticLoopStoreLike extends ContextBudgetStoreLike {
   getInvocationStatus(invocationId: string): Promise<string | undefined>;
 
   /**
+   * Return the taskId for the given invocation, or undefined if the invocation
+   * is not found.  Used by onContextSample to record an accurate taskId.
+   */
+  getInvocationTaskId(invocationId: string): Promise<string | undefined>;
+
+  /**
    * Return the currently active task for a run, or null if none.
    * The loop uses this for getLoopStatus().
    */
@@ -219,10 +225,11 @@ export class AgenticLoopController {
   async onContextSample(invocationId: string, usedPct: number): Promise<LoopAction> {
     const runId = this.config.runId;
 
-    // Derive taskId from the store for the sample record.  We use a sentinel
-    // value when the invocation is not found so we don't throw — the monitor
-    // still records and transitions correctly.
-    const taskId = runId;
+    // Resolve the real taskId from the store.  If the invocation is not found
+    // we fall back to the sentinel "unknown" so the monitor can still record
+    // the sample without throwing.
+    const resolvedTaskId = await this.store.getInvocationTaskId(invocationId);
+    const taskId = resolvedTaskId ?? "unknown";
 
     const newState = await this.contextMonitor.recordSample(
       invocationId,

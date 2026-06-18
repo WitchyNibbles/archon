@@ -1458,6 +1458,7 @@ export async function runOrchestrationBaseline(): Promise<OrchestrationEvalRepor
       async createInvocation(data) { return `inv-${data.taskId}`; },
       async updateInvocationStatus() { /* no-op */ },
       async getInvocationStatus() { return undefined; },
+      async getInvocationTaskId() { return undefined; },
       async getActiveTask() { return null; },
       async getActiveInvocation() { return null; },
       async countPendingHandoffs() { return 0; }
