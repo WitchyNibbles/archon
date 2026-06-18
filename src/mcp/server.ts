@@ -10,6 +10,8 @@ import {
   getStatusSurface
 } from "../admin/runtime-surface.ts";
 import { createMcpToolDefinitions, type McpRuntimeSurface } from "./tools.ts";
+import { createHandoffToolDefinitions } from "./handoff-tools.ts";
+import type { HandoffToolSurface } from "./handoff-tools.ts";
 
 export function createArchonMcpServer(
   runtime: McpRuntimeSurface = {
@@ -19,14 +21,19 @@ export function createArchonMcpServer(
     loop: getLoopSurface,
     report: getReportSurface,
     planContext: getPlanContextSurface
-  }
+  },
+  handoffSurface?: HandoffToolSurface | undefined
 ) {
   const server = new McpServer({
     name: "archon",
     version: "0.1.0"
   });
 
-  for (const tool of createMcpToolDefinitions(runtime)) {
+  const runtimeTools = createMcpToolDefinitions(runtime);
+  const handoffTools =
+    handoffSurface !== undefined ? createHandoffToolDefinitions(handoffSurface) : [];
+
+  for (const tool of [...runtimeTools, ...handoffTools]) {
     server.registerTool(
       tool.name,
       {
