@@ -361,6 +361,61 @@ async function main() {
     return;
   }
 
+  if (command === "handoffs") {
+    const runId = args[0];
+    const taskId = args[1];
+    if (!runId || !taskId) {
+      throw new Error("handoffs requires <run-id> <task-id>");
+    }
+    await withClient(async (client) => {
+      const store = new AgentRuntimeStore(client as ConstructorParameters<typeof AgentRuntimeStore>[0]);
+      const records = await store.listHandoffsForTask(runId, taskId);
+      process.stdout.write(JSON.stringify(records, null, 2) + "\n");
+    });
+    return;
+  }
+
+  if (command === "invocations") {
+    const runId = args[0];
+    const taskId = args[1]; // optional
+    if (!runId) {
+      throw new Error("invocations requires <run-id> [task-id]");
+    }
+    await withClient(async (client) => {
+      const store = new AgentRuntimeStore(client as ConstructorParameters<typeof AgentRuntimeStore>[0]);
+      const records = await store.listInvocationsForRun(runId, taskId);
+      process.stdout.write(JSON.stringify(records, null, 2) + "\n");
+    });
+    return;
+  }
+
+  if (command === "subtasks") {
+    const taskId = args[0];
+    if (!taskId) {
+      throw new Error("subtasks requires <task-id>");
+    }
+    await withClient(async (client) => {
+      const store = new AgentRuntimeStore(client as ConstructorParameters<typeof AgentRuntimeStore>[0]);
+      const records = await store.listSubtasksForTask(taskId);
+      process.stdout.write(JSON.stringify(records, null, 2) + "\n");
+    });
+    return;
+  }
+
+  if (command === "debates") {
+    const runId = args[0];
+    const taskId = args[1]; // optional
+    if (!runId) {
+      throw new Error("debates requires <run-id> [task-id]");
+    }
+    await withClient(async (client) => {
+      const store = new AgentRuntimeStore(client as ConstructorParameters<typeof AgentRuntimeStore>[0]);
+      const records = await store.listDebateSessionsForRun(runId, taskId);
+      process.stdout.write(JSON.stringify(records, null, 2) + "\n");
+    });
+    return;
+  }
+
   throw new Error(`Unknown command: ${command ?? "<none>"}`);
 }
 
