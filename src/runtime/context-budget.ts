@@ -151,7 +151,14 @@ export class ContextBudgetMonitor extends EventEmitter implements ContextBudgetE
     });
 
     const previousState = this.stateCache.get(invocationId) ?? "normal";
-    const newState = this.evaluate(usedPercentage);
+    let newState = this.evaluate(usedPercentage);
+
+    // ARCHON_CONTEXT_MONITOR=observe: downgrade handoff_required → warning so the
+    // monitor records data without blocking the agent. hard_stop is not downgraded
+    // (observe mode does not suppress critical budget exhaustion).
+    if (process.env.ARCHON_CONTEXT_MONITOR === "observe" && newState === "handoff_required") {
+      newState = "warning";
+    }
 
     if (newState !== previousState) {
       this.stateCache.set(invocationId, newState);
@@ -294,9 +301,15 @@ export class ContextBudgetMonitor extends EventEmitter implements ContextBudgetE
       return { decision: "allow" };
     }
 
-    const hasHandoff = await this.store.hasCommittedHandoff(invocationId);
-    if (hasHandoff) {
-      return { decision: "allow" };
+    // MEDIUM-3 fix: hasCommittedHandoff only bypasses the block when the state
+    // is handoff_required (below hardStopPct). At hard_stop the agent has run
+    // out of budget and must not continue even if a handoff was committed,
+    // because it may have been committed in the same over-budget turn.
+    if (state !== "hard_stop") {
+      const hasHandoff = await this.store.hasCommittedHandoff(invocationId);
+      if (hasHandoff) {
+        return { decision: "allow" };
+      }
     }
 
     return {
@@ -304,4 +317,33 @@ export class ContextBudgetMonitor extends EventEmitter implements ContextBudgetE
       reason: `Context at ${state}: tool '${toolName}' blocked until a valid handoff packet is committed. Use mcp__archon__create_handoff first.`
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// resolveArchonContextPolicy — runtime feature flags
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a ContextPolicy by reading env-var overrides on top of the defaults.
+ * Keeps defaultArchonContextPolicy unchanged so tests remain deterministic.
+ *
+ * Env vars:
+ *   ARCHON_CONTEXT_HANDOFF_PCT   — override handoffPct  (default 70)
+ *   ARCHON_CONTEXT_WARNING_PCT   — override warningPct  (default 60)
+ *   ARCHON_CONTEXT_HARD_STOP_PCT — override hardStopPct (default 80)
+ */
+export function resolveArchonContextPolicy(): Readonly<ContextPolicy> {
+  function readPct(key: string, fallback: number): number {
+    const raw = process.env[key];
+    if (raw === undefined || raw.trim() === "") return fallback;
+    const parsed = parseFloat(raw);
+    return Number.isFinite(parsed) && parsed > 0 && parsed <= 100 ? parsed : fallback;
+  }
+  return {
+    policyId: "archon-env-override",
+    appliesTo: "all_archon_agents" as const,
+    handoffPct: readPct("ARCHON_CONTEXT_HANDOFF_PCT", defaultArchonContextPolicy.handoffPct),
+    warningPct: readPct("ARCHON_CONTEXT_WARNING_PCT", defaultArchonContextPolicy.warningPct),
+    hardStopPct: readPct("ARCHON_CONTEXT_HARD_STOP_PCT", defaultArchonContextPolicy.hardStopPct)
+  };
 }

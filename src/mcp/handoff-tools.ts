@@ -1,13 +1,17 @@
 // Handoff MCP Tools — Phase 3 of the Archon Agentic Loop Runtime.
 //
-// Provides four MCP tools for agent handoff lifecycle management:
+// Provides five MCP tools for agent handoff lifecycle management:
 //   archon_handoff_prepare   — mark invocation handoff_requested; return template
 //   archon_handoff_commit    — validate and persist handoff packet
 //   archon_context_sample    — record current context usage
 //   archon_next_action       — ask runtime what action is allowed now
+//   archon_context_bundle    — build compact continuation context bundle
 //
 // Registration: import createHandoffToolDefinitions and loop in server.ts.
 
+import path from "node:path";
+import process from "node:process";
+import { writeFileSync } from "node:fs";
 import { z } from "zod";
 import type { McpToolDefinition } from "./tools.ts";
 import { HandoffController } from "../runtime/handoff-controller.ts";
@@ -16,6 +20,16 @@ import { HandoffPacketV1Schema } from "../domain/handoff-schemas.ts";
 import { handoffReasons } from "../domain/types.ts";
 import type { ContextBudgetStoreLike } from "../runtime/context-budget.ts";
 import { ContextBudgetMonitor } from "../runtime/context-budget.ts";
+import { ContinuationContextBuilder } from "../runtime/continuation-context.ts";
+
+// ---------------------------------------------------------------------------
+// Enforcement sidecar helper
+// ---------------------------------------------------------------------------
+
+function resolveEnforcementFilePath(): string | undefined {
+  const cwd = process.cwd();
+  return path.join(cwd, ".archon", "work", "context-guard.json");
+}
 
 // ---------------------------------------------------------------------------
 // Combined store surface needed by handoff tools
@@ -35,6 +49,7 @@ export function createHandoffToolDefinitions(
 ): readonly McpToolDefinition[] {
   const controller = new HandoffController(surface.handoffStore);
   const monitor = new ContextBudgetMonitor(surface.contextStore);
+  const bundleBuilder = new ContinuationContextBuilder(surface.handoffStore);
 
   return [
     // -----------------------------------------------------------------------
@@ -129,6 +144,20 @@ export function createHandoffToolDefinitions(
 
         const result = await controller.commit({ invocationId, rawPacket });
 
+        const guardPath = resolveEnforcementFilePath();
+        if (guardPath !== undefined) {
+          const guardPayload = JSON.stringify({
+            invocationId,
+            state: "handoff_written",
+            updatedAt: new Date().toISOString()
+          });
+          try {
+            writeFileSync(guardPath, guardPayload, "utf-8");
+          } catch {
+            // sidecar write is best-effort; do not fail the tool call
+          }
+        }
+
         const summary =
           `Handoff packet ${result.record.id} committed. ` +
           `Invocation ${invocationId} is now ${result.newStatus}.`;
@@ -201,6 +230,24 @@ export function createHandoffToolDefinitions(
         );
 
         const needsHandoff = newState === "handoff_required" || newState === "hard_stop";
+
+        if (needsHandoff) {
+          const guardPath = resolveEnforcementFilePath();
+          if (guardPath !== undefined) {
+            const guardPayload = JSON.stringify({
+              invocationId,
+              state: newState,
+              usedPercentage,
+              updatedAt: new Date().toISOString()
+            });
+            try {
+              writeFileSync(guardPath, guardPayload, "utf-8");
+            } catch {
+              // sidecar write is best-effort; do not fail the tool call
+            }
+          }
+        }
+
         const summary = needsHandoff
           ? `Context at ${usedPercentage.toFixed(1)}% (${newState}). ` +
             `Call archon_handoff_prepare immediately before using any other tool.`
@@ -266,6 +313,75 @@ export function createHandoffToolDefinitions(
             required_action: requiredAction,
             allowed_tools: allowedTools,
             message
+          }
+        };
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // archon_context_bundle
+    // -----------------------------------------------------------------------
+    {
+      name: "archon_context_bundle",
+      description:
+        "Build a compact, bounded continuation context bundle for the next invocation. " +
+        "Queries the latest unconsumed handoff for the given run/task and assembles a " +
+        "structured prompt ready for injection into the successor agent's context. " +
+        "Use this when bootstrapping a new invocation that continues from a handoff.",
+      inputSchema: {
+        runId: z.string().trim().min(1),
+        taskId: z.string().trim().min(1),
+        role: z.string().trim().min(1),
+        includeLatestHandoff: z.boolean().optional(),
+        includeEvidenceRefs: z.boolean().optional(),
+        tokenBudget: z.enum(["bounded", "full"]).optional()
+      },
+      async invoke(input) {
+        const runId = String(input["runId"] ?? "");
+        const taskId = String(input["taskId"] ?? "");
+        const role = String(input["role"] ?? "");
+        const includeLatestHandoff =
+          typeof input["includeLatestHandoff"] === "boolean"
+            ? input["includeLatestHandoff"]
+            : true;
+        const includeEvidenceRefs =
+          typeof input["includeEvidenceRefs"] === "boolean"
+            ? input["includeEvidenceRefs"]
+            : true;
+        const rawBudget = input["tokenBudget"];
+        const tokenBudget: "bounded" | "full" =
+          rawBudget === "full" ? "full" : "bounded";
+
+        const bundle = await bundleBuilder.buildBundle({
+          runId,
+          taskId,
+          role,
+          includeLatestHandoff,
+          includeEvidenceRefs,
+          tokenBudget
+        });
+
+        const summary =
+          bundle.latestHandoff !== undefined
+            ? `Context bundle assembled for run ${runId} / task ${taskId} / role ${role}. ` +
+              `Latest handoff: ${bundle.latestHandoff.id}. ` +
+              `${bundle.nextActions.length} next action(s), ` +
+              `${bundle.evidenceRefs.length} evidence ref(s).`
+            : `Context bundle assembled for run ${runId} / task ${taskId} / role ${role}. ` +
+              `No prior handoff found — initial invocation bundle.`;
+
+        return {
+          content: [{ type: "text" as const, text: summary }],
+          structuredContent: {
+            runId: bundle.runId,
+            taskId: bundle.taskId,
+            role: bundle.role,
+            latestHandoffId: bundle.latestHandoff?.id ?? null,
+            continuationPrompt: bundle.continuationPrompt,
+            evidenceRefs: bundle.evidenceRefs,
+            nextActions: bundle.nextActions,
+            allowedWriteScope: bundle.allowedWriteScope,
+            assembledAt: bundle.assembledAt
           }
         };
       }

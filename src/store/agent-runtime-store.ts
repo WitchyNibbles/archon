@@ -543,4 +543,215 @@ export class AgentRuntimeStore {
       [JSON.stringify(decision), sessionId]
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // Gap-A: additional methods needed by MCP wiring and CLI commands
+  // ---------------------------------------------------------------------------
+
+  async hasCommittedHandoff(invocationId: string): Promise<boolean> {
+    const result = await this.client.query(
+      `select 1 from agent_handoffs
+       where from_invocation_id = $1 and consumed_at is null
+       limit 1`,
+      [invocationId]
+    );
+    return result.rows.length > 0;
+  }
+
+  async listSubtasksForTask(taskId: string): Promise<Subtask[]> {
+    const result = await this.client.query(
+      `select id, run_id, task_id, parent_invocation_id, child_invocation_id,
+              subagent_type, title, prompt, allowed_tools, allowed_write_scope,
+              status, result_packet, created_at, completed_at
+       from agent_subtasks
+       where task_id = $1
+       order by created_at asc`,
+      [taskId]
+    );
+    return result.rows.map((row) => ({
+      id: row.id as string,
+      runId: row.run_id as string,
+      taskId: row.task_id as string,
+      parentInvocationId: row.parent_invocation_id as string,
+      childInvocationId: (row.child_invocation_id ?? undefined) as string | undefined,
+      subagentType: row.subagent_type as string,
+      title: row.title as string,
+      prompt: row.prompt as string,
+      allowedTools: (row.allowed_tools ?? []) as string[],
+      allowedWriteScope: (row.allowed_write_scope ?? []) as string[],
+      status: row.status as Subtask["status"],
+      resultPacket: (row.result_packet ?? undefined) as Record<string, unknown> | undefined,
+      createdAt: row.created_at as string,
+      completedAt: (row.completed_at ?? undefined) as string | undefined
+    }));
+  }
+
+  async getInvocationById(invocationId: string): Promise<AgentInvocation | undefined> {
+    const result = await this.client.query(
+      `select id, run_id, task_id, parent_invocation_id, role, agent_kind,
+              model, effort, status, context_policy_id, session_id,
+              transcript_path, started_at, ended_at, metadata
+       from agent_invocations
+       where id = $1`,
+      [invocationId]
+    );
+    if (result.rows.length === 0) return undefined;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const row = result.rows[0]!;
+    return {
+      id: row.id as string,
+      runId: row.run_id as string,
+      taskId: row.task_id as string,
+      parentInvocationId: (row.parent_invocation_id ?? undefined) as string | undefined,
+      role: row.role as string,
+      agentKind: row.agent_kind as AgentInvocation["agentKind"],
+      model: row.model as string,
+      effort: row.effort as string,
+      status: row.status as AgentInvocation["status"],
+      contextPolicyId: row.context_policy_id as string,
+      sessionId: (row.session_id ?? undefined) as string | undefined,
+      transcriptPath: (row.transcript_path ?? undefined) as string | undefined,
+      startedAt: row.started_at as string,
+      endedAt: (row.ended_at ?? undefined) as string | undefined,
+      metadata: (row.metadata ?? {}) as Record<string, unknown>
+    };
+  }
+
+  async listInvocationsForRun(
+    runId: string,
+    taskId?: string | undefined
+  ): Promise<AgentInvocation[]> {
+    const params: unknown[] = [runId];
+    const taskFilter = taskId !== undefined ? `and task_id = $2` : "";
+    if (taskId !== undefined) params.push(taskId);
+    const result = await this.client.query(
+      `select id, run_id, task_id, parent_invocation_id, role, agent_kind,
+              model, effort, status, context_policy_id, session_id,
+              transcript_path, started_at, ended_at, metadata
+       from agent_invocations
+       where run_id = $1 ${taskFilter}
+       order by started_at asc`,
+      params
+    );
+    return result.rows.map((row) => ({
+      id: row.id as string,
+      runId: row.run_id as string,
+      taskId: row.task_id as string,
+      parentInvocationId: (row.parent_invocation_id ?? undefined) as string | undefined,
+      role: row.role as string,
+      agentKind: row.agent_kind as AgentInvocation["agentKind"],
+      model: row.model as string,
+      effort: row.effort as string,
+      status: row.status as AgentInvocation["status"],
+      contextPolicyId: row.context_policy_id as string,
+      sessionId: (row.session_id ?? undefined) as string | undefined,
+      transcriptPath: (row.transcript_path ?? undefined) as string | undefined,
+      startedAt: row.started_at as string,
+      endedAt: (row.ended_at ?? undefined) as string | undefined,
+      metadata: (row.metadata ?? {}) as Record<string, unknown>
+    }));
+  }
+
+  async listHandoffsForTask(runId: string, taskId: string): Promise<HandoffRecord[]> {
+    const result = await this.client.query(
+      `select id, run_id, task_id, from_invocation_id, to_invocation_id,
+              from_role, to_role, reason, status, context_used_pct, packet,
+              authority_label, created_at, consumed_at
+       from agent_handoffs
+       where run_id = $1 and task_id = $2
+       order by created_at desc`,
+      [runId, taskId]
+    );
+    return result.rows.map((row) => ({
+      id: row.id as string,
+      runId: row.run_id as string,
+      taskId: row.task_id as string,
+      fromInvocationId: row.from_invocation_id as string,
+      toInvocationId: (row.to_invocation_id ?? undefined) as string | undefined,
+      fromRole: row.from_role as string,
+      toRole: row.to_role as string,
+      reason: row.reason as string,
+      status: row.status as string,
+      contextUsedPct: (row.context_used_pct ?? undefined) as number | undefined,
+      packet: (row.packet ?? {}) as Record<string, unknown>,
+      authorityLabel: (row.authority_label ?? "runtime") as string,
+      createdAt: row.created_at as string,
+      consumedAt: (row.consumed_at ?? undefined) as string | undefined
+    }));
+  }
+
+  async listDebateSessionsForRun(
+    runId: string,
+    taskId?: string | undefined
+  ): Promise<DebateSession[]> {
+    const params: unknown[] = [runId];
+    const taskFilter = taskId !== undefined ? `and task_id = $2` : "";
+    if (taskId !== undefined) params.push(taskId);
+    const result = await this.client.query(
+      `select id, run_id, task_id, topic, trigger_kind, status,
+              decision, created_at, completed_at
+       from agent_debate_sessions
+       where run_id = $1 ${taskFilter}
+       order by created_at desc`,
+      params
+    );
+    return result.rows.map((row) => ({
+      id: row.id as string,
+      runId: row.run_id as string,
+      taskId: (row.task_id ?? undefined) as string | undefined,
+      topic: row.topic as string,
+      triggerKind: row.trigger_kind as DebateSession["triggerKind"],
+      status: row.status as DebateSession["status"],
+      decision: (row.decision ?? undefined) as Record<string, unknown> | undefined,
+      createdAt: row.created_at as string,
+      completedAt: (row.completed_at ?? undefined) as string | undefined
+    }));
+  }
+
+  async getDebateSession(sessionId: string): Promise<DebateSession | null> {
+    const result = await this.client.query(
+      `select id, run_id, task_id, topic, trigger_kind, status,
+              decision, created_at, completed_at
+       from agent_debate_sessions
+       where id = $1`,
+      [sessionId]
+    );
+    if (result.rows.length === 0) return null;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const row = result.rows[0]!;
+    return {
+      id: row.id as string,
+      runId: row.run_id as string,
+      taskId: (row.task_id ?? undefined) as string | undefined,
+      topic: row.topic as string,
+      triggerKind: row.trigger_kind as DebateSession["triggerKind"],
+      status: row.status as DebateSession["status"],
+      decision: (row.decision ?? undefined) as Record<string, unknown> | undefined,
+      createdAt: row.created_at as string,
+      completedAt: (row.completed_at ?? undefined) as string | undefined
+    };
+  }
+
+  async getInvocationForSpawning(invocationId: string): Promise<
+    | { status: string; taskId: string; runId: string; role: string; depth: number; metadata: Record<string, unknown> }
+    | undefined
+  > {
+    const result = await this.client.query(
+      `select status, task_id, run_id, role, coalesce(depth, 0) as depth, metadata
+       from agent_invocations
+       where id = $1`,
+      [invocationId]
+    );
+    if (result.rows.length === 0) return undefined;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const row = result.rows[0]!;
+    return {
+      status: row.status as string,
+      taskId: row.task_id as string,
+      runId: row.run_id as string,
+      role: row.role as string,
+      depth: Number(row.depth),
+      metadata: (row.metadata ?? {}) as Record<string, unknown>
+    };
+  }
 }
