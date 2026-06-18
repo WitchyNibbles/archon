@@ -20,6 +20,7 @@ import {
   normalizeToolOutput,
   parseApplyPatchTargets,
   persistHookBlockerState,
+  persistTouchedPath,
   persistVerificationCert,
   qualifiesForVerificationCert,
   reviewArtifactPath,
@@ -308,6 +309,14 @@ export function evaluatePostToolUse(payload, context) {
         additionalContext: `Write/Edit failed for ${filePath}; verify file state before claiming the change complete`
       };
     }
+    // Record path-touch metadata for successful edits so handoff packets and
+    // review gates have evidence of what the task actually changed (§14.1).
+    if (!isError && context.activeTaskId && context.repoRoot) {
+      const filePath = resolveWriteTargetPath(toolName, payload);
+      if (filePath) {
+        persistTouchedPath(context.repoRoot, context.activeTaskId, filePath);
+      }
+    }
     return undefined;
   }
 
@@ -583,4 +592,174 @@ export function evaluateStop(payload, context) {
   }
 
   return undefined;
+}
+
+
+// ---------------------------------------------------------------------------
+// Statusline context observer (R1)
+//
+// Claude Code's statusline event is the only interactive surface that exposes
+// context_window.used_percentage. Without it nothing records context usage in an
+// interactive session, so context-guard.json never reaches handoff_required and
+// the PreToolUse 70% enforcement never fires. These helpers compute the budget
+// state from a statusline payload and produce the guard update + display line.
+// ---------------------------------------------------------------------------
+
+function readContextPct(env, key, fallback) {
+  const raw = env?.[key];
+  if (raw === undefined || String(raw).trim() === "") return fallback;
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 100 ? parsed : fallback;
+}
+
+// Mirror of defaultArchonContextPolicy thresholds (src/runtime/context-budget.ts).
+export function resolveStatuslineThresholds(env = process.env) {
+  return {
+    warningPct: readContextPct(env, "ARCHON_CONTEXT_WARNING_PCT", 60),
+    handoffPct: readContextPct(env, "ARCHON_CONTEXT_HANDOFF_PCT", 70),
+    hardStopPct: readContextPct(env, "ARCHON_CONTEXT_HARD_STOP_PCT", 80)
+  };
+}
+
+export function evaluateContextBudgetState(usedPct, thresholds) {
+  if (usedPct >= thresholds.hardStopPct) return "hard_stop";
+  if (usedPct >= thresholds.handoffPct) return "handoff_required";
+  if (usedPct >= thresholds.warningPct) return "warning";
+  return "normal";
+}
+
+// Pull used_percentage out of a statusline payload, tolerating shape variation.
+export function extractUsedPercentage(payload) {
+  const cw = payload?.context_window;
+  const candidates = [
+    cw?.used_percentage,
+    payload?.used_percentage,
+    payload?.context?.used_percentage
+  ];
+  for (const candidate of candidates) {
+    const value = typeof candidate === "string" ? Number.parseFloat(candidate) : candidate;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.max(0, Math.min(100, value));
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Compute the guard update and display line for a statusline tick.
+ *
+ * Returns `{ guard, line }` where `guard` is the object to persist to
+ * context-guard.json (or undefined to leave the existing guard untouched) and
+ * `line` is the status string to print (always a string).
+ *
+ * Rules:
+ *   - No observable context %: leave guard untouched, render a neutral line.
+ *   - Existing state "handoff_written": do not overwrite (handoff already
+ *     committed for this invocation); only refresh the displayed percentage.
+ *   - ARCHON_CONTEXT_MONITOR=observe: downgrade handoff_required -> warning so
+ *     the observer records data without blocking (mirrors ContextBudgetMonitor).
+ *   - Invocation id: reuse the active guard's invocation id; otherwise fall back
+ *     to the session id, otherwise the literal "interactive" so enforcement
+ *     still applies to unmanaged interactive sessions (FR-6).
+ */
+export function computeStatuslineGuardUpdate(payload, existingGuard, env = process.env) {
+  const usedPct = extractUsedPercentage(payload);
+  if (usedPct === undefined) {
+    return { guard: undefined, line: "archon ctx —" };
+  }
+
+  const rounded = Math.round(usedPct * 10) / 10;
+  const existingState =
+    existingGuard && typeof existingGuard.state === "string" ? existingGuard.state : undefined;
+
+  // Once a handoff has been committed for the active invocation, don't clobber
+  // the committed state — just refresh the displayed percentage.
+  if (existingState === "handoff_written") {
+    return {
+      guard: { ...existingGuard, contextPct: rounded, updatedAt: new Date().toISOString() },
+      line: `archon ctx ${rounded}% handoff_written`
+    };
+  }
+
+  const thresholds = resolveStatuslineThresholds(env);
+  let state = evaluateContextBudgetState(usedPct, thresholds);
+
+  if (env?.ARCHON_CONTEXT_MONITOR === "observe" && state === "handoff_required") {
+    state = "warning";
+  }
+
+  const invocationId =
+    (existingGuard && typeof existingGuard.invocationId === "string" && existingGuard.invocationId) ||
+    (typeof payload?.session_id === "string" && payload.session_id) ||
+    "interactive";
+
+  const guard = {
+    invocationId,
+    state,
+    contextPct: rounded,
+    source: "statusline",
+    updatedAt: new Date().toISOString()
+  };
+
+  return { guard, line: `archon ctx ${rounded}% ${state}` };
+}
+
+
+// ---------------------------------------------------------------------------
+// SubagentStop capture (R3)
+//
+// Claude Code fires SubagentStop when an Agent-tool subagent finishes. This is
+// the safety net that records the child's transcript and status even when the
+// parent never called archon_subtask_result, so subagent work is auditable as a
+// runtime record (§14.1, FR-16).
+// ---------------------------------------------------------------------------
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Build a durable audit record for a SubagentStop event from the hook payload.
+ * Pure: no I/O. Always returns an object with a `stoppedAt` timestamp.
+ */
+export function buildSubagentStopRecord(payload, nowIso = new Date().toISOString()) {
+  return {
+    stoppedAt: nowIso,
+    sessionId: firstString(payload?.session_id, payload?.sessionId),
+    transcriptPath: firstString(
+      payload?.transcript_path,
+      payload?.transcriptPath,
+      payload?.subagent?.transcript_path
+    ),
+    subagentType: firstString(
+      payload?.agent_type,
+      payload?.subagent_type,
+      payload?.subagent?.type,
+      payload?.subagent?.name
+    ),
+    stopHookActive: payload?.stop_hook_active === true
+  };
+}
+
+/**
+ * Decide whether a single pending subtask can be safely attributed to this
+ * SubagentStop event. Returns the subtask id when exactly one pending,
+ * un-resulted subtask exists; otherwise undefined (avoid mis-attribution when
+ * the mapping is ambiguous).
+ */
+export function selectSubtaskForStop(subtasks) {
+  if (!Array.isArray(subtasks)) return undefined;
+  const pending = subtasks.filter(
+    (subtask) =>
+      subtask &&
+      subtask.status !== "completed" &&
+      subtask.status !== "failed" &&
+      (subtask.resultPacket === undefined || subtask.resultPacket === null)
+  );
+  return pending.length === 1 ? pending[0].id : undefined;
 }

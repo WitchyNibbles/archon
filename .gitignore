@@ -12,6 +12,9 @@ dist/
 .archon/work/reviews/
 .archon/work/council/
 .archon/work/proofs/
+.archon/work/context-guard.json
+.archon/work/touched-paths.jsonl
+.archon/work/subagent-stops.jsonl
 
 # Keep the directory skeletons
 !.archon/work/briefs/.gitkeep
