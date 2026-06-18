@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import {
   classifyBashFailure,
   clearHookBlockerState,
@@ -89,6 +91,36 @@ function resolveWriteTargetPath(toolName, payload) {
   return "";
 }
 
+// Tools that are safe to call regardless of context-guard state.
+// Read, Bash (read-only checks), and internal archon state updates are
+// always allowed so the agent can diagnose and recover without deadlocking.
+function isHandoffSafeTool(toolName) {
+  const safe = new Set(["Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch"]);
+  return safe.has(toolName);
+}
+
+// Read and parse the context-guard sidecar file.
+// Returns undefined when the file is absent, unreadable, or malformed.
+// Shape: { invocationId, state, contextPct, updatedAt }
+function readContextGuardState(repoRoot) {
+  try {
+    const guardPath = path.join(repoRoot, ".archon", "work", "context-guard.json");
+    const raw = readFileSync(guardPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      typeof parsed.state === "string"
+    ) {
+      return parsed;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function evaluatePermissionRequest(payload, context) {
   const command = extractToolCommand(payload);
 
@@ -112,6 +144,34 @@ export function evaluatePermissionRequest(payload, context) {
 export function evaluatePreToolUse(payload, context) {
   const toolName = payload?.tool_name;
   const command = extractToolCommand(payload);
+
+  // Context-guard enforcement: when the ContextBudgetMonitor has written a
+  // hard_stop or handoff_required state, block non-safe tools so the agent
+  // cannot continue substantive work past the context threshold.
+  //
+  // Bypass path: ARCHON_HANDOFF_ENFORCEMENT=warn emits advisory only;
+  //              ARCHON_HANDOFF_ENFORCEMENT=off disables the check entirely.
+  const handoffEnforcement = process.env.ARCHON_HANDOFF_ENFORCEMENT ?? "block";
+  if (handoffEnforcement !== "off" && !isHandoffSafeTool(toolName)) {
+    const guardState = readContextGuardState(context.repoRoot);
+    if (guardState) {
+      if (guardState.state === "hard_stop") {
+        const msg = `context budget hard stop (${guardState.contextPct ?? "?"}% used): write a handoff artifact and stop before context is exhausted`;
+        if (handoffEnforcement === "warn") {
+          // advisory only — do not block
+        } else {
+          return { decision: "block", reason: msg };
+        }
+      } else if (guardState.state === "handoff_required") {
+        const msg = `context budget handoff required (${guardState.contextPct ?? "?"}% used): write a handoff artifact before continuing`;
+        if (handoffEnforcement === "warn") {
+          return { additionalContext: msg };
+        } else {
+          return { decision: "block", reason: msg };
+        }
+      }
+    }
+  }
 
   if (toolName === "Agent") {
     if (context.allowedWriteScope.length > 0) {
