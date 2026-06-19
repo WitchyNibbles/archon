@@ -353,3 +353,106 @@ describe("AgentRuntimeStore.getInvocationForSpawning", () => {
     assert.equal(record, undefined);
   });
 });
+
+// ---------------------------------------------------------------------------
+// hasInvocationCrossedThreshold (SDD §20.2 / TDD §8.2)
+// ---------------------------------------------------------------------------
+
+describe("AgentRuntimeStore.hasInvocationCrossedThreshold", () => {
+  it("returns true when a sample at/over threshold exists", async () => {
+    const client = makeStubClient(new Map([["agent_context_samples", [{ "?column?": 1 }]]]));
+    const store = new AgentRuntimeStore(client as Parameters<typeof AgentRuntimeStore>[0]);
+    assert.equal(await store.hasInvocationCrossedThreshold("inv-1"), true);
+  });
+
+  it("returns false when no over-threshold sample exists", async () => {
+    const client = makeStubClient(new Map([["agent_context_samples", []]]));
+    const store = new AgentRuntimeStore(client as Parameters<typeof AgentRuntimeStore>[0]);
+    assert.equal(await store.hasInvocationCrossedThreshold("inv-2"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkReviewIndependenceForTask (SDD §18.3)
+// ---------------------------------------------------------------------------
+
+describe("AgentRuntimeStore.checkReviewIndependenceForTask", () => {
+  // The store now issues a single `select ... from agent_invocations where task_id`
+  // query and resolves implementer/reviewer relationships in TypeScript, so the
+  // stub returns the full invocation graph keyed on "agent_invocations".
+  function graph(rows: Record<string, unknown>[]) {
+    const client = makeStubClient(new Map([["agent_invocations", rows]]));
+    return new AgentRuntimeStore(client as Parameters<typeof AgentRuntimeStore>[0]);
+  }
+
+  it("returns hasInvocations=false when no implementing invocations exist", async () => {
+    const store = graph([
+      { id: "r1", role: "reviewer", agent_kind: "reviewer", parent_invocation_id: null }
+    ]);
+    const result = await store.checkReviewIndependenceForTask("task-1");
+    assert.equal(result.hasInvocations, false);
+    assert.deepEqual(result.implementerRoles, []);
+    assert.deepEqual(result.subagentReviewerRoles, []);
+  });
+
+  it("returns distinct implementer roles and treats subagent kind as an implementer (C2)", async () => {
+    const store = graph([
+      { id: "a", role: "backend_engineer", agent_kind: "specialist_owner", parent_invocation_id: null },
+      { id: "b", role: "backend_engineer", agent_kind: "specialist_owner", parent_invocation_id: null },
+      { id: "c", role: "patch_writer", agent_kind: "subagent", parent_invocation_id: "a" }
+    ]);
+    const result = await store.checkReviewIndependenceForTask("task-1");
+    assert.equal(result.hasInvocations, true);
+    assert.deepEqual(result.implementerRoles.sort(), ["backend_engineer", "patch_writer"]);
+    assert.deepEqual(result.subagentReviewerRoles, []);
+  });
+
+  it("flags a reviewer whose immediate parent is the implementer", async () => {
+    const store = graph([
+      { id: "a", role: "backend_engineer", agent_kind: "specialist_owner", parent_invocation_id: null },
+      { id: "r", role: "reviewer", agent_kind: "reviewer", parent_invocation_id: "a" }
+    ]);
+    const result = await store.checkReviewIndependenceForTask("task-1");
+    assert.deepEqual(result.subagentReviewerRoles, ["reviewer"]);
+  });
+
+  it("flags a reviewer that descends from the implementer through a non-implementer intermediary (C1 two-hop)", async () => {
+    const store = graph([
+      { id: "a", role: "backend_engineer", agent_kind: "specialist_owner", parent_invocation_id: null },
+      // intermediary is root_manager (NOT an implementer kind) but its parent is the implementer
+      { id: "mid", role: "root_manager", agent_kind: "root_manager", parent_invocation_id: "a" },
+      { id: "r", role: "reviewer", agent_kind: "reviewer", parent_invocation_id: "mid" }
+    ]);
+    const result = await store.checkReviewIndependenceForTask("task-1");
+    assert.deepEqual(result.subagentReviewerRoles, ["reviewer"]);
+  });
+
+  it("does NOT flag a reviewer spawned by root_manager (legitimate independent review)", async () => {
+    const store = graph([
+      { id: "a", role: "backend_engineer", agent_kind: "specialist_owner", parent_invocation_id: null },
+      { id: "rm", role: "root_manager", agent_kind: "root_manager", parent_invocation_id: null },
+      { id: "r", role: "reviewer", agent_kind: "reviewer", parent_invocation_id: "rm" }
+    ]);
+    const result = await store.checkReviewIndependenceForTask("task-1");
+    assert.deepEqual(result.subagentReviewerRoles, []);
+  });
+
+  it("flags a debate_participant that descends from the implementer", async () => {
+    const store = graph([
+      { id: "a", role: "backend_engineer", agent_kind: "specialist_owner", parent_invocation_id: null },
+      { id: "d", role: "security_reviewer", agent_kind: "debate_participant", parent_invocation_id: "a" }
+    ]);
+    const result = await store.checkReviewIndependenceForTask("task-1");
+    assert.deepEqual(result.subagentReviewerRoles, ["security_reviewer"]);
+  });
+
+  it("terminates on a cyclic parent chain without flagging", async () => {
+    const store = graph([
+      { id: "a", role: "backend_engineer", agent_kind: "specialist_owner", parent_invocation_id: null },
+      { id: "x", role: "reviewer", agent_kind: "reviewer", parent_invocation_id: "y" },
+      { id: "y", role: "reviewer", agent_kind: "reviewer", parent_invocation_id: "x" }
+    ]);
+    const result = await store.checkReviewIndependenceForTask("task-1");
+    assert.deepEqual(result.subagentReviewerRoles, []);
+  });
+});

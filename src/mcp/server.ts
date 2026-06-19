@@ -95,13 +95,16 @@ export async function startArchonMcpServer(): Promise<void> {
         // @ts-ignore — spawnPolicy may not exist on v1 entries
         const spawnPolicy = (entry as { spawnPolicy?: typeof defaultArchonSpawnPolicy })?.spawnPolicy
           ?? defaultArchonSpawnPolicy;
+        // SDD §20.2 / TDD §8.2: deny spawning once the parent crossed the threshold.
+        const contextThresholdCrossed = await store.hasInvocationCrossedThreshold(invocationId);
         return {
           status: row.status,
           taskId: row.taskId,
           runId: row.runId,
           allowedWriteScope: [],
           depth: row.depth,
-          spawnPolicy
+          spawnPolicy,
+          contextThresholdCrossed
         } satisfies ParentInvocationRef;
       }
     }
