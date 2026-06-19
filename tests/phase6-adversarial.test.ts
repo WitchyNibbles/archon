@@ -78,7 +78,7 @@ describe("phase6 adversarial: agent continues past 70% without handoff", () => {
     });
 
     const monitor = new ContextBudgetMonitor(store);
-    const result = await monitor.evaluatePreToolUse("inv-adv-safe", "mcp__archon__create_handoff");
+    const result = await monitor.evaluatePreToolUse("inv-adv-safe", "mcp__archon__archon_handoff_commit");
 
     assert.strictEqual(result.decision, "allow");
   });

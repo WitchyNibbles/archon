@@ -259,16 +259,28 @@ export class ContextBudgetMonitor extends EventEmitter implements ContextBudgetE
    * Only handoff-committing operations and read-only diagnostic tools are allowed.
    */
   static isHandoffSafeTool(toolName: string): boolean {
-    const safeTools = new Set([
-      "mcp__archon__create_handoff",
-      "mcp__archon__commit_handoff",
-      "mcp__archon__record_checkpoint",
-      "mcp__archon__context_status",
-      "Bash",     // read-only inspection is not preventable at tool level
-      "Read",
-      "TodoRead"
+    // Read-only / coordination tools that are always safe; not preventable at
+    // the tool level anyway.
+    const diagnosticTools = new Set(["Bash", "Read", "TodoRead"]);
+    if (diagnosticTools.has(toolName)) {
+      return true;
+    }
+
+    // Handoff-completing MCP tools. These MUST match the names actually
+    // registered by the MCP server (see src/mcp/handoff-tools.ts); otherwise an
+    // agent in handoff_required would be denied the very tools it needs to clear
+    // the block. Accept both the bare tool name and the fully-qualified
+    // `mcp__archon__<name>` form the host may pass to a PreToolUse evaluation.
+    const bare = toolName.startsWith("mcp__archon__")
+      ? toolName.slice("mcp__archon__".length)
+      : toolName;
+    const handoffSafeMcpTools = new Set([
+      "archon_handoff_prepare",
+      "archon_handoff_commit",
+      "archon_context_sample",
+      "archon_next_action"
     ]);
-    return safeTools.has(toolName);
+    return handoffSafeMcpTools.has(bare);
   }
 
   // -------------------------------------------------------------------------
@@ -314,7 +326,7 @@ export class ContextBudgetMonitor extends EventEmitter implements ContextBudgetE
 
     return {
       decision: "deny",
-      reason: `Context at ${state}: tool '${toolName}' blocked until a valid handoff packet is committed. Use mcp__archon__create_handoff first.`
+      reason: `Context at ${state}: tool '${toolName}' blocked until a valid handoff packet is committed. Call archon_handoff_prepare then archon_handoff_commit first.`
     };
   }
 }
