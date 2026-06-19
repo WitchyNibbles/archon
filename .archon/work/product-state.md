@@ -4,17 +4,49 @@
 
 ## Current phase
 
-Archon remediation initiative (9 phases, from the Fable 5 audit) — **complete**.
-All nine phases are approved in the runtime with orchestrator-written reviews
-and pass `workflow-proof` with `runtime_authoritative` authority. Brief:
-`.archon/work/briefs/brief-archon-remediation.md`.
+**Trust-hardening initiative** (trust-first, from the 2026-06-12 owner intent).
+Goal: make the completion authority provably trustworthy against careless agents.
+Brief: `.archon/work/briefs/brief-archon-trust-hardening.md`.
 
-## Active run
+- Intake found 5 enforcement findings by red-teaming archon's own gates.
+- **Careless-class fixes (findings 1, 2, 4, 5) shipped** under task
+  `trust-fix-enforcement-gaps` (run `fc5e4ae7`): sanctioned `init-task` cold-start,
+  heredoc-stripped managed-path scan, runtime-sourced write scope. Security review
+  caught + fixed a HIGH path-traversal. `workflow-proof` runtime_authoritative;
+  reviewer/qa/security gates passed. Committed on branch `fix/trust-enforcement-gaps`
+  (`059f588`); 413 tests pass, tsc clean.
+- **Design & Architecture Council: `approved_with_conditions`**
+  (`.archon/work/council/dac-archon-trust-hardening.md`). Sequence = eval-first
+  (Path C). Council confirmed two new HIGH gaps to fix next: **#10** forged
+  verification-cert via shell chaining, **#14** forged council outcome from
+  worker-editable markdown. Plus MEDIUM two-authorities divergence.
 
-`d216a303-74d8-4a4d-8bd4-c1f23ff57b17` (runtime authoritative). All nine
-remediation tasks are approved; no task is currently claimed. The earlier
-seeded run `1443ac90` is superseded history — `workflow-proof --run-id latest`
-resolves every phase to `d216a303`.
+## Completed task: trust-redteam-fixes
+
+Run `f1aedfac` — **approved**, `workflow-proof` runtime_authoritative, committed
+`23962b0` on branch `fix/trust-enforcement-gaps`. Closed council-confirmed HIGH
+gaps **#10** (forged verification-cert via shell chaining — guard covers `|| && ; |`
+and newlines, redirect-strip stops at metacharacters) and **#14** (forged council
+outcome — now runtime-authoritative via `record-council`, proven live), plus the
+MEDIUM **two-authorities** divergence (strictly run-scoped Stop-hook review query,
+`saveOrchestratorReview` persists run id). Added the gate-integrity eval suite
+(`tests/gate-integrity.test.ts`: RED fixtures, negative twins, mutation canary,
+scope label). reviewer + security_reviewer PASSED (security re-review closed 3
+follow-on HIGHs in the fix); qa GAP-A resolved. 428 tests pass, tsc clean.
+
+## Next task
+
+`T-trust-boundary-doc` (+ remaining council conditions): ≥1 executed live finding-3
+bypass against a disposable run (demonstrated boundary); the scope-from-DB rollback
+note; and securing the `councilRequired` flag from the runtime (security follow-on —
+#14 secured the outcome but not the gate-trigger flag). Then the comprehensive
+red-team wave is the deferred follow-on phase. Not yet started.
+
+## Prior phase (complete)
+
+Archon remediation initiative (9 phases, Fable 5 audit) — complete; run
+`d216a303-74d8-4a4d-8bd4-c1f23ff57b17` runtime_authoritative, all nine approved.
+Brief: `.archon/work/briefs/brief-archon-remediation.md`.
 
 ## Phase status
 
