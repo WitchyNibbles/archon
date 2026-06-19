@@ -372,13 +372,23 @@ describe("ContextBudgetMonitor.buildStatusSummary", () => {
 // ---------------------------------------------------------------------------
 
 describe("ContextBudgetMonitor.isHandoffSafeTool", () => {
-  it("returns true for handoff commit tool", () => {
-    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("mcp__archon__create_handoff"), true);
-    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("mcp__archon__commit_handoff"), true);
+  it("returns true for the real registered handoff tools (bare and mcp-qualified)", () => {
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("archon_handoff_prepare"), true);
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("archon_handoff_commit"), true);
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("mcp__archon__archon_handoff_prepare"), true);
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("mcp__archon__archon_handoff_commit"), true);
   });
 
-  it("returns true for checkpoint tool", () => {
-    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("mcp__archon__record_checkpoint"), true);
+  it("returns true for context sample and next-action tools (bare and mcp-qualified)", () => {
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("archon_context_sample"), true);
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("archon_next_action"), true);
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("mcp__archon__archon_context_sample"), true);
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("mcp__archon__archon_next_action"), true);
+  });
+
+  it("returns false for tool names that are not registered MCP tools", () => {
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("mcp__archon__create_handoff"), false);
+    assert.equal(ContextBudgetMonitor.isHandoffSafeTool("mcp__archon__record_checkpoint"), false);
   });
 
   it("returns true for diagnostic tools", () => {
@@ -421,7 +431,7 @@ describe("ContextBudgetMonitor.evaluatePreToolUse", () => {
     const store = new StubStore();
     const m = monitor(store);
     await m.recordSample("inv-1", "run-1", "task-1", "auto", 72);
-    const result = await m.evaluatePreToolUse("inv-1", "mcp__archon__create_handoff");
+    const result = await m.evaluatePreToolUse("inv-1", "mcp__archon__archon_handoff_commit");
     assert.equal(result.decision, "allow");
   });
 
@@ -447,6 +457,17 @@ describe("ContextBudgetMonitor.evaluatePreToolUse", () => {
     const store = new StubStore();
     const m = monitor(store);
     await m.recordSample("inv-1", "run-1", "task-1", "auto", 85);
+    const result = await m.evaluatePreToolUse("inv-1", "Edit");
+    assert.equal(result.decision, "deny");
+  });
+
+  it("denies non-handoff tools in hard_stop even when a handoff was committed", async () => {
+    // A committed handoff bypasses handoff_required but NOT hard_stop, since the
+    // handoff may have been committed in the same over-budget turn.
+    const store = new StubStore();
+    const m = monitor(store);
+    await m.recordSample("inv-1", "run-1", "task-1", "auto", 85);
+    store.addHandoff("inv-1");
     const result = await m.evaluatePreToolUse("inv-1", "Edit");
     assert.equal(result.decision, "deny");
   });

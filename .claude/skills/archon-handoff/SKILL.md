@@ -17,8 +17,10 @@ exhausted.
 
 ## When to invoke
 
-- The `ContextBudgetMonitor` emits a `handoff_required` or `hard_stop` event.
-- The PreToolUse hook returns a context-guard block message.
+- The `ContextBudgetMonitor` reaches `handoff_required` or `hard_stop` (the
+  managed loop's `onContextSample` returns that action).
+- `archon_next_action` reports the invocation may not proceed and must commit a
+  handoff.
 - The operator runs `/archon-handoff` manually to snapshot progress.
 
 ## Skill steps
@@ -52,28 +54,56 @@ Call `mcp__archon__archon_handoff_prepare` with:
 ```json
 {
   "invocationId": "<current invocation id>",
+  "runId": "<active run id>",
   "taskId": "<active task id>",
-  "reason": "context_threshold_70"
+  "fromRole": "<current role>",
+  "toRole": "<successor role, default same role>",
+  "reason": "context_threshold_70",
+  "contextUsedPct": 72
 }
 ```
 
 **Step 4b — commit** (validates and persists the full handoff packet):
 
-Call `mcp__archon__archon_handoff_commit` with:
+Call `mcp__archon__archon_handoff_commit` with `{ invocationId, packet }`, where
+`packet` conforms to `HandoffPacketV1` (see `.archon/rules/context-handoff.md`):
 
 ```json
 {
   "invocationId": "<current invocation id>",
-  "taskId": "<active task id>",
-  "reason": "context_threshold_70",
-  "summary": "<plain text summary of completed work>",
-  "nextSteps": ["<step 1>", "<step 2>", "..."],
-  "artifacts": ["<path1>", "<path2>", "..."],
-  "metadata": {}
+  "packet": {
+    "schemaVersion": 1,
+    "handoffId": "<unique handoff id>",
+    "runId": "<active run id>",
+    "taskId": "<active task id>",
+    "fromInvocationId": "<current invocation id>",
+    "fromRole": "<current role>",
+    "toRole": "<successor role, default same role>",
+    "reason": "context_threshold_70",
+    "contextUsedPct": 72,
+    "status": "needs_followup",
+    "summary": "<plain-text summary of completed work, >= 10 chars>",
+    "scope": {
+      "allowedWriteScope": ["<path glob>"],
+      "touchedPaths": ["<path1>", "<path2>"],
+      "lockedPaths": []
+    },
+    "decisions": [],
+    "openQuestions": [],
+    "evidenceRefs": ["<test/log/artifact ref>"],
+    "nextActions": ["<step 1>", "<step 2>"],
+    "risks": [],
+    "createdAt": "<ISO-8601 timestamp>"
+  }
 }
 ```
 
-The commit call returns `{ "handoffId": "<artifact-id>" }`. Record this id.
+Validation notes: `summary` must be at least 10 characters; `evidenceRefs` is
+required unless `status` is `blocked`; `nextActions` is required unless `status`
+is `completed`; `contextUsedPct` is required when `reason` is
+`context_threshold_70`.
+
+The commit call returns the persisted handoff id. Record it.
 
 ### 5. Update task state
 
