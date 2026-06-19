@@ -9,7 +9,7 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-a855f7?style=flat-square)](./LICENSE)
 [![Node ≥22](https://img.shields.io/badge/node-%E2%89%A522-6366f1?style=flat-square)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3b82f6?style=flat-square)](https://www.typescriptlang.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-0ea5e9?style=flat-square)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-0ea5e9?style=flat-square)](https://www.postgresql.org/)
 
 </div>
 
@@ -34,7 +34,7 @@ Claude Code is powerful, but raw autonomy without structure leads to drift, unve
 | Agent says it's done → you trust it | Evidence required before completion is accepted |
 | Anyone can merge anything | Authenticated reviewer, QA, and security gates |
 | Session ends, context lost | Resumable state via PostgreSQL checkpoint |
-| One big agent doing everything | 28 specialist roles, right model for the job |
+| One big agent doing everything | 31 specialist roles, right model for the job |
 | Ad-hoc prompting | Typed workflow skills with declared contracts |
 
 ---
@@ -46,7 +46,7 @@ Claude Code is powerful, but raw autonomy without structure leads to drift, unve
 - **🔐 Review gates** — `reviewer`, `qa_engineer`, and `security_reviewer` must sign off on substantive work
 - **♻️ Resumable state** — checkpoint/resume so long-running work survives session breaks
 - **🧠 Reasoning discipline** — facts, assumptions, and hypotheses are separated and labelled
-- **⚖️ Role-based orchestration** — 28 specialist agents, each with retrieval policies and effort routing
+- **⚖️ Role-based orchestration** — 31 specialist agents, each with retrieval policies and effort routing
 
 ---
 
@@ -55,8 +55,8 @@ Claude Code is powerful, but raw autonomy without structure leads to drift, unve
 ```
 archon/
 ├── .claude/
-│   ├── agents/          # 28 specialist role definitions (AGENT.md per role)
-│   ├── skills/          # 42 workflow skills (SKILL.md per skill)
+│   ├── agents/          # 31 specialist role definitions (AGENT.md per role)
+│   ├── skills/          # 46 workflow skills (SKILL.md per skill)
 │   └── hooks/           # Session lifecycle hooks
 ├── .archon/
 │   ├── rules/           # Detailed policy documents
@@ -68,8 +68,7 @@ archon/
 │   ├── core/            # Core runtime services
 │   ├── mcp/             # MCP server (tool exposure to Claude)
 │   ├── runtime/         # Workflow proof and verification
-│   ├── install/         # Project installer and merge logic
-│   └── ui/              # Admin UI server
+│   └── install/         # Project installer and merge logic
 ├── scripts/             # Setup, install, and check scripts
 └── CLAUDE.md            # Operating rules entrypoint
 ```
@@ -78,7 +77,7 @@ archon/
 
 ## 👥 The Agent Team
 
-Archon ships **28 specialist roles** arranged into four classes:
+Archon ships **31 specialist roles** arranged into four classes:
 
 ### 🧭 Manager Roles
 | Role | Purpose |
@@ -109,6 +108,8 @@ Archon ships **28 specialist roles** arranged into four classes:
 | `accessibility_engineer` | Accessibility acceptance gate — semantic HTML, keyboard, ARIA, contrast |
 | `database_specialist` | Schema migrations, query optimization, PostgreSQL correctness |
 | `performance_engineer` | Latency profiling, throughput, benchmark regressions |
+| `observability_engineer` | Dashboards, tracing, SLI/SLO design, alerting, log-signal quality |
+| `review_orchestrator` | Spawns review gate agents and writes their findings as trusted runtime records |
 
 ### 📚 Knowledge Roles
 | Role | Purpose |
@@ -117,6 +118,7 @@ Archon ships **28 specialist roles** arranged into four classes:
 | `technical_writer` | Operator docs, migration notes, release notes |
 | `memory_curator` | Promotes live state to durable reviewed memory |
 | `git_operator` | Staging, commit slicing, branch hygiene |
+| `context_manager` | Assembles retrieval context from memory, runtime, and the vault |
 
 ### 🔬 Domain Specialists *(optional)*
 `mobile_engineer` · `ml_engineer` · `data_engineer` · `ux_researcher` · `product_analyst` · `compliance_reviewer`
@@ -145,6 +147,7 @@ Invoke any skill from within a Claude Code session with a slash command:
 /archon-planning            ✦ Structure and scope a task
 /archon-architecture        ✦ Architecture council review
 /archon-execution           ✦ Run a delivery task with full gates
+/archon-subtask             ✦ Scope and run a bounded subtask
 /archon-autopilot           ✦ Run the full delivery loop autonomously
 /archon-review              ✦ Invoke review gate evidence gathering
 /archon-qa-verification     ✦ QA verification and regression checks
@@ -159,18 +162,24 @@ Invoke any skill from within a Claude Code session with a slash command:
 /archon-graphify            ✦ Advisory repo intelligence via graphify knowledge graph
 /archon-infra-ops           ✦ Infrastructure and environment work
 /archon-setup               ✦ First-time project bootstrap
+/archon-handoff             ✦ Write a handoff packet to continue work later
 /archon-docs-research       ✦ Research docs, evidence, and prior art
+/archon-context-retrieval   ✦ Assemble retrieval context within a token budget
 /archon-technical-writing   ✦ Operator docs, release notes, onboarding
 /archon-memory              ✦ Promote live state to durable memory
 /archon-product-framing     ✦ Product framing and acceptance clarity
 /archon-product-analysis    ✦ Metrics framing and product-signal analysis
 /archon-ux-research         ✦ User-flow investigation and experience quality
 /archon-compliance-review   ✦ Compliance-sensitive review of policy and controls
+/archon-frontend            ✦ Hub for all frontend work on Archon UIs
 /archon-design-system       ✦ Design system discipline and visual consistency
+/archon-visual-standards    ✦ Canonical color, type, motion, and surface tokens
+/archon-ui-patterns         ✦ Concrete dashboard and workflow UI component patterns
 /archon-frontend-taste      ✦ Frontend quality and UI taste direction
 /archon-agent-runtime       ✦ Hook, MCP, and tool-contract changes
 /archon-eval-engineering    ✦ Benchmark datasets, graders, eval rigor
 /archon-skill-evals         ✦ Skill regression and quality scoring
+/archon-skill-evolution     ✦ Create, update, and manage repo-local skills
 ```
 
 Skills live in `.claude/skills/`. Each `SKILL.md` declares its trigger, output contract, and allowed write scope.
@@ -247,7 +256,7 @@ Copy `.env.example` to `.env` and configure:
 
 ```bash
 # PostgreSQL — workflow state, task queue, run history
-ARCHON_CORE_DATABASE_URL=postgresql://archon:password@127.0.0.1:5432/archon
+ARCHON_CORE_DATABASE_URL=postgresql://archon:archon-local-password@127.0.0.1:5432/archon
 ARCHON_POSTGRES_PORT=5432
 
 # Runtime mode
@@ -266,7 +275,6 @@ npm run doctor          # Full configuration verification
 npm run migrate         # Run DB migrations
 npm run archon          # Admin CLI
 npm run mcp             # Start MCP server
-npm run ui              # Start admin UI
 npm run check:workflow  # Verify workflow contract
 npm run check:quality   # TypeScript + tests
 ```
@@ -281,8 +289,8 @@ npm run check:quality   # TypeScript + tests
 | [`.archon/rules/`](./.archon/rules/) | Detailed policy: review gates, write scope, reasoning quality |
 | [`docs/archon-agent-team.md`](./docs/archon-agent-team.md) | Full agent team reference matrix |
 | [`docs/global-setup.md`](./docs/global-setup.md) | Installing archon into a consuming project |
-| [`.claude/agents/`](./.claude/agents/) | 28 specialist role definitions |
-| [`.claude/skills/`](./.claude/skills/) | 42 workflow skill definitions |
+| [`.claude/agents/`](./.claude/agents/) | 31 specialist role definitions |
+| [`.claude/skills/`](./.claude/skills/) | 46 workflow skill definitions |
 
 ---
 
