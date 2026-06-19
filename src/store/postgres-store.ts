@@ -930,7 +930,7 @@ export class PostgresStore implements ArchonStore {
          id, workspace_id, project_id, run_id, task_id, reviewer_role, actor, actor_role,
          state, severity, findings, waiver_reason, evidence_refs, source
        )
-       values ($1, $2, $3, $4, $5, $6, 'review-orchestrator', 'reviewer',
+       values ($1, $2, $3, $4, $5, $6, 'review-orchestrator', $9,
                $7, 'low', $8, null, '{}', 'orchestrator')`,
       [
         id,
@@ -940,7 +940,8 @@ export class PostgresStore implements ArchonStore {
         input.taskId,
         input.role,
         state,
-        [input.findings]
+        input.findings.trim() ? [input.findings] : [],
+        input.role
       ]
     );
   }

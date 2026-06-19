@@ -61,6 +61,8 @@ import {
   type ReviewIdentityStatusObservation
 } from "./admin/status.ts";
 import { AgentRuntimeStore } from "./store/agent-runtime-store.ts";
+import { collectAgenticMetrics, formatPrometheus } from "./runtime/agentic-metrics.ts";
+import { resolveArchonContextPolicy } from "./runtime/context-budget.ts";
 import { parseExportDocsRequest } from "./docs-export/parser.ts";
 import { resolveObsidianConfig, validateObsidianConfig } from "./docs-export/obsidian-config.ts";
 import { exportTaskToObsidian } from "./export/obsidian-exporter.ts";
@@ -412,6 +414,27 @@ async function main() {
       const store = new AgentRuntimeStore(client as ConstructorParameters<typeof AgentRuntimeStore>[0]);
       const records = await store.listDebateSessionsForRun(runId, taskId);
       process.stdout.write(JSON.stringify(records, null, 2) + "\n");
+    });
+    return;
+  }
+
+  if (command === "metrics") {
+    const runId = args[0];
+    if (!runId) {
+      throw new Error("metrics requires <run-id> [--format json|prometheus]");
+    }
+    const formatIndex = args.indexOf("--format");
+    const format = formatIndex >= 0 ? args[formatIndex + 1] : "json";
+    await withClient(async (client) => {
+      const store = new AgentRuntimeStore(client as ConstructorParameters<typeof AgentRuntimeStore>[0]);
+      const metrics = await collectAgenticMetrics(store, runId, {
+        handoffPct: resolveArchonContextPolicy().handoffPct
+      });
+      if (format === "prometheus") {
+        process.stdout.write(formatPrometheus(metrics));
+      } else {
+        process.stdout.write(JSON.stringify(metrics, null, 2) + "\n");
+      }
     });
     return;
   }

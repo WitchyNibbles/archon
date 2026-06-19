@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1069,6 +1069,66 @@ export function persistVerificationCert(repoRootPath, taskId, command) {
     passedAt: new Date().toISOString()
   });
   writeFileSync(certPath, `${JSON.stringify(existing, null, 2)}\n`, "utf8");
+}
+
+// Touched-path evidence ledger (R3/R4) — records files an active task actually
+// modified, providing path-touch metadata for handoff packets and review
+// evidence (§14.1 PostToolUse). Append-only JSONL, deduplicated per path.
+function touchedPathsLedgerPath(repoRootPath) {
+  return path.join(repoRootPath, ".archon", "work", "touched-paths.jsonl");
+}
+
+export function persistTouchedPath(repoRootPath, taskId, filePath) {
+  if (typeof filePath !== "string" || filePath.trim().length === 0) {
+    return;
+  }
+  const relative = toRelativePath(filePath, repoRootPath);
+  const ledgerPath = touchedPathsLedgerPath(repoRootPath);
+  mkdirSync(path.dirname(ledgerPath), { recursive: true });
+  // Skip if this (task, path) pair was already the most recent record for the
+  // path — avoids unbounded duplicate lines on repeated edits to one file.
+  try {
+    const existing = readFileSync(ledgerPath, "utf8").trim().split("\n");
+    for (let i = existing.length - 1; i >= 0; i -= 1) {
+      if (!existing[i]) continue;
+      try {
+        const parsed = JSON.parse(existing[i]);
+        if (parsed && parsed.path === relative && parsed.taskId === taskId) {
+          return;
+        }
+      } catch {
+        // ignore malformed line
+      }
+    }
+  } catch {
+    // no ledger yet
+  }
+  appendFileSync(
+    ledgerPath,
+    `${JSON.stringify({ taskId: taskId ?? null, path: relative, touchedAt: new Date().toISOString() })}\n`,
+    "utf8"
+  );
+}
+
+export function readTouchedPaths(repoRootPath, taskId) {
+  try {
+    const lines = readFileSync(touchedPathsLedgerPath(repoRootPath), "utf8").trim().split("\n");
+    const paths = [];
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed.path === "string" && (taskId === undefined || parsed.taskId === taskId)) {
+          paths.push(parsed.path);
+        }
+      } catch {
+        // ignore malformed line
+      }
+    }
+    return [...new Set(paths)];
+  } catch {
+    return [];
+  }
 }
 
 export function readVerificationCert(repoRootPath, taskId) {
