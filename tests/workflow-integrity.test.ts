@@ -1156,3 +1156,70 @@ test("workflow integrity: §18.3 — proof fails when a reviewer invocation is a
     }
   );
 });
+
+test("workflow integrity: §18.3 — the SEED proof path also enforces review independence", async () => {
+  // Guards the H4 remediation: the seed executor must forward
+  // getReviewIndependenceCheck into its inner workflow-proof call. If a future
+  // refactor drops the forwarding, this test fails.
+  const { store, seededService } = buildSeedHarness();
+  await store.ensureProjectContext({ workspaceSlug: "team", projectSlug: "archon" });
+
+  await assert.rejects(
+    () =>
+      executeSeedWorkflowProofCommandFromArgs(
+        ["--workspace-slug", "team", "--project-slug", "archon", "--task-id", "task-ind-seed"],
+        {
+          env: process.env,
+          intakeRequest(input) {
+            return seededService.intakeRequest(input);
+          },
+          getProjectContext(params) {
+            return store.getProjectContext(params);
+          },
+          getProjectRuntimeState(projectId) {
+            return store.getProjectRuntimeState(projectId);
+          },
+          saveProjectRuntimeState(state) {
+            return store.saveProjectRuntimeState(state);
+          },
+          createTaskGraph(runId, tasks) {
+            return seededService.createTaskGraph(runId, tasks);
+          },
+          claimTask(runId, tid, actor) {
+            return seededService.claimTask(runId, tid, actor);
+          },
+          submitHandoff(runId, tid, handoff) {
+            return seededService.submitHandoff(runId, tid, handoff);
+          },
+          recordReview(runId, tid, actor, review) {
+            return seededService.recordReview(runId, tid, actor, review);
+          },
+          failTask(runId, tid, reason) {
+            return seededService.failTask(runId, tid, reason);
+          },
+          getStatusSnapshot(runId) {
+            return seededService.getStatus(runId);
+          },
+          getReviews(runId, tid) {
+            return store.getReviews(runId, tid);
+          },
+          getApprovals(runId, tid) {
+            return store.getApprovals(runId, tid);
+          },
+          // Implementer role overlaps the reviewer gate → must block through the seed path.
+          getReviewIndependenceCheck(_taskId) {
+            return Promise.resolve({
+              hasInvocations: true,
+              implementerRoles: ["reviewer"],
+              subagentReviewerRoles: []
+            });
+          }
+        }
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "expected an Error");
+      assert.match(err.message, /18\.3|independen/i);
+      return true;
+    }
+  );
+});
