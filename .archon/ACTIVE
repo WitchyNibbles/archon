@@ -1,3 +1,2 @@
 workflow=archon
-task_id=agentic-loop-gaps
-state=completed
+state=complete
