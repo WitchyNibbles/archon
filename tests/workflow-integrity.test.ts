@@ -971,3 +971,188 @@ test("workflow integrity: AC11 — proof passes when threshold NOT crossed (no h
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// SDD §18.3: review independence — implementer ≠ reviewer; subagent cannot
+// approve its parent. Enforced in workflow-proof via getReviewIndependenceCheck.
+// ---------------------------------------------------------------------------
+
+test("workflow integrity: §18.3 — proof passes when the independence check is not provided (opt-in gate)", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ind-no-hook");
+
+  await executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ind-no-hook"], {
+    env: process.env,
+    integrityCheckMode: "allow_seed_failure_recovery",
+    getStatusSnapshot(id) {
+      return seededService.getStatus(id);
+    },
+    getReviews(id, tid) {
+      return store.getReviews(id, tid);
+    },
+    getApprovals(id, tid) {
+      return store.getApprovals(id, tid);
+    }
+    // getReviewIndependenceCheck deliberately omitted
+  });
+});
+
+test("workflow integrity: §18.3 — proof passes when no managed invocations exist (hasInvocations=false)", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ind-no-invocations");
+
+  await executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ind-no-invocations"], {
+    env: process.env,
+    integrityCheckMode: "allow_seed_failure_recovery",
+    getStatusSnapshot(id) {
+      return seededService.getStatus(id);
+    },
+    getReviews(id, tid) {
+      return store.getReviews(id, tid);
+    },
+    getApprovals(id, tid) {
+      return store.getApprovals(id, tid);
+    },
+    getReviewIndependenceCheck(_taskId) {
+      return Promise.resolve({
+        hasInvocations: false,
+        implementerRoles: [],
+        subagentReviewerRoles: []
+      });
+    }
+  });
+});
+
+test("workflow integrity: §18.3 — proof passes when implementer role does not overlap any review gate", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ind-independent");
+
+  await executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ind-independent"], {
+    env: process.env,
+    integrityCheckMode: "allow_seed_failure_recovery",
+    getStatusSnapshot(id) {
+      return seededService.getStatus(id);
+    },
+    getReviews(id, tid) {
+      return store.getReviews(id, tid);
+    },
+    getApprovals(id, tid) {
+      return store.getApprovals(id, tid);
+    },
+    getReviewIndependenceCheck(_taskId) {
+      return Promise.resolve({
+        hasInvocations: true,
+        implementerRoles: ["backend_engineer"],
+        subagentReviewerRoles: []
+      });
+    }
+  });
+});
+
+test("workflow integrity: §18.3 — proof fails when an implementing role also satisfied a required review gate", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ind-role-overlap");
+
+  await assert.rejects(
+    () =>
+      executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ind-role-overlap"], {
+        env: process.env,
+        integrityCheckMode: "allow_seed_failure_recovery",
+        getStatusSnapshot(id) {
+          return seededService.getStatus(id);
+        },
+        getReviews(id, tid) {
+          return store.getReviews(id, tid);
+        },
+        getApprovals(id, tid) {
+          return store.getApprovals(id, tid);
+        },
+        getReviewIndependenceCheck(_taskId) {
+          // The seeded task requires reviewer/security_reviewer/qa_engineer gates;
+          // here the implementing specialist owner WAS the reviewer → not independent.
+          return Promise.resolve({
+            hasInvocations: true,
+            implementerRoles: ["reviewer"],
+            subagentReviewerRoles: []
+          });
+        }
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "expected an Error");
+      assert.match(err.message, /18\.3|independen/i);
+      assert.match(err.message, /reviewer/);
+      return true;
+    }
+  );
+});
+
+test("workflow integrity: §18.3 — proof fails and names the specific overlapping role among several implementers", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ind-multi-role");
+
+  await assert.rejects(
+    () =>
+      executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ind-multi-role"], {
+        env: process.env,
+        integrityCheckMode: "allow_seed_failure_recovery",
+        getStatusSnapshot(id) {
+          return seededService.getStatus(id);
+        },
+        getReviews(id, tid) {
+          return store.getReviews(id, tid);
+        },
+        getApprovals(id, tid) {
+          return store.getApprovals(id, tid);
+        },
+        getReviewIndependenceCheck(_taskId) {
+          // Two implementing roles; only qa_engineer overlaps a required gate.
+          return Promise.resolve({
+            hasInvocations: true,
+            implementerRoles: ["backend_engineer", "qa_engineer"],
+            subagentReviewerRoles: []
+          });
+        }
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "expected an Error");
+      assert.match(err.message, /qa_engineer/);
+      assert.doesNotMatch(err.message, /backend_engineer/);
+      return true;
+    }
+  );
+});
+
+test("workflow integrity: §18.3 — proof fails when a reviewer invocation is a subagent of the implementer", async () => {
+  const { store, seededService } = buildSeedHarness();
+  const { runId } = await runSuccessfulSeed(store, seededService, "task-ind-subagent");
+
+  await assert.rejects(
+    () =>
+      executeWorkflowProofCommandFromArgs(["--run-id", runId, "--task-id", "task-ind-subagent"], {
+        env: process.env,
+        integrityCheckMode: "allow_seed_failure_recovery",
+        getStatusSnapshot(id) {
+          return seededService.getStatus(id);
+        },
+        getReviews(id, tid) {
+          return store.getReviews(id, tid);
+        },
+        getApprovals(id, tid) {
+          return store.getApprovals(id, tid);
+        },
+        getReviewIndependenceCheck(_taskId) {
+          // reviewer invocation descends from the implementing invocation → subagent approving parent
+          return Promise.resolve({
+            hasInvocations: true,
+            implementerRoles: ["backend_engineer"],
+            subagentReviewerRoles: ["reviewer"]
+          });
+        }
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "expected an Error");
+      assert.match(err.message, /18\.3|independen|subagent/i);
+      return true;
+    }
+  );
+});
