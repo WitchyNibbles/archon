@@ -265,6 +265,73 @@ What could break if the next invocation proceeds blindly?
   }
 
   // -------------------------------------------------------------------------
+  // recoverCrashedInvocation — synthesize a crash_recovery handoff
+  // -------------------------------------------------------------------------
+
+  /**
+   * Synthesize and commit a `crash_recovery` handoff for an invocation that
+   * crossed the context threshold but ended without committing a handoff (TDD
+   * §20). The committed packet lets a continuation resume from runtime state
+   * instead of stranding the task in a half-running invocation.
+   *
+   * I/O contract:
+   *   Input:  invocation identity + optional evidence refs
+   *   Output: CommitResult { record, newStatus: "handoff_written" }
+   *   Side effects: prepare() + commit() side effects (status transitions + INSERT)
+   */
+  async recoverCrashedInvocation(input: {
+    invocationId: string;
+    runId: string;
+    taskId: string;
+    role: string;
+    contextUsedPct?: number | undefined;
+    evidenceRefs?: readonly string[] | undefined;
+  }): Promise<CommitResult> {
+    const prepared = await this.prepare({
+      invocationId: input.invocationId,
+      runId: input.runId,
+      taskId: input.taskId,
+      fromRole: input.role,
+      toRole: input.role,
+      reason: "crash_recovery",
+      contextUsedPct: input.contextUsedPct
+    });
+
+    const evidenceRefs =
+      input.evidenceRefs && input.evidenceRefs.length > 0
+        ? [...input.evidenceRefs]
+        : [`runtime://invocation/${input.invocationId}`];
+
+    const packet: Record<string, unknown> = {
+      schemaVersion: 1,
+      handoffId: prepared.template.handoffId,
+      runId: input.runId,
+      taskId: input.taskId,
+      fromInvocationId: input.invocationId,
+      fromRole: input.role,
+      toRole: input.role,
+      reason: "crash_recovery",
+      ...(input.contextUsedPct !== undefined ? { contextUsedPct: input.contextUsedPct } : {}),
+      status: "needs_followup",
+      summary:
+        "Crash recovery: the prior invocation crossed the context threshold but ended " +
+        "without committing a handoff. Resume from the latest runtime state.",
+      scope: { allowedWriteScope: [], touchedPaths: [] },
+      decisions: [],
+      openQuestions: ["What did the crashed invocation complete before terminating?"],
+      evidenceRefs,
+      nextActions: [
+        "Re-read .archon/ACTIVE and the task packet.",
+        "Reconcile partial progress against runtime records before continuing."
+      ],
+      risks: [],
+      createdAt: prepared.template.createdAt
+    };
+
+    return this.commit({ invocationId: input.invocationId, rawPacket: packet });
+  }
+
+  // -------------------------------------------------------------------------
   // getLatestForTask — retrieve latest unconsumed handoff for a task
   // -------------------------------------------------------------------------
 
