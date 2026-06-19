@@ -482,6 +482,17 @@ export interface ExecuteWorkflowProofCommandOptions {
     hasContextThreshold: boolean;
     hasHandoff: boolean;
   }>) | undefined;
+  /**
+   * SDD §18.3 review independence. Returns the task's implementing-role surface so
+   * workflow-proof can reject a task whose implementing role also satisfied a
+   * required review gate, or whose reviewer ran as a subagent of the implementer.
+   * Optional — only fires when provided.
+   */
+  getReviewIndependenceCheck?: ((taskId: string) => Promise<{
+    hasInvocations: boolean;
+    implementerRoles: string[];
+    subagentReviewerRoles: string[];
+  }>) | undefined;
 }
 
 
@@ -997,6 +1008,37 @@ export async function executeWorkflowProofCommandFromArgs(
     }
   }
 
+  // SDD §18.3: review independence — a role that implemented the task cannot
+  // satisfy its own required review gate, and a subagent cannot approve its
+  // parent's work. Only fires for managed runs (specialist_owner invocations
+  // recorded for the task); otherwise it is a no-op.
+  if (options.getReviewIndependenceCheck) {
+    const independence = await options.getReviewIndependenceCheck(taskId);
+    if (independence.hasInvocations) {
+      const implementerRoleSet = new Set(independence.implementerRoles);
+      const roleOverlap = latestReviews.filter((review) =>
+        implementerRoleSet.has(review.reviewerRole)
+      );
+      if (roleOverlap.length > 0) {
+        const detail = Array.from(new Set(roleOverlap.map((review) => review.reviewerRole))).join(", ");
+        throw new Error(
+          `Task ${taskId} workflow-proof blocked (SDD §18.3 review independence): ` +
+          `the implementing role(s) also satisfied required review gate(s): ${detail}. ` +
+          `A role that implemented a task cannot satisfy its own review gate.`
+        );
+      }
+
+      if (independence.subagentReviewerRoles.length > 0) {
+        const detail = Array.from(new Set(independence.subagentReviewerRoles)).join(", ");
+        throw new Error(
+          `Task ${taskId} workflow-proof blocked (SDD §18.3 review independence): ` +
+          `a reviewer invocation [${detail}] descends from the implementing invocation. ` +
+          `Subagents cannot approve their parent's work.`
+        );
+      }
+    }
+  }
+
   const continuation = await maybeContinueWorkflowAfterProof(
     {
       runId,
@@ -1153,7 +1195,12 @@ export async function executeSeedWorkflowProofCommandFromArgs(
         getProjectRuntimeState: options.getProjectRuntimeState,
         getStatusSnapshot: options.getStatusSnapshot,
         getReviews: options.getReviews,
-        getApprovals: options.getApprovals
+        getApprovals: options.getApprovals,
+        // Thread the runtime gate checks through the seed path so it cannot be
+        // used to bypass the AC11 handoff gate or the §18.3 independence gate.
+        // For a freshly seeded run with no managed invocations these are no-ops.
+        getAgentHandoffCheck: options.getAgentHandoffCheck,
+        getReviewIndependenceCheck: options.getReviewIndependenceCheck
       }
     );
 
@@ -1241,6 +1288,9 @@ export async function workflowProofCommand(args: readonly string[]) {
       },
       getAgentHandoffCheck(taskId) {
         return agentStore.checkHandoffPresenceForTask(taskId);
+      },
+      getReviewIndependenceCheck(taskId) {
+        return agentStore.checkReviewIndependenceForTask(taskId);
       }
     });
 
@@ -1281,6 +1331,7 @@ export function createWorkflowProofSeedResolver(): ResolveReviewActionContext {
 export async function seedWorkflowProofCommand(args: readonly string[]) {
   await withClient(async (client) => {
     const store = new PostgresStore(client);
+    const agentStore = new AgentRuntimeStore(client);
     const service = new ArchonCoreService(store, {
       resolveReviewActionContext: createWorkflowProofSeedResolver(),
       reviewSource: "seed"
@@ -1323,6 +1374,12 @@ export async function seedWorkflowProofCommand(args: readonly string[]) {
       },
       getApprovals(runId, taskId) {
         return store.getApprovals(runId, taskId);
+      },
+      getAgentHandoffCheck(taskId) {
+        return agentStore.checkHandoffPresenceForTask(taskId);
+      },
+      getReviewIndependenceCheck(taskId) {
+        return agentStore.checkReviewIndependenceForTask(taskId);
       }
     });
 
