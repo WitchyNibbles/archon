@@ -235,6 +235,50 @@ test("SubtaskScheduler: requestSubtask rejects when parent status is 'completed'
 });
 
 // ---------------------------------------------------------------------------
+// Test 0e: requestSubtask — parent crossed context threshold (SDD §20.2 / TDD §8.2)
+// ---------------------------------------------------------------------------
+
+test("SubtaskScheduler: requestSubtask rejects when parent has crossed the context handoff threshold", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  invStore.register("inv_threshold", makeParentRef({ contextThresholdCrossed: true }));
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+  const outcome = await scheduler.requestSubtask("inv_threshold", defaultSpec());
+
+  assert.ok(!outcome.ok, "Expected ok=false when parent crossed the context threshold");
+  assert.ok(
+    !outcome.ok && /threshold|handoff/i.test(outcome.reason),
+    `Expected reason to mention 'threshold' or 'handoff', got: ${!outcome.ok ? outcome.reason : ""}`
+  );
+  // No subtask should have been created.
+  assert.equal((await subtaskStore.listSubtasksForTask("task_001")).length, 0);
+});
+
+test("SubtaskScheduler: requestSubtask allows spawn when contextThresholdCrossed is false", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  invStore.register("inv_below", makeParentRef({ contextThresholdCrossed: false }));
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+  const outcome = await scheduler.requestSubtask("inv_below", defaultSpec());
+
+  assert.ok(outcome.ok, `Expected ok=true below threshold, got: ${!outcome.ok ? outcome.reason : ""}`);
+});
+
+test("SubtaskScheduler: requestSubtask allows spawn when contextThresholdCrossed is omitted (undefined)", async () => {
+  const subtaskStore = new MockSubtaskStore();
+  const invStore = new MockInvocationStore();
+  // makeParentRef without the field → contextThresholdCrossed is undefined.
+  invStore.register("inv_undef", makeParentRef());
+
+  const scheduler = new SubtaskScheduler(subtaskStore, invStore);
+  const outcome = await scheduler.requestSubtask("inv_undef", defaultSpec());
+
+  assert.ok(outcome.ok, `Expected ok=true when field omitted, got: ${!outcome.ok ? outcome.reason : ""}`);
+});
+
+// ---------------------------------------------------------------------------
 // Test 1: Valid spawn
 // ---------------------------------------------------------------------------
 

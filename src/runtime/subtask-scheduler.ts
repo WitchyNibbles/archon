@@ -107,6 +107,12 @@ export interface ParentInvocationRef {
   depth: number;
   /** Spawn policy governing what this invocation can spawn. */
   spawnPolicy: AgentSpawnPolicy;
+  /**
+   * True if this invocation has already crossed the context handoff threshold.
+   * SDD §20.2 / TDD §8.2: a parent that crossed the threshold must commit a
+   * handoff, not fan out into new subagents. Defaults to false when omitted.
+   */
+  contextThresholdCrossed?: boolean;
 }
 
 export interface ParentInvocationStoreLike {
@@ -158,6 +164,20 @@ export class SubtaskScheduler {
       return {
         ok: false,
         reason: `Parent invocation '${parentInvocationId}' is not running (status: ${parent.status}).`
+      };
+    }
+
+    // Gate 1b (SDD §20.2 / TDD §8.2): once the parent crosses the context
+    // handoff threshold it must commit a handoff, not spawn more subagents.
+    // The PreToolUse hook also blocks the Agent/Task tool after the threshold;
+    // this is the runtime-level invariant so the scheduler fails closed even
+    // when invoked outside the hook path.
+    if (parent.contextThresholdCrossed === true) {
+      return {
+        ok: false,
+        reason:
+          `Parent invocation '${parentInvocationId}' has crossed the context handoff threshold; ` +
+          `commit a handoff packet before spawning subagents.`
       };
     }
 

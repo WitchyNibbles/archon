@@ -560,6 +560,93 @@ export class AgentRuntimeStore {
     return result.rows.length > 0;
   }
 
+  /**
+   * SDD §20.2 / TDD §8.2: true if the given invocation has recorded any context
+   * sample at or beyond the handoff threshold. Used by the subtask scheduler to
+   * deny spawning once a parent has crossed the threshold.
+   */
+  async hasInvocationCrossedThreshold(invocationId: string, thresholdPct = 70): Promise<boolean> {
+    const result = await this.client.query(
+      `select 1 from agent_context_samples
+       where invocation_id = $1 and used_percentage >= $2
+       limit 1`,
+      [invocationId, thresholdPct]
+    );
+    return result.rows.length > 0;
+  }
+
+  /**
+   * SDD §18.3 review independence.
+   *
+   * Returns the implementing-role surface for a task so workflow-proof can verify
+   * that no role which implemented the task also satisfied a required review gate,
+   * and that no reviewer invocation descends from the implementing invocation.
+   *
+   *   hasInvocations         — true if any implementing invocations exist for the task
+   *   implementerRoles       — distinct roles of implementing invocations
+   *   subagentReviewerRoles  — roles of reviewer/debate invocations whose parent chain
+   *                            reaches an implementing invocation (subagent-approves-parent)
+   *
+   * "Implementer" = agent_kind in (specialist_owner, subagent): both can write code.
+   * root_manager / review_orchestrator legitimately spawn reviewers, so they are NOT
+   * implementers and their reviewer children are not flagged as self-review.
+   *
+   * The reviewer→implementer relationship is resolved transitively over
+   * parent_invocation_id so a multi-hop chain (reviewer → intermediary → implementer)
+   * cannot evade the check.
+   */
+  async checkReviewIndependenceForTask(taskId: string): Promise<{
+    hasInvocations: boolean;
+    implementerRoles: string[];
+    subagentReviewerRoles: string[];
+  }> {
+    const result = await this.client.query(
+      `select id, role, agent_kind, parent_invocation_id from agent_invocations
+       where task_id = $1`,
+      [taskId]
+    );
+    const rows = result.rows as {
+      id: string;
+      role: string;
+      agent_kind: string;
+      parent_invocation_id: string | null;
+    }[];
+
+    const implementerKinds = new Set(["specialist_owner", "subagent"]);
+    const implementers = rows.filter((row) => implementerKinds.has(row.agent_kind));
+    if (implementers.length === 0) {
+      return { hasInvocations: false, implementerRoles: [], subagentReviewerRoles: [] };
+    }
+
+    const implementerRoles = Array.from(new Set(implementers.map((row) => row.role)));
+    const implementerIds = new Set(implementers.map((row) => row.id));
+    const parentOf = new Map(rows.map((row) => [row.id, row.parent_invocation_id]));
+
+    const reviewerKinds = new Set(["reviewer", "debate_participant"]);
+    const reviewers = rows.filter((row) => reviewerKinds.has(row.agent_kind));
+
+    const subagentReviewerRoles: string[] = [];
+    for (const reviewer of reviewers) {
+      // Walk the parent chain; flag if any ancestor is an implementing invocation.
+      let cursor: string | null | undefined = reviewer.parent_invocation_id;
+      const seen = new Set<string>();
+      while (cursor !== undefined && cursor !== null && !seen.has(cursor)) {
+        if (implementerIds.has(cursor)) {
+          subagentReviewerRoles.push(reviewer.role);
+          break;
+        }
+        seen.add(cursor);
+        cursor = parentOf.get(cursor);
+      }
+    }
+
+    return {
+      hasInvocations: true,
+      implementerRoles,
+      subagentReviewerRoles: Array.from(new Set(subagentReviewerRoles))
+    };
+  }
+
   async listSubtasksForTask(taskId: string): Promise<Subtask[]> {
     const result = await this.client.query(
       `select id, run_id, task_id, parent_invocation_id, child_invocation_id,
