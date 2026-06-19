@@ -5,7 +5,7 @@ This guide covers installing archon into a consuming repository. The archon repo
 ## Prerequisites
 
 - Node.js ≥ 22
-- Docker (for PostgreSQL + Qdrant)
+- Docker (for PostgreSQL)
 - Claude Code CLI
 
 ## 1. Clone and build archon
@@ -26,8 +26,7 @@ cp .env.example .env
 Key variables:
 
 ```bash
-ARCHON_CORE_DATABASE_URL=postgresql://archon:password@127.0.0.1:5432/archon
-ARCHON_QDRANT_URL=http://127.0.0.1:6333
+ARCHON_CORE_DATABASE_URL=postgresql://archon:archon-local-password@127.0.0.1:5432/archon
 ARCHON_RUNTIME_MODE=auto
 ARCHON_RUNTIME_PROFILE=local-docker
 ```
@@ -35,7 +34,7 @@ ARCHON_RUNTIME_PROFILE=local-docker
 ## 3. Start backing stores
 
 ```bash
-npm run setup:local   # Spins up PostgreSQL + Qdrant via Docker
+npm run setup:local   # Spins up PostgreSQL via Docker
 npm run migrate       # Runs database migrations
 npm run doctor        # Verifies the full configuration
 ```
