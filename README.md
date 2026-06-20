@@ -252,7 +252,7 @@ Every council review must name a **dissent owner** responsible for arguing at le
 
 ## 🌿 Environment Variables
 
-Copy `.env.example` to `.env` and configure:
+Copy `.env.example` and configure it. The runtime loader checks **`.env.archon` first, then `.env`** — in this repo use `.env`; in a consuming project (archon installed as a dependency) use `.env.archon` at the project root. Variables must reach the runtime/daemon process environment, so restart a long-running daemon/MCP after changing them.
 
 ```bash
 # PostgreSQL — workflow state, task queue, run history
@@ -262,7 +262,13 @@ ARCHON_POSTGRES_PORT=5432
 # Runtime mode
 ARCHON_RUNTIME_MODE=auto
 ARCHON_RUNTIME_PROFILE=local-docker
+
+# Optional: let genuinely trivial, scope-safe opt-out tasks close on a single
+# reviewer instead of the full trio (default OFF). Per-deployment opt-in.
+# ARCHON_REVIEW_FLOOR_REDUCTION=1
 ```
+
+See [`.env.example`](./.env.example) for the full set (review identity, context-handoff thresholds, subagent/debate gates, MCP/UI ports, Grafana).
 
 ---
 
