@@ -4,6 +4,7 @@ import path from "node:path";
 import type { TaskQueue } from "../archon/task-queue.ts";
 import type { RunRecord, TaskRecord, TaskPacketInput } from "../domain/types.ts";
 import type { ArchonStore } from "../store/types.ts";
+import { effectiveRequiredReviews } from "../domain/contracts.ts";
 
 // Findings 1+4 fix: a sanctioned cold-start command to register a brand-new
 // initiative (run + first task + active state) through the runtime, replacing the
@@ -303,6 +304,8 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
 
 export function renderTaskPacketMarkdown(packet: TaskPacketInput, taskClass: TaskClass = "prototype_slice"): string {
   const scope = packet.allowedWriteScope.map((entry) => `- ${entry}`).join("\n");
+  const effectiveReviews = effectiveRequiredReviews(packet.requiredReviews);
+  const reviewsSection = effectiveReviews.map((role) => `- ${role}`).join("\n");
   return `# Task Packet — ${packet.taskId}
 
 ## Task ID
@@ -339,7 +342,7 @@ false
 
 ## Required reviews
 
-- none
+${reviewsSection}
 `;
 }
 
