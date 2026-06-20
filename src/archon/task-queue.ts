@@ -1,20 +1,14 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { VALID_TASK_CLASSES, normalizeTaskClass, type TaskClass } from "../domain/task-class.ts";
 
 export const ALLOWED_TASK_STATUSES = ["pending", "in_progress", "blocked", "done"] as const;
-export const ALLOWED_TASK_CLASSES = [
-  "prototype_slice",
-  "security_sensitive",
-  "release_candidate",
-  "docs_only"
-] as const;
-
-const LEGACY_TASK_CLASS_ALIASES = {
-  implementation_slice: "prototype_slice"
-} as const;
+// Re-export the canonical task-class union so existing importers (service.ts,
+// tests) keep working while the single source of truth lives in domain/task-class.ts.
+export const ALLOWED_TASK_CLASSES = VALID_TASK_CLASSES;
 
 export type TaskStatus = (typeof ALLOWED_TASK_STATUSES)[number];
-export type TaskClass = (typeof ALLOWED_TASK_CLASSES)[number];
+export type { TaskClass };
 
 export interface TaskQueueTask {
   id: string;
@@ -141,11 +135,7 @@ function asTaskClass(value: unknown, context: string): TaskClass {
 }
 
 export function canonicalizeTaskClass(taskClass: string): TaskClass | undefined {
-  if (ALLOWED_TASK_CLASSES.includes(taskClass as TaskClass)) {
-    return taskClass as TaskClass;
-  }
-
-  return LEGACY_TASK_CLASS_ALIASES[taskClass as keyof typeof LEGACY_TASK_CLASS_ALIASES];
+  return normalizeTaskClass(taskClass);
 }
 
 function parseTask(value: unknown, index: number): TaskQueueTask {
