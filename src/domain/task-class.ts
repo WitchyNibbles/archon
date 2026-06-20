@@ -73,8 +73,13 @@ export function isOptOutClass(cls: TaskClass): cls is OptOutClass {
     case "release_candidate":
       return false;
     default: {
+      // Compile-time exhaustiveness: adding a TaskClass without a case above is a
+      // type error here. At RUNTIME we must return false (deny-by-default), never
+      // the value — an out-of-enum/tainted input (e.g. "docs_only\x00") would
+      // otherwise be returned as a truthy string and be treated as opt-out.
       const exhaustive: never = cls;
-      return exhaustive;
+      void exhaustive;
+      return false;
     }
   }
 }

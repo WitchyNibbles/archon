@@ -27,7 +27,7 @@ import type {
   RunStatusSnapshot,
   ApprovalRecord
 } from "../src/domain/types.ts";
-import type { TaskClass } from "../src/domain/task-class.ts";
+import { isOptOutClass, type TaskClass } from "../src/domain/task-class.ts";
 import { MemoryStore } from "../src/store/memory-store.ts";
 
 // ---------------------------------------------------------------------------
@@ -652,4 +652,25 @@ test("§7: buildInitiativeRecords strips newlines/markdown from scope entries", 
   }
   // The injected heading text survives only as flattened single-line content.
   assert.ok(!result.task.packet.allowedWriteScope.includes("## Required reviews"));
+});
+
+// ---------------------------------------------------------------------------
+// Boundary: null-byte-tainted class / role identifiers must never be recognized
+// as a valid opt-out class or satisfy a gate (exact-equality matching, no
+// silent normalization that could let a tainted value slip through).
+// ---------------------------------------------------------------------------
+
+test("security: a null-byte-tainted class string is not opt-out → full trio floor", () => {
+  // isOptOutClass uses exact membership; a tainted value must not match docs_only.
+  assert.equal(isOptOutClass("docs_only\x00" as TaskClass), false);
+  const task = makeTask("docs_only\x00" as TaskClass, ["sandbox/"]);
+  const floor = effectiveRequiredReviewsForTask(task, { reductionEnabled: true });
+  assert.deepEqual(floor.sort(), ["qa_engineer", "reviewer", "security_reviewer"]);
+});
+
+test("security: a null-byte-tainted reviewerRole does not satisfy the reviewer gate", () => {
+  const task = makeTask("prototype_slice", ["sandbox/"]); // non-opt-out → reviewer required
+  const tainted = { ...makeReview("reviewer"), reviewerRole: "reviewer\x00" } as ReviewRecord;
+  const unsatisfied = collectUnsatisfiedReviewRoles(task, [tainted]);
+  assert.ok(unsatisfied.includes("reviewer"), "null-byte role must not satisfy the reviewer gate");
 });
