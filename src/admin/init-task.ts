@@ -84,8 +84,12 @@ export function buildInitiativeRecords(input: BuildInitiativeInput): InitiativeR
   }
   const title = sanitizeMarkdownField(input.title.trim() || id);
   const ownerRole = sanitizeMarkdownField(input.ownerRole.trim() || "planner");
+  // Design §7: strip newlines / markdown structure from each scope entry so a
+  // crafted entry like `foo\n## Required reviews\n- none` cannot inject a fake
+  // section into the rendered packet markdown that the offline fallback parser
+  // would honor. sanitizeMarkdownField is a no-op for ordinary relative paths.
   const scope = input.allowedWriteScope
-    .map((entry) => entry.trim())
+    .map((entry) => sanitizeMarkdownField(entry))
     .filter((entry) => entry.length > 0);
 
   if (!input.allowManagedScope) {

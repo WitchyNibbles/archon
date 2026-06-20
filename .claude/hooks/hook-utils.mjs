@@ -462,6 +462,7 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
     // caller falls back to markdown; an array (even empty) is authoritative.
     let allowedWriteScope;
     let councilOutcome;
+    let reviewFloorEffective;
     if (activeRunId && activeTaskId) {
       try {
         const taskRow = await client.query(
@@ -484,6 +485,35 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
       } catch {
         // leave fields undefined so the caller falls back to markdown
       }
+
+      // Option B (slice 5): the runtime is the authority for the effective review
+      // floor. A review_floor_reductions row means the orchestrator approved this
+      // task under a reduced floor (e.g. [reviewer]); the Stop hook must honor that
+      // instead of demanding the full trio from the markdown. NO row → undefined →
+      // the caller falls back to the full trio (the conservative offline-can't-reduce
+      // invariant: a reduction is only ever honored when a durable provenance row
+      // exists). effective_floor is orchestrator-written, like allowed_write_scope.
+      try {
+        const floorRow = await client.query(
+          `select effective_floor
+             from review_floor_reductions
+            where run_id = $1 and task_id = $2
+            order by decided_at desc
+            limit 1`,
+          [activeRunId, activeTaskId]
+        );
+        const fr = floorRow.rows[0];
+        if (fr && Array.isArray(fr.effective_floor)) {
+          const floor = fr.effective_floor
+            .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+            .map((entry) => entry.trim());
+          if (floor.length > 0) {
+            reviewFloorEffective = floor;
+          }
+        }
+      } catch {
+        // leave undefined so the caller falls back to the full trio
+      }
     }
 
     return {
@@ -492,6 +522,7 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
       queueCurrentTaskId,
       allowedWriteScope,
       councilOutcome,
+      reviewFloorEffective,
       runtimeConnected: true
     };
   } catch {
@@ -796,7 +827,15 @@ export async function readActiveTaskContext(options = {}) {
     context.queueCurrentTaskId
   );
 
-  const requiredRoles = parseRequiredReviews(taskMarkdown);
+  // Option B (slice 5): when the runtime is connected AND it recorded a review-floor
+  // reduction for this task, that effective_floor is authoritative (orchestrator-
+  // written) — honor it over the markdown trio. Offline, or with no provenance row,
+  // fall back to the markdown floor (which defaults to the full trio): a reduction is
+  // never honored without a durable runtime row (offline-can't-reduce invariant).
+  const requiredRoles =
+    context.runtimeConnected && Array.isArray(runtimeContext?.reviewFloorEffective)
+      ? runtimeContext.reviewFloorEffective
+      : parseRequiredReviews(taskMarkdown);
   context.requiredReviews = requiredRoles;
   context.missingReviews = [];
   context.invalidReviews = [];
@@ -1283,6 +1322,99 @@ export function parseVerificationRequired(markdown) {
 }
 
 export const verificationExemptTaskClasses = ["docs_only", "state_sync", "memory_curation", "scaffold_only"];
+
+// ---------------------------------------------------------------------------
+// Option B (slice 5): offline-capable port of the review-floor predicate.
+//
+// These mirror src/domain/task-class.ts (OPT_OUT_TASK_CLASSES, scopeIsReviewSafe,
+// REVIEW_FLOOR_DENY_PREFIXES). They exist so tests/review-floor-parity.test.ts can
+// assert the .mjs and .ts predicates agree on the full class×scope matrix — any
+// drift is a test failure. The Stop hook does NOT use these to perform an offline
+// reduction: a reduction is only ever honored when the runtime recorded a durable
+// review_floor_reductions row (offline-can't-reduce invariant). They are the
+// anti-drift mirror, not an offline reduction path.
+// ---------------------------------------------------------------------------
+
+export const OPT_OUT_TASK_CLASSES = ["docs_only", "state_sync", "memory_curation", "scaffold_only"];
+
+// Must equal the de-duplicated control-layer roots + DEFAULT_REPO_MARKDOWN_INCLUDE_PATHS
+// from src/domain/task-class.ts. The parity test asserts this equality.
+export const REVIEW_FLOOR_DENY_PREFIXES = [
+  ".archon/rules",
+  ".archon/memory",
+  ".archon/ACTIVE",
+  "CLAUDE.md",
+  "AGENTS.md",
+  ".claude",
+  ".codex",
+  "README.md",
+  "docs",
+  ".agents/skills"
+];
+
+export function isOptOutClass(cls) {
+  return OPT_OUT_TASK_CLASSES.includes(cls);
+}
+
+// Port of normalizeScopeEntryForFloor in src/domain/task-class.ts. Returns the
+// canonical slash-form path, or null when the entry is suspicious (deny-by-default).
+function normalizeScopeEntryForFloor(raw) {
+  if (typeof raw !== "string" || raw.includes("\0")) {
+    return null;
+  }
+  let value = raw.trim();
+  if (value.length === 0) {
+    return null;
+  }
+  value = value.normalize("NFKC");
+  try {
+    value = decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+  if (value.includes("\0") || value.includes("\\")) {
+    return null;
+  }
+  for (let i = 0; i < value.length; i += 1) {
+    if (value.charCodeAt(i) > 0x7f) {
+      return null;
+    }
+  }
+  value = value.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+  if (value.length === 0) {
+    return null;
+  }
+  const segments = value.split("/");
+  for (const segment of segments) {
+    if (segment === "" || segment === "." || segment === ".." || segment.includes("*")) {
+      return null;
+    }
+  }
+  return segments.join("/");
+}
+
+function entryMatchesDenyPrefix(normalized) {
+  return REVIEW_FLOOR_DENY_PREFIXES.some(
+    (prefix) =>
+      normalized === prefix ||
+      normalized.startsWith(`${prefix}/`) ||
+      prefix.startsWith(`${normalized}/`)
+  );
+}
+
+// Port of scopeIsReviewSafe in src/domain/task-class.ts. Deny-by-default.
+export function scopeIsReviewSafe(scope) {
+  if (!Array.isArray(scope) || scope.length === 0) {
+    return false;
+  }
+  for (const rawEntry of scope) {
+    const normalized = normalizeScopeEntryForFloor(rawEntry);
+    if (normalized === null || entryMatchesDenyPrefix(normalized)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export function parseTaskClass(markdown) {
   const lines = parseMarkdownListSection(markdown, "## Task class");
