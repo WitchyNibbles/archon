@@ -7,6 +7,7 @@ import type {
   PlanArtifact,
   ProjectRuntimeStateRecord,
   ProjectRecord,
+  ReviewFloorReductionRecord,
   ReviewRecord,
   RuntimeMigrationJournalRecord,
   RuntimeProjectRegistrationRecord,
@@ -118,6 +119,10 @@ export interface ArchonStore {
   getReviews(runId: string, taskId: string): Promise<ReviewRecord[]>;
   saveApproval(approval: ApprovalRecord): Promise<void>;
   getApprovals(runId: string, taskId: string): Promise<ApprovalRecord[]>;
+  /** Write an idempotent provenance row when a review-floor reduction occurs (Option B, slice 3). */
+  saveReviewFloorReduction(record: ReviewFloorReductionRecord): Promise<void>;
+  /** Read review-floor reduction provenance rows for a task (Option B; hook/runtime authority). */
+  getReviewFloorReductions(runId: string, taskId: string): Promise<ReviewFloorReductionRecord[]>;
   saveMemoryEntry(entry: MemoryEntryRecord): Promise<void>;
   listMemoryEntries(params: {
     runId: string;

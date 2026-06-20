@@ -9,6 +9,7 @@ import type {
   ProjectRuntimeStateRecord,
   ProjectRecord,
   RetrievalRole,
+  ReviewFloorReductionRecord,
   ReviewRecord,
   RuntimeMigrationJournalRecord,
   RuntimeProjectRegistrationRecord,
@@ -660,12 +661,12 @@ export class PostgresStore implements ArchonStore {
           id, workspace_id, project_id, run_id, task_key, title, owner_role, status,
           allowed_write_scope, out_of_scope, acceptance_criteria, verification_steps,
           required_reviews, security_checks, anti_patterns, rollback_notes, handoff_format,
-          payload, claimed_by
+          payload, claimed_by, "class"
         ) values (
           $1, $2, $3, $4, $5, $6, $7, $8,
           $9, $10, $11, $12,
           $13, $14, $15, $16, $17,
-          $18::jsonb, $19
+          $18::jsonb, $19, $20
         )`,
         [
           task.id,
@@ -686,7 +687,8 @@ export class PostgresStore implements ArchonStore {
           task.packet.rollbackNotes,
           task.packet.handoffFormat,
           JSON.stringify(task.packet),
-          task.claimedBy ?? null
+          task.claimedBy ?? null,
+          task.class
         ]
       );
 
@@ -706,6 +708,7 @@ export class PostgresStore implements ArchonStore {
           'runId', run_id,
           'workspaceId', workspace_id,
           'projectId', project_id,
+          'class', "class",
           'packet', payload::jsonb,
           'status', status,
           'claimedBy', claimed_by,
@@ -727,6 +730,7 @@ export class PostgresStore implements ArchonStore {
           'runId', run_id,
           'workspaceId', workspace_id,
           'projectId', project_id,
+          'class', "class",
           'packet', payload::jsonb,
           'status', status,
           'claimedBy', claimed_by,
@@ -741,6 +745,21 @@ export class PostgresStore implements ArchonStore {
   }
 
   async updateTask(task: TaskRecord): Promise<void> {
+    // Guard: the `class` column is immutable after INSERT. Verify the caller
+    // is not attempting to mutate it by comparing with the persisted value.
+    const existing = await this.client.query<{ class: string }>(
+      `select "class" from tasks where id = $1`,
+      [task.id]
+    );
+    if (existing.rows.length > 0) {
+      const persistedClass = existing.rows[0]!.class;
+      if (persistedClass !== task.class) {
+        throw new Error(
+          `updateTask: cannot mutate immutable field 'class' on task ${task.id} ` +
+          `(persisted='${persistedClass}', attempted='${task.class}')`
+        );
+      }
+    }
     await this.client.query(
       `update tasks
        set status = $2,
@@ -984,6 +1003,51 @@ export class PostgresStore implements ArchonStore {
        where run_id = $1
          and task_id = $2
        order by created_at asc`,
+      [runId, taskId]
+    );
+    return result.rows.map((row) => row.payload);
+  }
+
+  async saveReviewFloorReduction(record: ReviewFloorReductionRecord): Promise<void> {
+    await this.client.query(
+      `insert into review_floor_reductions (
+         id, run_id, task_id, derived_class, dropped_roles, effective_floor,
+         write_scope_snapshot, basis, source, decided_at
+       ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       on conflict (run_id, task_id, decided_at) do nothing`,
+      [
+        record.id,
+        record.runId,
+        record.taskId,
+        record.derivedClass,
+        record.droppedRoles,
+        record.effectiveFloor,
+        record.writeScopeSnapshot,
+        record.basis,
+        record.source,
+        record.decidedAt
+      ]
+    );
+  }
+
+  async getReviewFloorReductions(runId: string, taskId: string): Promise<ReviewFloorReductionRecord[]> {
+    const result = await this.client.query<JsonRow<ReviewFloorReductionRecord>>(
+      `select jsonb_build_object(
+          'id', id,
+          'runId', run_id,
+          'taskId', task_id,
+          'derivedClass', derived_class,
+          'droppedRoles', dropped_roles,
+          'effectiveFloor', effective_floor,
+          'writeScopeSnapshot', write_scope_snapshot,
+          'basis', basis,
+          'source', source,
+          'decidedAt', decided_at
+       ) as payload
+       from review_floor_reductions
+       where run_id = $1
+         and task_id = $2
+       order by decided_at asc`,
       [runId, taskId]
     );
     return result.rows.map((row) => row.payload);

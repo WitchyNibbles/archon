@@ -76,6 +76,7 @@ import {
 } from "./archon/task-queue.ts";
 import {
   effectiveRequiredReviews,
+  effectiveRequiredReviewsForTask,
   isGateReviewRole,
   isPlaywrightRequiredForTask,
   isRetrievalRole,
@@ -950,7 +951,7 @@ export async function executeWorkflowProofCommandFromArgs(
     throw new Error(`Task ${taskId} runtime status must be approved, found ${task.status}`);
   }
 
-  const requiredReviews = effectiveRequiredReviews(task.packet.requiredReviews);
+  const requiredReviews = effectiveRequiredReviewsForTask(task);
   const latestReviews = requiredReviews
     .map((role) => reviews.filter((review) => review.reviewerRole === role).at(-1))
     .filter((review): review is ReviewRecord => review !== undefined);

@@ -13,8 +13,12 @@ import {
   normalizeSearchInput,
   validateMemoryPromotion,
   validatePlanInput,
-  validateTaskPacket
+  validateTaskPacket,
+  effectiveRequiredReviewsForTask,
+  isReviewFloorReduced
 } from "../domain/contracts.ts";
+import { requiredGateReviews } from "../domain/types.ts";
+import { isOptOutClass } from "../domain/task-class.ts";
 import {
   canRoleAccessSearchResult,
   collectUnsatisfiedReviewRoles,
@@ -88,6 +92,7 @@ import type {
   RunResumeSnapshot,
   ReviewInput,
   ReviewRecord,
+  ReviewFloorReductionRecord,
   RecoveryApplyResult,
   RecoveryInspectionReport,
   RecoveryIssue,
@@ -522,16 +527,22 @@ function mapTaskStatusToQueueStatus(status: TaskRecord["status"]): QueueTaskStat
   }
 }
 
+// Derive the class for a plan-created task from its quality gates.
+//
+// SECURITY (Option B condition 3): this MUST NEVER return an OPT_OUT_TASK_CLASSES
+// value. Opt-out classes are review-floor-reducible, and qualityGates is a mutable,
+// packet-author-controlled field — deriving an opt-out class from it would resurrect
+// exactly the Option A hole the council rejected (a plan packet could omit quality
+// gates to land in docs_only and become eligible for a single-reviewer close).
+// Opt-out classification may ONLY be assigned explicitly via the validated
+// init-task --class path, never derived here. The default is the non-opt-out
+// prototype_slice; a defense-in-depth guard rejects any opt-out result outright.
 function mapTaskPacketToQueueClass(packet: TaskPacketInput): TaskClass {
-  if (packet.qualityGates.includes("release_readiness_required")) {
-    return "release_candidate";
-  }
-
-  if (packet.qualityGates.includes("product_acceptance")) {
-    return "prototype_slice";
-  }
-
-  return "docs_only";
+  const derived: TaskClass = packet.qualityGates.includes("release_readiness_required")
+    ? "release_candidate"
+    : "prototype_slice";
+  // Invariant guard: a derived class can never be opt-out (review-floor-reducible).
+  return isOptOutClass(derived) ? "prototype_slice" : derived;
 }
 
 function buildRuntimeTaskQueue(runStatus: RunRecord["status"], tasks: readonly TaskRecord[], activeTaskId?: string | undefined): TaskQueue {
@@ -542,7 +553,11 @@ function buildRuntimeTaskQueue(runStatus: RunRecord["status"], tasks: readonly T
       id: task.packet.taskId,
       title: task.packet.title,
       status: mapTaskStatusToQueueStatus(task.status),
-      class: mapTaskPacketToQueueClass(task.packet),
+      // Read the authoritative immutable TaskRecord.class — never re-derive from
+      // the mutable qualityGates here (that was the Option A pattern the council
+      // rejected; re-deriving in the queue export would resurrect a spoofable
+      // shadow even though gate sites use task.class).
+      class: task.class,
       depends_on: [...task.packet.dependencies],
       acceptance_criteria: [...task.packet.acceptanceCriteria],
       verification: [...task.packet.verificationSteps],
@@ -1193,6 +1208,7 @@ export class ArchonCoreService {
       runId,
       workspaceId: run.workspaceId,
       projectId: run.projectId,
+      class: mapTaskPacketToQueueClass(packet),
       packet,
       status: "ready",
       createdAt: now,
@@ -1447,6 +1463,25 @@ export class ArchonCoreService {
     };
 
     if (nextStatus === "approved") {
+      // Condition 5: a task may never be approved under a reduced review floor
+      // without a durable provenance row. Use the same shared predicate the gate
+      // decision used so the floor decision and its audit record cannot drift.
+      if (isReviewFloorReduced(task)) {
+        const effectiveFloor = effectiveRequiredReviewsForTask(task);
+        const droppedRoles = requiredGateReviews.filter((role) => !effectiveFloor.includes(role));
+        await this.store.saveReviewFloorReduction({
+          id: randomUUID(),
+          runId,
+          taskId,
+          derivedClass: task.class,
+          droppedRoles: [...droppedRoles],
+          effectiveFloor: [...effectiveFloor],
+          writeScopeSnapshot: [...task.packet.allowedWriteScope],
+          basis: "opt_out_class+scope_review_safe",
+          source: "runtime",
+          decidedAt: updatedTask.updatedAt
+        } satisfies ReviewFloorReductionRecord);
+      }
       await this.store.releaseLocksForTask(runId, taskId, timestamp());
     }
 

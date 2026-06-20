@@ -20,8 +20,10 @@ security-significant.
 - **Option A (rejected):** derive the gate-relevant task class from `qualityGates` at gate-eval.
   Both council seats independently found this **unsound**: `qualityGates` lives in the packet
   `payload` jsonb, which `updateTask` (`src/store/postgres-store.ts:743`) rewrites wholesale —
-  `record-council.ts:57` already mutates the packet that way. So an authorized orchestrator path
-  could rewrite `qualityGates` post-creation; the "non-spoofable derivation" claim is false. The
+  any authorized `updateTask` caller can rewrite `qualityGates` post-creation (`record-council.ts` already uses the
+  `updateTask({...task, packet:{...task.packet, councilOutcome}})` spread — it writes
+  `councilOutcome`, but the pattern overwrites the full packet jsonb, so any field including
+  `qualityGates` is mutable this way); the "non-spoofable derivation" claim is false. The
   `else → docs_only` derivation default is also "deny-by-absence" (most permissive class as default),
   a fragile footing for a security invariant.
 - **Option B (chosen):** an **immutable, insert-once `class` column** on `tasks`, set at creation,
@@ -46,9 +48,12 @@ security-significant.
    no third path can drift.
 
 3. **Unified TaskClass (Condition 2).** Replace the two divergent enums
-   (`src/archon/task-queue.ts:5` `ALLOWED_TASK_CLASSES` vs `src/admin/init-task.ts:14`
-   `VALID_TASK_CLASSES`) with one canonical source (`src/domain/task-class.ts`): the 7-value
-   superset, plus `OPT_OUT_TASK_CLASSES = [docs_only, state_sync, memory_curation, scaffold_only]`,
+   (`src/archon/task-queue.ts:5` `ALLOWED_TASK_CLASSES` vs `src/admin/init-task.ts:15`
+   `VALID_TASK_CLASSES`) with one canonical source (`src/domain/task-class.ts`). The canonical
+   enum is the 7-value union of the two existing constants —
+   `prototype_slice, security_sensitive, release_candidate, docs_only, memory_curation, state_sync,
+   scaffold_only` (preserve the legacy alias `implementation_slice → prototype_slice` from
+   `task-queue.ts:12`). Plus `OPT_OUT_TASK_CLASSES = [docs_only, state_sync, memory_curation, scaffold_only]`,
    a compile-time guarantee `OptOutClass extends TaskClass`, and an exhaustive `switch` with a
    `never` default. No `class` column exists on `tasks` today, so adding it is additive.
 
@@ -62,7 +67,7 @@ security-significant.
    the whole task → trio. Normalization is hardened: NFKC + reject non-ASCII separators,
    backslash→slash, URL-decode-once with re-check, reject `..`/null bytes, **segment-aware** match
    (`srcdocs/` must not match `src/`). Reuse the existing `isDangerousManagedScopeEntry`
-   (`init-task.ts:55`) matcher shape; do not duplicate logic.
+   (`init-task.ts:56`) matcher shape; do not duplicate logic.
 
 5. **Mandatory provenance (Condition 5).** New migration `review_floor_reductions` with first-class
    columns (`derived_class`, `dropped_roles`, `effective_floor`, `write_scope_snapshot`, `basis`,
@@ -130,7 +135,7 @@ re-reviewed — nothing destructive.
   `:354` `canActorWaiveReview`)
 - `src/domain/types.ts` (`:80` `requiredGateReviews`, `:477` `TaskPacketInput`)
 - `src/core/policy.ts` (`:74`, `:123` gate sites), `src/review.ts` (`:953`)
-- `src/archon/task-queue.ts` (`:5`), `src/admin/init-task.ts` (`:14`, `:47`, `:55`)
+- `src/archon/task-queue.ts` (`:5`), `src/admin/init-task.ts` (`:15`, `:48`, `:56`)
 - `src/core/service.ts` (`:525` `mapTaskPacketToQueueClass`), `src/store/postgres-store.ts`
   (`:743` `updateTask`), `src/runtime/repo-markdown-indexer.ts` (include paths)
 - `.claude/hooks/hook-utils.mjs` (`parseRequiredReviews`, runtime-authority read)

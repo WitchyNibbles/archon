@@ -37,9 +37,11 @@ import {
   uiSurfaces,
   retrievalRoles,
   stopGoDecisions,
-  type TaskPacketInput
+  type TaskPacketInput,
+  type TaskRecord
 } from "./types.ts";
 import { isTrustedReviewActionContext } from "../core/review-context.ts";
+import { isOptOutClass, scopeIsReviewSafe } from "./task-class.ts";
 
 const maxQueryEmbeddingDimensions = 1536;
 const retrievalRoleSet = new Set<string>(retrievalRoles);
@@ -369,6 +371,54 @@ export function defaultRetrievalRoles(): RetrievalRole[] {
 export function effectiveRequiredReviews(requiredReviews: readonly GateReviewRole[] | undefined): GateReviewRole[] {
   const effective = new Set<GateReviewRole>(requiredGateReviews);
   for (const role of requiredReviews ?? []) {
+    if (isGateReviewRole(role)) {
+      effective.add(role);
+    }
+  }
+  return [...effective];
+}
+
+// Option B review-floor relaxation (slice 4). Pure functions — no side effects.
+
+export interface ReviewFloorReductionOptions {
+  reductionEnabled?: boolean | undefined;
+  env?: Record<string, string | undefined> | undefined;
+}
+
+// Single source of truth for "is this task's review floor reduced?". A reduction
+// applies ONLY when ALL of:
+//   1. reductionEnabled (options.reductionEnabled, else env.ARCHON_REVIEW_FLOOR_REDUCTION in {"1","true"})
+//   2. task.class is in OPT_OUT_TASK_CLASSES
+//   3. scopeIsReviewSafe(task.packet.allowedWriteScope)
+// Both the gate predicate (effectiveRequiredReviewsForTask) and the provenance
+// write call this, so the floor decision and its audit row can never drift
+// (condition 5: a reduction must always be accompanied by a durable row).
+export function isReviewFloorReduced(task: TaskRecord, options?: ReviewFloorReductionOptions): boolean {
+  const env = options?.env ?? process.env;
+  const flagValue = env.ARCHON_REVIEW_FLOOR_REDUCTION?.trim();
+  const reductionEnabled = options?.reductionEnabled ?? (flagValue === "1" || flagValue === "true");
+  return reductionEnabled && isOptOutClass(task.class) && scopeIsReviewSafe(task.packet.allowedWriteScope);
+}
+
+// Returns the effective review-floor for a task at gate-evaluation time. This is
+// the single chokepoint for all three gate sites — callers MUST NOT call
+// effectiveRequiredReviews(task.packet.requiredReviews) at gate sites.
+export function effectiveRequiredReviewsForTask(
+  task: TaskRecord,
+  options?: ReviewFloorReductionOptions
+): GateReviewRole[] {
+  // Reduced floor is flat [reviewer]. We deliberately do NOT union
+  // task.packet.requiredReviews here: the only gate roles ARE the trio
+  // (requiredGateReviews), and validateTaskPacket forces every validated packet
+  // to store all three — so unioning would re-add security_reviewer + qa_engineer
+  // and silently nullify the reduction. There are no "extra" roles to preserve.
+  if (isReviewFloorReduced(task, options)) {
+    return ["reviewer"];
+  }
+
+  // Non-reduced path: the existing trio-or-more additive behavior.
+  const effective = new Set<GateReviewRole>(requiredGateReviews);
+  for (const role of task.packet.requiredReviews ?? []) {
     if (isGateReviewRole(role)) {
       effective.add(role);
     }

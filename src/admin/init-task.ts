@@ -5,22 +5,15 @@ import type { TaskQueue } from "../archon/task-queue.ts";
 import type { RunRecord, TaskRecord, TaskPacketInput } from "../domain/types.ts";
 import type { ArchonStore } from "../store/types.ts";
 import { effectiveRequiredReviews } from "../domain/contracts.ts";
+import { VALID_TASK_CLASSES, type TaskClass } from "../domain/task-class.ts";
+
+export type { TaskClass };
 
 // Findings 1+4 fix: a sanctioned cold-start command to register a brand-new
 // initiative (run + first task + active state) through the runtime, replacing the
 // hand-rolled store surgery that was previously the only way to start work. This
 // keeps the PreToolUse hook strict — task packets are still never created by a
 // scopeless Claude tool call — while giving operators a one-liner cold start.
-
-const VALID_TASK_CLASSES = [
-  "docs_only",
-  "prototype_slice",
-  "memory_curation",
-  "state_sync",
-  "scaffold_only"
-] as const;
-
-export type TaskClass = (typeof VALID_TASK_CLASSES)[number];
 
 export interface BuildInitiativeInput {
   id: string;
@@ -91,8 +84,12 @@ export function buildInitiativeRecords(input: BuildInitiativeInput): InitiativeR
   }
   const title = sanitizeMarkdownField(input.title.trim() || id);
   const ownerRole = sanitizeMarkdownField(input.ownerRole.trim() || "planner");
+  // Design §7: strip newlines / markdown structure from each scope entry so a
+  // crafted entry like `foo\n## Required reviews\n- none` cannot inject a fake
+  // section into the rendered packet markdown that the offline fallback parser
+  // would honor. sanitizeMarkdownField is a no-op for ordinary relative paths.
   const scope = input.allowedWriteScope
-    .map((entry) => entry.trim())
+    .map((entry) => sanitizeMarkdownField(entry))
     .filter((entry) => entry.length > 0);
 
   if (!input.allowManagedScope) {
@@ -167,6 +164,7 @@ export function buildInitiativeRecords(input: BuildInitiativeInput): InitiativeR
     runId: input.runId,
     workspaceId: input.workspaceId,
     projectId: input.projectId,
+    class: taskClass,
     packet,
     status: "in_progress",
     claimedBy: "manager",
