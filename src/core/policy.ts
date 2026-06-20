@@ -20,7 +20,8 @@ import {
   canReviewRecordSatisfyGate,
   effectiveRequiredReviews,
   effectiveRequiredReviewsForTask,
-  normalizeRetrievalMetadata
+  normalizeRetrievalMetadata,
+  type ReviewFloorReductionOptions
 } from "../domain/contracts.ts";
 import { assessFreshness } from "../runtime/freshness-gate.ts";
 
@@ -68,11 +69,12 @@ export function findBlockingReasonsForTask(
 
 export function evaluateReviewDecision(
   task: TaskRecord,
-  reviews: readonly ReviewRecord[]
+  reviews: readonly ReviewRecord[],
+  options?: ReviewFloorReductionOptions
 ): { decision: ApprovalDecision; blockers: string[] } {
   const blockers: string[] = [];
 
-  for (const requiredReview of effectiveRequiredReviewsForTask(task)) {
+  for (const requiredReview of effectiveRequiredReviewsForTask(task, options)) {
     const matchingReviews = reviews.filter((review) => review.reviewerRole === requiredReview);
     if (matchingReviews.length === 0) {
       blockers.push(`missing required review: ${requiredReview}`);
@@ -117,11 +119,12 @@ export function evaluateReviewDecision(
 
 export function collectUnsatisfiedReviewRoles(
   task: TaskRecord,
-  reviews: readonly ReviewRecord[]
+  reviews: readonly ReviewRecord[],
+  options?: ReviewFloorReductionOptions
 ): GateReviewRole[] {
   const missing: GateReviewRole[] = [];
 
-  for (const requiredReview of effectiveRequiredReviewsForTask(task)) {
+  for (const requiredReview of effectiveRequiredReviewsForTask(task, options)) {
     const matchingReviews = reviews.filter((review) => review.reviewerRole === requiredReview);
     if (matchingReviews.length === 0) {
       missing.push(requiredReview);

@@ -111,7 +111,10 @@ test("adversarial normalization cannot smuggle a deny-listed root past the guard
     ".claude／hooks", // U+FF0F fullwidth solidus
     " .claude",
     ".claude ",
-    "docs "
+    "docs ",
+    "\x00.claude", // null byte prefix
+    "sandbox/\x00/../.claude", // null byte mid-path
+    ".claude\x00" // null byte suffix
   ];
   for (const entry of adversarial) {
     assert.equal(scopeIsReviewSafe([entry]), false, `expected deny (adversarial): ${JSON.stringify(entry)}`);

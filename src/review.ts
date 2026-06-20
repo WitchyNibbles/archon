@@ -942,7 +942,10 @@ export async function executeWorkflowProofCommandFromArgs(
   }
 
   const reviews = await options.getReviews(runId, taskId);
-  const decision = evaluateReviewDecision(task, reviews);
+  // Thread the same env into the decision so the gate floor here cannot diverge
+  // from the explicit required-review check below (both resolve the reduction flag
+  // from the identical source — anti-drift across the workflow-proof chokepoint).
+  const decision = evaluateReviewDecision(task, reviews, { env: options.env ?? process.env });
   if (decision.decision !== "approved") {
     throw new Error(`Task ${taskId} is not approved in runtime: ${decision.blockers.join("; ")}`);
   }

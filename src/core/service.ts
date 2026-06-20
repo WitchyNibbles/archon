@@ -546,7 +546,11 @@ function buildRuntimeTaskQueue(runStatus: RunRecord["status"], tasks: readonly T
       id: task.packet.taskId,
       title: task.packet.title,
       status: mapTaskStatusToQueueStatus(task.status),
-      class: mapTaskPacketToQueueClass(task.packet),
+      // Read the authoritative immutable TaskRecord.class — never re-derive from
+      // the mutable qualityGates here (that was the Option A pattern the council
+      // rejected; re-deriving in the queue export would resurrect a spoofable
+      // shadow even though gate sites use task.class).
+      class: task.class,
       depends_on: [...task.packet.dependencies],
       acceptance_criteria: [...task.packet.acceptanceCriteria],
       verification: [...task.packet.verificationSteps],
