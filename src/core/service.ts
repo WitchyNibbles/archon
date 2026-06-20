@@ -18,6 +18,7 @@ import {
   isReviewFloorReduced
 } from "../domain/contracts.ts";
 import { requiredGateReviews } from "../domain/types.ts";
+import { isOptOutClass } from "../domain/task-class.ts";
 import {
   canRoleAccessSearchResult,
   collectUnsatisfiedReviewRoles,
@@ -526,16 +527,22 @@ function mapTaskStatusToQueueStatus(status: TaskRecord["status"]): QueueTaskStat
   }
 }
 
+// Derive the class for a plan-created task from its quality gates.
+//
+// SECURITY (Option B condition 3): this MUST NEVER return an OPT_OUT_TASK_CLASSES
+// value. Opt-out classes are review-floor-reducible, and qualityGates is a mutable,
+// packet-author-controlled field — deriving an opt-out class from it would resurrect
+// exactly the Option A hole the council rejected (a plan packet could omit quality
+// gates to land in docs_only and become eligible for a single-reviewer close).
+// Opt-out classification may ONLY be assigned explicitly via the validated
+// init-task --class path, never derived here. The default is the non-opt-out
+// prototype_slice; a defense-in-depth guard rejects any opt-out result outright.
 function mapTaskPacketToQueueClass(packet: TaskPacketInput): TaskClass {
-  if (packet.qualityGates.includes("release_readiness_required")) {
-    return "release_candidate";
-  }
-
-  if (packet.qualityGates.includes("product_acceptance")) {
-    return "prototype_slice";
-  }
-
-  return "docs_only";
+  const derived: TaskClass = packet.qualityGates.includes("release_readiness_required")
+    ? "release_candidate"
+    : "prototype_slice";
+  // Invariant guard: a derived class can never be opt-out (review-floor-reducible).
+  return isOptOutClass(derived) ? "prototype_slice" : derived;
 }
 
 function buildRuntimeTaskQueue(runStatus: RunRecord["status"], tasks: readonly TaskRecord[], activeTaskId?: string | undefined): TaskQueue {

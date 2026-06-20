@@ -559,14 +559,37 @@ const orchestratorApproval: ApprovalRecord = {
   createdAt: BASE_NOW
 };
 
+// The reduction flag is resolved from a single source (process.env) at every gate
+// site, so these tests drive it via process.env (with restore) rather than a
+// per-call env override.
+async function withReductionFlag<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.ARCHON_REVIEW_FLOOR_REDUCTION;
+  if (value === undefined) {
+    delete process.env.ARCHON_REVIEW_FLOOR_REDUCTION;
+  } else {
+    process.env.ARCHON_REVIEW_FLOOR_REDUCTION = value;
+  }
+  try {
+    // MUST await so the env is restored only after the async work has read it.
+    return await fn();
+  } finally {
+    if (prev === undefined) {
+      delete process.env.ARCHON_REVIEW_FLOOR_REDUCTION;
+    } else {
+      process.env.ARCHON_REVIEW_FLOOR_REDUCTION = prev;
+    }
+  }
+}
+
 test("anti-drift (chokepoint 3): workflow-proof passes a reduced docs_only task with ONLY a reviewer review (flag ON)", async () => {
   const task = makeTask("docs_only", ["sandbox/"]);
-  const result = await executeWorkflowProofCommandFromArgs(["--run-id", "run-1", "--task-id", "test-task"], {
-    env: { ARCHON_REVIEW_FLOOR_REDUCTION: "1" },
-    getStatusSnapshot: async () => approvedSnapshot(task),
-    getReviews: async () => [makeReview("reviewer")],
-    getApprovals: async () => [orchestratorApproval]
-  });
+  const result = await withReductionFlag("1", () =>
+    executeWorkflowProofCommandFromArgs(["--run-id", "run-1", "--task-id", "test-task"], {
+      getStatusSnapshot: async () => approvedSnapshot(task),
+      getReviews: async () => [makeReview("reviewer")],
+      getApprovals: async () => [orchestratorApproval]
+    })
+  );
   assert.equal(result.reviewDecision, "approved");
   assert.deepEqual(result.latestReviews.map((r) => r.reviewerRole), ["reviewer"]);
 });
@@ -575,12 +598,13 @@ test("anti-drift (chokepoint 3): workflow-proof BLOCKS the same task with only a
   const task = makeTask("docs_only", ["sandbox/"]);
   await assert.rejects(
     () =>
-      executeWorkflowProofCommandFromArgs(["--run-id", "run-1", "--task-id", "test-task"], {
-        env: {}, // flag OFF → full trio required
-        getStatusSnapshot: async () => approvedSnapshot(task),
-        getReviews: async () => [makeReview("reviewer")],
-        getApprovals: async () => [orchestratorApproval]
-      }),
+      withReductionFlag(undefined, () =>
+        executeWorkflowProofCommandFromArgs(["--run-id", "run-1", "--task-id", "test-task"], {
+          getStatusSnapshot: async () => approvedSnapshot(task),
+          getReviews: async () => [makeReview("reviewer")],
+          getApprovals: async () => [orchestratorApproval]
+        })
+      ),
     /not approved|missing/i
   );
 });

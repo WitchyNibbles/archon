@@ -942,10 +942,7 @@ export async function executeWorkflowProofCommandFromArgs(
   }
 
   const reviews = await options.getReviews(runId, taskId);
-  // Thread the same env into the decision so the gate floor here cannot diverge
-  // from the explicit required-review check below (both resolve the reduction flag
-  // from the identical source — anti-drift across the workflow-proof chokepoint).
-  const decision = evaluateReviewDecision(task, reviews, { env: options.env ?? process.env });
+  const decision = evaluateReviewDecision(task, reviews);
   if (decision.decision !== "approved") {
     throw new Error(`Task ${taskId} is not approved in runtime: ${decision.blockers.join("; ")}`);
   }
@@ -954,7 +951,7 @@ export async function executeWorkflowProofCommandFromArgs(
     throw new Error(`Task ${taskId} runtime status must be approved, found ${task.status}`);
   }
 
-  const requiredReviews = effectiveRequiredReviewsForTask(task, { env: options.env ?? process.env });
+  const requiredReviews = effectiveRequiredReviewsForTask(task);
   const latestReviews = requiredReviews
     .map((role) => reviews.filter((review) => review.reviewerRole === role).at(-1))
     .filter((review): review is ReviewRecord => review !== undefined);
