@@ -160,6 +160,7 @@ export function buildInitiativeRecords(input: BuildInitiativeInput): InitiativeR
     runId: input.runId,
     workspaceId: input.workspaceId,
     projectId: input.projectId,
+    class: taskClass,
     packet,
     status: "in_progress",
     claimedBy: "manager",

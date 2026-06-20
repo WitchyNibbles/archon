@@ -13,8 +13,11 @@ import {
   normalizeSearchInput,
   validateMemoryPromotion,
   validatePlanInput,
-  validateTaskPacket
+  validateTaskPacket,
+  effectiveRequiredReviewsForTask,
+  isReviewFloorReduced
 } from "../domain/contracts.ts";
+import { requiredGateReviews } from "../domain/types.ts";
 import {
   canRoleAccessSearchResult,
   collectUnsatisfiedReviewRoles,
@@ -88,6 +91,7 @@ import type {
   RunResumeSnapshot,
   ReviewInput,
   ReviewRecord,
+  ReviewFloorReductionRecord,
   RecoveryApplyResult,
   RecoveryInspectionReport,
   RecoveryIssue,
@@ -1193,6 +1197,7 @@ export class ArchonCoreService {
       runId,
       workspaceId: run.workspaceId,
       projectId: run.projectId,
+      class: mapTaskPacketToQueueClass(packet),
       packet,
       status: "ready",
       createdAt: now,
@@ -1447,6 +1452,25 @@ export class ArchonCoreService {
     };
 
     if (nextStatus === "approved") {
+      // Condition 5: a task may never be approved under a reduced review floor
+      // without a durable provenance row. Use the same shared predicate the gate
+      // decision used so the floor decision and its audit record cannot drift.
+      if (isReviewFloorReduced(task)) {
+        const effectiveFloor = effectiveRequiredReviewsForTask(task);
+        const droppedRoles = requiredGateReviews.filter((role) => !effectiveFloor.includes(role));
+        await this.store.saveReviewFloorReduction({
+          id: randomUUID(),
+          runId,
+          taskId,
+          derivedClass: task.class,
+          droppedRoles: [...droppedRoles],
+          effectiveFloor: [...effectiveFloor],
+          writeScopeSnapshot: [...task.packet.allowedWriteScope],
+          basis: "opt_out_class+scope_review_safe",
+          source: "runtime",
+          decidedAt: updatedTask.updatedAt
+        } satisfies ReviewFloorReductionRecord);
+      }
       await this.store.releaseLocksForTask(runId, taskId, timestamp());
     }
 

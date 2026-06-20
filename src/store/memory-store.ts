@@ -17,6 +17,7 @@ import type {
   ProjectRuntimeStateRecord,
   ProjectRecord,
   RetrievalRole,
+  ReviewFloorReductionRecord,
   ReviewRecord,
   RuntimeMigrationJournalRecord,
   RuntimeProjectRegistrationRecord,
@@ -100,6 +101,7 @@ export class MemoryStore implements ArchonStore {
   private readonly handoffs = new Map<string, HandoffRecord>();
   private readonly reviews = new Map<string, ReviewRecord>();
   private readonly approvals = new Map<string, ApprovalRecord>();
+  private readonly reviewFloorReductions = new Map<string, ReviewFloorReductionRecord>();
   private readonly memoryEntries = new Map<string, MemoryEntryRecord>();
   private readonly markdownArtifacts = new Map<string, MarkdownArtifactRecord>();
   private readonly runtimeProjectRegistrations = new Map<string, RuntimeProjectRegistrationRecord>();
@@ -326,6 +328,15 @@ export class MemoryStore implements ArchonStore {
   }
 
   async updateTask(task: TaskRecord): Promise<void> {
+    // Guard: the `class` field is immutable after creation. Throw if the
+    // caller attempts to change it.
+    const existing = this.tasks.get(task.id);
+    if (existing !== undefined && existing.class !== task.class) {
+      throw new Error(
+        `updateTask: cannot mutate immutable field 'class' on task ${task.id} ` +
+        `(persisted='${existing.class}', attempted='${task.class}')`
+      );
+    }
     this.tasks.set(task.id, task);
   }
 
@@ -373,6 +384,20 @@ export class MemoryStore implements ArchonStore {
 
   async getApprovals(runId: string, taskId: string): Promise<ApprovalRecord[]> {
     return [...this.approvals.values()].filter((approval) => approval.runId === runId && approval.taskId === taskId);
+  }
+
+  async saveReviewFloorReduction(record: ReviewFloorReductionRecord): Promise<void> {
+    // Idempotent: key on (runId, taskId, decidedAt) — same as the DB UNIQUE constraint.
+    const key = `${record.runId}:${record.taskId}:${record.decidedAt}`;
+    if (!this.reviewFloorReductions.has(key)) {
+      this.reviewFloorReductions.set(key, record);
+    }
+  }
+
+  async getReviewFloorReductions(runId: string, taskId: string): Promise<ReviewFloorReductionRecord[]> {
+    return [...this.reviewFloorReductions.values()]
+      .filter((record) => record.runId === runId && record.taskId === taskId)
+      .sort((left, right) => left.decidedAt.localeCompare(right.decidedAt));
   }
 
   async saveMemoryEntry(entry: MemoryEntryRecord): Promise<void> {

@@ -19,6 +19,7 @@ import { getAgentCatalogEntry } from "../archon/agent-catalog.ts";
 import {
   canReviewRecordSatisfyGate,
   effectiveRequiredReviews,
+  effectiveRequiredReviewsForTask,
   normalizeRetrievalMetadata
 } from "../domain/contracts.ts";
 import { assessFreshness } from "../runtime/freshness-gate.ts";
@@ -71,7 +72,7 @@ export function evaluateReviewDecision(
 ): { decision: ApprovalDecision; blockers: string[] } {
   const blockers: string[] = [];
 
-  for (const requiredReview of effectiveRequiredReviews(task.packet.requiredReviews)) {
+  for (const requiredReview of effectiveRequiredReviewsForTask(task)) {
     const matchingReviews = reviews.filter((review) => review.reviewerRole === requiredReview);
     if (matchingReviews.length === 0) {
       blockers.push(`missing required review: ${requiredReview}`);
@@ -120,7 +121,7 @@ export function collectUnsatisfiedReviewRoles(
 ): GateReviewRole[] {
   const missing: GateReviewRole[] = [];
 
-  for (const requiredReview of effectiveRequiredReviews(task.packet.requiredReviews)) {
+  for (const requiredReview of effectiveRequiredReviewsForTask(task)) {
     const matchingReviews = reviews.filter((review) => review.reviewerRole === requiredReview);
     if (matchingReviews.length === 0) {
       missing.push(requiredReview);

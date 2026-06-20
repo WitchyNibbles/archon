@@ -1,5 +1,6 @@
 import type { TaskQueue } from "../archon/task-queue.ts";
 import { agentRoleIds } from "../archon/agent-catalog.ts";
+import type { TaskClass } from "./task-class.ts";
 
 export const runStatuses = [
   "intake",
@@ -1016,6 +1017,8 @@ export interface TaskRecord {
   runId: string;
   workspaceId: string;
   projectId: string;
+  /** Immutable task class set once at INSERT. Never changes after creation. */
+  class: TaskClass;
   packet: TaskPacketInput;
   status: TaskStatus;
   claimedBy?: string | undefined;
@@ -1078,6 +1081,20 @@ export interface ApprovalRecord {
   decision: ApprovalDecision;
   rationale: string;
   createdAt: string;
+}
+
+/** Immutable audit row written when a review-floor reduction occurs (Option B, slice 3). */
+export interface ReviewFloorReductionRecord {
+  id: string;
+  runId: string;
+  taskId: string;
+  derivedClass: string;
+  droppedRoles: string[];
+  effectiveFloor: string[];
+  writeScopeSnapshot: string[];
+  basis: string;
+  source: string;
+  decidedAt: string;
 }
 
 export interface MemoryEntryRecord {
