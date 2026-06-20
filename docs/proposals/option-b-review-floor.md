@@ -1,9 +1,12 @@
 # Design: Option B review-floor relaxation (council-vetted)
 
-> Status: **approved design, not yet implemented.** Council outcome: `rework_required` on the
-> original scope-guard (Option A), **converged on Option B** with the conditions below.
-> Implement under task `reviewFloorOptB` (security_sensitive); record the council outcome on it,
-> build via `agent-runtime-engineer` under TDD, close via review-orchestrator.
+> Status: **implemented and merged (PR #9, branch `feature/review-floor-opt-b`).** Council outcome:
+> `rework_required` on the original scope-guard (Option A), **converged on Option B** with the
+> conditions below. Built under task `reviewFloorOptB` (security_sensitive) via TDD; closed through
+> review-orchestrator — `reviewer`, `qa_engineer`, and `security_reviewer` all passed as trusted
+> runtime records and runtime `workflow-proof` returned `approved`. Ships behind
+> `ARCHON_REVIEW_FLOOR_REDUCTION` (**default OFF**); enabling reduction is a per-deployment operator
+> opt-in. All seven conditions below are implemented; this document is retained as the design record.
 
 ## Problem
 
