@@ -1,0 +1,11 @@
+# Archon Codex configuration
+#
+# This file is required by the workflow integrity check
+# (scripts/check-archon-workflow.ts lines 695, 806-807).
+# It must reference both AGENTS.md and .agents.md.
+
+# Primary agent instructions file
+agents_file = "AGENTS.md"
+
+# Alias used by Codex for the agents file
+agents_file_alias = ".agents.md"

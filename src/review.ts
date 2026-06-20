@@ -2,7 +2,7 @@
 // Extracted verbatim from src/admin.ts (P8-T1 split). MOVE ONLY — no logic changes.
 import { access, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1435,4 +1435,110 @@ export async function saveReviewCommand(args: readonly string[]) {
   });
 
   console.log(JSON.stringify({ saved: true, taskId, role, outcome, source, runId: runId ?? null }));
+}
+
+// ─── save-approval ────────────────────────────────────────────────────────────
+//
+// Writes an orchestrator approval record for a task and transitions its status
+// to "approved", provided that all required reviews already exist and pass.
+//
+// TRUST GATE: only --source orchestrator is accepted. Self-attestation is
+// explicitly forbidden and will throw before any DB access.
+//
+// REVIEW FLOOR: the existing evaluateReviewDecision logic is NOT bypassed.
+// If the task's required reviews are missing or blocked, the command throws
+// with the list of blockers. The decision gate is identical to the one the
+// service layer enforces in recordReview().
+
+type ApprovalStore = Pick<
+  ArchonStoreContract,
+  "getProjectRuntimeState" | "getTasksByRun" | "getReviews" | "saveApproval" | "updateTask"
+>;
+
+export interface SaveApprovalCommandDeps {
+  withClientFn?: <T>(fn: (store: ApprovalStore) => Promise<T>) => Promise<T>;
+  env?: NodeJS.ProcessEnv;
+}
+
+export async function saveApprovalCommand(
+  args: readonly string[],
+  deps?: SaveApprovalCommandDeps
+): Promise<void> {
+  const taskId = resolveCommandFlag(args, "--task-id");
+  const source = resolveCommandFlag(args, "--source") ?? "orchestrator";
+  const actor = resolveCommandFlag(args, "--actor") ?? "orchestrator";
+  const rationale = resolveCommandFlag(args, "--rationale") ?? "All required reviews passed";
+
+  if (!taskId) {
+    throw new Error("save-approval requires --task-id");
+  }
+
+  // TRUST GATE — identical invariant to save-review (review.ts:1407-1409).
+  if (source !== "orchestrator") {
+    throw new Error(
+      "save-approval only accepts --source orchestrator; self-attestation and seed approval are not permitted"
+    );
+  }
+
+  const env = deps?.env ?? process.env;
+  const workspaceSlug = env.ARCHON_WORKSPACE_SLUG;
+  const projectSlug = env.ARCHON_PROJECT_SLUG;
+  if (!workspaceSlug || !projectSlug) {
+    throw new Error("save-approval requires ARCHON_WORKSPACE_SLUG and ARCHON_PROJECT_SLUG to be set");
+  }
+
+  const projectId = `project:${workspaceSlug}:${projectSlug}`;
+  const now = new Date().toISOString();
+
+  const withClientFn: <T>(fn: (store: ApprovalStore) => Promise<T>) => Promise<T> =
+    deps?.withClientFn ??
+    ((fn) => withClient((client) => fn(new PostgresStore(client) as unknown as ApprovalStore)));
+
+  const result = await withClientFn(async (store) => {
+    const state = await store.getProjectRuntimeState(projectId);
+    if (!state?.activeRunId) {
+      throw new Error(`save-approval: no active run found for project ${projectId}`);
+    }
+    const runId = state.activeRunId;
+
+    const allTasks = await store.getTasksByRun(runId);
+    const task = allTasks.find((candidate) => candidate.packet.taskId === taskId);
+    if (!task) {
+      throw new Error(`save-approval: task "${taskId}" not found in run ${runId}`);
+    }
+
+    const reviews = await store.getReviews(runId, taskId);
+    const decision = evaluateReviewDecision(task, reviews);
+
+    if (decision.decision !== "approved") {
+      throw new Error(
+        `save-approval: task "${taskId}" is not approvable — ${decision.blockers.join("; ")}`
+      );
+    }
+
+    const approval: ApprovalRecord = {
+      id: randomUUID(),
+      runId,
+      taskId,
+      actor,
+      actorRole: "manager" as RetrievalRole,
+      source: "orchestrator",
+      decision: "approved",
+      rationale,
+      createdAt: now
+    };
+
+    await store.saveApproval(approval);
+
+    const updatedTask = {
+      ...task,
+      status: "approved" as const,
+      updatedAt: now
+    };
+    await store.updateTask(updatedTask);
+
+    return { taskId, runId, decision: "approved", source };
+  });
+
+  console.log(JSON.stringify({ saved: true, ...result }));
 }
