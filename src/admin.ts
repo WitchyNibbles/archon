@@ -141,7 +141,7 @@ import { recordCouncilCommand } from "./admin/record-council.ts";
 import { advanceActiveTaskCommand, checkpointCommand, coverageCommand, gapsCommand, githubDispatchCommand, opsCommand, repairTaskQueueCommand, reportCommand, resumeCommand, statusCommand, syncRuntimeExportsCommand } from "./workflow.ts";
 import { bootstrapProject, doctorCommand, health, migrate, reconcileRuntimeStateCommand, recoverCommand, refreshRepoContextCommand, verifyLiveMigrations, verifySetup } from "./runtime.ts";
 import { indexRepoMarkdownCommand, planContextCommand, refreshRetrievalCommand, runEmbeddingJobsCommand } from "./memory.ts";
-import { recordReviewCommand, saveReviewCommand, seedWorkflowProofCommand, verifyReviewIdentityCommand, workflowProofCommand } from "./review.ts";
+import { recordReviewCommand, saveApprovalCommand, saveReviewCommand, seedWorkflowProofCommand, verifyReviewIdentityCommand, workflowProofCommand } from "./review.ts";
 import { exportDocsCommand } from "./export.ts";
 import { daemonCommand, loopCommand, supervisorCommand, supervisorHistoryCommand } from "./daemon.ts";
 export * from "./workflow.ts";
@@ -324,6 +324,11 @@ async function main() {
 
   if (command === "save-review") {
     await saveReviewCommand(args);
+    return;
+  }
+
+  if (command === "save-approval") {
+    await saveApprovalCommand(args);
     return;
   }
 

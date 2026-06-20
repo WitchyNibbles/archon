@@ -4,12 +4,23 @@ import path from "node:path";
 import type { TaskQueue } from "../archon/task-queue.ts";
 import type { RunRecord, TaskRecord, TaskPacketInput } from "../domain/types.ts";
 import type { ArchonStore } from "../store/types.ts";
+import { effectiveRequiredReviews } from "../domain/contracts.ts";
 
 // Findings 1+4 fix: a sanctioned cold-start command to register a brand-new
 // initiative (run + first task + active state) through the runtime, replacing the
 // hand-rolled store surgery that was previously the only way to start work. This
 // keeps the PreToolUse hook strict — task packets are still never created by a
 // scopeless Claude tool call — while giving operators a one-liner cold start.
+
+const VALID_TASK_CLASSES = [
+  "docs_only",
+  "prototype_slice",
+  "memory_curation",
+  "state_sync",
+  "scaffold_only"
+] as const;
+
+export type TaskClass = (typeof VALID_TASK_CLASSES)[number];
 
 export interface BuildInitiativeInput {
   id: string;
@@ -22,6 +33,7 @@ export interface BuildInitiativeInput {
   runId: string;
   taskUuid: string;
   now: string;
+  class?: string | undefined;
   allowManagedScope?: boolean | undefined;
 }
 
@@ -63,6 +75,7 @@ export interface InitiativeRecords {
   run: RunRecord;
   task: TaskRecord;
   queue: TaskQueue;
+  taskClass: TaskClass;
 }
 
 // Pure builder — no IO, fully unit-testable.
@@ -93,6 +106,14 @@ export function buildInitiativeRecords(input: BuildInitiativeInput): InitiativeR
   }
 
   const goal = sanitizeMarkdownField(input.goal.trim()) || `Cold-start initiative ${id}.`;
+
+  const rawClass = input.class ?? "prototype_slice";
+  if (!(VALID_TASK_CLASSES as readonly string[]).includes(rawClass)) {
+    throw new Error(
+      `init-task: --class "${rawClass}" is not a valid task class; must be one of: ${VALID_TASK_CLASSES.join(", ")}`
+    );
+  }
+  const taskClass = rawClass as TaskClass;
 
   const packet: TaskPacketInput = {
     taskId: id,
@@ -161,7 +182,7 @@ export function buildInitiativeRecords(input: BuildInitiativeInput): InitiativeR
         id,
         title,
         status: "in_progress",
-        class: "prototype_slice",
+        class: taskClass,
         depends_on: [],
         acceptance_criteria: [],
         verification: [],
@@ -171,7 +192,7 @@ export function buildInitiativeRecords(input: BuildInitiativeInput): InitiativeR
     ]
   };
 
-  return { run, task, queue };
+  return { run, task, queue, taskClass };
 }
 
 function parseFlag(args: readonly string[], flag: string): string | undefined {
@@ -202,6 +223,7 @@ export interface InitTaskCommandOptions {
   ownerRole: string;
   goal: string;
   allowedWriteScope: readonly string[];
+  class?: string | undefined;
   now?: string | undefined;
   writePacketMarkdown?: boolean | undefined;
   allowManagedScope?: boolean | undefined;
@@ -228,7 +250,7 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
   });
 
   const existing = await options.store.getProjectRuntimeState(project.id);
-  const { run, task, queue } = buildInitiativeRecords({
+  const { run, task, queue, taskClass } = buildInitiativeRecords({
     id: options.id,
     title: options.title,
     ownerRole: options.ownerRole,
@@ -239,6 +261,7 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
     runId: randomUUID(),
     taskUuid: randomUUID(),
     now,
+    class: options.class,
     allowManagedScope: options.allowManagedScope
   });
 
@@ -268,7 +291,7 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
       throw new Error(`init-task: refusing to write packet outside the tasks directory (${packetPath})`);
     }
     await mkdir(path.dirname(packetPath), { recursive: true });
-    await writeFile(packetPath, renderTaskPacketMarkdown(task.packet), "utf8");
+    await writeFile(packetPath, renderTaskPacketMarkdown(task.packet, taskClass), "utf8");
   }
 
   return {
@@ -279,8 +302,10 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
   };
 }
 
-export function renderTaskPacketMarkdown(packet: TaskPacketInput): string {
+export function renderTaskPacketMarkdown(packet: TaskPacketInput, taskClass: TaskClass = "prototype_slice"): string {
   const scope = packet.allowedWriteScope.map((entry) => `- ${entry}`).join("\n");
+  const effectiveReviews = effectiveRequiredReviews(packet.requiredReviews);
+  const reviewsSection = effectiveReviews.map((role) => `- ${role}`).join("\n");
   return `# Task Packet — ${packet.taskId}
 
 ## Task ID
@@ -297,7 +322,7 @@ export function renderTaskPacketMarkdown(packet: TaskPacketInput): string {
 
 ## Task class
 
-prototype_slice
+${taskClass}
 
 ## Goal
 
@@ -317,7 +342,7 @@ false
 
 ## Required reviews
 
-- none
+${reviewsSection}
 `;
 }
 
@@ -344,6 +369,7 @@ export async function initTaskCommand(
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   const allowManagedScope = args.includes("--allow-managed-scope");
+  const taskClassFlag = parseFlag(args, "class");
 
   const projectSlug = env.ARCHON_PROJECT_SLUG;
   if (!projectSlug) {
@@ -364,6 +390,7 @@ export async function initTaskCommand(
       ownerRole,
       goal,
       allowedWriteScope,
+      class: taskClassFlag,
       allowManagedScope
     });
   });
