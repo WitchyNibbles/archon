@@ -419,6 +419,40 @@ function filterAndRankEntries(
 }
 
 /**
+ * Sanitize a single rendered fragment from an anti-pattern entry for safe
+ * injection into the continuation prompt.
+ *
+ * Neutralization steps (prompt-injection defence-in-depth):
+ *   1. Strip control characters (U+0000–U+0008, U+000B–U+001F; keep \t, \n, \r).
+ *   2. Collapse all remaining newline/carriage-return sequences to a single space,
+ *      preventing newline-injection attacks that forge extra block lines.
+ *   3. Neutralize any literal `[ANTI-PATTERN` or `[/ANTI-PATTERN]` sequences so
+ *      content cannot forge or close a block delimiter.
+ *   4. Cap length at maxLen characters (default 300) after the above steps.
+ *
+ * I/O contract:
+ *   Input:  raw fragment string from entry content
+ *   Output: sanitized string, single-line, capped at maxLen chars
+ *   Side effects: none
+ */
+function sanitizeFragment(raw: string, maxLen: number = 300): string {
+  // Step 1: strip control characters — C0 (keep tab \t=\x09, newline \n=\x0a,
+  // CR \r=\x0d), DEL \x7f, and C1 controls \x80-\x9f EXCEPT NEL \x85 (which step 2
+  // collapses as a line break). Prevents terminal/control sequences in content.
+  // eslint-disable-next-line no-control-regex
+  const noControl = raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x84\x86-\x9f]/g, "");
+  // Step 2: collapse ALL line separators to a space so embedded breaks can't forge
+  // extra prompt lines — LF/CR plus Unicode NEL (U+0085), LS (U+2028), PS (U+2029).
+  const singleLine = noControl.replace(/[\n\r\u0085\u2028\u2029]+/g, " ").trim();
+  // Step 3: neutralize block delimiter sequences.
+  const noDelimiters = singleLine
+    .replace(/\[ANTI-PATTERN/gi, "[ANTI\\u2010PATTERN")
+    .replace(/\[\/ANTI-PATTERN\]/gi, "[/ANTI\\u2010PATTERN]");
+  // Step 4: cap length.
+  return noDelimiters.length > maxLen ? noDelimiters.slice(0, maxLen) : noDelimiters;
+}
+
+/**
  * Format a single anti-pattern entry in compact caveman style.
  *
  * Includes visible provenance: fingerprint prefix + representative run IDs.
@@ -428,6 +462,14 @@ function filterAndRankEntries(
  *   Input:  entry (MemoryEntryRecord)
  *   Output: string (compact text, ≤ ~600 chars per entry)
  *   Side effects: none
+ *
+ * Sanitization (mplInjectionHardening FIX 2):
+ *   All rendered content fragments are passed through sanitizeFragment before
+ *   insertion into the prompt block. This neutralizes:
+ *     - Embedded block delimiters ([ANTI-PATTERN / [/ANTI-PATTERN])
+ *     - Newline injection (collapsed to single space)
+ *     - Control characters (stripped)
+ *     - Overlong fragments (capped at 300 chars)
  */
 export function formatInjectedAntiPattern(entry: MemoryEntryRecord): string {
   const fingerprint = (entry.metadata as RetrievalMetadata).mistakeFingerprint ?? "unknown";
@@ -442,9 +484,10 @@ export function formatInjectedAntiPattern(entry: MemoryEntryRecord): string {
   const recurrenceLine = lines.find((l) => l.startsWith("Recurrence:")) ?? "";
   const provenanceLines = lines.filter((l) => l.trim().startsWith("run=")).slice(0, 2);
 
-  const category = categoryLine.replace("Anti-pattern:", "").trim();
-  const anchor = anchorLine.replace("Policy anchor:", "").trim();
-  const recurrence = recurrenceLine.replace("Recurrence:", "").trim();
+  // Extract raw values, then sanitize each fragment before rendering.
+  const category = sanitizeFragment(categoryLine.replace("Anti-pattern:", "").trim());
+  const anchor = sanitizeFragment(anchorLine.replace("Policy anchor:", "").trim());
+  const recurrence = sanitizeFragment(recurrenceLine.replace("Recurrence:", "").trim());
 
   const guidanceStart = lines.findIndex(
     (l) => l.includes("Prevention") || l.includes("detection guidance")
@@ -455,14 +498,14 @@ export function formatInjectedAntiPattern(entry: MemoryEntryRecord): string {
           .slice(guidanceStart + 1)
           .filter((l) => l.trim().startsWith("-"))
           .slice(0, 2)
-          .map((l) => l.trim())
+          .map((l) => sanitizeFragment(l.trim()))
       : [];
 
   return [
     `[ANTI-PATTERN] ${category}`,
-    `anchor:${anchor || "unknown"} fp:${fpShort}`,
+    `anchor:${anchor || "unknown"} fp:${sanitizeFragment(fpShort)}`,
     recurrence ? `seen:${recurrence}` : "",
-    ...provenanceLines.map((l) => l.trim()),
+    ...provenanceLines.map((l) => sanitizeFragment(l.trim())),
     ...guidanceLines
   ]
     .filter((l) => l.length > 0)

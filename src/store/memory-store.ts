@@ -773,6 +773,7 @@ export class MemoryMistakeLedgerStore implements MistakeLedgerStoreLike {
     if (!byId) { return []; }
     return [...byId.values()]
       .filter((e) => e.entryType === "anti_pattern")
+      .filter((e) => e.status === "approved")
       .filter((entry) => {
         const tags = (entry.metadata as import("../domain/types.ts").RetrievalMetadata).tags ?? [];
         const lTag = tags.find((t) => t.startsWith("locus:"));

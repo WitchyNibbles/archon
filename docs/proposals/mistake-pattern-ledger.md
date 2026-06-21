@@ -298,6 +298,9 @@ Revised phase plan:
   Folds into the P1 PR; review gate runs over the combined P1+P1.5 diff.
 - **P2:** distillation + gated draft promotion (recurrence ≥ 2; conditions 1–5).
 - **P3:** preventive locus-filtered injection in `buildBundle` (conditions 6–7) — **wired in production** (`archon_context_bundle` MCP tool via `HandoffToolSurface.injector` + daemon `loopCommand` continuation loop via `PostgresMistakeLedgerStore`). Injector is best-effort/fail-safe at both callsites.
+  - **P3 defence-in-depth (mplInjectionHardening, DONE 2026-06-21):**
+    - **Inject only approved anti-patterns:** `listAntiPatternsForLocus` in both `PostgresMistakeLedgerStore` (SQL `AND status = 'approved'`) and `MemoryMistakeLedgerStore` (in-memory `.filter(e => e.status === "approved")`) now enforce status filtering at the query layer. Previously the filter was absent; any entry type in the store could have been returned. TDD: two new tests verify only `status='approved'` entries are returned when a pending entry is also present.
+    - **Sanitize injected content:** `formatInjectedAntiPattern` now passes every rendered fragment through `sanitizeFragment` (control-char strip, newline collapse, `[ANTI-PATTERN`/`[/ANTI-PATTERN]` neutralization, 300-char cap). TDD: six new tests cover block marker injection, closing delimiter injection, control char stripping, newline collapse, overlong cap, and a normal-entry no-op regression.
 - **P4:** eval proof — injected-prevention hit-rate delta vs P1 baseline.
 
 ---
