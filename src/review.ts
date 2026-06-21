@@ -116,6 +116,7 @@ import type {
   RecoveryApplyResult,
   RecoveryInspectionReport,
   ProjectRecord,
+  ReviewFinding,
   ReviewInput,
   ReviewRecord,
   RuntimeMigrationJournalRecord,
@@ -129,6 +130,7 @@ import type {
   TaskPacketInput,
   TaskStatus
 } from "./domain/types.ts";
+import { reviewSeverities } from "./domain/types.ts";
 import type { WorkspaceRecord } from "./domain/types.ts";
 import type { ExportDocsCommandResult } from "./docs-export/models.ts";
 import { PostgresStore } from "./store/postgres-store.ts";
@@ -1389,11 +1391,199 @@ export async function seedWorkflowProofCommand(args: readonly string[]) {
 }
 
 
-export async function saveReviewCommand(args: readonly string[]) {
+// ---------------------------------------------------------------------------
+// parseReviewFindingsJson — validate and parse --findings-json flag value
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse and validate a JSON string (or file path) as an array of ReviewFinding.
+ *
+ * Accepts either:
+ *   (a) inline JSON string — `[{"message":"...", ...}]`
+ *   (b) file path — caller must read the file first and pass the content here
+ *
+ * Validates:
+ *   - top-level value must be a JSON array
+ *   - each element must have a `message` field of type string
+ *   - optional `severity` must be one of the known ReviewSeverity values
+ *   - no `any` — narrows `unknown` at every step
+ *
+ * Throws on invalid shape with a descriptive message.
+ */
+export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error(`parseReviewFindingsJson: invalid JSON — ${json.slice(0, 80)}`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      "parseReviewFindingsJson: findings-json must be a JSON array of ReviewFinding objects"
+    );
+  }
+
+  const results: ReviewFinding[] = [];
+
+  for (let i = 0; i < parsed.length; i++) {
+    const item: unknown = parsed[i];
+
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new Error(
+        `parseReviewFindingsJson: element [${i}] must be an object, got ${typeof item}`
+      );
+    }
+
+    const obj = item as Record<string, unknown>;
+
+    if (typeof obj["message"] !== "string") {
+      throw new Error(
+        `parseReviewFindingsJson: element [${i}].message must be a string`
+      );
+    }
+
+    // Optional severity — must be a known ReviewSeverity if present
+    if (obj["severity"] !== undefined && obj["severity"] !== null) {
+      if (typeof obj["severity"] !== "string") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].severity must be a string`
+        );
+      }
+      if (!(reviewSeverities as readonly string[]).includes(obj["severity"])) {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].severity "${obj["severity"]}" is not a valid ReviewSeverity (${reviewSeverities.join("|")})`
+        );
+      }
+    }
+
+    // Optional category — plain string allowed (MistakeCategory or fallback)
+    if (obj["category"] !== undefined && obj["category"] !== null) {
+      if (typeof obj["category"] !== "string") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].category must be a string`
+        );
+      }
+    }
+
+    // Optional file — string
+    if (obj["file"] !== undefined && obj["file"] !== null) {
+      if (typeof obj["file"] !== "string") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].file must be a string`
+        );
+      }
+    }
+
+    // Optional line — number
+    if (obj["line"] !== undefined && obj["line"] !== null) {
+      if (typeof obj["line"] !== "number") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].line must be a number`
+        );
+      }
+    }
+
+    // Optional symbol — string
+    if (obj["symbol"] !== undefined && obj["symbol"] !== null) {
+      if (typeof obj["symbol"] !== "string") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].symbol must be a string`
+        );
+      }
+    }
+
+    results.push({
+      message: obj["message"] as string,
+      severity: obj["severity"] as ReviewFinding["severity"],
+      category: obj["category"] as string | undefined,
+      file: obj["file"] as string | undefined,
+      line: obj["line"] as number | undefined,
+      symbol: obj["symbol"] as string | undefined
+    });
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// parseOrReadFindingsJson — FIX 4/5: testable path-guarded file/inline reader
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse and optionally read a --findings-json CLI argument.
+ *
+ * If the argument looks like a file path (contains "/" or ends with ".json"),
+ * reads the file via readFileFn after verifying the resolved path is within cwd.
+ * Otherwise treats the argument as inline JSON.
+ *
+ * Path traversal guard (FIX 5):
+ *   Resolves the path against cwd and rejects any resolved path that does not
+ *   start with cwd — prevents `../../../etc/passwd`, `/proc/self/environ`, etc.
+ *
+ * @param arg         - the raw --findings-json flag value (trimmed)
+ * @param cwd         - the working directory to resolve file paths against
+ * @param readFileFn  - injectable file reader (default: node:fs/promises readFile)
+ */
+export async function parseOrReadFindingsJson(
+  arg: string,
+  cwd: string,
+  readFileFn: (filePath: string) => Promise<string>
+): Promise<readonly ReviewFinding[]> {
+  const trimmed = arg.trim();
+  if (trimmed.includes("/") || trimmed.endsWith(".json")) {
+    // Treat as file path — resolve against cwd and guard against traversal
+    const resolved = path.resolve(cwd, trimmed);
+    const cwdNormalized = path.resolve(cwd);
+    // Ensure the resolved path is within cwd (starts with cwd + sep, or equals cwd)
+    const cwdWithSep = cwdNormalized.endsWith(path.sep)
+      ? cwdNormalized
+      : cwdNormalized + path.sep;
+    if (!resolved.startsWith(cwdWithSep) && resolved !== cwdNormalized) {
+      throw new Error(
+        `save-review: --findings-json path "${trimmed}" resolves to "${resolved}" which is ` +
+          `outside the working directory "${cwdNormalized}". Path traversal is forbidden.`
+      );
+    }
+    let jsonContent: string;
+    try {
+      jsonContent = await readFileFn(resolved);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`save-review: could not read --findings-json file "${resolved}": ${msg}`);
+    }
+    return parseReviewFindingsJson(jsonContent);
+  }
+  // Treat as inline JSON
+  return parseReviewFindingsJson(trimmed);
+}
+
+// ---------------------------------------------------------------------------
+// SaveReviewCommandDeps — injectable dependencies for saveReviewCommand (FIX 4)
+// ---------------------------------------------------------------------------
+
+type SaveReviewStore = Pick<PostgresStore, "getProjectRuntimeState" | "saveOrchestratorReview">;
+
+export interface SaveReviewCommandDeps {
+  /**
+   * Injectable withClient replacement — receives a callback and passes the store to it.
+   * Defaults to the real withClient + PostgresStore when undefined.
+   */
+  withClientFn?: <T>(fn: (store: SaveReviewStore) => Promise<T>) => Promise<T>;
+  /** Injectable environment variables — defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
+  /** Injectable working directory for path resolution — defaults to process.cwd(). */
+  cwd?: string;
+  /** Injectable file reader for --findings-json file path branch — defaults to node:fs/promises readFile. */
+  readFileFn?: (filePath: string) => Promise<string>;
+}
+
+export async function saveReviewCommand(args: readonly string[], deps?: SaveReviewCommandDeps) {
   const taskId = resolveCommandFlag(args, "--task-id");
   const role = resolveCommandFlag(args, "--role");
   const outcome = resolveCommandFlag(args, "--outcome");
   const findings = resolveCommandFlag(args, "--findings") ?? "";
+  const findingsJsonArg = resolveCommandFlag(args, "--findings-json");
   const source = resolveCommandFlag(args, "--source") ?? "orchestrator";
 
   if (!taskId) {
@@ -1409,8 +1599,9 @@ export async function saveReviewCommand(args: readonly string[]) {
     throw new Error("save-review only accepts --source orchestrator; self-attestation is not permitted");
   }
 
-  const workspaceSlug = process.env.ARCHON_WORKSPACE_SLUG;
-  const projectSlug = process.env.ARCHON_PROJECT_SLUG;
+  const env = deps?.env ?? process.env;
+  const workspaceSlug = env.ARCHON_WORKSPACE_SLUG;
+  const projectSlug = env.ARCHON_PROJECT_SLUG;
   if (!workspaceSlug || !projectSlug) {
     throw new Error("save-review requires ARCHON_WORKSPACE_SLUG and ARCHON_PROJECT_SLUG to be set");
   }
@@ -1418,8 +1609,29 @@ export async function saveReviewCommand(args: readonly string[]) {
   const workspaceId = `workspace:${workspaceSlug}`;
   const projectId = `project:${workspaceSlug}:${projectSlug}`;
 
-  const runId = await withClient(async (client) => {
-    const store = new PostgresStore(client);
+  // P1.5: parse --findings-json when supplied.
+  // FIX 4/5: delegates to parseOrReadFindingsJson which guards against path traversal
+  // and is injectable/testable via deps.readFileFn and deps.cwd.
+  let findingDetails: readonly ReviewFinding[] | undefined;
+  if (findingsJsonArg !== undefined && findingsJsonArg.trim().length > 0) {
+    const cwd = deps?.cwd ?? process.cwd();
+    const readFileFn = deps?.readFileFn ?? ((p: string) => readFile(p, "utf8"));
+    findingDetails = await parseOrReadFindingsJson(findingsJsonArg.trim(), cwd, readFileFn);
+  }
+
+  // When structured findingDetails are present, derive the string findings view.
+  // This mirrors the service.ts recordReview derivation for the CLI path.
+  const derivedFindings: string =
+    findingDetails !== undefined && findingDetails.length > 0
+      ? findingDetails.map((f) => f.message).join("; ")
+      : findings;
+
+  const withClientFn =
+    deps?.withClientFn ??
+    (<T>(fn: (store: SaveReviewStore) => Promise<T>) =>
+      withClient((client) => fn(new PostgresStore(client) as unknown as SaveReviewStore)));
+
+  const runId = await withClientFn(async (store) => {
     // Resolve the active run so the review is run-scoped (two-authorities fix).
     const state = await store.getProjectRuntimeState(projectId);
     const activeRunId = state?.activeRunId;
@@ -1427,10 +1639,11 @@ export async function saveReviewCommand(args: readonly string[]) {
       taskId,
       role,
       outcome,
-      findings,
+      findings: derivedFindings,
       workspaceId,
       projectId,
-      runId: activeRunId
+      runId: activeRunId,
+      findingDetails
     });
     return activeRunId;
   });

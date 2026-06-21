@@ -34,8 +34,10 @@ import type {
   EmbeddingJobSourceTable,
   EmbeddingSourceRecord,
   LeaseEmbeddingJobsInput,
+  MistakeLedgerStoreLike,
   QueueEmbeddingJobInput
 } from "./types.ts";
+import type { MistakeOccurrenceRecord } from "../runtime/mistake-ledger.ts";
 export interface SqlQueryResult<Row> {
   rows: Row[];
   rowCount: number | null;
@@ -867,9 +869,9 @@ export class PostgresStore implements ArchonStore {
     await this.client.query(
       `insert into reviews (
          id, workspace_id, project_id, run_id, task_id, reviewer_role, actor, actor_role,
-         source, state, severity, findings, waiver_reason, evidence_refs
+         source, state, severity, findings, waiver_reason, evidence_refs, finding_details
        )
-       select $1, r.workspace_id, r.project_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+       select $1, r.workspace_id, r.project_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
        from runs r
        where r.id = $2`,
       [
@@ -884,7 +886,8 @@ export class PostgresStore implements ArchonStore {
         review.severity,
         review.findings,
         review.waiverReason ?? null,
-        review.evidenceRefs ?? []
+        review.evidenceRefs ?? [],
+        review.findingDetails !== undefined ? JSON.stringify(review.findingDetails) : null
       ]
     );
   }
@@ -904,7 +907,8 @@ export class PostgresStore implements ArchonStore {
           'findings', findings,
           'waiverReason', waiver_reason,
           'evidenceRefs', evidence_refs,
-          'createdAt', created_at
+          'createdAt', created_at,
+          'findingDetails', finding_details
        ) as payload
        from reviews
        where run_id = $1
@@ -912,7 +916,15 @@ export class PostgresStore implements ArchonStore {
        order by created_at asc`,
       [runId, taskId]
     );
-    return result.rows.map((row) => row.payload);
+    return result.rows.map((row) => {
+      const record = row.payload;
+      // finding_details is stored as JSONB — Postgres returns it as a parsed object.
+      // If null (no structured details), strip the field so the type remains clean.
+      if (record.findingDetails === null) {
+        return { ...record, findingDetails: undefined };
+      }
+      return record;
+    });
   }
 
   async getOrchestratorReviews(taskId: string): Promise<{ role: string; outcome: string; source: string }[]> {
@@ -938,6 +950,7 @@ export class PostgresStore implements ArchonStore {
     workspaceId: string;
     projectId: string;
     runId?: string | null | undefined;
+    findingDetails?: readonly import("../domain/types.ts").ReviewFinding[] | undefined;
   }): Promise<void> {
     const id = randomUUID();
     const state = input.outcome === "passed" ? "passed" : "blocked";
@@ -947,10 +960,10 @@ export class PostgresStore implements ArchonStore {
     await this.client.query(
       `insert into reviews (
          id, workspace_id, project_id, run_id, task_id, reviewer_role, actor, actor_role,
-         state, severity, findings, waiver_reason, evidence_refs, source
+         state, severity, findings, waiver_reason, evidence_refs, source, finding_details
        )
        values ($1, $2, $3, $4, $5, $6, 'review-orchestrator', $9,
-               $7, 'low', $8, null, '{}', 'orchestrator')`,
+               $7, 'low', $8, null, '{}', 'orchestrator', $10)`,
       [
         id,
         input.workspaceId,
@@ -960,7 +973,8 @@ export class PostgresStore implements ArchonStore {
         input.role,
         state,
         input.findings.trim() ? [input.findings] : [],
-        input.role
+        input.role,
+        input.findingDetails !== undefined ? JSON.stringify(input.findingDetails) : null
       ]
     );
   }
@@ -1198,6 +1212,10 @@ export class PostgresStore implements ArchonStore {
     return searchMemory(this.client, params);
   }
 
+  // ---------------------------------------------------------------------------
+  // PostgresMistakeLedgerStore lives below; PostgresStore ends here.
+  // ---------------------------------------------------------------------------
+
   private async loadArtifactsByIds(
     projectSlug: string,
     artifactIds: readonly string[]
@@ -1254,5 +1272,93 @@ export class PostgresStore implements ArchonStore {
         "id" | "title" | "content" | "sourcePath" | "sourceAnchor" | "createdAt" | "kind" | "metadata" | "runId"
       >
     >;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PostgresMistakeLedgerStore — occurrence persistence via productState JSONB
+// ---------------------------------------------------------------------------
+// Raw occurrences are appended to project_runtime_state.product_state under
+// the key "mistake_occurrences" (array of MistakeOccurrenceRecord).
+// No schema migration required for P1. Upsert is by record id (later wins).
+
+const PRODUCT_STATE_KEY = "mistake_occurrences";
+
+type ProductStateRow = {
+  product_state: Record<string, unknown>;
+};
+
+function parseMistakeOccurrences(productState: Record<string, unknown>): MistakeOccurrenceRecord[] {
+  const raw = productState[PRODUCT_STATE_KEY];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  // Narrow: accept only objects that look like MistakeOccurrenceRecord
+  return raw.filter(
+    (item): item is MistakeOccurrenceRecord =>
+      item !== null &&
+      typeof item === "object" &&
+      typeof (item as Record<string, unknown>)["id"] === "string" &&
+      typeof (item as Record<string, unknown>)["fingerprint"] === "string"
+  );
+}
+
+export class PostgresMistakeLedgerStore implements MistakeLedgerStoreLike {
+  private readonly client: SqlClient;
+  constructor(client: SqlClient) {
+    this.client = client;
+  }
+
+  async appendMistakeOccurrences(
+    projectId: string,
+    incoming: readonly MistakeOccurrenceRecord[]
+  ): Promise<void> {
+    if (incoming.length === 0) {
+      return;
+    }
+
+    // Load existing productState; create a minimal stub if missing.
+    const result = await this.client.query<ProductStateRow>(
+      `select product_state from project_runtime_state where project_id = $1`,
+      [projectId]
+    );
+
+    if (result.rows[0] === undefined) {
+      console.warn(
+        `[postgres-mistake-ledger] appendMistakeOccurrences: no project_runtime_state row ` +
+          `found for project_id="${projectId}". Occurrences will be lost (row must exist before capture). ` +
+          `Ensure the project runtime is initialised before recording reviews.`
+      );
+      return;
+    }
+
+    const existing = result.rows[0].product_state;
+    const prior = parseMistakeOccurrences(existing);
+
+    // Idempotent merge by id (later wins)
+    const byId = new Map<string, MistakeOccurrenceRecord>(prior.map((r) => [r.id, r]));
+    for (const occ of incoming) {
+      byId.set(occ.id, occ);
+    }
+
+    const updated = { ...existing, [PRODUCT_STATE_KEY]: [...byId.values()] };
+
+    await this.client.query(
+      `update project_runtime_state
+         set product_state = $2::jsonb,
+             updated_at = now()
+       where project_id = $1`,
+      [projectId, JSON.stringify(updated)]
+    );
+  }
+
+  async listMistakeOccurrences(projectId: string): Promise<readonly MistakeOccurrenceRecord[]> {
+    const result = await this.client.query<ProductStateRow>(
+      `select product_state from project_runtime_state where project_id = $1`,
+      [projectId]
+    );
+
+    const productState = result.rows[0]?.product_state ?? {};
+    return parseMistakeOccurrences(productState);
   }
 }

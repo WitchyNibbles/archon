@@ -34,8 +34,10 @@ import type {
   EmbeddingJobSourceTable,
   EmbeddingSourceRecord,
   LeaseEmbeddingJobsInput,
+  MistakeLedgerStoreLike,
   QueueEmbeddingJobInput
 } from "./types.ts";
+import type { MistakeOccurrenceRecord } from "../runtime/mistake-ledger.ts";
 
 function zonedIsoDate(value: string, timezone: string): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -750,4 +752,36 @@ function cosineSimilarity(left: readonly number[], right: readonly number[]): nu
   }
 
   return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
+}
+
+// ---------------------------------------------------------------------------
+// MemoryMistakeLedgerStore — in-memory implementation for tests
+// ---------------------------------------------------------------------------
+
+/**
+ * In-memory MistakeLedgerStoreLike for tests and local-only usage.
+ * Persists occurrences in a Map<projectId, MistakeOccurrenceRecord[]>.
+ * Idempotent by record id (upsert semantics: later record with same id wins).
+ */
+export class MemoryMistakeLedgerStore implements MistakeLedgerStoreLike {
+  private readonly occurrences = new Map<string, Map<string, MistakeOccurrenceRecord>>();
+
+  async appendMistakeOccurrences(
+    projectId: string,
+    incoming: readonly MistakeOccurrenceRecord[]
+  ): Promise<void> {
+    if (incoming.length === 0) {
+      return;
+    }
+    const byId = this.occurrences.get(projectId) ?? new Map<string, MistakeOccurrenceRecord>();
+    for (const occ of incoming) {
+      byId.set(occ.id, occ);
+    }
+    this.occurrences.set(projectId, byId);
+  }
+
+  async listMistakeOccurrences(projectId: string): Promise<readonly MistakeOccurrenceRecord[]> {
+    const byId = this.occurrences.get(projectId);
+    return byId ? [...byId.values()] : [];
+  }
 }
