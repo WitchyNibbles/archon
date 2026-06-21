@@ -133,7 +133,14 @@ function createTrustedReviewActionContextInternal(
   return trustedContext as TrustedReviewActionContext;
 }
 
-export function createTrustedReviewActionContext(
+/**
+ * Test-only surface for minting a WeakSet-registered trusted context in unit
+ * and integration tests. The clearly-named `ForTest` suffix signals that this
+ * export must NOT be used in production code paths. Production code must go
+ * through `createReviewActionContextResolver` so that principal binding is
+ * enforced at the resolver level.
+ */
+export function createTrustedReviewActionContextForTest(
   context: ReviewActionContext
 ): TrustedReviewActionContext {
   return createTrustedReviewActionContextInternal(context);

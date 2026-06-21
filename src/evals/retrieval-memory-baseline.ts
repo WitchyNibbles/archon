@@ -1,7 +1,40 @@
 import { SEARCH_MEMORY_STALE_AFTER_DAYS } from "../core/policy.ts";
+import { createReviewActionContextResolver } from "../core/review-context.ts";
+import type { ResolveReviewActionContext } from "../core/review-context.ts";
 import { ArchonCoreService } from "../core/service.ts";
 import type { MemoryEntryRecord } from "../domain/types.ts";
 import { MemoryStore } from "../store/memory-store.ts";
+
+/**
+ * Trusted seed resolver for memory promotion in eval / local-seed contexts.
+ *
+ * Accepts the "memory_curator" and "memory_curator@example.com" actors and
+ * binds them to the "reviewer" role via the archon-local-seed provider.
+ * Must never be used in production.
+ */
+function createMemoryPromotionSeedResolver(): ResolveReviewActionContext {
+  return createReviewActionContextResolver({
+    bindings: {
+      bindings: [
+        {
+          principal: { provider: "archon-local-seed", subject: "memory_curator" },
+          actors: [{ actor: "memory_curator", roles: ["reviewer"] }]
+        },
+        {
+          principal: { provider: "archon-local-seed", subject: "memory_curator@example.com" },
+          actors: [{ actor: "memory_curator@example.com", roles: ["reviewer"] }]
+        }
+      ]
+    },
+    async resolveAuthenticatedPrincipal(input) {
+      return {
+        provider: "archon-local-seed",
+        subject: input.actor,
+        verified: true
+      };
+    }
+  });
+}
 
 export interface RetrievalEvalCaseResult {
   id: string;
@@ -41,7 +74,10 @@ export function mutateMemoryEntryWhere(
 export async function runRetrievalMemoryBaseline(): Promise<RetrievalEvalReport> {
   const cases: RetrievalEvalCaseResult[] = [];
   const store = new MemoryStore();
-  const service = new ArchonCoreService(store);
+  const service = new ArchonCoreService(store, {
+    resolveReviewActionContext: createMemoryPromotionSeedResolver(),
+    reviewSource: "seed"
+  });
 
   const projectRun = await service.intakeRequest({
     workspaceSlug: "team",
