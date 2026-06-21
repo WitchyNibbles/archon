@@ -1978,7 +1978,8 @@ export async function writeDaemonOperatorHandoff(
       | "runtime_blocked"
       | "recovery_required"
       | "runtime_task_missing"
-      | "active_task_mismatch";
+      | "active_task_mismatch"
+      | "uncommitted_deliverables";
     reason: string;
     workspaceSlug: string;
     projectSlug: string;
@@ -2318,7 +2319,8 @@ export async function readDaemonOperatorHandoff(
       parsed.blockerKind === "runtime_blocked" ||
       parsed.blockerKind === "recovery_required" ||
       parsed.blockerKind === "runtime_task_missing" ||
-      parsed.blockerKind === "active_task_mismatch"
+      parsed.blockerKind === "active_task_mismatch" ||
+      parsed.blockerKind === "uncommitted_deliverables"
         ? parsed.blockerKind
         : "unknown";
     const reason =
@@ -3730,6 +3732,37 @@ export async function writeSupervisorReviewAction(input: {
 }
 
 
+// Map an advance-active-task failure to an operator-actionable blocker. The commit
+// guard (advanceCommitGuard) throws with a recognizable signature when in-scope
+// deliverables are uncommitted; that case gets a dedicated, recoverable blocker
+// with commit guidance. Any other advance failure surfaces as runtime_blocked so a
+// throw never escapes the daemon loop as an unhandled exception. Pure and
+// unit-testable.
+export function classifyAdvanceFailure(error: unknown): {
+  blockerKind: "uncommitted_deliverables" | "runtime_blocked";
+  reason: string;
+  nextActions: string[];
+} {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/refusing to close task|uncommitted change\(s\)/i.test(message)) {
+    return {
+      blockerKind: "uncommitted_deliverables",
+      reason: message,
+      nextActions: [
+        "Commit the active task's uncommitted in-scope deliverables, then re-run the daemon.",
+        "Or run advance-active-task --apply --allow-uncommitted if leaving them uncommitted is intentional."
+      ]
+    };
+  }
+  return {
+    blockerKind: "runtime_blocked",
+    reason: `advance-active-task failed: ${message}`,
+    nextActions: [
+      "Resolve the advance-active-task failure (see reason), then re-run the daemon."
+    ]
+  };
+}
+
 export async function executeDaemonCommandFromArgs(
   args: readonly string[],
   options: ExecuteDaemonCommandOptions
@@ -3776,7 +3809,8 @@ export async function executeDaemonCommandFromArgs(
         | "runtime_blocked"
         | "recovery_required"
         | "runtime_task_missing"
-        | "active_task_mismatch";
+        | "active_task_mismatch"
+        | "uncommitted_deliverables";
       reason: string;
       cycle: number;
       activeRunId: string | null;
@@ -4333,20 +4367,46 @@ export async function executeDaemonCommandFromArgs(
       };
 
       if (directive.kind === "complete") {
-        const advanced = await executeAdvanceActiveTaskCommandFromArgs(
-          [
-            "--workspace-slug",
-            workspaceSlug,
-            "--project-slug",
-            projectSlug,
-            "--run-id",
+        let advanced: Awaited<ReturnType<typeof executeAdvanceActiveTaskCommandFromArgs>>;
+        try {
+          advanced = await executeAdvanceActiveTaskCommandFromArgs(
+            [
+              "--workspace-slug",
+              workspaceSlug,
+              "--project-slug",
+              projectSlug,
+              "--run-id",
+              activeRunId,
+              "--apply",
+              "--format",
+              "json"
+            ],
+            options
+          );
+        } catch (error) {
+          // advance-active-task can throw — most notably the commit guard when the
+          // task's in-scope deliverables are uncommitted. Surface it as a structured
+          // blocker so the autonomy loop pauses for the operator instead of crashing.
+          const failure = classifyAdvanceFailure(error);
+          cycles.push({
+            cycle,
+            directiveKind: directive.kind,
+            action: "blocked",
+            runId: activeRunId,
+            taskId: activeTaskId,
+            sessionId: latestSessionId ?? null,
+            summary: failure.reason
+          });
+          return blockedResult({
+            blockerKind: failure.blockerKind,
+            reason: failure.reason,
+            cycle,
             activeRunId,
-            "--apply",
-            "--format",
-            "json"
-          ],
-          options
-        );
+            activeTaskId,
+            directiveKind: directive.kind,
+            nextActions: failure.nextActions
+          });
+        }
 
         cycles.push({
           cycle,

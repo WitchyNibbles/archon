@@ -69,6 +69,7 @@ export interface DaemonOperatorHandoffObservation {
     | "recovery_required"
     | "runtime_task_missing"
     | "active_task_mismatch"
+    | "uncommitted_deliverables"
     | "unknown";
   reason: string;
   workspaceSlug?: string | undefined;
