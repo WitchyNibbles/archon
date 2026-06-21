@@ -2497,3 +2497,183 @@ test("FIX2 evaluatePreToolUse: echo x > /tmp/foo.txt with active task and narrow
   const result = evaluatePreToolUse(bashPayload("echo x > /tmp/foo.txt"), ctx);
   assert.ok(result === undefined || result.decision !== "block", "bash redirect to outside-repo absolute must not be blocked by scope gate");
 });
+
+// ─── hookScopeNarrowing Fix 1: no-task gate must NOT block outside-repo writes ──
+
+test("Fix1: Write to /tmp/z.txt with NO active task is NOT blocked (outside repo)", () => {
+  // No task active; the path is not inside the repo root. The no-task write gate
+  // must not fire for paths outside the repo. The scope gate also must not fire.
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "Write", tool_input: { file_path: "/tmp/z.txt" } },
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `Write to /tmp outside repo with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("Fix1: Write to /home/eimi/.claude/projects/x/memory/y.md with NO active task is NOT blocked (outside repo)", () => {
+  // Global Claude project memory is outside the repo root — archon must not own it.
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "Write", tool_input: { file_path: "/home/eimi/.claude/projects/x/memory/y.md" } },
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `Write to global .claude/projects outside repo with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("Fix1: Write to repo-relative src/index.ts with NO active task is STILL blocked (in-repo)", () => {
+  // In-repo write must still be blocked by the no-task gate even after fix.
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(writePayload("src/index.ts"), ctx);
+  assert.ok(result, "expected a block for in-repo write with no task");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("Fix1: Write to .claude/settings.json with NO active task is STILL blocked (managed path)", () => {
+  // Managed control-layer path — blocked by managed-path gate before no-task gate.
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(writePayload(".claude/settings.json"), ctx);
+  assert.ok(result, "expected a block for managed path write with no task");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /requires an active archon task/i);
+});
+
+test("Fix1: Write to /repo/src/foo.ts (absolute, inside repo) with NO active task is STILL blocked", () => {
+  // Absolute path inside the repo root strips to src/foo.ts → in-repo → still blocked.
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "Write", tool_input: { file_path: "/repo/src/foo.ts" } },
+    ctx
+  );
+  assert.ok(result, "expected a block for absolute-inside-repo write with no task");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("Fix1: Edit to /tmp/scratch.ts with NO active task is NOT blocked (outside repo)", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "Edit", tool_input: { file_path: "/tmp/scratch.ts" } },
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `Edit to /tmp with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+// ─── hookScopeNarrowing Fix 2: extractBashReferencedManagedPaths must not over-match ──
+
+// Import extractBashReferencedManagedPaths — it is exported from hook-utils.mjs
+const { extractBashReferencedManagedPaths } = await import(`${hooksDir}/hook-utils.mjs`);
+
+test("Fix2 extractBashReferencedManagedPaths: grep pattern .claude in single-quoted string is NOT flagged", () => {
+  // grep -rn '\.claude' . — the path appears only inside a single-quoted argument
+  const matches = extractBashReferencedManagedPaths("grep -rn '\\.claude' .");
+  assert.deepEqual(matches, [], `expected no matches for grep pattern in single-quoted arg, got: ${JSON.stringify(matches)}`);
+});
+
+test("Fix2 extractBashReferencedManagedPaths: grep pattern claude in double-quoted string is NOT flagged", () => {
+  // grep -rn "claude|managed" . — mentions "claude" only inside a quoted string
+  const matches = extractBashReferencedManagedPaths('grep -rn "claude|managed" .');
+  assert.deepEqual(matches, [], `expected no matches for grep pattern in double-quoted arg, got: ${JSON.stringify(matches)}`);
+});
+
+test("Fix2 extractBashReferencedManagedPaths: reference to ~/.claude/ (absolute outside repo) is NOT flagged", () => {
+  // cp ~/.claude/settings.json /tmp/backup.json — source is outside the repo.
+  // The managed path appears as a suffix of an absolute path (preceded by "/").
+  const matches = extractBashReferencedManagedPaths("cp ~/.claude/settings.json /tmp/backup.json");
+  assert.deepEqual(matches, [], `expected no matches for ~/.claude/ reference, got: ${JSON.stringify(matches)}`);
+});
+
+test("Fix2 extractBashReferencedManagedPaths: ls .claude/agents (unquoted, repo-relative) IS flagged", () => {
+  // ls .claude/agents — unquoted repo-relative managed path; should still be flagged
+  const matches = extractBashReferencedManagedPaths("ls .claude/agents");
+  assert.ok(matches.includes(".claude"), `expected .claude to be flagged, got: ${JSON.stringify(matches)}`);
+});
+
+test("Fix2 extractBashReferencedManagedPaths: echo x > .claude/settings.json IS flagged", () => {
+  // Write redirect to in-repo managed path — must still be flagged
+  const matches = extractBashReferencedManagedPaths("echo x > .claude/settings.json");
+  assert.ok(matches.includes(".claude"), `expected .claude to be flagged for write redirect, got: ${JSON.stringify(matches)}`);
+});
+
+test("Fix2 extractBashReferencedManagedPaths: CLAUDE.md in double-quoted string is NOT flagged", () => {
+  // grep -rn "CLAUDE.md" . — managed path appears only inside double-quoted pattern
+  const matches = extractBashReferencedManagedPaths('grep -rn "CLAUDE.md" .');
+  assert.deepEqual(matches, [], `expected no matches for CLAUDE.md in double-quoted pattern, got: ${JSON.stringify(matches)}`);
+});
+
+test("Fix2 extractBashReferencedManagedPaths: unquoted CLAUDE.md IS flagged", () => {
+  // cat CLAUDE.md — unquoted reference; still flagged
+  const matches = extractBashReferencedManagedPaths("cat CLAUDE.md");
+  assert.ok(matches.includes("CLAUDE.md"), `expected CLAUDE.md to be flagged, got: ${JSON.stringify(matches)}`);
+});
+
+test("Fix2 evaluatePreToolUse: grep referencing .claude in quoted pattern with no active task is NOT blocked", () => {
+  // The quoted grep pattern should not trigger the managed-path gate
+  const result = evaluatePreToolUse(
+    bashPayload("grep -rn '\\.claude' ."),
+    emptyContext()
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `grep .claude in quoted pattern with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("Fix2 evaluatePreToolUse: ls .claude/agents && echo done with no active task is NOT blocked (read-only compound)", () => {
+  // ls .claude/agents is read-only; echo is read-only. isReadOnlyBashCommand must return true
+  // for the compound command. extractBashReferencedManagedPaths flags .claude, but since the
+  // whole command is read-only, the managed-path gate must not fire.
+  const result = evaluatePreToolUse(
+    bashPayload("ls .claude/agents && echo done"),
+    emptyContext()
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `read-only ls .claude/agents && echo done with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("Fix2 evaluatePreToolUse: echo x > .claude/settings.json with no active task is STILL blocked", () => {
+  // Actual write to .claude/ — must still be blocked
+  const result = evaluatePreToolUse(
+    bashPayload("echo x > .claude/settings.json"),
+    emptyContext()
+  );
+  assert.ok(result, "expected a block for write to .claude/");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /requires an active archon task/i);
+});
+
+test("Fix2 evaluatePreToolUse: cp ~/.claude/settings.json /tmp/backup.json with no active task is NOT blocked", () => {
+  // Source is outside-repo absolute path; destination is /tmp/. Neither is in-repo managed.
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    bashPayload("cp ~/.claude/settings.json /tmp/backup.json"),
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `cp from ~/.claude/ to /tmp/ with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("Fix2 evaluatePreToolUse: .archon/memory/ write without scope is STILL blocked (managed path)", () => {
+  // In-repo managed path — must still be blocked regardless of new fixes
+  const result = evaluatePreToolUse(
+    writePayload(".archon/memory/facts.md"),
+    emptyContext()
+  );
+  assert.ok(result, "expected a block for .archon/memory/ write with no scope");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /requires an active archon task/i);
+});

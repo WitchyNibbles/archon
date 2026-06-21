@@ -266,9 +266,15 @@ export function evaluatePreToolUse(payload, context) {
     if (filePath && (filePath === ".archon/skills" || filePath.startsWith(".archon/skills/"))) {
       return undefined;
     }
+    // Outside-repo detection: toRelativePath returns an absolute path (still starting
+    // with "/") when the file is not under the repo root.  Such paths are legitimately
+    // outside archon's jurisdiction (e.g. ~/.claude/projects/…, /tmp/foo.txt).
+    // Compute ONCE here so both the no-task gate and the task-scope gate can use it.
+    const filePathIsOutsideRepo = typeof filePath === "string" && filePath.startsWith("/");
     // No-task write gate: block substantive writes when no task is active.
     // archon:bypass does NOT apply here — it only affects the UserPromptSubmit advisory.
-    if (filePath && !context.activeTaskId && isSubstantiveWriteTarget(filePath)) {
+    // Outside-repo paths are exempt — archon does not own files outside the repo root.
+    if (filePath && !context.activeTaskId && !filePathIsOutsideRepo && isSubstantiveWriteTarget(filePath)) {
       return {
         decision: "block",
         reason: `write to ${filePath} blocked — no active archon task. To unblock: register an initiative via \`npm run archon -- init-task --id <id> --title "<title>" --scope <comma,paths>\` (or point .archon/ACTIVE at an existing task), then retry.`
@@ -278,7 +284,6 @@ export function evaluatePreToolUse(payload, context) {
     // block writes to files outside that scope.
     // Skip the scope gate for absolute paths that are outside the repo root — those
     // are legitimately outside archon's jurisdiction (e.g. /tmp/foo.txt).
-    const filePathIsOutsideRepo = typeof filePath === "string" && filePath.startsWith("/");
     if (
       filePath &&
       context.activeTaskId &&

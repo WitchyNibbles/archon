@@ -1735,12 +1735,44 @@ export function extractBashReferencedManagedPaths(command) {
   // written into a heredoc that merely MENTION a managed path do not trip the
   // guard. An actual write target (e.g. `cat > .claude/x <<EOF`) keeps the
   // redirect outside the body, so real managed writes remain detected.
-  const scanned = stripHeredocBodies(command);
+  let scanned = stripHeredocBodies(command);
+
+  // Strip quoted strings so that a managed-path prefix that appears only inside
+  // a grep/sed pattern or a quoted argument (e.g. grep -rn "\.claude" . or
+  // grep -rn 'CLAUDE.md' .) does not falsely trigger the guard.  Single-quoted
+  // strings are stripped entirely; double-quoted strings have their contents
+  // replaced with a placeholder that cannot match any managed prefix.
+  scanned = scanned
+    .replace(/'[^']*'/g, "''")
+    .replace(/"[^"]*"/g, '""');
 
   const matches = [];
   for (const prefix of managedPathPrefixes) {
     const plainPrefix = prefix.replace(/\/$/, "");
-    if (scanned.includes(prefix) || scanned.includes(plainPrefix)) {
+    // Use a word-boundary style check: the prefix must appear as a standalone
+    // token or path component, NOT as a suffix of an absolute path from outside
+    // the repo (e.g. /home/user/.claude/projects/... should not flag .claude/).
+    // A match at position i is an outside-repo absolute-path hit when the
+    // character immediately before the prefix is "/".  Such matches are skipped.
+    const candidates = [prefix, plainPrefix];
+    let found = false;
+    for (const candidate of candidates) {
+      let idx = scanned.indexOf(candidate);
+      while (idx !== -1) {
+        // Skip when the matched prefix is a suffix of an absolute path outside
+        // the repo root (preceding char is "/").  The intent is to avoid
+        // flagging ~/.claude/... or /some/path/.claude/... appearing in a
+        // command that reads from them (e.g. cp ~/.claude/settings.json /tmp/).
+        const preceding = idx > 0 ? scanned[idx - 1] : "";
+        if (preceding !== "/") {
+          found = true;
+          break;
+        }
+        idx = scanned.indexOf(candidate, idx + 1);
+      }
+      if (found) break;
+    }
+    if (found) {
       matches.push(plainPrefix);
     }
   }
