@@ -63,6 +63,7 @@ import type {
   ResolveReviewActionContext,
   ReviewActionContextResolverInput
 } from "./review-context.ts";
+import { isTrustedReviewActionContext } from "./review-context.ts";
 import type {
   AnalysisPhase,
   ArchitectureDecisionRecord,
@@ -1586,17 +1587,48 @@ export class ArchonCoreService {
   }
 
   async promoteMemory(runId: string, input: MemoryPromotionInput) {
+    if (!this.resolveReviewActionContext) {
+      throw new Error("promoteMemory requires a trusted promotion context resolver");
+    }
+
     const run = await this.requireRun(runId);
     const errors = validateMemoryPromotion(input);
     if (errors.length > 0) {
       throw new Error(`Memory promotion rejected: ${errors.join("; ")}`);
     }
 
+    let context;
+    try {
+      context = await this.resolveReviewActionContext({
+        runId,
+        taskId: input.sourceTaskId ?? "",
+        actor: input.actor,
+        reviewerRole: "reviewer",
+        reviewState: "passed"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Memory promotion rejected: invalid promotion context: ${message}`);
+    }
+
+    // FINDING 1: mirror recordReview's trust gate — the resolver must return a
+    // WeakSet-registered TrustedReviewActionContext.  A plain unsealed object
+    // returned by a malicious or misconfigured resolver must be rejected here.
+    if (!isTrustedReviewActionContext(context)) {
+      throw new Error(
+        "Memory promotion rejected: promotion context must be a sealed trusted review action context"
+      );
+    }
+
     const createdAt = timestamp();
+    // FINDING 2: authorityLevel is always "reviewed_memory" for promoted
+    // memory entries regardless of caller input — strip any caller-supplied
+    // value before passing through normalizeRetrievalMetadata.
+    const { authorityLevel: _discardedAuthorityLevel, ...callerMetadata } = input.metadata ?? {};
     const metadata = normalizeRetrievalMetadata({
-      ...input.metadata,
-      reviewedAt: input.metadata?.reviewedAt ?? createdAt,
-      authorityLevel: input.metadata?.authorityLevel ?? "reviewed_memory"
+      ...callerMetadata,
+      reviewedAt: callerMetadata.reviewedAt ?? createdAt,
+      authorityLevel: "reviewed_memory"
     });
 
     const entry = {
@@ -1609,8 +1641,13 @@ export class ArchonCoreService {
       entryType: input.entryType,
       title: input.title,
       content: input.content,
-      reviewer: input.reviewer,
-      actor: input.actor,
+      // NON-BLOCKING (by design): input.reviewer and input.actor are silently
+      // discarded here — the stored values always come from the trusted resolver
+      // context.  Callers should not rely on those input fields being stored.
+      // Follow-up: mistake-pattern-ledger.md tracks this as a pattern to
+      // address in a future MemoryPromotionInput type revision.
+      reviewer: context.actor,
+      actor: context.actor,
       status: "approved" as const,
       metadata,
       createdAt
@@ -2554,6 +2591,10 @@ export class ArchonCoreService {
     return run;
   }
 
+  // NON-BLOCKING (intentional exempt): direct saveMemoryEntry call here bypasses
+  // the promoteMemory trust gate — this is an intentional exempt internal
+  // telemetry path writing operational_context-tier loop history that is not
+  // caller-controllable. Reviewed and accepted by security gate 2026-06-21.
   private async persistLoopExecutionHistory(
     runId: string,
     steps: readonly DirectiveExecutionStep[]
