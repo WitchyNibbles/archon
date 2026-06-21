@@ -216,6 +216,12 @@ export interface ExecuteAdvanceActiveTaskCommandOptions extends ExecuteWorkflowP
   }) => Promise<{ workspace: WorkspaceRecord; project: ProjectRecord } | undefined>;
   getProjectRuntimeState: (projectId: string) => Promise<ProjectRuntimeStateRecord | undefined>;
   saveProjectRuntimeState: (state: ProjectRuntimeStateRecord) => Promise<void>;
+  /**
+   * advanceCommitGuard: returns the repo-relative paths with uncommitted changes
+   * (staged, unstaged, or untracked). Injectable for testing; defaults to a real
+   * `git status --porcelain` reader in the CLI wrapper.
+   */
+  getUncommittedPaths?: ((cwd: string) => readonly string[]) | undefined;
 }
 
 
@@ -237,6 +243,13 @@ export interface AdvanceActiveTaskCommandResult {
   nextTaskId: string | null;
   proof: WorkflowProofResult;
   queue: TaskQueue;
+  /**
+   * advanceCommitGuard: repo-relative paths with uncommitted changes that fall
+   * inside the active task's write scope (excluding .archon/** live state). On
+   * `--apply` a non-empty list blocks the advance unless `--allow-uncommitted` is
+   * passed; in dry-run it is advisory only.
+   */
+  uncommittedInScope: string[];
 }
 
 
@@ -1881,7 +1894,10 @@ export function formatAdvanceActiveTaskCommandResult(result: AdvanceActiveTaskCo
     `completed-task: ${result.taskId}`,
     `proof-run: ${result.proof.runId}`,
     `next-task: ${result.nextTaskId ?? "none"}`,
-    `queue-current-task: ${result.queue.current_task_id ?? "none"}`
+    `queue-current-task: ${result.queue.current_task_id ?? "none"}`,
+    `uncommitted-in-scope: ${
+      result.uncommittedInScope.length > 0 ? result.uncommittedInScope.join(", ") : "none"
+    }`
   ].join("\n");
 }
 
@@ -1950,6 +1966,186 @@ export async function executeSyncRuntimeExportsCommandFromArgs(
 }
 
 
+// ─── advanceCommitGuard helpers ──────────────────────────────────────────────
+
+function normalizeGuardPath(value: string): string {
+  return value
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "")
+    .trim();
+}
+
+// Decode a git-quoted path body (the content between the surrounding double
+// quotes). git C-escapes special bytes: standard escapes (\n \t \r \" \\) and
+// octal \NNN for non-ASCII bytes. We reassemble the raw byte stream and decode it
+// as UTF-8 so non-ASCII filenames survive intact (otherwise they would be
+// misclassified and silently excluded from the guard).
+function decodeGitQuotedPath(body: string): string {
+  const bytes: number[] = [];
+  const simple: Record<string, number> = {
+    n: 0x0a,
+    t: 0x09,
+    r: 0x0d,
+    '"': 0x22,
+    "\\": 0x5c
+  };
+  let i = 0;
+  while (i < body.length) {
+    const ch = body[i] ?? "";
+    if (ch === "\\" && i + 1 < body.length) {
+      const octal = body.slice(i + 1).match(/^[0-7]{1,3}/);
+      if (octal) {
+        bytes.push(parseInt(octal[0], 8) & 0xff);
+        i += 1 + octal[0].length;
+        continue;
+      }
+      const escChar = body[i + 1] ?? "";
+      bytes.push(simple[escChar] ?? escChar.charCodeAt(0));
+      i += 2;
+      continue;
+    }
+    for (const b of Buffer.from(ch, "utf8")) bytes.push(b);
+    i += 1;
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+// Parse `git status --porcelain` (v1) into the set of repo-relative paths that
+// have uncommitted changes (staged, unstaged, or untracked). Renames/copies yield
+// the new (post-rename) path — the live deliverable. Pure and unit-testable.
+export function parseGitPorcelain(output: string): string[] {
+  if (typeof output !== "string" || output.trim().length === 0) {
+    return [];
+  }
+  const paths = new Set<string>();
+  for (const rawLine of output.split(/\r?\n/)) {
+    if (rawLine.trim().length === 0) continue;
+    // Porcelain v1 lines are "XY PATH" — two status columns, a space, then the
+    // path starting at index 3.
+    const status = rawLine.slice(0, 2);
+    let entry = rawLine.slice(3).trim();
+    if (entry.length === 0) continue;
+    // Rename/copy: "old -> new" — keep the new path. Only treat " -> " as a
+    // rename separator when the status code is actually R(ename) or C(opy), so a
+    // literal " -> " inside an ordinary filename is not misparsed.
+    if (status.includes("R") || status.includes("C")) {
+      // Use lastIndexOf so an original filename that itself contains " -> "
+      // still resolves to the true new path (the final segment).
+      const arrow = entry.lastIndexOf(" -> ");
+      if (arrow !== -1) {
+        entry = entry.slice(arrow + 4).trim();
+      }
+    }
+    // git quotes paths containing special characters; drop the surrounding quotes
+    // and decode the C-escapes within.
+    if (entry.length >= 2 && entry.startsWith("\"") && entry.endsWith("\"")) {
+      entry = decodeGitQuotedPath(entry.slice(1, -1));
+    }
+    if (entry.length > 0) paths.add(entry);
+  }
+  return [...paths];
+}
+
+// From a set of uncommitted paths, select those that are real deliverables for the
+// active task: inside its write scope AND not under .archon/** (live workflow state
+// that advance-active-task itself rewrites and must never block on). Pure.
+export function selectUncommittedDeliverables(
+  uncommittedPaths: readonly string[],
+  allowedWriteScope: readonly string[]
+): string[] {
+  const scope = allowedWriteScope
+    .map((entry) => normalizeGuardPath(entry))
+    .filter((entry) => entry.length > 0);
+  if (scope.length === 0) {
+    return [];
+  }
+  const result = new Set<string>();
+  for (const raw of uncommittedPaths) {
+    const p = normalizeGuardPath(raw);
+    if (p.length === 0) continue;
+    if (p === ".archon" || p.startsWith(".archon/")) continue;
+    const inScope = scope.some((entry) => p === entry || p.startsWith(`${entry}/`));
+    if (inScope) result.add(p);
+  }
+  return [...result].sort();
+}
+
+// Decide whether the commit guard blocks the advance. Pure and unit-testable: only
+// an `--apply` mutation with in-scope uncommitted deliverables and no override is
+// blocked; dry-run and overridden invocations always pass.
+export function evaluateCommitGuard(input: {
+  mode: "dry_run" | "applied";
+  uncommittedInScope: readonly string[];
+  allowOverride: boolean;
+  taskId: string;
+}): { block: boolean; reason?: string } {
+  if (input.mode !== "applied" || input.allowOverride || input.uncommittedInScope.length === 0) {
+    return { block: false };
+  }
+  const shown = input.uncommittedInScope.slice(0, 10).join(", ");
+  const more =
+    input.uncommittedInScope.length > 10
+      ? ` (and ${input.uncommittedInScope.length - 10} more)`
+      : "";
+  return {
+    block: true,
+    reason:
+      `advance-active-task refusing to close task "${input.taskId}": ${input.uncommittedInScope.length} ` +
+      `uncommitted change(s) inside its write scope are not committed: ${shown}${more}. ` +
+      `Commit the task's deliverables first, or pass --allow-uncommitted to override.`
+  };
+}
+
+// Resolve the commit-guard decision for an advance: read the active task's write
+// scope from the status snapshot, intersect it with the working tree's uncommitted
+// paths, and decide whether to block. Extracted as an injectable seam so the full
+// wiring (snapshot lookup by task id → scope → uncommitted intersection → decision)
+// is unit-testable without standing up the workflow-proof path. Fail-open when the
+// active task is absent from the snapshot (indeterminate scope → empty → no block).
+export async function computeAdvanceCommitGuard(input: {
+  runId: string;
+  activeTaskId: string;
+  mode: "dry_run" | "applied";
+  allowOverride: boolean;
+  cwd: string;
+  getStatusSnapshot: (runId: string) => Promise<RunStatusSnapshot>;
+  getUncommittedPaths: (cwd: string) => readonly string[];
+}): Promise<{ uncommittedInScope: string[]; guard: { block: boolean; reason?: string } }> {
+  const snapshot = await input.getStatusSnapshot(input.runId);
+  const activeTask = snapshot.tasks.find((task) => task.packet.taskId === input.activeTaskId);
+  const activeScope = activeTask ? activeTask.packet.allowedWriteScope : [];
+  const uncommittedInScope = selectUncommittedDeliverables(
+    input.getUncommittedPaths(input.cwd),
+    activeScope
+  );
+  const guard = evaluateCommitGuard({
+    mode: input.mode,
+    uncommittedInScope,
+    allowOverride: input.allowOverride,
+    taskId: input.activeTaskId
+  });
+  return { uncommittedInScope, guard };
+}
+
+// Real git reader — fail-open (returns []) when git is unavailable or the command
+// fails, so the guard never blocks a legitimate advance in a non-git context.
+function readUncommittedPaths(cwd: string): string[] {
+  try {
+    const res = spawnSync("git", ["status", "--porcelain"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 10_000
+    });
+    if (res.status !== 0 || typeof res.stdout !== "string") {
+      return [];
+    }
+    return parseGitPorcelain(res.stdout);
+  } catch {
+    return [];
+  }
+}
+
 export async function executeAdvanceActiveTaskCommandFromArgs(
   args: readonly string[],
   options: ExecuteAdvanceActiveTaskCommandOptions
@@ -1997,13 +2193,36 @@ export async function executeAdvanceActiveTaskCommandFromArgs(
   }
 
   const advanced = advanceTaskQueue(queue, activeTaskId);
+
+  // advanceCommitGuard: do not close a task while its real deliverables are still
+  // uncommitted. Read the active task's write scope from the authoritative status
+  // snapshot, intersect it with the working tree's uncommitted paths (excluding
+  // .archon/** live state), and refuse the `--apply` mutation when any remain. This
+  // closes the commit-before-advance ordering footgun that can otherwise let the
+  // autonomy loop advance past a task whose source/test/control-layer changes never
+  // landed. `--allow-uncommitted` overrides for deliberate exceptions.
+  const { uncommittedInScope, guard } = await computeAdvanceCommitGuard({
+    runId: proof.runId,
+    activeTaskId,
+    mode: args.includes("--apply") ? "applied" : "dry_run",
+    allowOverride: args.includes("--allow-uncommitted"),
+    cwd: options.cwd ?? process.cwd(),
+    getStatusSnapshot: options.getStatusSnapshot,
+    getUncommittedPaths: options.getUncommittedPaths ?? readUncommittedPaths
+  });
+
   const result: AdvanceActiveTaskCommandResult = {
     mode: args.includes("--apply") ? "applied" : "dry_run",
     taskId: activeTaskId,
     nextTaskId: advanced.nextTask?.id ?? null,
     proof,
-    queue: advanced.queue
+    queue: advanced.queue,
+    uncommittedInScope
   };
+
+  if (guard.block) {
+    throw new Error(guard.reason);
+  }
 
   if (result.mode === "dry_run") {
     return {
@@ -2121,6 +2340,9 @@ export async function advanceActiveTaskCommand(args: readonly string[]) {
       },
       saveProjectRuntimeState(state) {
         return store.saveProjectRuntimeState(state);
+      },
+      getUncommittedPaths(cwd) {
+        return readUncommittedPaths(cwd);
       },
       findLatestRun(workspaceSlug, projectSlug) {
         return store.findLatestRun({ workspaceSlug, projectSlug });
