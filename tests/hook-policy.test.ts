@@ -667,6 +667,33 @@ test("toRelativePath: returns original if not under repo root", () => {
   );
 });
 
+test("toRelativePath: collapses double-slash in absolute in-repo path", () => {
+  // Crafted double-slash path must canonicalize to a clean repo-relative path
+  // (no leading slash) so the managed-path and scope gates can match it.
+  assert.equal(
+    toRelativePath("/home/user/project//.claude/agents/x.md", "/home/user/project"),
+    ".claude/agents/x.md"
+  );
+});
+
+test("toRelativePath: collapses dot-dot traversal that resolves in-repo", () => {
+  assert.equal(
+    toRelativePath("/home/user/project/../project/CLAUDE.md", "/home/user/project"),
+    "CLAUDE.md"
+  );
+});
+
+test("toRelativePath: dot-dot escaping the repo returns canonical absolute path", () => {
+  assert.equal(
+    toRelativePath("/home/user/project/../other/file.ts", "/home/user/project"),
+    "/home/user/other/file.ts"
+  );
+});
+
+test("toRelativePath: repo root itself normalizes to empty string", () => {
+  assert.equal(toRelativePath("/home/user/project", "/home/user/project"), "");
+});
+
 // ─── Phase 4: task-scope write gate ─────────────────────────────────────────
 
 test("Write to in-scope file with active task is allowed", () => {
@@ -2676,4 +2703,206 @@ test("Fix2 evaluatePreToolUse: .archon/memory/ write without scope is STILL bloc
   assert.ok(result, "expected a block for .archon/memory/ write with no scope");
   assert.equal(result.decision, "block");
   assert.match(result.reason, /requires an active archon task/i);
+});
+
+// ─── hookOutsideRepoCanonicalize: double-slash bypass closed ─────────────────
+
+test("canonicalize: Write to /repo//src/foo.ts (double-slash) with NO active task is BLOCKED (in-repo)", () => {
+  // Crafted double-slash path that the old startsWith("/") heuristic misclassified
+  // as outside-repo. After canonicalization via path.resolve it resolves to
+  // /repo/src/foo.ts → inside repo → must be gated by the no-task write gate.
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "Write", tool_input: { file_path: "/repo//src/foo.ts" } },
+    ctx
+  );
+  assert.ok(result, "double-slash crafted in-repo write must be blocked without a task");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("canonicalize: Edit to /repo//src/foo.ts (double-slash) with NO active task is BLOCKED (in-repo)", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "Edit", tool_input: { file_path: "/repo//src/foo.ts" } },
+    ctx
+  );
+  assert.ok(result, "double-slash crafted in-repo Edit must be blocked without a task");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("canonicalize: MultiEdit to /repo//src/foo.ts (double-slash) with NO active task is BLOCKED (in-repo)", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "MultiEdit", tool_input: { file_path: "/repo//src/foo.ts" } },
+    ctx
+  );
+  assert.ok(result, "double-slash crafted in-repo MultiEdit must be blocked without a task");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("canonicalize: NotebookEdit to /repo//notebooks/a.ipynb (double-slash) with NO active task is BLOCKED (in-repo)", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "NotebookEdit", tool_input: { notebook_path: "/repo//notebooks/a.ipynb" } },
+    ctx
+  );
+  assert.ok(result, "double-slash crafted in-repo NotebookEdit must be blocked without a task");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("canonicalize: Write to /repo//src/foo.ts with active task + narrow scope is BLOCKED by scope gate (in-repo)", () => {
+  // The double-slash path resolves to an in-repo write; scope gate must apply.
+  const ctx = { ...emptyContext(), repoRoot: "/repo", activeTaskId: "task-1", allowedWriteScope: ["tests"] };
+  const result = evaluatePreToolUse(
+    { tool_name: "Write", tool_input: { file_path: "/repo//src/foo.ts" } },
+    ctx
+  );
+  assert.ok(result, "double-slash in-repo write must be blocked by scope gate");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /outside active task/i);
+});
+
+test("canonicalize: Write to /repo/../repo/.claude/agents/x.md (dot-dot bypass) with NO active task is BLOCKED (in-repo)", () => {
+  // Path traversal that resolves to inside the repo — must be treated as in-repo.
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "Write", tool_input: { file_path: "/repo/../repo/.claude/agents/x.md" } },
+    ctx
+  );
+  assert.ok(result, "dot-dot traversal to in-repo managed path must be blocked");
+  assert.equal(result.decision, "block");
+});
+
+test("canonicalize: Write to /repo/../repo/src/foo.ts (dot-dot) with active task + narrow scope is BLOCKED by scope gate (in-repo)", () => {
+  // Dot-dot traversal resolving to a non-managed in-repo path must still hit the
+  // scope gate (not the managed-path early-exit). Asserts the canonical in-repo
+  // classification feeds the active-task scope gate, not just the no-task gate.
+  const ctx = { ...emptyContext(), repoRoot: "/repo", activeTaskId: "task-1", allowedWriteScope: ["tests"] };
+  const result = evaluatePreToolUse(
+    { tool_name: "Write", tool_input: { file_path: "/repo/../repo/src/foo.ts" } },
+    ctx
+  );
+  assert.ok(result, "dot-dot in-repo write must be blocked by scope gate");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /outside active task/i);
+});
+
+test("canonicalize: Write to /repo//.claude/agents/x.md (double-slash) hits the MANAGED-PATH gate", () => {
+  // Before the toRelativePath canonicalization fix, the double-slash left filePath
+  // as "/.claude/agents/x.md" (leading slash), so isManagedPath missed it and the
+  // managed-path gate was bypassed (the no-task gate caught it with a generic
+  // reason). Now the path normalizes to ".claude/agents/x.md" and the dedicated
+  // managed-path gate fires with its specific reason — even with an active task
+  // whose scope does NOT cover the control layer.
+  const ctx = { ...emptyContext(), repoRoot: "/repo", activeTaskId: "task-1", allowedWriteScope: ["src"] };
+  const result = evaluatePreToolUse(
+    { tool_name: "Write", tool_input: { file_path: "/repo//.claude/agents/x.md" } },
+    ctx
+  );
+  assert.ok(result, "double-slash crafted managed path must hit the managed-path gate");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /managed control-layer file/i);
+  assert.match(result.reason, /\.claude\/agents\/x\.md/);
+});
+
+// ─── hookOutsideRepoCanonicalize: #20 coverage gap — MultiEdit/NotebookEdit outside-repo ──
+
+test("canonicalize: MultiEdit to /tmp/z.txt with NO active task is NOT blocked (outside repo)", () => {
+  // Outside-repo MultiEdit — the no-task gate must be skipped for paths outside repoRoot.
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "MultiEdit", tool_input: { file_path: "/tmp/z.txt" } },
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `MultiEdit to /tmp with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("canonicalize: NotebookEdit to /tmp/scratch.ipynb with NO active task is NOT blocked (outside repo)", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "NotebookEdit", tool_input: { notebook_path: "/tmp/scratch.ipynb" } },
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `NotebookEdit to /tmp with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("canonicalize: MultiEdit to /home/eimi/.claude/projects/x/memory/y.md with NO active task is NOT blocked (outside repo)", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "MultiEdit", tool_input: { file_path: "/home/eimi/.claude/projects/x/memory/y.md" } },
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `MultiEdit to global .claude/projects outside repo with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("canonicalize: NotebookEdit to /home/eimi/.claude/projects/x/memory/y.md with NO active task is NOT blocked (outside repo)", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "NotebookEdit", tool_input: { notebook_path: "/home/eimi/.claude/projects/x/memory/y.md" } },
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `NotebookEdit to global .claude/projects outside repo with no task must NOT be blocked; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("canonicalize: MultiEdit to /tmp/z.txt with active task + narrow scope is NOT blocked by scope gate (outside repo)", () => {
+  // Outside-repo path: scope gate must be skipped even when a task is active with narrow scope.
+  const ctx = { ...emptyContext(), repoRoot: "/repo", activeTaskId: "task-1", allowedWriteScope: ["src"] };
+  const result = evaluatePreToolUse(
+    { tool_name: "MultiEdit", tool_input: { file_path: "/tmp/z.txt" } },
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `MultiEdit to /tmp with active task + narrow scope must NOT be blocked by scope gate; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("canonicalize: NotebookEdit to /tmp/scratch.ipynb with active task + narrow scope is NOT blocked by scope gate (outside repo)", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo", activeTaskId: "task-1", allowedWriteScope: ["src"] };
+  const result = evaluatePreToolUse(
+    { tool_name: "NotebookEdit", tool_input: { notebook_path: "/tmp/scratch.ipynb" } },
+    ctx
+  );
+  assert.ok(
+    result === undefined || result.decision !== "block",
+    `NotebookEdit to /tmp with active task + narrow scope must NOT be blocked by scope gate; got: ${JSON.stringify(result)}`
+  );
+});
+
+test("canonicalize: MultiEdit to src/foo.ts (in-repo) with NO active task is STILL blocked (no-task gate)", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo" };
+  const result = evaluatePreToolUse(
+    { tool_name: "MultiEdit", tool_input: { file_path: "src/foo.ts" } },
+    ctx
+  );
+  assert.ok(result, "MultiEdit to in-repo path with no task must be blocked");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /no active archon task/i);
+});
+
+test("canonicalize: NotebookEdit to notebooks/a.ipynb (in-repo) with active task + narrow scope is BLOCKED by scope gate", () => {
+  const ctx = { ...emptyContext(), repoRoot: "/repo", activeTaskId: "task-1", allowedWriteScope: ["src"] };
+  const result = evaluatePreToolUse(
+    { tool_name: "NotebookEdit", tool_input: { notebook_path: "notebooks/a.ipynb" } },
+    ctx
+  );
+  assert.ok(result, "NotebookEdit to out-of-scope in-repo path must be blocked by scope gate");
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /outside active task/i);
 });

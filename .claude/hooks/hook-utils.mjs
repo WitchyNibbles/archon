@@ -996,17 +996,30 @@ export function resolveActiveWriteScope({ runtimeConnected, runtimeScope, markdo
 }
 
 // Claude Code tool calls pass absolute file_path values; scope entries are relative.
-// Strip the repo root prefix so path comparisons work correctly regardless of how
-// Claude Code formats the path.
+// Canonicalize against the repo root so path comparisons work correctly regardless
+// of how Claude Code formats the path. path.resolve collapses double-slashes and
+// dot-dot traversals BEFORE the prefix strip, so crafted paths like
+// "/repo//.claude/agents/x.md" or "/repo/../repo/CLAUDE.md" yield a clean
+// repo-relative result (".claude/agents/x.md", "CLAUDE.md") that the managed-path
+// and scope gates can match — closing the double-slash gate-bypass that the old
+// naive prefix strip left open. Paths that resolve outside the repo are returned
+// as their canonical absolute path (still leading "/"), preserving the
+// outside-repo signal callers rely on.
 export function toRelativePath(filePath, repoRoot) {
-  if (typeof filePath !== "string" || !filePath.startsWith("/")) {
+  if (typeof filePath !== "string" || filePath.length === 0) {
     return filePath;
   }
   if (typeof repoRoot === "string" && repoRoot.length > 0) {
-    const prefix = repoRoot.endsWith("/") ? repoRoot : `${repoRoot}/`;
-    if (filePath.startsWith(prefix)) {
-      return filePath.slice(prefix.length);
+    const root = repoRoot.endsWith(path.sep) ? repoRoot.slice(0, -1) : repoRoot;
+    const canonical = path.resolve(root, filePath);
+    if (canonical === root) {
+      return "";
     }
+    const prefix = root + path.sep;
+    if (canonical.startsWith(prefix)) {
+      return canonical.slice(prefix.length);
+    }
+    return canonical;
   }
   return filePath;
 }
