@@ -3744,7 +3744,10 @@ export function classifyAdvanceFailure(error: unknown): {
   nextActions: string[];
 } {
   const message = error instanceof Error ? error.message : String(error);
-  if (/refusing to close task|uncommitted change\(s\)/i.test(message)) {
+  // Match the commit guard's specific phrasing (src/workflow.ts evaluateCommitGuard).
+  // The second arm is anchored to "inside its write scope" so a generic future error
+  // that merely mentions "uncommitted change(s)" is not misclassified as a guard hit.
+  if (/refusing to close task|uncommitted change\(s\) inside its write scope/i.test(message)) {
     return {
       blockerKind: "uncommitted_deliverables",
       reason: message,

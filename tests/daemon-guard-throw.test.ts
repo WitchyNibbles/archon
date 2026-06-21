@@ -20,6 +20,13 @@ test("classifyAdvanceFailure: matches on the 'uncommitted change(s)' signature a
   assert.equal(r.blockerKind, "uncommitted_deliverables");
 });
 
+test("classifyAdvanceFailure: a bare 'uncommitted change(s)' mention without the guard phrase is runtime_blocked", () => {
+  // Guards against the loose-second-arm misclassification: only the guard's full
+  // phrase ("... inside its write scope") should map to uncommitted_deliverables.
+  const r = classifyAdvanceFailure(new Error("git reported 2 uncommitted change(s) in submodule"));
+  assert.equal(r.blockerKind, "runtime_blocked");
+});
+
 test("classifyAdvanceFailure: generic advance error → runtime_blocked, reason preserved", () => {
   const r = classifyAdvanceFailure(new Error("runtime queue current_task_id mismatch"));
   assert.equal(r.blockerKind, "runtime_blocked");
