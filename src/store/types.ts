@@ -18,6 +18,7 @@ import type {
   WorkflowDocumentRecord,
   WorkspaceRecord
 } from "../domain/types.ts";
+import type { MistakeOccurrenceRecord } from "../runtime/mistake-ledger.ts";
 
 export type EmbeddingJobSourceTable = "artifacts" | "memory_entries";
 
@@ -151,4 +152,28 @@ export interface ArchonStore {
     embeddingModel?: string | undefined;
     requesterRole?: RetrievalRole | undefined;
   }): Promise<SearchMemoryResult[]>;
+}
+
+// ---------------------------------------------------------------------------
+// MistakeLedgerStoreLike — minimal interface for P1 occurrence store
+// ---------------------------------------------------------------------------
+// Raw occurrences are persisted in project_runtime_state JSONB (productState)
+// under the key "mistake_occurrences". Only the distilled anti_pattern (P2+)
+// will land in memory_entries. This keeps write-volume out of the search layer.
+
+export interface MistakeLedgerStoreLike {
+  /**
+   * Append a batch of mistake occurrence records. Implementations must be
+   * idempotent by record id (upsert semantics). Must not throw on empty array.
+   */
+  appendMistakeOccurrences(
+    projectId: string,
+    occurrences: readonly MistakeOccurrenceRecord[]
+  ): Promise<void>;
+
+  /**
+   * Return all occurrence records for the project, across all runs.
+   * Used by collectMistakeMetrics for cross-run recurrence counting.
+   */
+  listMistakeOccurrences(projectId: string): Promise<readonly MistakeOccurrenceRecord[]>;
 }

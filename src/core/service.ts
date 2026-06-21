@@ -64,6 +64,8 @@ import type {
   ReviewActionContextResolverInput
 } from "./review-context.ts";
 import { isTrustedReviewActionContext } from "./review-context.ts";
+import { fireMistakeCapture } from "../runtime/mistake-capture.ts";
+import type { MistakeLedgerStoreLike } from "../store/types.ts";
 import type {
   AnalysisPhase,
   ArchitectureDecisionRecord,
@@ -125,6 +127,9 @@ export interface ArchonCoreServiceOptions {
   // synthetic local proof seeds that are never trusted as completion authority.
   reviewSource?: "orchestrator" | "seed" | undefined;
   onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
+  // P1 MPL: optional mistake ledger store for occurrence capture.
+  // If omitted, the capture hook is a no-op — never blocks the review path.
+  mistakeLedgerStore?: MistakeLedgerStoreLike | undefined;
 }
 
 export interface ExecuteReviewRecommendationResult {
@@ -606,12 +611,14 @@ export class ArchonCoreService {
   private readonly resolveReviewActionContext?: ResolveReviewActionContext | undefined;
   private readonly reviewSource: "orchestrator" | "seed";
   private readonly onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
+  private readonly mistakeLedgerStore?: MistakeLedgerStoreLike | undefined;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
     this.resolveReviewActionContext = options.resolveReviewActionContext;
     this.reviewSource = options.reviewSource ?? "orchestrator";
     this.onHandoff = options.onHandoff;
+    this.mistakeLedgerStore = options.mistakeLedgerStore;
   }
 
   private async saveAutonomousExecutionState(
@@ -1423,6 +1430,18 @@ export class ArchonCoreService {
       throw new Error(`Invalid review action: ${validationErrors.join("; ")}`);
     }
 
+    // P1.5: when structured findingDetails are supplied AND the review is NOT passing,
+    // derive the string findings view from the message fields so reviewers don't double-author.
+    // For passed reviews findings MUST remain as supplied (normally []) — the gate at
+    // contracts.ts canReviewRecordSatisfyGate requires findings.length === 0 for a clean pass.
+    // findingDetails is persisted separately for provenance regardless of state.
+    const derivedFindings: string[] =
+      review.state !== "passed" &&
+      review.findingDetails !== undefined &&
+      review.findingDetails.length > 0
+        ? review.findingDetails.map((f) => f.message)
+        : [...review.findings];
+
     const reviewRecord: ReviewRecord = {
       id: randomUUID(),
       runId,
@@ -1433,13 +1452,21 @@ export class ArchonCoreService {
       source: this.reviewSource,
       state: review.state,
       severity: review.severity,
-      findings: [...review.findings],
+      findings: derivedFindings,
       waiverReason: review.waiverReason,
       evidenceRefs: [...(review.evidenceRefs ?? [])],
-      createdAt: timestamp()
+      createdAt: timestamp(),
+      findingDetails: review.findingDetails !== undefined ? [...review.findingDetails] : undefined
     };
 
     await this.store.saveReview(reviewRecord);
+
+    // P1 MPL capture hook — non-fatal; must never block the review path.
+    // Delegated to fireMistakeCapture (FIX 3: extracted glue function, see module scope above).
+    if (this.mistakeLedgerStore) {
+      fireMistakeCapture(reviewRecord, task.projectId, this.mistakeLedgerStore);
+    }
+
     const reviews = await this.store.getReviews(runId, taskId);
     const decision = evaluateReviewDecision(task, reviews);
 

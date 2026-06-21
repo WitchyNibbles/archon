@@ -521,6 +521,35 @@ export interface HandoffInput {
   contextRefs: string[];
 }
 
+/**
+ * Structured review finding — P1.5 structured findings contract.
+ *
+ * `findingDetails` is OPTIONAL and additive. Existing `findings: string[]` and
+ * all gate logic (`canReviewRecordSatisfyGate`, `evaluateReviewDecision`) are
+ * unchanged. When `findingDetails` is supplied, string `findings` is derived
+ * from `findingDetails.map(f => f.message)` by `recordReview` so reviewers
+ * do not double-author. The `symbolLocus` field in MistakeOccurrenceRecord
+ * is populated from `symbol` (preferred) or `file` when structured details
+ * are present, giving finer fingerprint cardinality than P1.
+ */
+export interface ReviewFinding {
+  /** Human-readable description of the finding. Required. */
+  readonly message: string;
+  /** Severity of this individual finding. Optional. */
+  readonly severity?: ReviewSeverity | undefined;
+  /**
+   * Mistake category — use MistakeCategory values where applicable.
+   * Plain string fallback is allowed for categories not yet in the enum.
+   */
+  readonly category?: string | undefined;
+  /** Repo-relative file path where the finding was observed. Optional. */
+  readonly file?: string | undefined;
+  /** Line number in the file. Optional. */
+  readonly line?: number | undefined;
+  /** Symbol (function, class, method) where the finding was observed. Optional. */
+  readonly symbol?: string | undefined;
+}
+
 export interface ReviewInput {
   reviewerRole: GateReviewRole;
   state: ReviewState;
@@ -528,6 +557,12 @@ export interface ReviewInput {
   findings: string[];
   waiverReason?: string | undefined;
   evidenceRefs?: string[] | undefined;
+  /**
+   * Optional structured finding details — P1.5 additive extension.
+   * When supplied, `recordReview` derives `findings` string[] from
+   * `findingDetails.map(f => f.message)`. Do not double-author both.
+   */
+  findingDetails?: readonly ReviewFinding[] | undefined;
 }
 
 export interface ReviewActionContext {
@@ -1069,6 +1104,12 @@ export interface ReviewRecord {
   waiverReason?: string | undefined;
   evidenceRefs?: string[] | undefined;
   createdAt: string;
+  /**
+   * Optional structured finding details — P1.5 additive extension.
+   * Gate logic reads only `findings` and `state`; this field is metadata-only
+   * for the mistake ledger to compute fine-grained symbolLocus fingerprints.
+   */
+  findingDetails?: readonly ReviewFinding[] | undefined;
 }
 
 export interface ApprovalRecord {
