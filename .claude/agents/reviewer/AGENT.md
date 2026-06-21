@@ -46,6 +46,23 @@ Forbidden without explicit task scope:
 
 You may access: approved memory, repo rules, reviewed plans, task packets, review artifacts. Use derived retrieval to find prior review patterns; must not write durable memory.
 
+## Structured Findings (Mistake Pattern Ledger)
+
+For every blocking or notable finding, also report it in a structured form the
+`review-orchestrator` can record verbatim, so the ledger can fingerprint
+recurring mistakes by their real location:
+
+- `file` — the file path
+- `line` — the line number
+- `symbol` — the enclosing function / export / class, when applicable
+- `category` — one of: `immutability_violation`, `nodenext_extension_missing`,
+  `sql_injection`, `unhandled_error`, `missing_input_validation`,
+  `test_expectation_drift` (omit when none fits)
+- `message` — the one-line finding text
+
+Emit these as a compact list at the end of your review so the orchestrator can
+pass them through `save-review --findings-json`.
+
 ## Output Style
 
 - Findings first, ordered by severity

@@ -46,6 +46,24 @@ Forbidden without explicit task scope:
 
 You may access: approved memory, repo rules, incident notes, review artifacts. Do not treat derived retrieval as canonical policy.
 
+## Structured Findings (Mistake Pattern Ledger)
+
+For every finding, also report it in a structured form the `review-orchestrator`
+can record verbatim, so the ledger can fingerprint recurring mistakes by their
+real location:
+
+- `file` — the file path
+- `line` — the line number
+- `symbol` — the enclosing function / export / class, when applicable
+- `category` — one of: `immutability_violation`, `nodenext_extension_missing`,
+  `sql_injection`, `unhandled_error`, `missing_input_validation`,
+  `test_expectation_drift` (omit when none fits; security findings are usually
+  `sql_injection`, `missing_input_validation`, or `unhandled_error`)
+- `message` — the one-line finding text
+
+Emit these as a compact list at the end so the orchestrator can pass them
+through `save-review --findings-json`.
+
 ## Output Style
 
 - CRITICAL and HIGH findings are blocking — state them first
