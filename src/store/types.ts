@@ -18,7 +18,7 @@ import type {
   WorkflowDocumentRecord,
   WorkspaceRecord
 } from "../domain/types.ts";
-import type { MistakeOccurrenceRecord } from "../runtime/mistake-ledger.ts";
+import type { AntiPatternDraft, MistakeOccurrenceRecord } from "../runtime/mistake-ledger.ts";
 
 export type EmbeddingJobSourceTable = "artifacts" | "memory_entries";
 
@@ -176,4 +176,26 @@ export interface MistakeLedgerStoreLike {
    * Used by collectMistakeMetrics for cross-run recurrence counting.
    */
   listMistakeOccurrences(projectId: string): Promise<readonly MistakeOccurrenceRecord[]>;
+}
+
+// ---------------------------------------------------------------------------
+// AntiPatternDraftStoreLike — MPL P2 draft candidate persistence
+// ---------------------------------------------------------------------------
+// Pending anti-pattern drafts (review_required candidates) are stored here
+// until a human reviewer promotes them. autonomous candidates are promoted
+// immediately and never stored here.
+
+export interface AntiPatternDraftStoreLike {
+  /**
+   * Persist an anti-pattern draft candidate.
+   * Idempotent by draft id (upsert semantics: later record with same id wins).
+   * Must not throw on an already-stored id — silently updates.
+   */
+  appendAntiPatternDraft(projectId: string, draft: AntiPatternDraft): Promise<void>;
+
+  /**
+   * Return all anti-pattern drafts for the project (all statuses).
+   * Callers may filter by status (pending/promoted) as needed.
+   */
+  listAntiPatternDrafts(projectId: string): Promise<readonly AntiPatternDraft[]>;
 }

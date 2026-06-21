@@ -1021,6 +1021,18 @@ export function validateMemoryPromotion(input: MemoryPromotionInput): string[] {
     errors.push("sourceRunId is required");
   }
 
+  // MPL P2 council condition 2: anti_pattern entryType requires a review-class actorRole.
+  // This gate is enforced here (contract layer) in addition to the promoteMemory trust gate.
+  // Only "reviewer" and "security_reviewer" may promote anti_pattern entries.
+  if (input.entryType === "anti_pattern") {
+    const antiPatternAllowedRoles: ReadonlySet<string> = new Set(["reviewer", "security_reviewer"]);
+    if (input.actorRole === undefined || !antiPatternAllowedRoles.has(input.actorRole)) {
+      errors.push(
+        `anti_pattern promotion requires actorRole to be "reviewer" or "security_reviewer"; got: ${input.actorRole ?? "(none)"}`
+      );
+    }
+  }
+
   if (input.metadata) {
     const invalidRoles = uniqueTrimmedItems(input.metadata.retrievalRoles).filter((role) => !isRetrievalRole(role));
     if (invalidRoles.length > 0) {

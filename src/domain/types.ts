@@ -32,7 +32,7 @@ export const approvalDecisions = ["approved", "blocked", "waived"] as const;
 // "self" = written by the task agent itself (never trusted for gates)
 export const reviewSources = ["orchestrator", "seed", "self"] as const;
 export const memoryScopes = ["global", "project"] as const;
-export const memoryTypes = ["fact", "decision", "pattern", "lesson"] as const;
+export const memoryTypes = ["fact", "decision", "pattern", "lesson", "anti_pattern"] as const;
 export const memoryStatuses = ["proposed", "approved", "rejected"] as const;
 export const artifactKinds = ["plan", "markdown_chunk", "workflow_document"] as const;
 export const workflowDocumentKinds = [
@@ -352,6 +352,8 @@ export interface RetrievalMetadata {
   supersededBy?: string[] | undefined;
   contradicts?: string[] | undefined;
   authorityLevel?: "policy" | "reviewed_memory" | "repo_context" | "operational_context" | undefined;
+  /** MPL P2: fingerprint of the distilled mistake pattern that produced this entry. */
+  mistakeFingerprint?: string | undefined;
 }
 
 export interface MarkdownArtifactMetadata extends RetrievalMetadata {
@@ -586,6 +588,12 @@ export interface MemoryPromotionInput {
   reviewer: string;
   actor: string;
   metadata?: RetrievalMetadata | undefined;
+  /**
+   * MPL P2: actorRole is required when entryType is "anti_pattern".
+   * Validated in validateMemoryPromotion — must be "reviewer" or "security_reviewer".
+   * Ignored for other entry types.
+   */
+  actorRole?: RetrievalRole | undefined;
 }
 
 export interface SearchMemoryInput extends ProjectRef {
