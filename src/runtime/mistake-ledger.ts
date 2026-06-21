@@ -365,6 +365,197 @@ export function extractMistakeOccurrences(review: ReviewRecord): readonly Mistak
 }
 
 // ---------------------------------------------------------------------------
+// P2: Distillation — select fingerprints with ≥ 2 distinct run occurrences
+// ---------------------------------------------------------------------------
+
+/**
+ * POLICY CONSTANT allowlist of deterministic, mechanically-verifiable mistake
+ * categories eligible for AUTONOMOUS promotion (council condition 4 / hybrid-C).
+ *
+ * IMPORTANT: This list is code — NOT runtime-mutable. Expanding it requires a
+ * new council-approved change. Start with only "nodenext_extension_missing"
+ * because it is detected by a deterministic pattern rule (import lacks `.ts`)
+ * with no semantic ambiguity. All other categories require human judgment.
+ */
+export const AUTONOMOUS_PROMOTION_ALLOWLIST: readonly MistakeCategory[] = [
+  "nodenext_extension_missing"
+] as const;
+
+/** Promotion path for a distilled anti-pattern candidate. */
+export type DistillationPromotionPath = "autonomous" | "review_required";
+
+/**
+ * A distilled candidate ready for promotion or draft storage.
+ * Produced by selectDistillationCandidates — pure function, no side effects.
+ */
+export interface DistillationCandidate {
+  /** SHA-256 fingerprint that identifies this mistake pattern. */
+  readonly fingerprint: string;
+  readonly category: MistakeCategory;
+  readonly ruleLocus: string;
+  /** Number of DISTINCT run IDs that contained at least one occurrence. */
+  readonly distinctRunCount: number;
+  /**
+   * "autonomous" = category is in AUTONOMOUS_PROMOTION_ALLOWLIST; auto-promote.
+   * "review_required" = must be stored as a pending draft awaiting human review.
+   */
+  readonly promotionPath: DistillationPromotionPath;
+  /** Representative occurrences for provenance (one per distinct run). */
+  readonly representativeOccurrences: readonly MistakeOccurrenceRecord[];
+}
+
+/**
+ * Draft anti-pattern candidate stored for human review.
+ * Used for review_required candidates that cannot be auto-promoted.
+ */
+export interface AntiPatternDraft {
+  readonly id: string;
+  readonly projectId: string;
+  readonly fingerprint: string;
+  readonly category: MistakeCategory;
+  readonly ruleLocus: string;
+  readonly distinctRunCount: number;
+  readonly promotionPath: DistillationPromotionPath;
+  readonly content: string;
+  /** "pending" = awaiting human review; "promoted" = human approved and promoted. */
+  readonly status: "pending" | "promoted";
+  readonly createdAt: string;
+}
+
+/**
+ * Selects distillation candidates from all occurrence records.
+ *
+ * Algorithm:
+ * 1. Group occurrences by fingerprint.
+ * 2. Count distinct run IDs per fingerprint.
+ * 3. Exclude fingerprints with < 2 distinct runs (council condition 3).
+ * 4. Classify remaining fingerprints as "autonomous" (in allowlist) or
+ *    "review_required" (council condition 4 / hybrid-C).
+ *
+ * PURE function — no side effects. Callers are responsible for acting on results.
+ */
+export function selectDistillationCandidates(
+  occurrences: readonly MistakeOccurrenceRecord[]
+): readonly DistillationCandidate[] {
+  // Group by fingerprint → map of runId sets and representative occurrences
+  const byFingerprint = new Map<
+    string,
+    {
+      category: MistakeCategory;
+      ruleLocus: string;
+      runs: Set<string>;
+      occurrencesByRun: Map<string, MistakeOccurrenceRecord>;
+    }
+  >();
+
+  for (const occ of occurrences) {
+    const entry = byFingerprint.get(occ.fingerprint) ?? {
+      category: occ.category,
+      ruleLocus: occ.ruleLocus,
+      runs: new Set<string>(),
+      occurrencesByRun: new Map<string, MistakeOccurrenceRecord>()
+    };
+
+    entry.runs.add(occ.runId);
+    // Keep one representative occurrence per run (first seen wins)
+    if (!entry.occurrencesByRun.has(occ.runId)) {
+      entry.occurrencesByRun.set(occ.runId, occ);
+    }
+
+    byFingerprint.set(occ.fingerprint, entry);
+  }
+
+  const candidates: DistillationCandidate[] = [];
+  const allowlistSet = new Set<string>(AUTONOMOUS_PROMOTION_ALLOWLIST);
+
+  for (const [fingerprint, entry] of byFingerprint) {
+    // Council condition 3: require ≥ 2 distinct runs
+    if (entry.runs.size < 2) {
+      continue;
+    }
+
+    const promotionPath: DistillationPromotionPath = allowlistSet.has(entry.category)
+      ? "autonomous"
+      : "review_required";
+
+    candidates.push({
+      fingerprint,
+      category: entry.category,
+      ruleLocus: entry.ruleLocus,
+      distinctRunCount: entry.runs.size,
+      promotionPath,
+      representativeOccurrences: [...entry.occurrencesByRun.values()]
+    });
+  }
+
+  return candidates;
+}
+
+/**
+ * Builds the content string for an anti_pattern memory entry.
+ *
+ * Includes:
+ * - Category and policy anchor (ruleLocus)
+ * - Distinct run count (provenance signal)
+ * - How to detect before acting (prevention guidance)
+ * - Fingerprint (for cross-referencing)
+ */
+export function buildAntiPatternContent(candidate: DistillationCandidate): string {
+  const lines: string[] = [
+    `Anti-pattern: ${candidate.category}`,
+    `Policy anchor: ${candidate.ruleLocus}`,
+    `Fingerprint: ${candidate.fingerprint}`,
+    `Recurrence: seen in ${candidate.distinctRunCount} distinct run(s)`,
+    "",
+    "Prevention / detection guidance:",
+    ...getDetectionGuidance(candidate.category),
+    "",
+    "Provenance (representative run IDs):",
+    ...candidate.representativeOccurrences.map(
+      (occ) => `  run=${occ.runId} task=${occ.taskId}: ${occ.rawFinding}`
+    )
+  ];
+  return lines.join("\n");
+}
+
+const DETECTION_GUIDANCE: Readonly<Record<MistakeCategory, readonly string[]>> = {
+  nodenext_extension_missing: [
+    "  - All relative imports in TypeScript source must end with .ts extension.",
+    "  - Before writing any import statement, verify it includes .ts suffix.",
+    "  - NodeNext module resolution requires explicit extensions — no omissions allowed.",
+    "  - Run: grep -rn \"from '\\./\" src/ | grep -v \"\\.ts'\" to detect violations."
+  ],
+  immutability_violation: [
+    "  - Never mutate objects or arrays in place; return new copies via spread.",
+    "  - Use const for bindings; use Readonly<T> for data structures.",
+    "  - Before modifying an object field, verify you are working on a new copy."
+  ],
+  sql_injection: [
+    "  - Always use parameterized queries; never interpolate variables into SQL strings.",
+    "  - Review every query construction site before submitting code."
+  ],
+  unhandled_error: [
+    "  - Wrap all async calls in try/catch; never silently swallow errors.",
+    "  - Ensure every catch block either re-throws or logs with sufficient context."
+  ],
+  missing_input_validation: [
+    "  - Validate all external inputs at system boundaries using schema validation.",
+    "  - Never pass raw user/API input to business logic without validation."
+  ],
+  test_expectation_drift: [
+    "  - Write assertions against stable outcomes, not implementation details.",
+    "  - Update tests only when the behavior being tested has intentionally changed."
+  ],
+  uncategorized: [
+    "  - Review the raw findings and classify before acting."
+  ]
+};
+
+function getDetectionGuidance(category: MistakeCategory): readonly string[] {
+  return DETECTION_GUIDANCE[category] ?? DETECTION_GUIDANCE.uncategorized;
+}
+
+// ---------------------------------------------------------------------------
 // countRecurrences — recurrence counting across distinct runs
 // ---------------------------------------------------------------------------
 

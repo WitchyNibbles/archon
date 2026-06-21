@@ -29,6 +29,7 @@ import type {
 } from "../domain/types.ts";
 import type {
   ArchonStore,
+  AntiPatternDraftStoreLike,
   CompleteEmbeddingJobInput,
   EmbeddingJobRecord,
   EmbeddingJobSourceTable,
@@ -37,7 +38,7 @@ import type {
   MistakeLedgerStoreLike,
   QueueEmbeddingJobInput
 } from "./types.ts";
-import type { MistakeOccurrenceRecord } from "../runtime/mistake-ledger.ts";
+import type { AntiPatternDraft, MistakeOccurrenceRecord } from "../runtime/mistake-ledger.ts";
 
 function zonedIsoDate(value: string, timezone: string): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -782,6 +783,30 @@ export class MemoryMistakeLedgerStore implements MistakeLedgerStoreLike {
 
   async listMistakeOccurrences(projectId: string): Promise<readonly MistakeOccurrenceRecord[]> {
     const byId = this.occurrences.get(projectId);
+    return byId ? [...byId.values()] : [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MemoryAntiPatternDraftStore — in-memory draft store for tests
+// ---------------------------------------------------------------------------
+
+/**
+ * In-memory AntiPatternDraftStoreLike for tests and local-only usage.
+ * Persists drafts in a Map<projectId, Map<id, AntiPatternDraft>>.
+ * Idempotent by draft id (upsert semantics: later record with same id wins).
+ */
+export class MemoryAntiPatternDraftStore implements AntiPatternDraftStoreLike {
+  private readonly drafts = new Map<string, Map<string, AntiPatternDraft>>();
+
+  async appendAntiPatternDraft(projectId: string, draft: AntiPatternDraft): Promise<void> {
+    const byId = this.drafts.get(projectId) ?? new Map<string, AntiPatternDraft>();
+    byId.set(draft.id, draft);
+    this.drafts.set(projectId, byId);
+  }
+
+  async listAntiPatternDrafts(projectId: string): Promise<readonly AntiPatternDraft[]> {
+    const byId = this.drafts.get(projectId);
     return byId ? [...byId.values()] : [];
   }
 }
