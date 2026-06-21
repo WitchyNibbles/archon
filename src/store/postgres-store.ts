@@ -1451,6 +1451,7 @@ export class PostgresMistakeLedgerStore implements MistakeLedgerStoreLike {
        from memory_entries
        where project_id = $1
          and entry_type = 'anti_pattern'
+         and status = 'approved'
        order by created_at asc`,
       [projectId]
     );

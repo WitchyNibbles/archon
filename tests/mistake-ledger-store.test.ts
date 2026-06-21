@@ -108,6 +108,48 @@ describe("MemoryMistakeLedgerStore", () => {
     assert.strictEqual(listB[0]?.id, "o2");
   });
 
+  it("listAntiPatternsForLocus: returns ONLY approved entries — pending entry excluded (FIX 1 mplInjectionHardening)", async () => {
+    // Defence-in-depth: the query layer must filter on status='approved', not rely on callers.
+    const store = new MemoryMistakeLedgerStore();
+    const fp = computeFingerprint("immutability_violation", "coding-style#immutability");
+
+    const baseEntry = {
+      workspaceId: "ws-1",
+      projectId: "proj-status-test",
+      runId: "run-1",
+      taskId: "task-1",
+      scope: "project" as const,
+      entryType: "anti_pattern" as const,
+      title: "Anti-pattern: immutability_violation",
+      content: `Anti-pattern: immutability_violation\nFingerprint: ${fp}`,
+      reviewer: "archon-orchestrator",
+      actor: "archon-orchestrator",
+      createdAt: new Date().toISOString(),
+      metadata: {
+        tags: ["anti_pattern", `fingerprint:${fp}`],
+        mistakeFingerprint: fp,
+        authorityLevel: "reviewed_memory" as const,
+        reviewedAt: new Date().toISOString(),
+        retrievalRoles: ["reviewer"] as const
+      }
+    };
+
+    const approvedEntry = { ...baseEntry, id: "entry-approved", status: "approved" as const };
+    const pendingEntry = { ...baseEntry, id: "entry-pending", status: "pending" as const };
+
+    await store.appendAntiPatternEntry("proj-status-test", approvedEntry);
+    await store.appendAntiPatternEntry("proj-status-test", pendingEntry);
+
+    // listAntiPatternsForLocus must return only the approved entry.
+    const results = await store.listAntiPatternsForLocus("proj-status-test", []);
+    assert.strictEqual(results.length, 1, "only approved entry must be returned");
+    assert.strictEqual(results[0]!.id, "entry-approved", "returned entry must be the approved one");
+    assert.ok(
+      results.every((e) => e.status === "approved"),
+      "all returned entries must have status=approved"
+    );
+  });
+
   it("appendAntiPatternEntry: two calls with same entry id store exactly one row (ON CONFLICT DO UPDATE idempotency)", async () => {
     // FIX 4 (HIGH): verify appendAntiPatternEntry dedup so the same entry id
     // never accumulates duplicate rows regardless of how many times it is called.
@@ -301,6 +343,30 @@ describe("PostgresMistakeLedgerStore", () => {
         `INSERT must contain ON CONFLICT clause — got: ${sql.slice(0, 80)}`
       );
     }
+  });
+
+  it("listAntiPatternsForLocus: SQL query includes status='approved' filter (FIX 1 mplInjectionHardening)", async () => {
+    // Defence-in-depth: the SELECT must carry AND status = 'approved' so non-approved
+    // entries stored in memory_entries never reach the injection layer.
+    const capturedSqls: string[] = [];
+    const mockClient = {
+      async query(sql: string, _params?: readonly unknown[]) {
+        if (sql.toLowerCase().includes("from memory_entries")) {
+          capturedSqls.push(sql);
+        }
+        return { rows: [], rowCount: 0 };
+      }
+    };
+
+    const store = new PostgresMistakeLedgerStore(mockClient as never);
+    await store.listAntiPatternsForLocus("proj-pg-status", ["src/store/"]);
+
+    assert.ok(capturedSqls.length > 0, "listAntiPatternsForLocus must issue a SELECT against memory_entries");
+    const sql = capturedSqls[0]!;
+    assert.ok(
+      /status\s*=\s*'approved'/i.test(sql),
+      `SELECT must include AND status = 'approved' — got: ${sql.replace(/\s+/g, " ").slice(0, 200)}`
+    );
   });
 });
 
