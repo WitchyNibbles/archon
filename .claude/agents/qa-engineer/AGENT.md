@@ -45,6 +45,24 @@ Forbidden without explicit task scope:
 
 You may access: approved memory, repo rules, review gates, eval artifacts. Reference `.archon/rules/task-quality-matrix.md` for gate thresholds.
 
+## Structured Findings (Mistake Pattern Ledger)
+
+For every blocking gap or notable finding, also report it in a structured form
+the `review-orchestrator` can record verbatim, so the ledger can fingerprint
+recurring mistakes by their real location:
+
+- `file` — the file path
+- `line` — the line number
+- `symbol` — the enclosing function / export / class, when applicable
+- `category` — one of: `immutability_violation`, `nodenext_extension_missing`,
+  `sql_injection`, `unhandled_error`, `missing_input_validation`,
+  `test_expectation_drift` (omit when none fits; QA gaps are usually
+  `test_expectation_drift`)
+- `message` — the one-line finding text
+
+Emit these as a compact list at the end so the orchestrator can pass them
+through `save-review --findings-json`.
+
 ## Output Style
 
 - Return verification matrix, exact commands, and any blocking gap
