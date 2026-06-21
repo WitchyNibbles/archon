@@ -55,6 +55,10 @@ export function fireMistakeCapture(
  * - review_required candidates: persists as pending AntiPatternDraft in
  *   draftStore for human review.
  *
+ * P2 DEDUP FIX: checks existing drafts before persisting and checks the
+ * promoted fingerprint set before re-promoting. A fingerprint already present
+ * in the draft store (any status) or already promoted is NOT re-processed.
+ *
  * Non-fatal, fire-and-forget. The outer async chain is not awaited by callers.
  */
 export function fireDistillation(
@@ -72,6 +76,23 @@ export function fireDistillation(
   );
 }
 
+/**
+ * fireDistillationWithDedup — awaitable version of fireDistillation for testing
+ * and direct callers that need to assert completion.
+ *
+ * Identical behavior to fireDistillation but returns a Promise that resolves
+ * after the distillation run completes (or rejects on error).
+ */
+export async function fireDistillationWithDedup(
+  runId: string,
+  projectId: string,
+  ledgerStore: MistakeLedgerStoreLike,
+  draftStore: AntiPatternDraftStoreLike,
+  promoteMemoryFn: (runId: string, input: MemoryPromotionInput) => Promise<unknown>
+): Promise<void> {
+  return runDistillation(runId, projectId, ledgerStore, draftStore, promoteMemoryFn);
+}
+
 async function runDistillation(
   runId: string,
   projectId: string,
@@ -86,9 +107,27 @@ async function runDistillation(
     return;
   }
 
+  // P2 DEDUP: load existing drafts to build the "already seen" fingerprint set.
+  // A draft at any status (pending or promoted) means the fingerprint was
+  // already processed — do NOT re-promote or re-draft.
+  const existingDrafts = await draftStore.listAntiPatternDrafts(projectId);
+  const alreadyDraftedFingerprints = new Set(existingDrafts.map((d) => d.fingerprint));
+
   const now = new Date().toISOString();
 
+  // Track fingerprints promoted in this run to guard against double-promote
+  // within a single runDistillation call (e.g. two candidates with same fp).
+  const promotedInThisRun = new Set<string>();
+
   for (const candidate of candidates) {
+    // P2 DEDUP: skip if this fingerprint was already processed
+    if (alreadyDraftedFingerprints.has(candidate.fingerprint)) {
+      continue;
+    }
+    if (promotedInThisRun.has(candidate.fingerprint)) {
+      continue;
+    }
+
     const content = buildAntiPatternContent(candidate);
 
     if (candidate.promotionPath === "autonomous") {
@@ -122,16 +161,54 @@ async function runDistillation(
         }
       };
 
-      await promoteMemoryFn(runId, promotionInput).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[mistake-capture] autonomous promotion failed for fingerprint=${candidate.fingerprint}: ${msg}`
-        );
-      });
+      // Attempt promotion. We always mark the fingerprint as processed after a
+      // successful call (even when promoteMemoryFn returns void/undefined) so
+      // that a second distillation run does not re-promote the same fingerprint.
+      // Only a thrown error (caught below) should leave the fingerprint unmarked.
+      let promotionSucceeded = false;
+      await promoteMemoryFn(runId, promotionInput)
+        .then(() => {
+          promotionSucceeded = true;
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[mistake-capture] autonomous promotion failed for fingerprint=${candidate.fingerprint}: ${msg}`
+          );
+        });
+
+      if (promotionSucceeded) {
+        // Mark as promoted in this run and add to the existing-drafts set
+        // so subsequent candidates in this batch don't re-process.
+        promotedInThisRun.add(candidate.fingerprint);
+        alreadyDraftedFingerprints.add(candidate.fingerprint);
+
+        // Persist a "promoted" tombstone draft so subsequent runDistillation
+        // calls (across invocations) skip this fingerprint. Without this,
+        // the draftStore has no record of autonomous promotions and would
+        // re-promote on every call (P2 dedup bug).
+        const tombstone: AntiPatternDraft = {
+          id: `draft-${candidate.fingerprint.slice(0, 16)}`,
+          projectId,
+          fingerprint: candidate.fingerprint,
+          category: candidate.category,
+          ruleLocus: candidate.ruleLocus,
+          distinctRunCount: candidate.distinctRunCount,
+          promotionPath: candidate.promotionPath,
+          content,
+          status: "promoted",
+          createdAt: now
+        };
+        await draftStore.appendAntiPatternDraft(projectId, tombstone).catch(() => {
+          // Non-fatal: tombstone failure means next call may re-promote.
+          // Acceptable since promoteMemory is idempotent at the memory layer.
+        });
+      }
     } else {
       // REVIEW-REQUIRED PATH: persist as pending draft, do NOT promote.
+      // Create a stable draft id based on fingerprint so upsert by id is stable.
       const draft: AntiPatternDraft = {
-        id: `draft-${randomUUID()}`,
+        id: `draft-${candidate.fingerprint.slice(0, 16)}`,
         projectId,
         fingerprint: candidate.fingerprint,
         category: candidate.category,
@@ -149,6 +226,9 @@ async function runDistillation(
           `[mistake-capture] draft persistence failed for fingerprint=${candidate.fingerprint}: ${msg}`
         );
       });
+
+      // Mark as drafted in this run
+      alreadyDraftedFingerprints.add(candidate.fingerprint);
     }
   }
 }

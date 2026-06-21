@@ -176,6 +176,29 @@ export interface MistakeLedgerStoreLike {
    * Used by collectMistakeMetrics for cross-run recurrence counting.
    */
   listMistakeOccurrences(projectId: string): Promise<readonly MistakeOccurrenceRecord[]>;
+
+  /**
+   * Append (or upsert) a promoted anti_pattern MemoryEntryRecord to the project's
+   * anti-pattern store. Used by P3 injection store implementations.
+   * Idempotent by entry.id.
+   */
+  appendAntiPatternEntry(
+    projectId: string,
+    entry: import("../domain/types.ts").MemoryEntryRecord
+  ): Promise<void>;
+
+  /**
+   * Return anti_pattern MemoryEntryRecord entries for the given project whose
+   * locus (symbolLocus in tags, or universal when absent) matches any of the
+   * provided scope globs. Implementations must use an indexed path — NOT a
+   * full JSONB scan. Migration 026 adds the required index.
+   *
+   * Filtering for supersededBy and staleness is done by the caller (injector).
+   */
+  listAntiPatternsForLocus(
+    projectId: string,
+    locusGlobs: readonly string[]
+  ): Promise<readonly import("../domain/types.ts").MemoryEntryRecord[]>;
 }
 
 // ---------------------------------------------------------------------------

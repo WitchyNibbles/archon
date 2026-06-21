@@ -27,6 +27,7 @@ import {
 import { DEFAULT_RETRIEVAL_ROLE } from "../domain/contracts.ts";
 import { PostgresEmbeddingJobs } from "./postgres-embedding-jobs.ts";
 import { searchMemory } from "./postgres-memory-search.ts";
+import { locusMatchesGlob } from "./locus-glob.ts";
 import type {
   CompleteEmbeddingJobInput,
   ArchonStore,
@@ -1068,12 +1069,20 @@ export class PostgresStore implements ArchonStore {
   }
 
   async saveMemoryEntry(entry: MemoryEntryRecord): Promise<void> {
+    // FIX 3 (HIGH dedup): plain INSERT → ON CONFLICT DO UPDATE to ensure idempotency by id.
+    // A fresh id is generated per call, so if the tombstone write fails mid-promotion, a
+    // re-promotion window exists without this guard. ON CONFLICT closes the window.
     await this.client.query(
       `insert into memory_entries (
          id, workspace_id, project_id, run_id, task_id, scope, entry_type, title,
          content, reviewer, actor, status, source_path, source_anchor, metadata
        )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)`,
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+       on conflict (id) do update
+         set content = excluded.content,
+             metadata = excluded.metadata,
+             title = excluded.title,
+             updated_at = now()`,
       [
         entry.id,
         entry.workspaceId,
@@ -1360,5 +1369,104 @@ export class PostgresMistakeLedgerStore implements MistakeLedgerStoreLike {
 
     const productState = result.rows[0]?.product_state ?? {};
     return parseMistakeOccurrences(productState);
+  }
+
+  /**
+   * Append (or upsert by id) an anti_pattern MemoryEntryRecord to memory_entries.
+   *
+   * Uses INSERT ... ON CONFLICT DO UPDATE to ensure idempotency by entry id.
+   * This is the P3 path for storing promoted anti-pattern entries with locus
+   * metadata (tags containing "locus:<symbolLocus>") for subsequent injection.
+   */
+  async appendAntiPatternEntry(
+    projectId: string,
+    entry: import("../domain/types.ts").MemoryEntryRecord
+  ): Promise<void> {
+    await this.client.query(
+      `insert into memory_entries (
+         id, workspace_id, project_id, run_id, task_id, scope, entry_type, title,
+         content, reviewer, actor, status, source_path, source_anchor, metadata
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+       on conflict (id) do update
+         set content = excluded.content,
+             metadata = excluded.metadata,
+             title = excluded.title,
+             updated_at = now()`,
+      [
+        entry.id,
+        entry.workspaceId,
+        projectId,
+        entry.runId ?? null,
+        entry.taskId ?? null,
+        entry.scope,
+        entry.entryType,
+        entry.title,
+        entry.content,
+        entry.reviewer,
+        entry.actor,
+        entry.status,
+        entry.sourcePath ?? null,
+        entry.sourceAnchor ?? null,
+        JSON.stringify(entry.metadata ?? {})
+      ]
+    );
+  }
+
+  /**
+   * Return anti_pattern memory entries for the given project.
+   *
+   * Uses the indexed path: WHERE project_id = $1 AND entry_type = 'anti_pattern'
+   * (index created in migration 026 on (project_id, entry_type)).
+   *
+   * Locus matching (symbolLocus vs locusGlobs) is applied in-memory after
+   * the indexed lookup, since the anti-pattern count per project is small
+   * (distilled from occurrences, not raw data).
+   *
+   * When locusGlobs is empty, all anti-patterns for the project are returned.
+   */
+  async listAntiPatternsForLocus(
+    projectId: string,
+    locusGlobs: readonly string[]
+  ): Promise<readonly import("../domain/types.ts").MemoryEntryRecord[]> {
+    const result = await this.client.query<JsonRow<import("../domain/types.ts").MemoryEntryRecord>>(
+      `select jsonb_build_object(
+          'id', id,
+          'workspaceId', workspace_id,
+          'projectId', project_id,
+          'runId', run_id,
+          'taskId', task_id,
+          'scope', scope,
+          'entryType', entry_type,
+          'title', title,
+          'content', content,
+          'reviewer', reviewer,
+          'actor', actor,
+          'status', status,
+          'sourcePath', source_path,
+          'sourceAnchor', source_anchor,
+          'metadata', metadata,
+          'createdAt', created_at
+       ) as payload
+       from memory_entries
+       where project_id = $1
+         and entry_type = 'anti_pattern'
+       order by created_at asc`,
+      [projectId]
+    );
+
+    const allEntries = result.rows.map((row) => row.payload);
+
+    if (locusGlobs.length === 0) {
+      return allEntries;
+    }
+
+    // In-memory locus filtering (O(anti-patterns), acceptable: count is small)
+    return allEntries.filter((entry) => {
+      const tags = (entry.metadata as import("../domain/types.ts").RetrievalMetadata).tags ?? [];
+      const locusTag = tags.find((t: string) => t.startsWith("locus:"));
+      const symbolLocus = locusTag ? (locusTag as string).slice("locus:".length) : undefined;
+      return locusMatchesGlob(symbolLocus, locusGlobs);
+    });
   }
 }

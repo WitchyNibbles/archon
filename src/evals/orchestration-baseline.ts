@@ -11,9 +11,10 @@ import type {
   ReviewActionContext,
   ReviewRecord,
   TaskPacketInput,
-  ContextSample
+  ContextSample,
+  MemoryEntryRecord
 } from "../domain/types.ts";
-import { MemoryStore } from "../store/memory-store.ts";
+import { MemoryStore, MemoryMistakeLedgerStore } from "../store/memory-store.ts";
 import { AgenticLoopController } from "../runtime/agentic-loop.ts";
 import type { AgenticLoopStoreLike, TaskSummary } from "../runtime/agentic-loop.ts";
 import { ContinuationContextBuilder } from "../runtime/continuation-context.ts";
@@ -22,6 +23,7 @@ import type { HandoffRecord } from "../store/agent-runtime-store.ts";
 import { SubtaskScheduler } from "../runtime/subtask-scheduler.ts";
 import type { SubtaskStoreLike, ParentInvocationStoreLike, ParentInvocationRef } from "../runtime/subtask-scheduler.ts";
 import { DebateController } from "../runtime/debate-controller.ts";
+import { computeFingerprint } from "../runtime/mistake-ledger.ts";
 
 type OrchestrationEvalArea = "gate" | "lifecycle" | "state" | "trust";
 type EvalAuthorityLabel = "derived_only";
@@ -1672,6 +1674,224 @@ export async function runOrchestrationBaseline(): Promise<OrchestrationEvalRepor
   }
 
   cases.push(...(await runGeneratedAdversarialCases()));
+
+  // ---------------------------------------------------------------------------
+  // Phase 7 (MPL P4): preventive injection eval cases
+  // ---------------------------------------------------------------------------
+  // mpl_p3_injection_positive: a seeded anti_pattern entry whose locus matches
+  //   the handoff allowedWriteScope appears in the bundle's injectedAntiPatterns.
+  // mpl_p3_injection_negative: an anti_pattern entry with a DIFFERENT locus does
+  //   NOT appear when the handoff allowedWriteScope targets a different path.
+  // ---------------------------------------------------------------------------
+
+  // P4 positive: seeded anti_pattern with locus matching scope should be injected
+  {
+    const projectId = "eval-project-p3-positive";
+    const runId = "eval-run-p3-positive";
+    const taskId = "eval-task-p3-positive";
+
+    // Build a MemoryMistakeLedgerStore and seed it with an anti_pattern entry
+    const ledgerStore = new MemoryMistakeLedgerStore();
+    const fingerprint = computeFingerprint("nodenext_extension_missing", "src/runtime/");
+    const antiPatternEntry: MemoryEntryRecord = {
+      id: "ap-entry-eval-positive-1",
+      workspaceId: "eval-ws",
+      projectId,
+      runId,
+      taskId,
+      scope: "project",
+      entryType: "anti_pattern",
+      title: "Anti-pattern: nodenext_extension_missing (2 runs)",
+      content: [
+        "Anti-pattern: nodenext_extension_missing",
+        "Policy anchor: NodeNext requires .ts extension on relative imports",
+        "Recurrence: 2 distinct runs",
+        "Prevention and detection guidance",
+        "- Always add .ts extension to relative imports",
+        "- run-1, run-2"
+      ].join("\n"),
+      reviewer: "archon-orchestrator",
+      actor: "archon-orchestrator",
+      status: "approved",
+      sourcePath: undefined,
+      sourceAnchor: undefined,
+      metadata: {
+        tags: [
+          "anti_pattern",
+          "category:nodenext_extension_missing",
+          `fingerprint:${fingerprint}`,
+          "recurrence:2",
+          "severity:high",
+          "locus:src/runtime/"
+        ],
+        mistakeFingerprint: fingerprint,
+        authorityLevel: "reviewed_memory",
+        reviewedAt: new Date().toISOString()
+      },
+      createdAt: new Date().toISOString()
+    };
+    await ledgerStore.appendAntiPatternEntry(projectId, antiPatternEntry);
+
+    // Build a handoff store with a packet whose allowedWriteScope overlaps locus
+    const positiveHandoffRecord: HandoffRecord = {
+      id: "eval-handoff-p3-positive",
+      runId,
+      taskId,
+      fromInvocationId: "inv-from",
+      toInvocationId: undefined,
+      fromRole: "backend_engineer",
+      toRole: "backend_engineer",
+      reason: "context_threshold_70",
+      status: "in_progress",
+      contextUsedPct: 72,
+      authorityLabel: "runtime_authoritative",
+      createdAt: new Date().toISOString(),
+      consumedAt: undefined,
+      packet: {
+        runId,
+        taskId,
+        fromRole: "backend_engineer",
+        toRole: "backend_engineer",
+        reason: "context_threshold_70",
+        summary: "Implementation in progress",
+        scope: {
+          allowedWriteScope: ["src/runtime/"],
+          touchedPaths: ["src/runtime/"],
+          tokenBudget: "bounded"
+        },
+        decisions: [],
+        evidenceRefs: [],
+        nextActions: ["continue"],
+        risks: []
+      }
+    };
+    const mockHandoffStore: HandoffStoreLike = {
+      async createHandoff() { return positiveHandoffRecord; },
+      async getLatestUnconsumedHandoff() { return positiveHandoffRecord; },
+      async markHandoffConsumed() { /* no-op */ },
+      async updateAgentInvocationStatus() { /* no-op */ }
+    };
+
+    const builder = new ContinuationContextBuilder(mockHandoffStore);
+    const bundle = await builder.buildBundle(
+      { runId, taskId, role: "backend_engineer", projectId, tokenBudget: "bounded" },
+      ledgerStore
+    );
+
+    const injected = bundle.injectedAntiPatterns;
+    const hasEntry = injected.some(
+      (item) =>
+        (item.entry.metadata as { mistakeFingerprint?: string }).mistakeFingerprint === fingerprint
+    );
+
+    cases.push(
+      buildResult({
+        id: "mpl_p3_injection_positive",
+        area: "gate",
+        passed: hasEntry && injected.length > 0,
+        details: `injected=${injected.length} hasMatchingFingerprint=${hasEntry} locus=src/runtime/ scope=[src/runtime/]`
+      })
+    );
+  }
+
+  // P4 negative: anti_pattern with different locus should NOT be injected
+  {
+    const projectId = "eval-project-p3-negative";
+    const runId = "eval-run-p3-negative";
+    const taskId = "eval-task-p3-negative";
+
+    const ledgerStore = new MemoryMistakeLedgerStore();
+    const fingerprint = computeFingerprint("nodenext_extension_missing", "src/store/");
+    const antiPatternEntry: MemoryEntryRecord = {
+      id: "ap-entry-eval-negative-1",
+      workspaceId: "eval-ws",
+      projectId,
+      runId,
+      taskId,
+      scope: "project",
+      entryType: "anti_pattern",
+      title: "Anti-pattern: nodenext_extension_missing (2 runs)",
+      content: "Anti-pattern: nodenext_extension_missing\nPolicy anchor: NodeNext .ts ext",
+      reviewer: "archon-orchestrator",
+      actor: "archon-orchestrator",
+      status: "approved",
+      sourcePath: undefined,
+      sourceAnchor: undefined,
+      metadata: {
+        tags: [
+          "anti_pattern",
+          "category:nodenext_extension_missing",
+          `fingerprint:${fingerprint}`,
+          "recurrence:2",
+          "severity:high",
+          "locus:src/store/"  // Different locus: store, not runtime
+        ],
+        mistakeFingerprint: fingerprint,
+        authorityLevel: "reviewed_memory",
+        reviewedAt: new Date().toISOString()
+      },
+      createdAt: new Date().toISOString()
+    };
+    await ledgerStore.appendAntiPatternEntry(projectId, antiPatternEntry);
+
+    // Handoff scope targets src/evals/ — does NOT match src/store/ locus
+    const negativeHandoffRecord: HandoffRecord = {
+      id: "eval-handoff-p3-negative",
+      runId,
+      taskId,
+      fromInvocationId: "inv-from",
+      toInvocationId: undefined,
+      fromRole: "backend_engineer",
+      toRole: "backend_engineer",
+      reason: "context_threshold_70",
+      status: "in_progress",
+      contextUsedPct: 72,
+      authorityLabel: "runtime_authoritative",
+      createdAt: new Date().toISOString(),
+      consumedAt: undefined,
+      packet: {
+        runId,
+        taskId,
+        fromRole: "backend_engineer",
+        toRole: "backend_engineer",
+        reason: "context_threshold_70",
+        summary: "Implementation in progress",
+        scope: {
+          allowedWriteScope: ["src/evals/"],
+          touchedPaths: ["src/evals/"],
+          tokenBudget: "bounded"
+        },
+        decisions: [],
+        evidenceRefs: [],
+        nextActions: ["continue"],
+        risks: []
+      }
+    };
+    const mockHandoffStore: HandoffStoreLike = {
+      async createHandoff() { return negativeHandoffRecord; },
+      async getLatestUnconsumedHandoff() { return negativeHandoffRecord; },
+      async markHandoffConsumed() { /* no-op */ },
+      async updateAgentInvocationStatus() { /* no-op */ }
+    };
+
+    const builder = new ContinuationContextBuilder(mockHandoffStore);
+    const bundle = await builder.buildBundle(
+      { runId, taskId, role: "backend_engineer", projectId, tokenBudget: "bounded" },
+      ledgerStore
+    );
+
+    const injected = bundle.injectedAntiPatterns;
+    const notInjected = injected.length === 0;
+
+    cases.push(
+      buildResult({
+        id: "mpl_p3_injection_negative",
+        area: "gate",
+        passed: notInjected,
+        details: `injected=${injected.length} locus=src/store/ scope=[src/evals/] notInjected=${notInjected}`
+      })
+    );
+  }
 
   const passedCases = cases.filter((testCase) => testCase.passed).length;
   const totalCases = cases.length;

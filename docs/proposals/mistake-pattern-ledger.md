@@ -297,7 +297,7 @@ Revised phase plan:
     DDL: `alter table reviews add column if not exists finding_details jsonb;`
   Folds into the P1 PR; review gate runs over the combined P1+P1.5 diff.
 - **P2:** distillation + gated draft promotion (recurrence ≥ 2; conditions 1–5).
-- **P3:** preventive locus-filtered injection in `buildBundle` (conditions 6–7).
+- **P3:** preventive locus-filtered injection in `buildBundle` (conditions 6–7) — **wired in production** (`archon_context_bundle` MCP tool via `HandoffToolSurface.injector` + daemon `loopCommand` continuation loop via `PostgresMistakeLedgerStore`). Injector is best-effort/fail-safe at both callsites.
 - **P4:** eval proof — injected-prevention hit-rate delta vs P1 baseline.
 
 ---

@@ -66,6 +66,85 @@ function sanitizeLabel(value: string): string {
     .replace(/\r/g, "\\r");
 }
 
+// ---------------------------------------------------------------------------
+// InjectionPreventionMetrics — MPL P4: injected-prevention hit-rate
+// ---------------------------------------------------------------------------
+
+/**
+ * Metrics for the primary MPL P4 metric: injected-prevention hit-rate.
+ *
+ * Primary metric:
+ *   archon_injection_prevention_hit_rate — fraction of injection events where
+ *   the same mistake fingerprint was NOT repeated in subsequent runs.
+ *   Trends up as archon learns (complement of mistake_repeat_rate).
+ *
+ * Secondary metric:
+ *   archon_mistake_repeat_rate — fraction of occurrences that belong to
+ *   recurrent fingerprints (P1 baseline). Kept as secondary since it is
+ *   gameable (just stop flagging mistakes).
+ */
+export interface InjectionPreventionMetrics {
+  readonly runId: string;
+  /** Total anti-patterns injected into agent contexts this run. */
+  readonly injectedCount: number;
+  /** Count of injection events where the fingerprint was NOT repeated in later runs. */
+  readonly preventedCount: number;
+  /**
+   * Primary P4 metric: preventedCount / injectedCount.
+   * Range [0, 1]. Trends up as injection is effective.
+   */
+  readonly hitRate: number;
+  /**
+   * Secondary metric: fraction of occurrences in recurrent fingerprints (P1 baseline).
+   * Range [0, 1]. Trends down as archon learns.
+   */
+  readonly mistakeRepeatRate: number;
+}
+
+/**
+ * Format Prometheus exposition text for injection-prevention metrics.
+ *
+ * Counters:
+ *   archon_injection_prevention_hit_rate        — primary P4 metric (float 0..1)
+ *   archon_injection_prevention_injected_total  — total injections
+ *   archon_injection_prevention_prevented_total — prevented occurrences
+ *   archon_mistake_repeat_rate                  — secondary P1 baseline (float 0..1)
+ */
+export function formatInjectionPreventionPrometheus(metrics: InjectionPreventionMetrics): string {
+  const run = sanitizeLabel(metrics.runId);
+  const lines: string[] = [];
+
+  lines.push(
+    "# HELP archon_injection_prevention_hit_rate Fraction of injected anti-patterns that prevented a mistake repeat."
+  );
+  lines.push("# TYPE archon_injection_prevention_hit_rate gauge");
+  lines.push(`archon_injection_prevention_hit_rate{run_id="${run}"} ${metrics.hitRate}`);
+
+  lines.push(
+    "# HELP archon_injection_prevention_injected_total Total anti-patterns injected into agent contexts."
+  );
+  lines.push("# TYPE archon_injection_prevention_injected_total gauge");
+  lines.push(
+    `archon_injection_prevention_injected_total{run_id="${run}"} ${metrics.injectedCount}`
+  );
+
+  lines.push(
+    "# HELP archon_injection_prevention_prevented_total Anti-pattern injections that prevented a repeat."
+  );
+  lines.push("# TYPE archon_injection_prevention_prevented_total gauge");
+  lines.push(
+    `archon_injection_prevention_prevented_total{run_id="${run}"} ${metrics.preventedCount}`
+  );
+
+  lines.push(
+    "# HELP archon_mistake_repeat_rate Fraction of mistake occurrences that are recurrent (secondary P1 baseline)."
+  );
+  lines.push("# TYPE archon_mistake_repeat_rate gauge");
+  lines.push(`archon_mistake_repeat_rate{run_id="${run}"} ${metrics.mistakeRepeatRate}`);
+
+  return `${lines.join("\n")}\n`;
+}
+
 export function formatPrometheus(metrics: AgenticMetrics): string {
   const run = sanitizeLabel(metrics.runId);
   const lines: string[] = [];
