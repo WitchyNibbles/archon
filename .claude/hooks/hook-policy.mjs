@@ -266,9 +266,13 @@ export function evaluatePreToolUse(payload, context) {
     if (filePath && (filePath === ".archon/skills" || filePath.startsWith(".archon/skills/"))) {
       return undefined;
     }
-    // Outside-repo detection: toRelativePath returns an absolute path (still starting
-    // with "/") when the file is not under the repo root.  Such paths are legitimately
-    // outside archon's jurisdiction (e.g. ~/.claude/projects/…, /tmp/foo.txt).
+    // Outside-repo detection: toRelativePath canonicalizes via path.resolve, so an
+    // in-repo target (including crafted double-slash or dot-dot paths that resolve
+    // inside the repo) becomes a clean repo-relative path with no leading "/", while
+    // a target outside repoRoot is returned as its canonical absolute path (leading
+    // "/"). The leading-slash test therefore reflects true jurisdiction. Such
+    // outside-repo paths are legitimately outside archon's control (e.g.
+    // ~/.claude/projects/…, /tmp/foo.txt) and are exempt from both write gates.
     // Compute ONCE here so both the no-task gate and the task-scope gate can use it.
     const filePathIsOutsideRepo = typeof filePath === "string" && filePath.startsWith("/");
     // No-task write gate: block substantive writes when no task is active.

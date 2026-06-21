@@ -3,16 +3,14 @@
   "current_task_id": null,
   "tasks": [
     {
-      "id": "docs-readme-accuracy",
-      "title": "Fix README and install-doc drift",
+      "id": "hookOutsideRepoCanonicalize",
+      "title": "Harden outside-repo detection via path canonicalization + MultiEdit/NotebookEdit coverage",
       "status": "done",
-      "class": "docs_only",
+      "class": "security_sensitive",
       "depends_on": [],
       "acceptance_criteria": [],
       "verification": [],
-      "evidence": [
-        "task packet: docs-readme-accuracy"
-      ],
+      "evidence": [],
       "blocker": null
     }
   ]
