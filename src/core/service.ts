@@ -64,8 +64,8 @@ import type {
   ReviewActionContextResolverInput
 } from "./review-context.ts";
 import { isTrustedReviewActionContext } from "./review-context.ts";
-import { fireMistakeCapture } from "../runtime/mistake-capture.ts";
-import type { MistakeLedgerStoreLike } from "../store/types.ts";
+import { fireMistakeCapture, fireDistillation } from "../runtime/mistake-capture.ts";
+import type { AntiPatternDraftStoreLike, MistakeLedgerStoreLike } from "../store/types.ts";
 import type {
   AnalysisPhase,
   ArchitectureDecisionRecord,
@@ -130,6 +130,10 @@ export interface ArchonCoreServiceOptions {
   // P1 MPL: optional mistake ledger store for occurrence capture.
   // If omitted, the capture hook is a no-op — never blocks the review path.
   mistakeLedgerStore?: MistakeLedgerStoreLike | undefined;
+  // P2 MPL: optional store for pending anti-pattern draft candidates.
+  // If omitted, review_required distillation candidates are silently dropped.
+  // Autonomous candidates still promote through promoteMemory when configured.
+  antiPatternDraftStore?: AntiPatternDraftStoreLike | undefined;
 }
 
 export interface ExecuteReviewRecommendationResult {
@@ -612,6 +616,7 @@ export class ArchonCoreService {
   private readonly reviewSource: "orchestrator" | "seed";
   private readonly onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
   private readonly mistakeLedgerStore?: MistakeLedgerStoreLike | undefined;
+  private readonly antiPatternDraftStore?: AntiPatternDraftStoreLike | undefined;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
@@ -619,6 +624,7 @@ export class ArchonCoreService {
     this.reviewSource = options.reviewSource ?? "orchestrator";
     this.onHandoff = options.onHandoff;
     this.mistakeLedgerStore = options.mistakeLedgerStore;
+    this.antiPatternDraftStore = options.antiPatternDraftStore;
   }
 
   private async saveAutonomousExecutionState(
@@ -1465,6 +1471,25 @@ export class ArchonCoreService {
     // Delegated to fireMistakeCapture (FIX 3: extracted glue function, see module scope above).
     if (this.mistakeLedgerStore) {
       fireMistakeCapture(reviewRecord, task.projectId, this.mistakeLedgerStore);
+    }
+
+    // P2 MPL distillation hook — non-fatal; runs after capture, never blocks review path.
+    // Requires both mistakeLedgerStore (to read occurrences) and resolveReviewActionContext
+    // (to create a sealed trusted context for autonomous promotion through promoteMemory).
+    // SECURITY: promoteMemory is bound here — P0 trust gate (isTrustedReviewActionContext)
+    // is enforced inside promoteMemory, not bypassed. actorRole: "reviewer" in the
+    // MemoryPromotionInput satisfies the anti_pattern role-gate (council condition 2).
+    // The resolver provides the sealed WeakSet-registered context (council condition 1).
+    // If antiPatternDraftStore is absent, review_required candidates persist to a no-op store.
+    // resolveReviewActionContext is guaranteed non-null here (checked above at line ~1405).
+    if (this.mistakeLedgerStore && this.antiPatternDraftStore) {
+      fireDistillation(
+        runId,
+        task.projectId,
+        this.mistakeLedgerStore,
+        this.antiPatternDraftStore,
+        this.promoteMemory.bind(this)
+      );
     }
 
     const reviews = await this.store.getReviews(runId, taskId);
