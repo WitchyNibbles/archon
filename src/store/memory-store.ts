@@ -6,6 +6,7 @@ import {
   compareMemorySearchResults,
   scoreSearchableResult
 } from "../core/policy.ts";
+import { locusMatchesGlob } from "./locus-glob.ts";
 import { DEFAULT_RETRIEVAL_ROLE } from "../domain/contracts.ts";
 import type {
   ApprovalRecord,
@@ -703,81 +704,54 @@ export class MemoryStore implements ArchonStore {
   }
 }
 
-function awaitableTaskDates(
-  runId: string,
-  tasks: ReadonlyMap<string, TaskRecord>
-): string[] {
+function awaitableTaskDates(runId: string, tasks: ReadonlyMap<string, TaskRecord>): string[] {
   return [...tasks.values()]
-    .filter((task) => task.runId === runId)
-    .flatMap((task) => [task.createdAt, task.updatedAt]);
+    .filter((t) => t.runId === runId)
+    .flatMap((t) => [t.createdAt, t.updatedAt]);
 }
 
-function awaitableCreatedDates<RecordShape extends { runId: string; taskId: string; createdAt: string }>(
+function awaitableCreatedDates<R extends { runId: string; taskId: string; createdAt: string }>(
   runId: string,
   _taskIds: readonly string[],
-  records: ReadonlyMap<string, RecordShape>
+  records: ReadonlyMap<string, R>
 ): string[] {
-  return [...records.values()]
-    .filter((record) => record.runId === runId)
-    .map((record) => record.createdAt);
+  return [...records.values()].filter((r) => r.runId === runId).map((r) => r.createdAt);
 }
 
 function awaitableMemoryEntryDates(
   runId: string,
   memoryEntries: ReadonlyMap<string, MemoryEntryRecord>
 ): string[] {
-  return [...memoryEntries.values()]
-    .filter((entry) => entry.runId === runId)
-    .map((entry) => entry.createdAt);
+  return [...memoryEntries.values()].filter((e) => e.runId === runId).map((e) => e.createdAt);
 }
 
 function cosineSimilarity(left: readonly number[], right: readonly number[]): number {
-  if (left.length === 0 || left.length !== right.length) {
-    return 0;
-  }
-
+  if (left.length === 0 || left.length !== right.length) { return 0; }
   let dot = 0;
-  let leftMagnitude = 0;
-  let rightMagnitude = 0;
-
-  for (let index = 0; index < left.length; index += 1) {
-    const leftValue = left[index] ?? 0;
-    const rightValue = right[index] ?? 0;
-    dot += leftValue * rightValue;
-    leftMagnitude += leftValue * leftValue;
-    rightMagnitude += rightValue * rightValue;
+  let lMag = 0;
+  let rMag = 0;
+  for (let i = 0; i < left.length; i += 1) {
+    const l = left[i] ?? 0;
+    const r = right[i] ?? 0;
+    dot += l * r;
+    lMag += l * l;
+    rMag += r * r;
   }
-
-  if (leftMagnitude === 0 || rightMagnitude === 0) {
-    return 0;
-  }
-
-  return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
+  if (lMag === 0 || rMag === 0) { return 0; }
+  return dot / (Math.sqrt(lMag) * Math.sqrt(rMag));
 }
 
-// ---------------------------------------------------------------------------
-// MemoryMistakeLedgerStore — in-memory implementation for tests
-// ---------------------------------------------------------------------------
+// MemoryMistakeLedgerStore + MemoryAntiPatternDraftStore — in-memory stores
 
-/**
- * In-memory MistakeLedgerStoreLike for tests and local-only usage.
- * Persists occurrences in a Map<projectId, MistakeOccurrenceRecord[]>.
- * Idempotent by record id (upsert semantics: later record with same id wins).
- */
+/** In-memory MistakeLedgerStoreLike. Idempotent by record id. */
 export class MemoryMistakeLedgerStore implements MistakeLedgerStoreLike {
   private readonly occurrences = new Map<string, Map<string, MistakeOccurrenceRecord>>();
+  private readonly antiPatternEntries = new Map<string, Map<string, MemoryEntryRecord>>();
 
-  async appendMistakeOccurrences(
-    projectId: string,
-    incoming: readonly MistakeOccurrenceRecord[]
-  ): Promise<void> {
-    if (incoming.length === 0) {
-      return;
-    }
+  async appendMistakeOccurrences(projectId: string, incoming: readonly MistakeOccurrenceRecord[]): Promise<void> {
+    if (incoming.length === 0) { return; }
     const byId = this.occurrences.get(projectId) ?? new Map<string, MistakeOccurrenceRecord>();
-    for (const occ of incoming) {
-      byId.set(occ.id, occ);
-    }
+    for (const occ of incoming) { byId.set(occ.id, occ); }
     this.occurrences.set(projectId, byId);
   }
 
@@ -785,17 +759,29 @@ export class MemoryMistakeLedgerStore implements MistakeLedgerStoreLike {
     const byId = this.occurrences.get(projectId);
     return byId ? [...byId.values()] : [];
   }
+
+  /** Append (upsert by id) a promoted anti_pattern entry. Idempotent. */
+  async appendAntiPatternEntry(projectId: string, entry: MemoryEntryRecord): Promise<void> {
+    const byId = this.antiPatternEntries.get(projectId) ?? new Map<string, MemoryEntryRecord>();
+    byId.set(entry.id, entry);
+    this.antiPatternEntries.set(projectId, byId);
+  }
+
+  /** Return anti_pattern entries matching locus globs (linear scan; count is small). */
+  async listAntiPatternsForLocus(projectId: string, locusGlobs: readonly string[]): Promise<readonly MemoryEntryRecord[]> {
+    const byId = this.antiPatternEntries.get(projectId);
+    if (!byId) { return []; }
+    return [...byId.values()]
+      .filter((e) => e.entryType === "anti_pattern")
+      .filter((entry) => {
+        const tags = (entry.metadata as import("../domain/types.ts").RetrievalMetadata).tags ?? [];
+        const lTag = tags.find((t) => t.startsWith("locus:"));
+        return locusMatchesGlob(lTag ? lTag.slice("locus:".length) : undefined, locusGlobs);
+      });
+  }
 }
 
-// ---------------------------------------------------------------------------
-// MemoryAntiPatternDraftStore — in-memory draft store for tests
-// ---------------------------------------------------------------------------
-
-/**
- * In-memory AntiPatternDraftStoreLike for tests and local-only usage.
- * Persists drafts in a Map<projectId, Map<id, AntiPatternDraft>>.
- * Idempotent by draft id (upsert semantics: later record with same id wins).
- */
+/** In-memory AntiPatternDraftStoreLike. Idempotent by draft id. */
 export class MemoryAntiPatternDraftStore implements AntiPatternDraftStoreLike {
   private readonly drafts = new Map<string, Map<string, AntiPatternDraft>>();
 

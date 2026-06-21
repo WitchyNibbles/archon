@@ -78,9 +78,22 @@ export async function startArchonMcpServer(): Promise<void> {
   // @ts-ignore — pg Client is compatible with SqlClient interface; Parameters<> doesn't work on classes
   const store = new AgentRuntimeStore(client);
 
+  // P3 MPL: wire the anti-pattern injector so the standalone MCP server injects locus-matched
+  // anti-patterns into continuation bundles. Fail-safe: if construction throws, injector stays
+  // undefined and archon_context_bundle builds exactly as before (no injection, no crash).
+  let injector: import("../runtime/continuation-context.ts").AntiPatternInjectorLike | undefined;
+  try {
+    const { PostgresMistakeLedgerStore } = await import("../store/postgres-store.ts");
+    // @ts-ignore — pg Client is compatible with SqlClient interface
+    injector = new PostgresMistakeLedgerStore(client);
+  } catch {
+    // Injector construction failed; proceed without injection (fail-safe).
+  }
+
   const handoffSurface: HandoffToolSurface = {
     handoffStore: store,
-    contextStore: store
+    contextStore: store,
+    injector
   };
 
   const subtaskSurface: SubtaskToolSurface = {

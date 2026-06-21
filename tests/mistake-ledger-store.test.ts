@@ -107,6 +107,43 @@ describe("MemoryMistakeLedgerStore", () => {
     assert.strictEqual(listB.length, 1);
     assert.strictEqual(listB[0]?.id, "o2");
   });
+
+  it("appendAntiPatternEntry: two calls with same entry id store exactly one row (ON CONFLICT DO UPDATE idempotency)", async () => {
+    // FIX 4 (HIGH): verify appendAntiPatternEntry dedup so the same entry id
+    // never accumulates duplicate rows regardless of how many times it is called.
+    const store = new MemoryMistakeLedgerStore();
+    const fp = computeFingerprint("immutability_violation", "coding-style#immutability");
+    const entry = {
+      id: "entry-dedup-test",
+      workspaceId: "ws-1",
+      projectId: "proj-dedup",
+      runId: "run-1",
+      taskId: "task-1",
+      scope: "project" as const,
+      entryType: "anti_pattern" as const,
+      title: "Anti-pattern: immutability_violation",
+      content: `Anti-pattern: immutability_violation\nPolicy anchor: coding-style#immutability\nFingerprint: ${fp}`,
+      reviewer: "archon-orchestrator",
+      actor: "archon-orchestrator",
+      status: "approved" as const,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        tags: ["anti_pattern", "category:immutability_violation", `fingerprint:${fp}`],
+        mistakeFingerprint: fp,
+        authorityLevel: "reviewed_memory" as const,
+        reviewedAt: new Date().toISOString(),
+        retrievalRoles: ["reviewer"] as const
+      }
+    };
+
+    // First call.
+    await store.appendAntiPatternEntry("proj-dedup", entry);
+    // Second call with same entry id — must upsert, not duplicate.
+    await store.appendAntiPatternEntry("proj-dedup", entry);
+
+    const results = await store.listAntiPatternsForLocus("proj-dedup", []);
+    assert.strictEqual(results.length, 1, "two appendAntiPatternEntry calls with the same id must result in exactly one stored row");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -210,6 +247,60 @@ describe("PostgresMistakeLedgerStore", () => {
     // Verify state via listMistakeOccurrences call which reads the updated state
     const listAgain = await store.listMistakeOccurrences("project-1");
     assert.strictEqual(listAgain.length, 1);
+  });
+
+  it("appendAntiPatternEntry: two calls with same entry id issue ON CONFLICT DO UPDATE (idempotency)", async () => {
+    // FIX 4 (HIGH): verify PostgresMistakeLedgerStore.appendAntiPatternEntry uses
+    // ON CONFLICT DO UPDATE so that duplicate calls with the same entry id are safe.
+    // The mock captures all INSERT SQL strings to assert the ON CONFLICT clause is present.
+    const capturedSqls: string[] = [];
+    const mockClient = {
+      async query(sql: string, params?: readonly unknown[]) {
+        if (sql.toLowerCase().includes("insert into memory_entries")) {
+          capturedSqls.push(sql);
+        }
+        return { rows: [], rowCount: 1 };
+      }
+    };
+
+    const store = new PostgresMistakeLedgerStore(mockClient as never);
+    const fp = computeFingerprint("immutability_violation", "coding-style#immutability");
+    const entry = {
+      id: "pg-entry-dedup",
+      workspaceId: "ws-1",
+      projectId: "proj-pg-dedup",
+      runId: "run-1",
+      taskId: "task-1",
+      scope: "project" as const,
+      entryType: "anti_pattern" as const,
+      title: "Anti-pattern: immutability_violation",
+      content: `Anti-pattern: immutability_violation\nFingerprint: ${fp}`,
+      reviewer: "archon-orchestrator",
+      actor: "archon-orchestrator",
+      status: "approved" as const,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        tags: ["anti_pattern", `fingerprint:${fp}`],
+        mistakeFingerprint: fp,
+        authorityLevel: "reviewed_memory" as const,
+        reviewedAt: new Date().toISOString(),
+        retrievalRoles: ["reviewer"] as const
+      }
+    };
+
+    // Two calls with same entry id must both succeed without throwing.
+    await store.appendAntiPatternEntry("proj-pg-dedup", entry);
+    await store.appendAntiPatternEntry("proj-pg-dedup", entry);
+
+    // Each call must issue exactly one INSERT.
+    assert.strictEqual(capturedSqls.length, 2, "appendAntiPatternEntry must issue one INSERT per call");
+    // Every INSERT must use ON CONFLICT DO UPDATE to guarantee idempotency on a real DB.
+    for (const sql of capturedSqls) {
+      assert.ok(
+        sql.toLowerCase().includes("on conflict"),
+        `INSERT must contain ON CONFLICT clause — got: ${sql.slice(0, 80)}`
+      );
+    }
   });
 });
 

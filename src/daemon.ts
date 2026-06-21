@@ -130,7 +130,7 @@ import type {
 } from "./domain/types.ts";
 import type { WorkspaceRecord } from "./domain/types.ts";
 import type { ExportDocsCommandResult } from "./docs-export/models.ts";
-import { PostgresStore } from "./store/postgres-store.ts";
+import { PostgresStore, PostgresMistakeLedgerStore } from "./store/postgres-store.ts";
 import type { ArchonStore as ArchonStoreContract } from "./store/types.ts";
 import { INTERNAL_RUNTIME_PREFLIGHT_BYPASS_TOKEN, MAX_DAEMON_STAGNANT_TURNS, buildDefaultProductState, buildDefaultTaskQueue, buildDirectiveProgressFingerprint, collectCommandFlagValues, executeAdvanceActiveTaskCommandFromArgs, isSelfReferentialResumeTarget, resolveCommandFlag, resolveFormatFlag, resolveRunIdForCommand, validateResumeTargetSource } from "./workflow.ts";
 import type { EnvShape, ExecuteAdvanceActiveTaskCommandOptions, ExecuteStatusCommandOptions } from "./workflow.ts";
@@ -3185,8 +3185,18 @@ export async function loopCommand(args: readonly string[]) {
       const service = new ArchonCoreService(store);
       const continuationBuilder = new ContinuationContextBuilder(agentStore);
 
+      // P3 anti-pattern injector — fail-safe: construction is best-effort.
+      // If PostgresMistakeLedgerStore cannot be constructed (store unavailable),
+      // mistakeLedgerInjector remains undefined and buildBundle proceeds without injection.
+      let mistakeLedgerInjector: PostgresMistakeLedgerStore | undefined;
+      try {
+        mistakeLedgerInjector = new PostgresMistakeLedgerStore(client);
+      } catch (_injectorConstructionError) {
+        // Best-effort: injector construction failed, bundle will build without injection.
+      }
+
       async function buildContinuationBundle(runId: string, taskId: string, role: string): Promise<string> {
-        const bundle = await continuationBuilder.buildBundle({ runId, taskId, role });
+        const bundle = await continuationBuilder.buildBundle({ runId, taskId, role }, mistakeLedgerInjector);
         // Persist the bundle so the next invocation's resume prompt can consume
         // it. Without this the prompt would be discarded and the continuation
         // would lose its runtime-authoritative context (AC5/FR-11).

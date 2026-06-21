@@ -21,6 +21,7 @@ import { handoffReasons } from "../domain/types.ts";
 import type { ContextBudgetStoreLike } from "../runtime/context-budget.ts";
 import { ContextBudgetMonitor } from "../runtime/context-budget.ts";
 import { ContinuationContextBuilder } from "../runtime/continuation-context.ts";
+import type { AntiPatternInjectorLike } from "../runtime/continuation-context.ts";
 
 // ---------------------------------------------------------------------------
 // Enforcement sidecar helper
@@ -38,6 +39,12 @@ function resolveEnforcementFilePath(): string | undefined {
 export interface HandoffToolSurface {
   handoffStore: HandoffStoreLike;
   contextStore: ContextBudgetStoreLike;
+  /**
+   * Optional anti-pattern injector for P3 preventive injection in archon_context_bundle.
+   * When present, locus-matched anti-patterns are injected into the continuation bundle.
+   * Absence is fail-safe: bundle builds exactly as before with no injection.
+   */
+  injector?: AntiPatternInjectorLike | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -352,14 +359,17 @@ export function createHandoffToolDefinitions(
         const tokenBudget: "bounded" | "full" =
           rawBudget === "full" ? "full" : "bounded";
 
-        const bundle = await bundleBuilder.buildBundle({
-          runId,
-          taskId,
-          role,
-          includeLatestHandoff,
-          includeEvidenceRefs,
-          tokenBudget
-        });
+        const bundle = await bundleBuilder.buildBundle(
+          {
+            runId,
+            taskId,
+            role,
+            includeLatestHandoff,
+            includeEvidenceRefs,
+            tokenBudget
+          },
+          surface.injector
+        );
 
         const summary =
           bundle.latestHandoff !== undefined
