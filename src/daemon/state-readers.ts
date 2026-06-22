@@ -1,8 +1,9 @@
 // Daemon split (by concern): daemon state-file READERS — parse and validate the
 // continuation-status, operator-handoff, supervisor-status, and supervisor-history
 // JSON artifacts under .archon/work/daemon/. Self-contained leaf. Behavior-preserving
-// move from daemon.ts. (Supervisor-history result types stay in daemon.ts and are
-// imported type-only here — erased at runtime, no cycle.)
+// move from daemon.ts. (Supervisor-history result types live in the state-writers
+// sibling and are re-exported by daemon.ts; imported type-only here — erased at
+// runtime, no cycle.)
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { selectLocalContinuationProvider } from "../admin/autonomous-summary.ts";
