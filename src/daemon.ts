@@ -143,7 +143,8 @@ import { AgenticLoopController } from "./runtime/agentic-loop.ts";
 import { ContinuationContextBuilder } from "./runtime/continuation-context.ts";
 import { recoverOrphanedInvocations } from "./runtime/crash-recovery.ts";
 import { resolveArchonContextPolicy } from "./runtime/context-budget.ts";
-// Daemon split (by concern) — leaf module, re-exported below to preserve the public surface.
+// Daemon split (by concern) — leaf module. Import for daemon-internal use, then
+// re-export the same bindings to preserve the public surface for existing callers.
 import {
   buildAppAutomationPrompt,
   convertSupportedCronScheduleToRrule,
@@ -155,7 +156,7 @@ export {
   convertSupportedCronScheduleToRrule,
   convertSupportedCronScheduleToSystemdOnCalendar,
   detectGitAutomationExecutionEnvironment
-} from "./daemon/automation-schedule.ts";
+};
 
 
 export function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
