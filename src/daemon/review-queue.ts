@@ -4,7 +4,7 @@
 // daemon.ts). Behavior-preserving move from daemon.ts.
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { collectCommandFlagValues, resolveCommandFlag } from "../workflow.ts";
+import { collectCommandFlagValues, resolveCommandFlag } from "../cli-flags.ts";
 import { normalizeRecordReviewCommandInput } from "../review.ts";
 import type { ContinueAnalysisDirectiveClassification } from "../admin/autonomous-summary.ts";
 import type { EnvShape } from "../workflow.ts";

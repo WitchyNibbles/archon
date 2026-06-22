@@ -8,6 +8,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// CLI-flag helpers moved to a dependency-free leaf; import for internal use and
+// re-export to preserve workflow.ts's public surface for existing importers.
+import { collectCommandFlagValues, resolveCommandFlag, resolveFormatFlag } from "./cli-flags.ts";
+export { collectCommandFlagValues, resolveCommandFlag, resolveFormatFlag };
 import { installArchonIntoProject, upgradeArchonInProject, verifyArchonInstall } from "./install/cli.ts";
 import { embedQueryText, runEmbeddingJobs, type EmbeddingProvider } from "./runtime/embedding-runner.ts";
 import {
@@ -309,21 +313,6 @@ export interface RepairTaskQueueResult {
 
 export function appendAutomaticRefreshDeferredSummary(summary: string, kind: "repo context" | "retrieval"): string {
   return `${summary}; automatic ${kind} refresh deferred for interactive planning`;
-}
-
-
-export function resolveCommandFlag(args: readonly string[], flag: string): string | undefined {
-  const index = args.indexOf(flag);
-  if (index === -1) {
-    return undefined;
-  }
-
-  const value = args[index + 1];
-  if (!value || value.startsWith("-")) {
-    throw new Error(`${flag} requires a value`);
-  }
-
-  return value;
 }
 
 
@@ -648,26 +637,6 @@ export function buildDirectiveProgressFingerprint(directive: RunExecutionPlan["d
 }
 
 
-export function collectCommandFlagValues(args: readonly string[], flag: string): string[] {
-  const values: string[] = [];
-
-  for (let index = 0; index < args.length; index += 1) {
-    if (args[index] !== flag) {
-      continue;
-    }
-
-    const value = args[index + 1];
-    if (!value || value.startsWith("-")) {
-      throw new Error(`${flag} requires a value`);
-    }
-    values.push(value);
-    index += 1;
-  }
-
-  return values;
-}
-
-
 export function collectCommandFreeText(
   args: readonly string[],
   options: {
@@ -721,15 +690,6 @@ export async function resolveRunIdForCommand(
   }
 
   return latestRun.id;
-}
-
-
-export function resolveFormatFlag(args: readonly string[]): "json" | "text" {
-  const format = resolveCommandFlag(args, "--format") ?? "json";
-  if (format !== "json" && format !== "text") {
-    throw new Error(`Invalid --format value: ${format}`);
-  }
-  return format;
 }
 
 
