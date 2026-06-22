@@ -141,6 +141,7 @@
     "check:coverage": "node --experimental-strip-types scripts/check-coverage.ts",
     "setup:local": "docker compose up -d archon-postgres",
     "migrate": "tsx src/admin.ts migrate",
+    "verify:migrations:live": "tsx src/admin.ts verify-live-migrations",
     "health": "tsx src/admin.ts health",
     "bootstrap": "tsx src/admin.ts bootstrap-project",
     "verify:setup": "tsx src/admin.ts verify-setup",
