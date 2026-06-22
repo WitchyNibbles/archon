@@ -493,8 +493,12 @@ export function buildRuntimeExecutionConnectionFailure(error: unknown): RuntimeE
     reason: `runtime execution preflight failed: ${summary}`,
     activeRunId: null,
     nextActions: [
-      "restore Postgres connectivity or set a valid `ARCHON_CORE_DATABASE_URL`",
-      "rerun `npm run archon:doctor` after connectivity is restored"
+      // Full runtime mode (Postgres is the completion authority).
+      "to use the full runtime: start Postgres (`npm run setup:local`) or set a valid `ARCHON_CORE_DATABASE_URL`, then rerun `npm run archon:doctor`",
+      // Local-only mode — the supported escape hatch for a fresh install with no
+      // backing database. The agent workflow runs from local .archon/ state; only the
+      // Postgres-backed runtime proof (workflow-proof) is unavailable.
+      "to run without a database: unset `ARCHON_CORE_DATABASE_URL` (comment it out in `.env.archon` / `.env`) to fall back to local-only mode"
     ]
   };
 }

@@ -212,6 +212,17 @@ npm run setup:local   # Spins up Postgres via Docker
 npm run doctor        # Verifies the full configuration
 ```
 
+#### Full runtime vs. local-only mode
+
+Archon runs in one of two modes depending on whether `ARCHON_CORE_DATABASE_URL` is set:
+
+| Mode | When | Behavior |
+|---|---|---|
+| **Full runtime** | `ARCHON_CORE_DATABASE_URL` set **and** Postgres reachable | Postgres is the workflow completion authority — `workflow-proof`, runtime review gates, and run history are available. |
+| **Local-only** | `ARCHON_CORE_DATABASE_URL` unset (commented out) | The agent workflow runs from local `.archon/` state with no database. The Postgres-backed runtime proof is unavailable; everything else works. |
+
+> ⚠️ **Common onboarding pitfall:** if `ARCHON_CORE_DATABASE_URL` is **set but Postgres is not reachable** (e.g. you copied `.env.example` into a consuming repo but never started Postgres), runtime commands fail with a connection error and the workflow blocks. To recover: start Postgres (`npm run setup:local`), fix the URL — **or comment out `ARCHON_CORE_DATABASE_URL`** to fall back to local-only mode.
+
 ### Bootstrap a project
 
 ```bash
