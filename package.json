@@ -129,7 +129,9 @@
     "src/sql/migrations/",
     "src/store/"
   ],
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/admin.ts",
@@ -166,7 +168,18 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
+    "c8": "^11.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
+  },
+  "c8": {
+    "all": true,
+    "include": ["src/**/*.ts"],
+    "reporter": ["text-summary"],
+    "check-coverage": true,
+    "lines": 50,
+    "statements": 50,
+    "functions": 45,
+    "branches": 65
   }
 }
