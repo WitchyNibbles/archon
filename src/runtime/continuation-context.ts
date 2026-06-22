@@ -439,7 +439,7 @@ function sanitizeFragment(raw: string, maxLen: number = 300): string {
   // Step 1: strip control characters — C0 (keep tab \t=\x09, newline \n=\x0a,
   // CR \r=\x0d), DEL \x7f, and C1 controls \x80-\x9f EXCEPT NEL \x85 (which step 2
   // collapses as a line break). Prevents terminal/control sequences in content.
-  // eslint-disable-next-line no-control-regex
+  // eslint-disable-next-line no-control-regex -- the regex intentionally strips C0/C1 control chars
   const noControl = raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x84\x86-\x9f]/g, "");
   // Step 2: collapse ALL line separators to a space so embedded breaks can't forge
   // extra prompt lines — LF/CR plus Unicode NEL (U+0085), LS (U+2028), PS (U+2029).

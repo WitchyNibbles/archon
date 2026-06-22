@@ -327,29 +327,6 @@ const coverageThresholdKeys = [
   "runtime_trace_coverage"
 ];
 
-function validateCoverageManifestArtifact(artifactPath: string): void {
-  const artifact = asRecord(readJsonOrFail(artifactPath));
-  const errors: string[] = [];
-
-  const requiredCategories = artifact.required_categories;
-  if (!Array.isArray(requiredCategories) || requiredCategories.length === 0) {
-    errors.push("required_categories must contain at least one category");
-  }
-
-  const thresholds = asRecord(artifact.thresholds);
-  for (const key of coverageThresholdKeys) {
-    const value = thresholds[key];
-    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
-      errors.push(`thresholds.${key} must be a finite number between 0 and 1`);
-    }
-  }
-
-  if (errors.length > 0) {
-    failRaw(
-      `archon workflow check failed: invalid coverage manifest artifact ${artifactPath}: ${errors.join("; ")}`
-    );
-  }
-}
 
 function validateCoverageLedgerArtifacts(
   manifestPath: string,

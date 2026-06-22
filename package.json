@@ -137,7 +137,7 @@
     "dev": "tsx watch src/admin.ts",
     "archon": "node --experimental-strip-types src/admin/archon.ts",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",
     "check:quality": "tsc --noEmit && npm test",
     "check:workflow": "node --experimental-strip-types scripts/check-archon-workflow.ts",
