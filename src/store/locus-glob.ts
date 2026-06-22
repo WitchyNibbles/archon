@@ -41,6 +41,7 @@ export function matchGlobPattern(path: string, pattern: string): boolean {
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*\*/g, "\x00")
     .replace(/\*/g, "[^/]*")
+    // eslint-disable-next-line no-control-regex -- \x00 is an internal sentinel for `**`
     .replace(/\x00/g, ".*");
   const regex = new RegExp(`^${regexSource}$`);
   return regex.test(path);

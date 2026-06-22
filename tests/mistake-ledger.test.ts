@@ -12,7 +12,6 @@ import {
   computeFingerprint,
   deriveRuleLocus,
   countRecurrences,
-  type MistakeCategory,
   type MistakeOccurrenceRecord,
   type MistakeMetrics
 } from "../src/runtime/mistake-ledger.ts";

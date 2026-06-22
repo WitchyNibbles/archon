@@ -3,7 +3,7 @@
 // All tests use an in-memory mock store; no DB connection required.
 // Uses node:test (the project test runner).
 
-import { describe, it, before, beforeEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { AgenticLoopController } from "../src/runtime/agentic-loop.ts";
 import type { AgenticLoopStoreLike, TaskSummary } from "../src/runtime/agentic-loop.ts";

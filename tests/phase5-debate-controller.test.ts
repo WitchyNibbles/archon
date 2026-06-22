@@ -242,7 +242,7 @@ test("finalizeDecision rejects when evidenceRefs is empty", async () => {
 // ---------------------------------------------------------------------------
 
 test("getSession returns the session record when store has getDebateSession and session is found", async () => {
-  const { controller, store } = makeController();
+  const { controller } = makeController();
 
   const session = await controller.start({
     runId: "run_get_001",

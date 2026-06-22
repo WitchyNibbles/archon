@@ -3,7 +3,7 @@
 // Uses a stub SqlClient that returns fixed query results.
 // No real database connection is required.
 
-import { describe, it, before } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { AgentRuntimeStore } from "../src/store/agent-runtime-store.ts";
 

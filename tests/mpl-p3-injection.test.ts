@@ -14,9 +14,7 @@ import assert from "node:assert/strict";
 import {
   computeFingerprint,
   selectDistillationCandidates,
-  buildAntiPatternContent,
-  type MistakeOccurrenceRecord,
-  type DistillationCandidate
+  type MistakeOccurrenceRecord
 } from "../src/runtime/mistake-ledger.ts";
 import {
   MemoryMistakeLedgerStore,
@@ -29,8 +27,7 @@ import {
   formatInjectedAntiPattern,
   matchGlobPattern,
   ContinuationContextBuilder,
-  type InjectedAntiPattern,
-  type AntiPatternInjectionOptions
+  type InjectedAntiPattern
 } from "../src/runtime/continuation-context.ts";
 import type { HandoffRecord } from "../src/store/agent-runtime-store.ts";
 import type { HandoffStoreLike } from "../src/runtime/handoff-controller.ts";
@@ -69,25 +66,6 @@ function makeOccurrence(
     runId: "run-1",
     taskId: "task-1",
     capturedAt: NOW_FRESH,
-    ...overrides
-  };
-}
-
-function makeCandidate(
-  overrides: Partial<DistillationCandidate> = {}
-): DistillationCandidate {
-  const category = overrides.category ?? "immutability_violation";
-  const ruleLocus = overrides.ruleLocus ?? "coding-style#immutability";
-  const fingerprint = overrides.fingerprint ?? computeFingerprint(category, ruleLocus, overrides.representativeOccurrences?.[0]?.symbolLocus);
-  const occ1 = makeOccurrence({ category, ruleLocus, runId: "run-A" });
-  const occ2 = makeOccurrence({ category, ruleLocus, runId: "run-B" });
-  return {
-    fingerprint,
-    category,
-    ruleLocus,
-    distinctRunCount: 2,
-    promotionPath: "review_required" as const,
-    representativeOccurrences: [occ1, occ2],
     ...overrides
   };
 }
@@ -1383,17 +1361,18 @@ describe("formatInjectedAntiPattern sanitization (FIX 2 mplInjectionHardening)",
       ].join("\n")
     });
     const text = formatInjectedAntiPattern(entry);
-    // eslint-disable-next-line no-control-regex
+     
     assert.ok(
+      // eslint-disable-next-line no-control-regex -- the assertion is specifically that C0 control chars are absent
       !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text),
       "C0 control characters must not appear in rendered output"
     );
-    // eslint-disable-next-line no-control-regex
+     
     assert.ok(
       !/\x7f/.test(text),
       "DEL (\\x7f) must not appear in rendered output"
     );
-    // eslint-disable-next-line no-control-regex
+     
     assert.ok(
       !/[\x80-\x84\x86-\x9f]/.test(text),
       "C1 controls (excluding NEL \\x85) must not appear in rendered output"

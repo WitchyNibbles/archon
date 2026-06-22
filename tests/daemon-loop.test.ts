@@ -75,7 +75,7 @@ test("daemon: unknown event types are skipped without throwing", () => {
     { type: "tool_result", tool_use_id: "t1", content: "file.ts\n" },
     { type: "result", session_id: SESSION_A, result: "OK." }
   );
-  let { sessionId, finalMessage } = parseClaudeStreamJsonOutput(stdout);
+  const { sessionId, finalMessage } = parseClaudeStreamJsonOutput(stdout);
   assert.equal(sessionId, SESSION_A);
   assert.equal(finalMessage, "OK.");
 });

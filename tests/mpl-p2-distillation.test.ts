@@ -18,14 +18,13 @@ import {
   AUTONOMOUS_PROMOTION_ALLOWLIST,
   selectDistillationCandidates,
   buildAntiPatternContent,
-  type DistillationCandidate,
   type AntiPatternDraft
 } from "../src/runtime/mistake-ledger.ts";
 import {
   computeFingerprint,
   type MistakeOccurrenceRecord
 } from "../src/runtime/mistake-ledger.ts";
-import { MemoryMistakeLedgerStore, MemoryAntiPatternDraftStore } from "../src/store/memory-store.ts";
+import { MemoryAntiPatternDraftStore } from "../src/store/memory-store.ts";
 import {
   validateMemoryPromotion
 } from "../src/domain/contracts.ts";

@@ -18,7 +18,6 @@ import {
 import { getAgentCatalogEntry } from "../archon/agent-catalog.ts";
 import {
   canReviewRecordSatisfyGate,
-  effectiveRequiredReviews,
   effectiveRequiredReviewsForTask,
   normalizeRetrievalMetadata
 } from "../domain/contracts.ts";

@@ -1047,10 +1047,6 @@ function bashSuccessPayload(command: string) {
   return { tool_name: "Bash", tool_input: { command }, tool_response: { exitCode: 0 } };
 }
 
-function bashFailPayload(command: string) {
-  return { tool_name: "Bash", tool_input: { command }, tool_response: { exitCode: 1, stderr: "failed" } };
-}
-
 test("evaluatePostToolUse: passing verification command writes cert", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-cert-test-"));
   try {

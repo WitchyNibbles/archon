@@ -1,4 +1,3 @@
-import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -53,16 +52,6 @@ export function runtimeModeFromProfile(profile: string): RuntimeMode {
     return "docker";
   }
   throw new Error(`invalid runtime profile: ${profile}`);
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname.trim().toLowerCase();
-  if (normalized === "localhost" || normalized === "::1") {
-    return true;
-  }
-
-  const ipVersion = isIP(normalized);
-  return ipVersion === 4 ? normalized.startsWith("127.") : false;
 }
 
 function defaultRuntimeDataRoot(projectSlug: string): string {

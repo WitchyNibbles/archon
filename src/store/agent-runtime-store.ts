@@ -685,7 +685,7 @@ export class AgentRuntimeStore {
       [invocationId]
     );
     if (result.rows.length === 0) return undefined;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+     
     const row = result.rows[0]!;
     return {
       id: row.id as string,
@@ -941,7 +941,7 @@ export class AgentRuntimeStore {
       [sessionId]
     );
     if (result.rows.length === 0) return null;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+     
     const row = result.rows[0]!;
     return {
       id: row.id as string,
@@ -967,7 +967,7 @@ export class AgentRuntimeStore {
       [invocationId]
     );
     if (result.rows.length === 0) return undefined;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+     
     const row = result.rows[0]!;
     return {
       status: row.status as string,
@@ -1070,11 +1070,11 @@ export class AgentRuntimeStore {
       )
     ]);
 
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+     
     const latestSample = sampleResult.rows[0] as { used_percentage: number | null; budget_state: string | null } | undefined;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+     
     const latestHandoff = handoffResult.rows[0] as { committed_at: string | null } | undefined;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+     
     const activeCount = Number((activeResult.rows[0] as { cnt: string } | undefined)?.cnt ?? 0);
 
     return {

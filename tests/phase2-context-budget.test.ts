@@ -3,12 +3,11 @@
 // Uses node:test + node:assert/strict.  No real database connection.
 // All store operations are covered by an in-memory stub.
 
-import { describe, it, beforeEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   ContextBudgetMonitor,
   defaultArchonContextPolicy,
-  type ContextBudgetState,
   type ContextBudgetStoreLike,
   type ContextThresholdEvent
 } from "../src/runtime/context-budget.ts";

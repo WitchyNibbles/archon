@@ -19,8 +19,7 @@ import assert from "node:assert/strict";
 
 import {
   extractMistakeOccurrences,
-  computeFingerprint,
-  type MistakeOccurrenceRecord
+  computeFingerprint
 } from "../src/runtime/mistake-ledger.ts";
 
 import type { ReviewRecord, ReviewFinding } from "../src/domain/types.ts";

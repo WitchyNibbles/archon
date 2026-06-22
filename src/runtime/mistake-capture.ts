@@ -17,7 +17,6 @@
 //     role-gate in validateMemoryPromotion (council condition 2).
 //   This module does NOT mint trusted contexts directly; it delegates to service.
 
-import { randomUUID } from "node:crypto";
 import {
   extractMistakeOccurrences,
   selectDistillationCandidates,
