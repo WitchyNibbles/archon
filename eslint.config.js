@@ -15,6 +15,41 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    // Type-aware rules apply only to src/** — that is what tsconfig includes (tests
+    // and scripts are excluded), and it is the production surface where typed checks
+    // (floating promises, unsafe any, etc.) matter most.
+    files: ["src/**/*.ts"],
+    extends: [...tseslint.configs.recommendedTypeChecked],
+    languageOptions: {
+      parserOptions: {
+        project: "./tsconfig.json",
+        tsconfigRootDir: import.meta.dirname
+      }
+    },
+    rules: {
+      // The high-value type-aware rules (no-floating-promises, no-misused-promises,
+      // await-thenable, ...) already pass clean and stay enforced. The rules below are
+      // turned off as a documented baseline: they flag pre-existing `any`-flow debt
+      // (pg rows, JSON.parse, external payloads) and intentional async-for-interface
+      // signatures across a 49k-line codebase not written under typed linting. Burning
+      // them down (real narrowing) is a separate hardening initiative; re-enable
+      // incrementally as the `any` surface shrinks.
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-base-to-string": "off",
+      "@typescript-eslint/restrict-template-expressions": "off",
+      "@typescript-eslint/require-await": "off",
+      // Auto-fixable in principle, but `--fix` produced tsc-breaking removals here
+      // (no-unnecessary-type-assertion flagged load-bearing casts as redundant).
+      // Disabled until the assertions can be reviewed case-by-case.
+      "@typescript-eslint/no-unnecessary-type-assertion": "off",
+      "@typescript-eslint/no-duplicate-type-constituents": "off"
+    }
+  },
+  {
     files: ["**/*.ts"],
     plugins: { "unused-imports": unusedImports },
     rules: {
