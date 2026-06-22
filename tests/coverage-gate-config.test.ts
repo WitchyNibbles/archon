@@ -15,9 +15,15 @@ test("coverage gate: package.json c8 config enforces a ratchet floor", async () 
   const c8 = pkg.c8;
   assert.ok(c8, "package.json must define a c8 config block");
   assert.equal(c8["check-coverage"], true, "check-coverage must be enabled so floors are enforced");
-  for (const metric of ["lines", "statements", "functions", "branches"]) {
+  // Ratchet enforcement: floors may be raised but not silently lowered below the
+  // established minimums. Bump these alongside the c8 config when coverage improves.
+  const minimums: Record<string, number> = { lines: 50, statements: 50, functions: 45, branches: 65 };
+  for (const [metric, min] of Object.entries(minimums)) {
     assert.equal(typeof c8[metric], "number", `c8.${metric} floor must be a number`);
-    assert.ok(c8[metric] > 0, `c8.${metric} floor must be a positive ratchet (got ${c8[metric]})`);
+    assert.ok(
+      c8[metric] >= min,
+      `c8.${metric} floor must not drop below ${min} (got ${c8[metric]}); the ratchet only goes up`
+    );
   }
   assert.equal(c8.all, true, "c8.all must be true so untested files count against the floor");
 });
