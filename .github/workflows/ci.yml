@@ -102,7 +102,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm test
+      # Runs the full suite under c8 and enforces the coverage ratchet floor
+      # (package.json "c8" key). Fails on test failure OR coverage regression.
+      - run: npm run check:coverage
 
   required-checks:
     if: ${{ always() }}

@@ -2,11 +2,15 @@ import { execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Real coverage gate. Runs the full test suite under c8 and enforces the ratchet
+// floors configured in package.json ("c8" key: check-coverage + lines/statements/
+// functions/branches). Exits non-zero on a test failure OR when coverage drops
+// below the floor. Raise the floors over time as coverage improves (e.g. once large
+// untested modules like daemon.ts are decomposed and unit-tested). This replaces the
+// previous no-op note that performed no measurement.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const result = execSync(
-  "node --experimental-strip-types --test --test-reporter=spec tests/*.test.ts",
-  { cwd: repoRoot, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }
-);
-process.stdout.write(result);
-process.stdout.write("\nNote: formal coverage measurement requires vitest or c8. Run `npx c8 npm test` for a coverage report.\n");
+execSync("npx c8 node --experimental-strip-types --test tests/*.test.ts", {
+  cwd: repoRoot,
+  stdio: "inherit"
+});

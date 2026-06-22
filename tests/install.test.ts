@@ -525,10 +525,10 @@ test("ci workflow routes the release posture through the release overlay gate", 
   assert.doesNotMatch(ciWorkflow, /windows-setup-smoke:/);
   assert.doesNotMatch(ciWorkflow, /property-regressions:/);
   assert.doesNotMatch(ciWorkflow, /- run: npm run check:quality/);
-  assert.doesNotMatch(ciWorkflow, /- run: npm run check:coverage/);
-  // GAP-10: unit-tests job runs the full suite and is gated in required-checks
+  // GAP-10: unit-tests job runs the full suite under coverage (c8 ratchet gate)
+  // and is gated in required-checks.
   assert.match(ciWorkflow, /jobs:[\s\S]*\n  unit-tests:/);
-  assert.match(ciWorkflow, /- run: npm test/);
+  assert.match(ciWorkflow, /- run: npm run check:coverage/);
   assert.match(ciWorkflow, /needs:[\s\S]*unit-tests/);
 });
 
