@@ -490,7 +490,15 @@ export interface ExecuteDaemonCommandOptions extends ExecuteAdvanceActiveTaskCom
 }
 
 
-export interface ExecuteSupervisorCommandOptions extends ExecuteDaemonCommandOptions {}
+export interface ExecuteSupervisorCommandOptions extends ExecuteDaemonCommandOptions {
+  // Injected daemon-loop runner. Decouples the supervisor from the loop (the loop is
+  // passed in by the CLI wrapper) so the supervisor command can live in its own module
+  // without importing executeDaemonCommandFromArgs (which would form a cycle).
+  runDaemonCommand: (
+    args: readonly string[],
+    options: ExecuteDaemonCommandOptions
+  ) => Promise<{ format: "json" | "text"; result: DaemonCommandResult }>;
+}
 
 
 export interface ExecuteSupervisorHistoryCommandOptions {
@@ -3413,7 +3421,7 @@ export async function executeSupervisorCommandFromArgs(
   };
 
   for (let cycle = 1; cycle <= maxSupervisorCycles; cycle += 1) {
-    const daemonResult = await executeDaemonCommandFromArgs(args, options);
+    const daemonResult = await options.runDaemonCommand(args, options);
     daemonRuns.push(daemonResult.result);
 
     if (daemonResult.result.status !== "blocked") {
@@ -3975,6 +3983,7 @@ export async function supervisorCommand(args: readonly string[]) {
       const { format: resolvedFormat, result } = await executeSupervisorCommandFromArgs(args, {
         cwd,
         env,
+        runDaemonCommand: executeDaemonCommandFromArgs,
         findLatestRun(workspaceSlug, projectSlug) {
           return store.findLatestRun({ workspaceSlug, projectSlug });
         },
