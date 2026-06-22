@@ -10,7 +10,13 @@ import { fileURLToPath } from "node:url";
 // previous no-op note that performed no measurement.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-execSync("npx c8 node --experimental-strip-types --test tests/*.test.ts", {
-  cwd: repoRoot,
-  stdio: "inherit"
-});
+try {
+  execSync("npx c8 node --experimental-strip-types --test tests/*.test.ts", {
+    cwd: repoRoot,
+    stdio: "inherit"
+  });
+} catch {
+  // c8 exits non-zero on a test failure or a coverage floor breach. Fail explicitly
+  // so the gate cannot be silently swallowed by a future wrapper around this script.
+  process.exit(1);
+}
