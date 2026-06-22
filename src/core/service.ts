@@ -60,8 +60,7 @@ import { generateRepoInventory } from "../runtime/repo-inventory.ts";
 import { buildRuntimeTraceRegistry } from "../runtime/runtime-trace-registry.ts";
 import { annotateConflictSignals, isProvenancedSearchResult } from "./search-memory-results.ts";
 import type {
-  ResolveReviewActionContext,
-  ReviewActionContextResolverInput
+  ResolveReviewActionContext
 } from "./review-context.ts";
 import { isTrustedReviewActionContext } from "./review-context.ts";
 import { fireMistakeCapture, fireDistillation } from "../runtime/mistake-capture.ts";
@@ -669,7 +668,7 @@ export class ArchonCoreService {
 
   private async ensureDirectiveExecutionAuthority(
     runId: string,
-    directive: RunExecutionPlan["directive"]
+    _directive: RunExecutionPlan["directive"]
   ): Promise<void> {
     const run = await this.requireRun(runId);
     const registration = await this.store.getProjectRuntimeRegistration(run.projectId);

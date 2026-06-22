@@ -183,7 +183,7 @@ await test("createAnthropicEmbeddingProvider: API error propagates with clear me
 
 await test("createAnthropicEmbeddingProvider: API returning wrong embedding count throws", async () => {
   const mockClient = buildMockClient({
-    async createEmbeddings(input) {
+    async createEmbeddings(_input) {
       // Return more embeddings than input texts
       return {
         embeddings: [

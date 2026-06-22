@@ -297,7 +297,7 @@ describe("PostgresMistakeLedgerStore", () => {
     // The mock captures all INSERT SQL strings to assert the ON CONFLICT clause is present.
     const capturedSqls: string[] = [];
     const mockClient = {
-      async query(sql: string, params?: readonly unknown[]) {
+      async query(sql: string, _params?: readonly unknown[]) {
         if (sql.toLowerCase().includes("insert into memory_entries")) {
           capturedSqls.push(sql);
         }

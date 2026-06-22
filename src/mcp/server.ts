@@ -75,7 +75,7 @@ export async function startArchonMcpServer(): Promise<void> {
   await client.connect();
 
   const { AgentRuntimeStore } = await import("../store/agent-runtime-store.ts");
-  // @ts-ignore — pg Client is compatible with SqlClient interface; Parameters<> doesn't work on classes
+  // pg Client is compatible with the SqlClient interface AgentRuntimeStore expects.
   const store = new AgentRuntimeStore(client);
 
   // P3 MPL: wire the anti-pattern injector so the standalone MCP server injects locus-matched
@@ -84,7 +84,7 @@ export async function startArchonMcpServer(): Promise<void> {
   let injector: import("../runtime/continuation-context.ts").AntiPatternInjectorLike | undefined;
   try {
     const { PostgresMistakeLedgerStore } = await import("../store/postgres-store.ts");
-    // @ts-ignore — pg Client is compatible with SqlClient interface
+    // pg Client is compatible with the SqlClient interface PostgresMistakeLedgerStore expects.
     injector = new PostgresMistakeLedgerStore(client);
   } catch {
     // Injector construction failed; proceed without injection (fail-safe).
@@ -105,7 +105,7 @@ export async function startArchonMcpServer(): Promise<void> {
         const entry = agentCatalog[row.role as AgentRoleId] as
           | (typeof agentCatalog)[AgentRoleId]
           | undefined;
-        // @ts-ignore — spawnPolicy may not exist on v1 entries
+        // spawnPolicy may not exist on v1 catalog entries; the cast narrows it optionally.
         const spawnPolicy = (entry as { spawnPolicy?: typeof defaultArchonSpawnPolicy })?.spawnPolicy
           ?? defaultArchonSpawnPolicy;
         // SDD §20.2 / TDD §8.2: deny spawning once the parent crossed the threshold.

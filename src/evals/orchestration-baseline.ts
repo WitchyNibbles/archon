@@ -16,7 +16,7 @@ import type {
 } from "../domain/types.ts";
 import { MemoryStore, MemoryMistakeLedgerStore } from "../store/memory-store.ts";
 import { AgenticLoopController } from "../runtime/agentic-loop.ts";
-import type { AgenticLoopStoreLike, TaskSummary } from "../runtime/agentic-loop.ts";
+import type { AgenticLoopStoreLike } from "../runtime/agentic-loop.ts";
 import { ContinuationContextBuilder } from "../runtime/continuation-context.ts";
 import type { HandoffStoreLike } from "../runtime/handoff-controller.ts";
 import type { HandoffRecord } from "../store/agent-runtime-store.ts";

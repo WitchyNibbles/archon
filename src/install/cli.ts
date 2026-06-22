@@ -607,7 +607,6 @@ function serializeInstallManifest(manifest: InstallManifest): string {
 }
 
 async function readInstallManifest(targetRoot: string): Promise<InstallManifest | undefined> {
-  const manifestPath = path.join(targetRoot, installManifestRelativePath);
   const inspection = await inspectManagedTarget(targetRoot, installManifestRelativePath);
   if (inspection.invalidReason) {
     throw new Error(`Install manifest at ${installManifestRelativePath} is not an in-root regular file.`);

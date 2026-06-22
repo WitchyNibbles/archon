@@ -1,6 +1,5 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import path from "node:path";
 import { verifyGitGuard } from "./git-guard.ts";
 
 async function main(): Promise<void> {

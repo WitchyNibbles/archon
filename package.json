@@ -137,6 +137,8 @@
     "dev": "tsx watch src/admin.ts",
     "archon": "node --experimental-strip-types src/admin/archon.ts",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "check:quality": "tsc --noEmit && npm test",
     "check:workflow": "node --experimental-strip-types scripts/check-archon-workflow.ts",
     "check:happy-path": "bash scripts/check-archon-happy-path.sh",
@@ -166,16 +168,24 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
     "c8": "^11.0.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-unused-imports": "^4.4.1",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.61.1"
   },
   "c8": {
     "all": true,
-    "include": ["src/**/*.ts"],
-    "reporter": ["text-summary"],
+    "include": [
+      "src/**/*.ts"
+    ],
+    "reporter": [
+      "text-summary"
+    ],
     "check-coverage": true,
     "lines": 50,
     "statements": 50,

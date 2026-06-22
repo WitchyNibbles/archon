@@ -1,4 +1,4 @@
-import { describe, it, before, after } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { executeArchonGrafanaQuery, inferDatasourceType } from "../src/grafana/client.ts";
 import type { GrafanaQueryInput } from "../src/grafana/client.ts";
@@ -208,7 +208,7 @@ describe("executeArchonGrafanaQuery — Loki routing", () => {
       time_range: makeTimeRange()
     };
 
-    const result = await (executeArchonGrafanaQuery(input, { env: makeEnv(), fetchFn: mockFetch }) as Promise<unknown>);
+    await (executeArchonGrafanaQuery(input, { env: makeEnv(), fetchFn: mockFetch }) as Promise<unknown>);
 
     assert.equal(calls.length, 1);
     assert.ok(

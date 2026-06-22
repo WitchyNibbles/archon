@@ -18,8 +18,6 @@ import {
 } from "./autonomous-summary.ts";
 import { buildRuntimeTraceRegistry } from "../runtime/runtime-trace-registry.ts";
 
-type StatusAuthorityLabel = "runtime_authoritative" | "derived_only";
-
 export interface ReviewIdentityStatusObservation {
   authorityLabel: "derived_only";
   adapterConfigured: boolean;

@@ -513,10 +513,10 @@ test("ci workflow routes the release posture through the release overlay gate", 
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const ciWorkflow = await readFile(path.join(sourceRoot, ".github/workflows/ci.yml"), "utf8");
 
-  assert.match(ciWorkflow, /jobs:\n  release-overlay:/);
+  assert.match(ciWorkflow, /jobs:\n {2}release-overlay:/);
   assert.match(ciWorkflow, /npm run verify:release-overlay/);
-  assert.match(ciWorkflow, /jobs:[\s\S]*\n  live-migrations:/);
-  assert.match(ciWorkflow, /jobs:[\s\S]*\n  required-checks:/);
+  assert.match(ciWorkflow, /jobs:[\s\S]*\n {2}live-migrations:/);
+  assert.match(ciWorkflow, /jobs:[\s\S]*\n {2}required-checks:/);
   // CI triggers on the actual default branch (master), not the non-existent main.
   assert.match(ciWorkflow, /pull_request:\n\s+branches:\n\s+- master/);
   // The windows-setup-smoke and property-regressions jobs were removed as phantom
@@ -527,7 +527,7 @@ test("ci workflow routes the release posture through the release overlay gate", 
   assert.doesNotMatch(ciWorkflow, /- run: npm run check:quality/);
   // GAP-10: unit-tests job runs the full suite under coverage (c8 ratchet gate)
   // and is gated in required-checks.
-  assert.match(ciWorkflow, /jobs:[\s\S]*\n  unit-tests:/);
+  assert.match(ciWorkflow, /jobs:[\s\S]*\n {2}unit-tests:/);
   assert.match(ciWorkflow, /- run: npm run check:coverage/);
   assert.match(ciWorkflow, /needs:[\s\S]*unit-tests/);
 });
@@ -789,7 +789,6 @@ test("install CLI rejects flag-like values passed after --target", async () => {
 });
 
 test("legacy direct install CLI invocation cannot mutate", async () => {
-  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-install-cli-legacy-"));
 
   try {
@@ -809,7 +808,6 @@ test("legacy direct install CLI invocation cannot mutate", async () => {
 });
 
 test("install CLI init requires an explicit mode before writing", async () => {
-  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-install-cli-init-mode-"));
 
   try {
@@ -1921,7 +1919,7 @@ test("setup scripts treat env files as data and keep repo defaults aligned", asy
         'ARCHON_PROJECT_NAME="Alpha Team" # trailing comment',
         'ARCHON_REVIEW_IDENTITY_ADAPTER_MODULE="./archon/review-identity-adapter.ts" # module comment',
         'ARCHON_POSTGRES_USER=\'quoted user\'',
-        'ARCHON_POSTGRES_PASSWORD="pa\\\"ss # literal"',
+        'ARCHON_POSTGRES_PASSWORD="pa\\"ss # literal"',
         "PATH=/tmp/evil",
         `NODE_OPTIONS=--require ${sentinel}`,
         `BASH_ENV=${sentinel}`,
