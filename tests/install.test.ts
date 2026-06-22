@@ -517,10 +517,13 @@ test("ci workflow routes the release posture through the release overlay gate", 
   assert.match(ciWorkflow, /npm run verify:release-overlay/);
   assert.match(ciWorkflow, /jobs:[\s\S]*\n  live-migrations:/);
   assert.match(ciWorkflow, /jobs:[\s\S]*\n  required-checks:/);
-  const windowsJobBlock = ciWorkflow.match(
-    /\n  windows-setup-smoke:[\s\S]*?(?=\n  [a-z0-9-]+:|\n$)/
-  )?.[0] ?? "";
-  assert.doesNotMatch(windowsJobBlock, /persist-credentials: false/);
+  // CI triggers on the actual default branch (master), not the non-existent main.
+  assert.match(ciWorkflow, /pull_request:\n\s+branches:\n\s+- master/);
+  // The windows-setup-smoke and property-regressions jobs were removed as phantom
+  // jobs (they referenced tests/scripts that do not exist). Assert they stay gone so
+  // a future edit cannot silently reintroduce an un-runnable job.
+  assert.doesNotMatch(ciWorkflow, /windows-setup-smoke:/);
+  assert.doesNotMatch(ciWorkflow, /property-regressions:/);
   assert.doesNotMatch(ciWorkflow, /- run: npm run check:quality/);
   assert.doesNotMatch(ciWorkflow, /- run: npm run check:coverage/);
   // GAP-10: unit-tests job runs the full suite and is gated in required-checks
