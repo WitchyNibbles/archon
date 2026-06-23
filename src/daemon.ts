@@ -345,6 +345,15 @@ import type {
 } from "./daemon/complete.ts";
 export type { DaemonCompleteInput, DaemonCompleteDeps };
 export { classifyAdvanceFailure } from "./daemon/complete.ts";
+// Loop-monolith decomposition (6l): the blocked / apply_recovery directive
+// handler is now in ./daemon/blocked-recovery.ts. Single-exit (always blocks);
+// tests import it directly from the module path.
+import { handleDaemonBlockedOrRecovery as handleDaemonBlockedOrRecoveryStep } from "./daemon/blocked-recovery.ts";
+import type {
+  DaemonBlockedRecoveryInput,
+  DaemonBlockedRecoveryDeps
+} from "./daemon/blocked-recovery.ts";
+export type { DaemonBlockedRecoveryInput, DaemonBlockedRecoveryDeps };
 
 
 export function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
@@ -1233,31 +1242,10 @@ export async function executeDaemonCommandFromArgs(
       }
 
       if (directive.kind === "blocked" || directive.kind === "apply_recovery") {
-        cycles.push({
-          cycle,
-          directiveKind: directive.kind,
-          action: "blocked",
-          runId: activeRunId,
-          taskId: activeTaskId,
-          sessionId: latestSessionId ?? null,
-          summary:
-            directive.kind === "blocked"
-              ? directive.blockers.join(" | ") || "runtime reported no executable next step"
-              : "runtime still requires explicit recovery before the daemon can continue"
-        });
-
-        return blockedResult({
-          blockerKind: directive.kind === "blocked" ? "runtime_blocked" : "recovery_required",
-          reason:
-            directive.kind === "blocked"
-              ? "runtime reported no executable next step"
-              : "safe recovery could not clear the active runtime blockers",
-          cycle,
-          activeRunId,
-          activeTaskId,
-          directiveKind: directive.kind,
-          nextActions: []
-        });
+        return handleDaemonBlockedOrRecoveryStep(
+          { directive, cycle, activeRunId, activeTaskId },
+          { cycles, getSessionId: () => latestSessionId, blockedResult }
+        );
       }
 
       if (directive.kind === "continue_analysis") {
