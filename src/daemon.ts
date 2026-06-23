@@ -41,7 +41,7 @@ import { PostgresStore, PostgresMistakeLedgerStore } from "./store/postgres-stor
 import { INTERNAL_RUNTIME_PREFLIGHT_BYPASS_TOKEN, executeAdvanceActiveTaskCommandFromArgs, resolveCommandFlag, resolveFormatFlag, resolveRunIdForCommand } from "./workflow.ts";
 import type { EnvShape, ExecuteAdvanceActiveTaskCommandOptions, ExecuteStatusCommandOptions } from "./workflow.ts";
 import { buildRuntimeExecutionConnectionFailure, executeReconcileRuntimeStateCommandFromArgs, executeRuntimeExecutionPreflight, formatRuntimeExecutionPreflightFailureResult, isRuntimeExecutionPreflightConnectionError } from "./runtime.ts";
-import type { ExecuteDoctorCommandOptions, ExecuteRuntimePreflightCommandOptions, ReconcileRuntimeStateCommandResult } from "./runtime.ts";
+import type { ExecuteDoctorCommandOptions, ExecuteRuntimePreflightCommandOptions } from "./runtime.ts";
 import type { RecordReviewCommandInput } from "./review.ts";
 import { AgentRuntimeStore } from "./store/agent-runtime-store.ts";
 import { AgenticLoopController } from "./runtime/agentic-loop.ts";
@@ -354,6 +354,16 @@ import type {
   DaemonBlockedRecoveryDeps
 } from "./daemon/blocked-recovery.ts";
 export type { DaemonBlockedRecoveryInput, DaemonBlockedRecoveryDeps };
+// Loop-monolith decomposition (6m): the blockedResult and attemptRuntimeReconcile
+// loop closures are now factories in ./daemon/blocked-result.ts and
+// ./daemon/runtime-reconcile.ts. The loop wires them once at startup so all
+// downstream handlers receive the same callback references they always did.
+import { createDaemonBlockedResult } from "./daemon/blocked-result.ts";
+import type { DaemonBlockedResultFactoryDeps } from "./daemon/blocked-result.ts";
+export type { DaemonBlockedResultFactoryDeps };
+import { createDaemonRuntimeReconcile } from "./daemon/runtime-reconcile.ts";
+import type { DaemonRuntimeReconcileFactoryDeps, ReconcileRuntimeStateFn } from "./daemon/runtime-reconcile.ts";
+export type { DaemonRuntimeReconcileFactoryDeps, ReconcileRuntimeStateFn };
 
 
 export function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
@@ -903,107 +913,23 @@ export async function executeDaemonCommandFromArgs(
   const result = await withDaemonLock(cwd, async () => {
     const cycles: DaemonCycleRecord[] = [];
     let latestSessionId: string | undefined;
-    const blockedResult = async (input: {
-      blockerKind:
-        | "bootstrapping"
-        | "runtime_preflight"
-        | "missing_active_runtime"
-        | "review_queue"
-        | "review_execution_unsupported"
-        | "operator_required_continuation"
-        | "workflow_proof_failure"
-        | "scope_expansion_required"
-        | "runtime_blocked"
-        | "recovery_required"
-        | "runtime_task_missing"
-        | "active_task_mismatch"
-        | "uncommitted_deliverables";
-      reason: string;
-      cycle: number;
-      activeRunId: string | null;
-      activeTaskId: string | null;
-      directiveKind?: RunExecutionPlan["directive"]["kind"] | undefined;
-      nextActions?: string[] | undefined;
-      detailFiles?: {
-        continuationStatus?: string | undefined;
-        reviewQueueStatus?: string | undefined;
-        scopeExpansionRequest?: string | undefined;
-        automationEnvelope?: string | undefined;
-      } | undefined;
-    }) => {
-      await writeDaemonOperatorHandoff(cwd, {
-        state: "blocked",
-        blockerKind: input.blockerKind,
-        reason: input.reason,
-        workspaceSlug,
-        projectSlug,
-        activeRunId: input.activeRunId,
-        activeTaskId: input.activeTaskId,
-        sessionId: latestSessionId ?? null,
-        cycle: input.cycle,
-        directiveKind: input.directiveKind,
-        nextActions: [...(input.nextActions ?? [])],
-        detailFiles: { ...(input.detailFiles ?? {}) },
-        updatedAt: now().toISOString()
-      });
-
-      return {
-        authorityLabel: "derived_only" as const,
-        workspaceSlug,
-        projectSlug,
-        status: "blocked" as const,
-        reason: input.reason,
-        activeRunId: input.activeRunId,
-        activeTaskId: input.activeTaskId,
-        sessionId: latestSessionId ?? null,
-        cycles
-      };
-    };
-
-    const attemptRuntimeReconcile = async (cycle: number): Promise<ReconcileRuntimeStateCommandResult | undefined> => {
-      const baseArgs = [
-        "--workspace-slug",
-        workspaceSlug,
-        "--project-slug",
-        projectSlug,
-        "--stale-after-hours",
-        String(staleAfterHours),
-        "--format",
-        "json"
-      ] as const;
-      const preview = await executeReconcileRuntimeStateCommandFromArgs(
-        baseArgs,
-        options
-      );
-      const repairAction = preview.result.repairAction;
-      const shouldApply =
-        repairAction === "rebuild_missing_runtime_state" ||
-        repairAction === "sync_active_task_to_in_progress" ||
-        repairAction === "activate_owner_dispatch_target";
-
-      if (!preview.result.runtimeStateChanged || !shouldApply) {
-        return undefined;
-      }
-
-      const { result } = await executeReconcileRuntimeStateCommandFromArgs(
-        [
-          ...baseArgs,
-          "--apply",
-        ],
-        options
-      );
-
-      cycles.push({
-        cycle,
-        directiveKind: result.executionPlanDirectiveKind ?? "blocked",
-        action: "reconcile_runtime_state",
-        runId: result.activeRunId ?? "none",
-        taskId: result.activeTaskId,
-        sessionId: latestSessionId ?? null,
-        summary: `${result.repairAction}: ${result.reason}`
-      });
-      return result;
-    };
+    const blockedResult = createDaemonBlockedResult({
+      cwd,
+      workspaceSlug,
+      projectSlug,
+      getSessionId: () => latestSessionId,
+      now,
+      cycles
+    });
+    const attemptRuntimeReconcile = createDaemonRuntimeReconcile({
+      workspaceSlug,
+      projectSlug,
+      staleAfterHours,
+      options,
+      cycles,
+      getSessionId: () => latestSessionId,
+      reconcileRuntimeState: executeReconcileRuntimeStateCommandFromArgs
+    });
 
     const runtimePreflightFailure = await executeRuntimeExecutionPreflight(
       args,
