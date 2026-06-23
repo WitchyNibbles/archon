@@ -235,8 +235,11 @@ no new attack surface, no auth surface. The dashboard stays read-only BY CONSTRU
 no endpoint that can mutate.
 
 - **Reversible:** YES (cheap). It is the Phase-0 mechanism, just with the live query body filled in.
-- **Live-ness tradeoff:** stale until refreshed. Acceptable for a single-operator monitor; a
-  `forge snapshot --watch` poller can refresh on an interval if needed (still no inbound server).
+- **Live-ness tradeoff:** stale until refreshed. The council (dissent owner) reframed this surface as a
+  **snapshot VIEWER, not a monitor** — and required (§13 C5) that the dashboard render an honest
+  `generated-at` / snapshot-age signal and that a bounded `forge snapshot --watch` poller ship IN P1-S2
+  scope (not "if needed"), so the viewer never silently shows stale state. Real-time (the HTTP read
+  server) is the Phase-2 promotion (Decision 4 Option B), gated on U3 and a listener security review.
 
 **Option B — A thin read-only HTTP endpoint (GET-only) in the forge module.**
 A tiny server exposing a GET dashboard route returning the validated view model.
@@ -256,11 +259,14 @@ A tiny server exposing a GET dashboard route returning the validated view model.
   into git. Mitigation: live output goes to a gitignored live variant; only the sanitized sample is
   committed (the generator already documents this split).
 - **Read surface accidentally exposing secrets:** the report and status projection must be field-allowlisted
-  to the view-model contract — never spread raw rows. The schema parse call already acts
-  as the allowlist (it strips unknown fields). Keep it strict or use explicit field mapping so a future column
-  addition cannot leak.
+  to the view-model contract — never spread raw rows. A default `z.object().parse()` already strips unknown
+  keys (strip mode); **never use `.passthrough()`**, and prefer explicit field mapping so a future column
+  addition cannot leak. Field-leak prevention is locked as §13 **C6** (a P1-S2 done-bar), which also requires
+  the committed sample to use SYNTHETIC ids (the current sample reuses real work-item ids).
 
-**Council conditions satisfied:** number 1 read-only surface, number 11 ArchonStore-only with no raw SQL, number 7 and number 9 (no secrets, no stack traces).
+**Parent-initiative conditions satisfied:** #1 read-only surface, #11 ArchonStore-only with no raw SQL, #7
+read-surface secret hygiene. (These are the 12 parent-Forge-council conditions; the Phase-1 §13 conditions
+are labeled **C1–C10** — see §13.)
 
 ---
 
@@ -270,13 +276,19 @@ The drift risk: the web-side dashboard type file is hand-kept in sync with the f
 R2-C forbids `web` importing the core (verified, depths 1 through 6), and importing the Zod module would pull the
 zod runtime into the web bundle. So we cannot just import.
 
-### Option A — Codegen TS types from the Zod contract into `web` at build time
-A generator (run from the root toolchain) emits a generated web type file from
-the dashboard view-model schema (for example via a zod-to-ts style extraction or a small bespoke emitter). Web imports
-the generated file.
+### Option A — Build-time codegen, NEVER committed (COUNCIL-ADOPTED, §13 C2)
+A bespoke emitter (run from the root toolchain) derives a generated web type file from the dashboard
+view-model schema. It runs as a `prebuild` step in the web workspace and the generated file is GITIGNORED
+in the web tree — it never exists in version control, so it cannot be hand-edited or committed stale. Web
+imports the generated file; the generator MUST NOT import from the web tree (one-direction flow preserved).
 
-- **Risk:** adds a codegen dependency or step; generated-file freshness must be CI-checked or it drifts
-  exactly like the hand-written file. Tooling for zod-to-ts is third-party and version-sensitive.
+- **Why the council chose this:** a file that does not exist in the repo cannot be hand-edited to force a
+  green CI under deadline — it removes the drift FAILURE CLASS entirely (vs Option C, which only detects it).
+  The web build already runs `tsc --noEmit && vite build`; a `prebuild` hook is additive and adds no runtime
+  dependency (the emitter is bespoke, scoped to the constructs the contract uses).
+- **Risk:** the bespoke emitter must cover the contract's zod constructs (enums, objects, optionals, arrays);
+  if the contract grows complex, revisit a vetted root-side zod-to-ts library. If build-time codegen proves
+  impractical during P1-S1, return to the council with evidence before falling back to Option C.
 
 ### Option B — Publish the forge contract as a tiny shared package web imports
 A real `@archon/forge-contract` package (types-only, no zod runtime export) consumed via web's
@@ -285,36 +297,29 @@ A real `@archon/forge-contract` package (types-only, no zod runtime export) cons
 - **Risk:** a published package is a versioning and release surface; for an in-repo single consumer it is
   heavyweight, and it complicates the npm-pack exclusion story. Expensive and premature.
 
-### Option C — Generate-and-commit a generated file with a CI drift check (RECOMMENDED)
-A root-side script derives the TS types from the canonical Zod contract and writes a COMMITTED
-generated web type file. A CI check (in the existing root lint and test, NOT web-e2e) re-runs
-the generator and fails if the committed output differs. The generator is the
-single source of the projection; the committed file is convenience plus reviewability; the drift check makes
-the sync MACHINE-ENFORCED instead of human-promised.
+### Option C — Generate-AND-COMMIT a generated file with a CI drift check (REJECTED by council; fallback only)
+A root-side script derives the TS types and writes a COMMITTED generated web type file, with a CI drift check.
+The dissent owner rejected this: a committed generated file invites the classic "hand-edit + force CI green
+under deadline" drift (GraphQL/protobuf/OpenAPI precedent) — the drift check only DETECTS the failure, it does
+not PREVENT it. Retained only as the documented fallback if Option A proves impractical (return to council
+with evidence first).
 
-- **Reversible:** YES (cheap). The generated file is a derived artifact.
-- **R2-C-safe:** the generator runs in the ROOT toolchain (which may read the core) and EMITS a file under
-  the web source tree; `web` still never imports the core. The one-direction flow (from the forge module into the web tree) is
-  preserved exactly as the eslint wall messages already prescribe.
+### Recommendation: Option A (build-time, never committed) — COUNCIL-ADOPTED via the dissent (§13 C2).
 
-### Recommendation: Option C.
-
-It directly converts the current "must stay in sync" comment into a CI gate, which is the whole point of the
-Phase-1 mandate to kill the drift risk. It avoids a new published package (Option B's cost) and avoids
-trusting a hand-edited file (the status quo). The generator can be as simple as a bespoke emitter for this one
-contract — no heavyweight zod-to-ts dependency required, keeping the root's 3-dep posture intact.
+This removes the drift failure class rather than merely detecting it, matching the "best long-term over
+low-cost" directive. It avoids a new published package (Option B's cost) and keeps the root's 3-dep posture
+intact (bespoke emitter, no heavyweight zod-to-ts dependency). R2-C holds: the generator runs root-side and
+emits into the web tree; web never imports the core, and the generator never imports the web tree (§13 C2).
 
 ### Risks
 
-- **Bespoke emitter completeness:** a hand-rolled zod-to-ts emitter may not cover every zod construct. The
-  current contract is simple (enums, objects, optionals, arrays). Mitigation: scope the emitter to the
-  constructs the contract actually uses; the drift check catches regressions. If the contract grows
-  complex, revisit a vetted zod-to-ts library (still root-side).
-- **Two-checkout confusion:** the generated file lives under the web tree but is owned by a root script. Document
-  ownership in the file header (as the current file already does for the hand-written version).
+- **Bespoke emitter completeness:** must cover the contract's constructs (enums, objects, optionals, arrays);
+  if the contract grows complex, revisit a vetted root-side zod-to-ts library.
+- **Build coupling:** the web build now depends on the `prebuild` codegen step running first; the web build
+  fails loudly (not silently) if it does not — which is the intended visibility (vs a stale committed file).
 
-**Council condition satisfied:** the brief's Phase-1 mandate to eliminate the duplication WITHOUT breaching
-R2-C.
+**Council condition:** §13 **C2** (build-time codegen, never committed) + the parent mandate to eliminate the
+duplication WITHOUT breaching R2-C.
 
 ---
 
@@ -328,12 +333,14 @@ R2-C.
 - **Pin exact, not caret, for reproducible E2E:** change the web manifest from caret to an exact version (the
   current resolved version) AND pin the installer's exact Playwright version in a follow-up task with installer
   scope. The browser binary version and the test-runner version must match, so pin them together.
-- **The web-e2e workflow is a NON-REQUIRED job (Condition number 9).** A separate GitHub Actions workflow that:
+- **The web-e2e workflow is a NON-REQUIRED job (§13 C8; parent condition #9).** A separate GitHub Actions workflow that:
   - runs only on web-tree plus contract-generator changes (path filter),
   - runs the headless Chromium install with system deps (the F3 spike confirmed headless Chromium on WSL2 and CI),
   - runs the web build plus the web e2e suite,
-  - is NOT a required status check. Promote it to required ONLY after it demonstrates stability over N runs
-    (the council should set N; suggested at ten or more consecutive green on master).
+  - is NOT a required status check. Promote it to required ONLY after it demonstrates stability over N runs.
+    **The council set N = 15 consecutive green on master** (frontend_designer, over the proposal's floor of
+    10), and §13 C8 requires the promotion criterion to name an owner role + a concrete check mechanism in
+    the workflow file.
 - Keep the runtime-contract-and-export-regressions CI scope (per the root operating rules) intact: the root CI stays the authority
   for runtime and export regressions; web-e2e is additive and non-blocking.
 
@@ -344,7 +351,7 @@ R2-C.
   Mitigation: pin via the test-runner version (it resolves the matching browser build); cache the
   browser path in CI.
 
-**Council condition satisfied:** number 9 (separate non-required job, promote later).
+**Council condition satisfied:** §13 **C8** (separate non-required job, N=15 promotion with named owner + check mechanism, CI workspace isolation via `cd web && npm ci`); parent condition #9.
 
 ---
 
@@ -441,14 +448,24 @@ Note: every code slice carries the standard reviewer plus qa_engineer plus secur
 - **U3:** is manual or poll refresh (Decision 4 Option A) acceptable for the operator UX, or is real-time
   (Option B HTTP server, Phase 2) a hard requirement? This is a UX and risk-appetite call the user owns.
 
-### COUNCIL decisions (architecture, quality — owned by this gate)
-- **C1:** approve Decision 1 Option A (profile-as-template) versus demand evidence against Option B.
-- **C2:** accept Decision 2 Option B (two-tier critic) as falsifiable enough for Condition number 1, or require
-  the deterministic tier to cover layout-genericness too before approval.
-- **C3:** accept Decision 4 deferring the HTTP server to Phase 2, or rule the static-snapshot UX insufficient.
-- **C4:** set the promote-web-e2e-to-required stability threshold N (Decision 6).
-- **C5:** confirm Slice P1-S5's engine-graph reach is acceptable as additive, or require a deeper read of the
-  decompose path before approving the profile mechanism.
+### COUNCIL questions (architecture/quality — owned by this gate) and their RESOLUTIONS
+
+These are the questions the council answered; the resulting binding conditions are §13 **C1–C10** (the
+labels below are Q-prefixed to avoid colliding with those condition numbers). Resolutions recorded:
+
+- **Q1:** approve Decision 1 Option A (profile-as-template) vs demand evidence against Option B.
+  → APPROVED with §13 **C3** (verify the decompose mechanism before P1-S5; no conditional branching in the
+  template without re-gate).
+- **Q2:** is the Decision 2 two-tier critic falsifiable enough for PARENT condition #1?
+  → APPROVED only with §13 **C1** (the deterministic tier MUST cover AG-012/AG-014 as DOM assertions, with a
+  hard-fail test; any unchecked rule emits an explicit `layout-genericness-unchecked` flag).
+- **Q3:** accept Decision 4 deferring the HTTP server to Phase 2, or rule the static-snapshot UX insufficient?
+  → Transport APPROVED contingent on **U3** (operator owns whether stale-with-honest-age is acceptable);
+   §13 **C4/C5** require the two-part done-bar + honest staleness + `--watch`. If U3 = real-time-required,
+   Decision 4 reopens.
+- **Q4:** set the promote-web-e2e-to-required threshold N (Decision 6). → N = **15** (§13 **C8**).
+- **Q5:** is P1-S5's engine-graph reach acceptable as additive, or require a deeper decompose read first?
+  → Deeper read REQUIRED first (§13 **C3**, blocker before P1-S5).
 
 ---
 
@@ -485,7 +502,7 @@ Note: every code slice carries the standard reviewer plus qa_engineer plus secur
 | D2 two-tier critic | Reversible | additive checker module |
 | D3 forge subcommand | Reversible | additive admin module |
 | D4 static-snapshot live read | Reversible | reuses the Phase-0 mechanism; the HTTP server (Phase-2) would be the expensive step |
-| D5 generate-and-commit plus drift gate | Reversible | derived artifact |
+| D5 build-time codegen (never committed, §13 C2) | Reversible | gitignored derived artifact; web `prebuild` step |
 | D6 non-required CI plus exact pin | Reversible | additive workflow |
 | D7 self-hosted fonts plus CSP | Reversible | vendored asset |
 
@@ -515,6 +532,14 @@ Keep it strictly additive, give it its own task scope, and gate it hardest. Ever
 Panel (unanimous approved-with-conditions): `product_strategist`, `frontend_designer`,
 `infra_engineer` (**dissent owner**). Reasoning mode: strict.
 
+> **Numbering convention (read first).** Two numbering schemes appear in this doc and must not be conflated:
+> "condition number N" / "parent condition #N" in the Decision sections (§2–§7) refers to the **12 parent
+> Frontend-Forge-initiative conditions** (the council that approved the whole initiative). The labels **C1–C10
+> below are the Phase-1 binding conditions** produced by THIS gate, and where they conflict with a Decision-
+> section recommendation, **C1–C10 supersede it** (notably: §13 C2 overrides Decision 5 to build-time
+> codegen; the C5/D4 reframe overrides "monitor" → "snapshot viewer"). The §9 council questions are
+> Q-prefixed for the same reason.
+
 ### Recorded dissent (infra_engineer, adopted)
 The dissent owner forced one genuine design change and two framing corrections, all adopted:
 - **D5 → build-time codegen, NOT generate-and-commit.** A committed generated file invites the
@@ -541,21 +566,35 @@ The dissent owner forced one genuine design change and two framing corrections, 
 3. **C3 — Run-profile mechanism verified before P1-S5 (infra; blocker).** A bounded read of the
    decompose path must confirm conditional task presence / single-writer mid-run injection before P1-S5
    starts; expand S5 scope if injection is required. The profile template must acquire NO conditional
-   branching logic in Phase 1 without re-gating (product PS-5 tripwire).
-4. **C4 — Two-part done-bar, stated explicitly (product_strategist).** The Phase-1 brief states BOTH
-   falsifiable gates separately: (a) VIEWER — operator identifies a blocked/stuck run from the dashboard
-   faster than from SQL, *with honest staleness*; (b) CAPABILITY — a `frontend_forge` run materializes
-   the 15 gated tasks end-to-end on fallback assets. Phase-1 is NOT done on (b) alone.
+   branching logic in Phase 1 without re-gating (product PS-5 tripwire). **Required evidence:** a
+   solution_architect finding recorded in the P1-S5 task packet's `## Investigation` section (owner role +
+   read scope + the confirmed attach point), referenced by the P1-S5 verification before the slice activates.
+4. **C4 — Two-part done-bar, stated explicitly + measurably (product_strategist + qa_engineer).** The
+   Phase-1 brief states BOTH falsifiable gates separately. (a) VIEWER — operationalized as a **replayable
+   Playwright assertion**: given a snapshot with ≥1 `review_blocked`/`blocked` run, the dashboard renders
+   that run AND its blocking gate/role above the fold (no scroll, no SQL) within one load, AND shows a
+   `generated-at` age — verified by an e2e test, not a vibe. The qualitative "faster than SQL" claim, if
+   retained, is an explicit operator-acceptance step owned by the user (ties to U3), not an auto-gate.
+   (b) CAPABILITY — a `frontend_forge` run materializes the 15 gated tasks end-to-end on fallback assets.
+   Phase-1 is NOT done on (b) alone.
 5. **C5 — Honest staleness + poll refresh in P1-S2 (product PS-3/PS-4; infra D4).** The dashboard MUST
    render a `generated-at` / snapshot-age signal distinct from the `derived_only` authority label; a
    bounded operator-set poll refresh (`forge snapshot --watch`, no listening socket) is in P1-S2 scope,
    not deferred. A viewer that cannot show it is stale fails the done-bar.
-6. **C6 — Field-leak prevention in P1-S2 (infra; blocker for S2).** The snapshot generator uses strict
-   Zod parse (`.strip()`, never `.passthrough()`); the live snapshot output is gitignored; the committed
-   sample contains no real run/task IDs.
-7. **C7 — CSP / self-host Geist (frontend + infra), sequenced WITH D4.** Self-host Geist (CSP collapses
-   to `default-src 'self'`); confirm against the Vite production build whether `'unsafe-inline'` in
-   `style-src` is droppable and drop it if so. Do not ship a weaker CSP without evidence it is required.
+6. **C6 — Field-leak prevention (infra; a P1-S2 DONE-BAR, not a pre-start blocker — the three
+   sub-requirements are properties OF the S2 implementation).** The snapshot generator parses through the
+   view-model schema with default strip behavior (`z.object().parse()` drops unknown keys) and MUST NOT use
+   `.passthrough()`; prefer explicit field mapping so a future column cannot leak. The live snapshot output
+   is gitignored (done in #56). The committed sample uses **synthetic** run/task ids — the current sample
+   reuses real work-item ids (`forgePhase0Skeleton`, `dashboardContract`); P1-S2 sample regeneration must
+   replace them with synthetic identifiers.
+7. **C7 — CSP / self-host Geist (frontend + infra), sequenced WITH D4.** Self-host Geist so the CSP
+   collapses to a `default-src 'self'` family with no external origins. Target directive set MUST include
+   `object-src 'none'` (absent from both options as originally specified). The existing `dist/` build
+   already extracts CSS to an external file, so `'unsafe-inline'` in `style-src` is NOT required —
+   target `style-src 'self'` (no `'unsafe-inline'`); confirm against the production build at S2 and do not
+   ship the looser policy. If Decision 4 ever becomes the HTTP server, move the CSP to a response header and
+   add `connect-src` for the read endpoint.
 8. **C8 — CI isolation + promotion tracking (infra; frontend).** The non-required `web-e2e` workflow runs
    `cd web && npm ci` (explicit workspace scoping, never a root `npm ci`), with an R2-C rationale comment.
    The promote-to-required criterion names an owner role + a concrete check mechanism in the workflow
@@ -575,6 +614,6 @@ The dissent owner forced one genuine design change and two framing corrections, 
   operator requires real-time, Decision 4 reopens and the HTTP server is pulled forward (with its
   security review).
 
-**Implementation sequencing:** C3 and C6 are blockers before their slices start (P1-S5, P1-S2
-respectively). C1, C2, C5, C7, C8, C9 are slice done-bar items. C4 and C10 are brief/manager items
-before the dependent slices cut.
+**Implementation sequencing:** C3 is the one pre-start blocker (its decompose-path evidence must exist
+before P1-S5 activates). C1, C2, C5, C6, C7, C8, C9 are slice done-bar items (verified at slice review, not
+before start). C4 and C10 are brief/manager items before the dependent slices cut.
