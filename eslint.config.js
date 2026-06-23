@@ -10,7 +10,9 @@ export default tseslint.config(
   {
     // Generated / vendored / build-output paths, plus the managed control-layer
     // hooks (.claude/** is not part of the TS build and is governed separately).
-    ignores: ["node_modules/**", "coverage/**", "dist/**", "**/*.d.ts", ".claude/**"]
+    // web/** is the Forge UI workspace — it ships its own eslint.config.js and
+    // its own toolchain; the root linter must not reach in.
+    ignores: ["node_modules/**", "coverage/**", "dist/**", "**/*.d.ts", ".claude/**", "web/**"]
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -27,6 +29,25 @@ export default tseslint.config(
       }
     },
     rules: {
+      // Package boundary wall (R2-C): src/** MUST NOT import from web/**.
+      // The Forge UI workspace (web/) is a hard toolchain boundary — React, Vite,
+      // Tailwind, and Playwright live only in web/package.json and must never bleed
+      // into archon's lean backend core. A future published src/forge/ contract
+      // (data types / event schemas) is the only allowed bridge, and that flows
+      // FROM src TO web, never the other direction.
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/web/**", "../web/**", "../../web/**"],
+              message:
+                "src/** must not import from web/**. The Forge UI workspace is a hard package boundary (R2-C). If you need to share types, publish them through src/forge/ and import from there.",
+            },
+          ],
+        },
+      ],
+
       // The high-value type-aware rules (no-floating-promises, no-misused-promises,
       // await-thenable, ...) already pass clean and stay enforced. The rules below are
       // turned off as a documented baseline: they flag pre-existing `any`-flow debt

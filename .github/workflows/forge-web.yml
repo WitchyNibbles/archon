@@ -1,0 +1,74 @@
+name: Forge Web
+
+# Non-required CI job — intentionally NOT wired into the required-checks
+# job in ci.yml. A Vite/Tailwind/React toolchain flake must never block
+# merges to master by failing the core daemon/migration pipeline.
+#
+# Rollback path: delete this file or disable the workflow in GitHub UI.
+# The core CI contract (ci.yml required-checks) is unaffected.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - "web/**"
+      - ".github/workflows/forge-web.yml"
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "web/**"
+      - ".github/workflows/forge-web.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+
+permissions:
+  contents: read
+
+jobs:
+  forge-web-build:
+    name: Forge web build (non-required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          # No root cache: web/ has its own lockfile and node_modules.
+          # Cache keyed on web/package-lock.json to avoid mixing with root cache.
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+      # Verify the build output exists and the dist dir is non-empty.
+      - name: Verify build artifact
+        working-directory: web
+        run: |
+          test -d dist || { echo "dist/ missing after build"; exit 1; }
+          test "$(ls -A dist)" || { echo "dist/ is empty after build"; exit 1; }
+          echo "Build artifact present:"
+          ls -lh dist/
