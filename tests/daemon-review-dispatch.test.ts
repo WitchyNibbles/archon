@@ -77,7 +77,7 @@ function makeHarness(opts: {
   const cycles: DaemonCycleRecord[] = [];
   const blockedCalls: DaemonBlockedResultInput[] = [];
   const executeStepCalls: Array<{ runId: string; staleAfterHours: number; reviewCommands: unknown[] }> = [];
-  let session: string | undefined = opts.initialSession;
+  const session: string | undefined = opts.initialSession;
 
   const blockedResult: DaemonBlockedResultBuilder = async (blockedInput) => {
     blockedCalls.push(blockedInput);
