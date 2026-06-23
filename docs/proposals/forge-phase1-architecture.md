@@ -370,7 +370,10 @@ plus `frame-ancestors 'none'` and `base-uri 'self'`.
   `style-src 'unsafe-inline'` is required for Tailwind-style injected styles, weakening the policy.
 
 ### Option B — Self-host the Geist fonts (RECOMMENDED)
-Vendor the Geist woff2 files under the web public fonts dir, drop the CDN `@import`, and serve `font-src 'self'`.
+Vendor the Geist woff2 files under the web public fonts dir, drop the CDN `@import`, and serve a CSP whose
+directive set includes `default-src 'self'`, `font-src 'self'`, `object-src 'none'` (required, per C7),
+`style-src 'self'` (no `'unsafe-inline'` — see the resolved risk below), `frame-ancestors 'none'`, and
+`base-uri 'self'`.
 
 - **Pro:** removes the third-party origin entirely, so the CSP collapses to a `default-src 'self'` family with no
   external font or style host. No CDN availability or tracking dependency. Best fit for a single-operator
@@ -379,10 +382,11 @@ Vendor the Geist woff2 files under the web public fonts dir, drop the CDN `@impo
 
 ### Recommendation: Option B, with the CSP delivered as a meta http-equiv tag for the static-snapshot deployment (Option A transport). If Decision 4 ever becomes Option B (HTTP server), MOVE the CSP into a real response header and add connect-src for the read endpoint — which is why this MUST be sequenced WITH Decision 4, not before it.
 
-### Risk
-- **`'unsafe-inline'` in `style-src`** may still be required by Tailwind 4 and Vite's injected styles. Mitigation:
-  verify the built output uses external stylesheets (Vite extracts CSS in build mode); if so, drop
-  `'unsafe-inline'`. Confirm during implementation; do not assume.
+### Risk (RESOLVED — see §13 C7)
+- **`'unsafe-inline'` in `style-src`** is NOT required: the existing `dist/` production build already extracts
+  CSS to an external stylesheet (Vite default in build mode), so the target is `style-src 'self'` with no
+  `'unsafe-inline'`. Re-confirm against the production build at P1-S2 implementation, but do not ship the
+  looser policy on the assumption it is needed.
 
 **Council condition satisfied:** addresses the pre-live-data security MEDIUM; sequenced with number 4.
 
@@ -393,25 +397,36 @@ Vendor the Geist woff2 files under the web public fonts dir, drop the CDN `@impo
 Each slice is an independently verifiable unit with a single dominant risk and a clear done-bar. Slices are
 ordered so the LIVE-DATA spine lands before the generative pipeline depends on it.
 
-**Slice P1-S1 — Contract codegen plus drift gate (Decision 5).** Write scope: the forge module, the web type tree,
-and root CI config. Done: the generated web type file is emitted from the Zod contract; the hand-written
-type file is replaced; the CI drift check fails on divergence. Dominant risk: emitter completeness.
-Why first: it removes the standing drift risk and unblocks every later view-model change. Reversible.
+**Slice P1-S1 — Build-time contract codegen (Decision 5 / C2).** Write scope: the forge module, the web type
+tree, the web build config, and root/web ignore config. Done: a bespoke emitter derives the web type file
+from the Zod contract and runs as a web `prebuild` step; the generated file is GITIGNORED (never committed);
+the generator MUST NOT import the web tree; the hand-written type file is replaced and the web build fails
+loudly if codegen did not run. Dominant risk: emitter completeness. Why first: removes the standing drift
+risk (no committed generated file to hand-edit) and unblocks every later view-model change. Reversible.
 
-**Slice P1-S2 — Live read into the snapshot generator (Decision 4 Option A plus Decision 7).** Write scope:
-the forge module, the web public dir, the web entry HTML (CSP meta plus self-hosted fonts), and the web public fonts dir. Done:
-the forge snapshot sub-verb queries the report and status surface via the store interface, validates through the schema,
-and labels the output derived_only; CSP plus self-hosted Geist landed. Dominant risk: field-leak via the projection;
-gated by the security reviewer. Reversible.
+**Slice P1-S2 — Live read into the snapshot generator (Decision 4 Option A + Decision 7; conditions C5, C6, C7).**
+Write scope: the forge module, the web public dir, the web entry HTML (CSP meta + self-hosted fonts), and the
+web public fonts dir. Done: the forge snapshot sub-verb queries the report and status surface via the store
+interface, validates through the schema (default strip parse, never `.passthrough()`), and labels the output
+`derived_only`; **the dashboard renders a `generated-at` / snapshot-age signal distinct from the authority
+label, and a bounded `forge snapshot --watch` poller ships IN THIS SLICE (C5, not deferred)**; the committed
+sample uses **synthetic** run/task ids (C6); self-hosted Geist + a CSP with `default-src 'self'`,
+`object-src 'none'`, and `style-src 'self'` (no `'unsafe-inline'`) landed (C7). Dominant risk: field-leak via
+the projection; gated by the security reviewer. Reversible.
 
 **Slice P1-S3 — forge admin subcommand (Decision 3).** Write scope: the admin entry dispatch line plus the new forge admin module.
 Done: the forge snapshot and forge critic sub-verbs with injected deps plus tests.
 Dominant risk: keeping snapshot read-only. Reversible.
 
-**Slice P1-S4 — Deterministic anti-generic checker (Decision 2 Tier-1).** Write scope: the forge module. Done:
-a checker that takes computed styles plus the constraints manifest and returns the violation list with
-AG-NNN ids and measured-vs-cap values; unit tests prove an over-cap radius case hard_fails.
-Dominant risk: computed-style extraction fidelity. This is the FALSIFIABLE core of Condition number 1.
+**Slice P1-S4 — Deterministic anti-generic checker (Decision 2 Tier-1; condition C1, NON-WAIVABLE).** Write
+scope: the forge module. Done: a checker that takes computed styles + DOM structure + the constraints manifest
+and returns the violation list with AG-NNN ids and measured-vs-cap values. **C1 (non-waivable):** `AG-012`
+(generic 3-card feature soup) and `AG-014` (marketing-page patterns) are implemented as DOM-STRUCTURE
+assertions (not LLM-advisory), and a test proves a three-equal-card layout `hard_fail`s before merge; unit
+tests also prove an over-cap radius case hard_fails. Any rule that cannot be mechanically checked MUST emit an
+explicit `layout-genericness-unchecked` flag in the gate output — advisory coverage is declared, never hidden
+behind a green deterministic pass. Dominant risk: computed-style + DOM extraction fidelity. This is the
+FALSIFIABLE core of parent condition #1 / §13 C1.
 
 **Slice P1-S5 — frontend_forge run profile template plus decompose mapping (Decision 1).** Write scope:
 the forge module (profile data plus Zod validation), and wherever profiles register (inspect the decompose path
@@ -425,9 +440,11 @@ the web public dir or a forge asset dir plus the forge module. Done: every pipel
 fallback; asset-QA validates the fallback so the pipeline runs end-to-end WITHOUT F1. Dominant risk: none
 high. Reversible. Sets up the Phase-2 codex swap as a localized change.
 
-**Slice P1-S7 — web-e2e non-required CI plus Playwright exact pin (Decision 6).** Write scope:
-the GitHub workflows dir plus the web manifest; the installer pin is a SEPARATE
-follow-up packet (forbidden scope here). Done: a non-required job green on the critical flow. Reversible.
+**Slice P1-S7 — web-e2e non-required CI plus Playwright exact pin (Decision 6; condition C8).** Write scope:
+the GitHub workflows dir plus the web manifest; the installer pin is a SEPARATE follow-up packet (forbidden
+scope here). Done: a non-required job, green on the critical flow, that runs `cd web && npm ci` (explicit
+workspace isolation, never a root `npm ci`, with an R2-C rationale comment); the workflow file documents the
+promote-to-required criterion = **15** consecutive green runs on master + a named owner role (C8). Reversible.
 
 **Slice P1-S8 (separate packet, control-layer skills scope) — author the three stage skills (Decision 2).** Compose
 the existing skills; encode the critic and repair contracts from S4. NOT in this task's scope; cut as its own packet
@@ -470,6 +487,11 @@ labels below are Q-prefixed to avoid colliding with those condition numbers). Re
 ---
 
 ## 10. Dissent seeds (material for the council dissent owner)
+
+> **Historical / pre-decision material.** These seeds were the arguments PREPARED for the dissent owner
+> before the gate ran; they retain their original "monitor" / "generate-and-commit" framing on purpose. Their
+> RESOLUTIONS are in §13 (the D4 and D5 seeds were adopted into conditions C5 and C2; the others informed the
+> conditions). Read §13 for the settled outcome — do not read §10 as live disagreement.
 
 - **Against Decision 1 (profile-as-template):** a declarative 15-stage template materialized at decompose
   time is a hidden DSL. The moment a stage needs conditional branching (skip asset-QA when no assets changed),
