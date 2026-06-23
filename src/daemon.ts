@@ -333,6 +333,18 @@ import type {
   DaemonContinueAnalysisOutcome
 } from "./daemon/continue-analysis.ts";
 export type { DaemonContinueAnalysisDeps, DaemonContinueAnalysisInput, DaemonContinueAnalysisOutcome };
+// Loop-monolith decomposition (6k): the complete directive handler is now in
+// ./daemon/complete.ts. classifyAdvanceFailure is MOVED there (to avoid a value
+// cycle) and re-exported here so existing callers at "../src/daemon.ts" keep
+// working without any import-path changes. Tests import the handler directly from
+// ./daemon/complete.ts — not from daemon.ts — to lock the module boundary.
+import { handleDaemonComplete as handleDaemonCompleteStep } from "./daemon/complete.ts";
+import type {
+  DaemonCompleteInput,
+  DaemonCompleteDeps
+} from "./daemon/complete.ts";
+export type { DaemonCompleteInput, DaemonCompleteDeps };
+export { classifyAdvanceFailure } from "./daemon/complete.ts";
 
 
 export function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
@@ -849,40 +861,6 @@ export function formatDaemonCommandResult(result: DaemonCommandResult): string {
 }
 
 
-// Map an advance-active-task failure to an operator-actionable blocker. The commit
-// guard (advanceCommitGuard) throws with a recognizable signature when in-scope
-// deliverables are uncommitted; that case gets a dedicated, recoverable blocker
-// with commit guidance. Any other advance failure surfaces as runtime_blocked so a
-// throw never escapes the daemon loop as an unhandled exception. Pure and
-// unit-testable.
-export function classifyAdvanceFailure(error: unknown): {
-  blockerKind: "uncommitted_deliverables" | "runtime_blocked";
-  reason: string;
-  nextActions: string[];
-} {
-  const message = error instanceof Error ? error.message : String(error);
-  // Match the commit guard's specific phrasing (src/workflow.ts evaluateCommitGuard).
-  // The second arm is anchored to "inside its write scope" so a generic future error
-  // that merely mentions "uncommitted change(s)" is not misclassified as a guard hit.
-  if (/refusing to close task|uncommitted change\(s\) inside its write scope/i.test(message)) {
-    return {
-      blockerKind: "uncommitted_deliverables",
-      reason: message,
-      nextActions: [
-        "Commit the active task's uncommitted in-scope deliverables, then re-run the daemon.",
-        "Or run advance-active-task --apply --allow-uncommitted if leaving them uncommitted is intentional."
-      ]
-    };
-  }
-  return {
-    blockerKind: "runtime_blocked",
-    reason: `advance-active-task failed: ${message}`,
-    nextActions: [
-      "Resolve the advance-active-task failure (see reason), then re-run the daemon."
-    ]
-  };
-}
-
 export async function executeDaemonCommandFromArgs(
   args: readonly string[],
   options: ExecuteDaemonCommandOptions
@@ -1221,76 +1199,26 @@ export async function executeDaemonCommandFromArgs(
             handleOperatorRequiredContinuation
           }
         );
+      // Loop-monolith decomposition (6k): the complete directive handler now lives
+      // in ./daemon/complete.ts. classifyAdvanceFailure was MOVED there (to avoid a
+      // value cycle) and is re-exported from daemon.ts. latestSessionId is exposed
+      // as a live getter (holder/ref) — the handler only reads it, never writes back.
 
       if (directive.kind === "complete") {
-        let advanced: Awaited<ReturnType<typeof executeAdvanceActiveTaskCommandFromArgs>>;
-        try {
-          advanced = await executeAdvanceActiveTaskCommandFromArgs(
-            [
-              "--workspace-slug",
-              workspaceSlug,
-              "--project-slug",
-              projectSlug,
-              "--run-id",
-              activeRunId,
-              "--apply",
-              "--format",
-              "json"
-            ],
-            options
-          );
-        } catch (error) {
-          // advance-active-task can throw — most notably the commit guard when the
-          // task's in-scope deliverables are uncommitted. Surface it as a structured
-          // blocker so the autonomy loop pauses for the operator instead of crashing.
-          const failure = classifyAdvanceFailure(error);
-          cycles.push({
-            cycle,
-            directiveKind: directive.kind,
-            action: "blocked",
-            runId: activeRunId,
-            taskId: activeTaskId,
-            sessionId: latestSessionId ?? null,
-            summary: failure.reason
-          });
-          return blockedResult({
-            blockerKind: failure.blockerKind,
-            reason: failure.reason,
-            cycle,
-            activeRunId,
-            activeTaskId,
-            directiveKind: directive.kind,
-            nextActions: failure.nextActions
-          });
-        }
-
-        cycles.push({
-          cycle,
-          directiveKind: directive.kind,
-          action: advanced.result.nextTaskId ? "advance_active_task" : "complete",
-          runId: activeRunId,
-          taskId: activeTaskId,
-          sessionId: latestSessionId ?? null,
-          summary: advanced.result.nextTaskId
-            ? `advanced to ${advanced.result.nextTaskId}`
-            : "advanced the final active task and closed the queue"
-        });
-
-        if (!advanced.result.nextTaskId) {
-          const refreshedState = await options.getProjectRuntimeState(projectContext.project.id);
-          return {
-            authorityLabel: "derived_only" as const,
+        const completeResult = await handleDaemonCompleteStep(
+          { directive, cycle, activeRunId, activeTaskId },
+          {
+            options,
             workspaceSlug,
             projectSlug,
-            status: "completed" as const,
-            reason: "daemon advanced the final active task and no next task remains",
-            activeRunId: refreshedState?.activeRunId ?? null,
-            activeTaskId: refreshedState?.activeTaskId ?? null,
-            sessionId: latestSessionId ?? null,
-            cycles
-          };
-        }
-
+            projectId: projectContext.project.id,
+            cycles,
+            getSessionId: () => latestSessionId,
+            blockedResult,
+            advanceActiveTask: executeAdvanceActiveTaskCommandFromArgs
+          }
+        );
+        if (completeResult !== undefined) return completeResult;
         continue;
       }
 
