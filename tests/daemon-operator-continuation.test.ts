@@ -165,6 +165,15 @@ test("handleDaemonOperatorRequiredContinuation: no matching action writes contin
   assert.equal(status.state, "blocked");
   assert.equal(status.executionMode, "operator_required");
   assert.equal(status.summary, "operator must resume this continuation");
+
+  // manual_resume -> manual_operator_handoff -> the else branch clears the
+  // automation envelope; no envelope file should exist and no detail key set.
+  await assert.rejects(
+    () => readFile(path.join(cwd, ".archon", "work", "daemon", "automation-envelope.json"), "utf8"),
+    /ENOENT/
+  );
+  const detailFiles = (harness.blockedCalls[0]!.detailFiles ?? {}) as Record<string, string>;
+  assert.equal(detailFiles.automationEnvelope, undefined);
 });
 
 test("handleDaemonOperatorRequiredContinuation: matching queued action runs a codex turn with operator notes", async () => {
@@ -215,6 +224,61 @@ test("handleDaemonOperatorRequiredContinuation: matching queued action runs a co
   // The consumed action file was archived out of the live queue.
   const remaining = await readdir(operatorActionDir);
   assert.deepEqual(remaining, [], "the matched action is consumed from the queue");
+});
+
+test("handleDaemonOperatorRequiredContinuation: defer_same_thread continuation writes the automation envelope", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "archon-opcont-"));
+  const operatorActionDir = path.join(dir, "operator-actions");
+  await mkdir(operatorActionDir, { recursive: true }); // empty queue
+  const cwd = path.join(dir, "cwd");
+  await mkdir(cwd, { recursive: true });
+
+  // env={} -> claudeCliScheduler defaults true; defer_same_thread + checkpoint
+  // source selects claude_cli_exec_scheduler (operator wakeOwner, cron), which
+  // satisfies the automation-envelope write branch.
+  const harness = makeDeps({ operatorActionDir, cwd });
+  const result = await handleDaemonOperatorRequiredContinuation(
+    input({
+      directive: continueAnalysisDirective({ source: "checkpoint" }),
+      classification: classification({ continuationIntent: "defer_same_thread" })
+    }),
+    harness.deps
+  );
+
+  assert.equal(result?.status, "blocked");
+  // The automation envelope was written under cwd with the selected provider.
+  const envelopePath = path.join(cwd, ".archon", "work", "daemon", "automation-envelope.json");
+  const envelope = JSON.parse(await readFile(envelopePath, "utf8"));
+  assert.equal(envelope.provider, "claude_cli_exec_scheduler");
+  assert.equal(envelope.wakeOwner, "operator");
+  assert.equal(envelope.targetMode, "same_thread");
+  assert.equal(envelope.continuationIntent, "defer_same_thread");
+  // The blocked result carries the automation-envelope detail file (spread quirk).
+  const detailFiles = harness.blockedCalls[0]!.detailFiles as Record<string, string>;
+  assert.equal(detailFiles.automationEnvelope, ".archon/work/daemon/automation-envelope.json");
+  assert.equal(detailFiles.continuationStatus, ".archon/work/daemon/continuation-status.json");
+});
+
+test("handleDaemonOperatorRequiredContinuation: invalid queued action files are archived to failed-operator-actions", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "archon-opcont-"));
+  const operatorActionDir = path.join(dir, "operator-actions");
+  await mkdir(operatorActionDir, { recursive: true });
+  const cwd = path.join(dir, "cwd");
+  await mkdir(cwd, { recursive: true });
+
+  // A malformed action file: parses into the failedEntries bucket (not a throw).
+  await writeFile(path.join(operatorActionDir, "broken.json"), "{ not valid json", "utf8");
+
+  const harness = makeDeps({ operatorActionDir, cwd });
+  const result = await handleDaemonOperatorRequiredContinuation(input(), harness.deps);
+
+  // No usable match -> blocked, but the failed entry was archived out of the queue.
+  assert.equal(result?.status, "blocked");
+  assert.equal(harness.codexCalls.length, 0);
+  assert.deepEqual(await readdir(operatorActionDir), [], "the invalid file is moved out of the live queue");
+  const archived = await readdir(path.join(cwd, ".archon", "work", "daemon", "failed-operator-actions"));
+  assert.ok(archived.includes("broken.json"), "invalid file archived to failed-operator-actions");
+  assert.ok(archived.includes("broken.json.error.json"), "error sidecar recorded");
 });
 
 test("handleDaemonOperatorRequiredContinuation: matching action returning undefined propagates the continue signal", async () => {
