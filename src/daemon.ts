@@ -15,8 +15,6 @@ import process from "node:process";
 import { withClient } from "./admin/db.ts";
 import {
   classifyContinueAnalysisDirective,
-  resolveContinuationCapabilities,
-  selectLocalContinuationProvider,
   type ContinueAnalysisDirectiveClassification
 } from "./admin/autonomous-summary.ts";
 
@@ -299,6 +297,22 @@ import type {
 export type {
   DaemonNoProgressOutcome,
   DaemonScopeExpansionPayload
+};
+import { handleDaemonOperatorRequiredContinuation } from "./daemon/operator-continuation.ts";
+export { handleDaemonOperatorRequiredContinuation };
+import type {
+  DaemonBlockedResultBuilder,
+  DaemonBlockedResultInput,
+  DaemonCodexTurnRunner,
+  DaemonOperatorContinuationDeps,
+  DaemonOperatorContinuationInput
+} from "./daemon/operator-continuation.ts";
+export type {
+  DaemonBlockedResultBuilder,
+  DaemonBlockedResultInput,
+  DaemonCodexTurnRunner,
+  DaemonOperatorContinuationDeps,
+  DaemonOperatorContinuationInput
 };
 
 
@@ -1276,158 +1290,36 @@ export async function executeDaemonCommandFromArgs(
 
         return undefined;
       };
-      const handleOperatorRequiredContinuation = async (input: {
+      // Loop-monolith decomposition (6g): the operator-required continuation
+      // handler now lives in ./daemon/operator-continuation.ts. This thin
+      // wrapper threads the per-cycle inputs plus the loop's mutable state —
+      // crucially latestSessionId via a live getter (holder/ref, not a
+      // snapshot) so runDaemonCodexTurn's session mutation stays observable.
+      const handleOperatorRequiredContinuation = (input: {
         directive: Extract<RunExecutionPlan["directive"], { kind: "continue_analysis" }>;
         classification: ContinueAnalysisDirectiveClassification;
-      }
-      ): Promise<DaemonCommandResult | undefined> => {
-        let queuedOperatorActions: DaemonOperatorActionQueueEntry[];
-        let failedOperatorActions: FailedDaemonOperatorActionQueueEntry[];
-        try {
-          const queueState = await readDaemonOperatorActionQueueState(operatorActionDir);
-          queuedOperatorActions = queueState.entries;
-          failedOperatorActions = queueState.failedEntries;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          cycles.push({
-            cycle,
-            directiveKind: input.directive.kind,
-            action: "blocked",
-            runId: activeRunId,
-            taskId: activeTaskId,
-            sessionId: latestSessionId ?? null,
-            summary: `operator action queue error: ${message}`
-          });
-
-          return blockedResult({
-            blockerKind: "operator_required_continuation",
-            reason: `operator action queue error: ${message}`,
+      }): Promise<DaemonCommandResult | undefined> =>
+        handleDaemonOperatorRequiredContinuation(
+          {
+            directive: input.directive,
+            classification: input.classification,
             cycle,
             activeRunId,
-            activeTaskId,
-            directiveKind: input.directive.kind,
-            nextActions: [...input.directive.nextActions]
-          });
-        }
-
-        if (failedOperatorActions.length > 0) {
-          await archiveFailedDaemonOperatorActionQueueEntries(failedOperatorActions, cwd, now().toISOString());
-        }
-
-        const matchingOperatorAction = queuedOperatorActions.find((entry) =>
-          matchesDaemonOperatorContinuationAction({
-            entry,
-            runId: activeRunId,
-            taskId: activeTaskId,
-            directive: input.directive,
-            classification: input.classification
-          })
-        );
-
-        if (matchingOperatorAction) {
-          await archiveConsumedDaemonOperatorActionQueueEntries([matchingOperatorAction], cwd);
-          const codexResult = await runDaemonCodexTurn({
-            directive: input.directive,
-            summaryAction: "run_codex_analysis",
-            activeRunId,
-            activeTaskId,
-            operatorNotes: matchingOperatorAction.command.action.operatorNotes
-          });
-          return codexResult;
-        }
-
-        const providerSelection = selectLocalContinuationProvider({
-          executionMode: input.classification.executionMode,
-          continuationIntent: input.classification.continuationIntent,
-          capabilities: resolveContinuationCapabilities(env)
-        });
-        const updatedAt = now().toISOString();
-        await writeDaemonContinuationStatus(cwd, {
-          state: "blocked",
-          directiveKind: "continue_analysis",
-          executionMode: "operator_required",
-          targetId: input.directive.targetId,
-          source: input.directive.source,
-          sourceId:
-            input.classification.action?.kind === "resume_target"
-              ? input.classification.action.sourceId
-              : undefined,
-          actionKind: input.classification.action?.kind,
-          provider: providerSelection.provider,
-          wakeOwner: providerSelection.wakeOwner,
-          scheduleKind: providerSelection.scheduleKind,
-          schedule: providerSelection.schedule,
-          summary: input.classification.summary,
-          nextActions: [...input.directive.nextActions],
-          blockers: [...input.directive.blockers],
-          updatedAt
-        });
-        if (
-          (providerSelection.provider === "claude_app_thread_automation" ||
-            providerSelection.provider === "claude_app_standalone_automation" ||
-            providerSelection.provider === "claude_cli_exec_scheduler") &&
-          providerSelection.wakeOwner === "operator" &&
-          providerSelection.scheduleKind !== "none" &&
-          providerSelection.scheduleKind !== "manual" &&
-          typeof providerSelection.schedule === "string" &&
-          (input.classification.continuationIntent === "defer_same_thread" ||
-            input.classification.continuationIntent === "defer_fresh_run") &&
-          (input.directive.source === "checkpoint" || input.directive.source === "progress_proof")
-        ) {
-          await writeDaemonAutomationEnvelope(cwd, {
-            provider: providerSelection.provider,
-            wakeOwner: "operator",
-            continuationIntent: input.classification.continuationIntent,
-            targetMode: input.classification.continuationIntent === "defer_same_thread" ? "same_thread" : "fresh_run",
-            scheduleKind: providerSelection.scheduleKind,
-            schedule: providerSelection.schedule,
-            targetId: input.directive.targetId,
-            source: input.directive.source,
-            sourceId:
-              input.classification.action?.kind === "resume_target"
-                ? input.classification.action.sourceId
-                : undefined,
-            summary: input.classification.summary,
-            nextActions: [...input.directive.nextActions],
+            activeTaskId
+          },
+          {
+            operatorActionDir,
+            cwd,
+            env,
+            now,
             workspaceSlug,
             projectSlug,
-            activeRunId,
-            activeTaskId,
-            updatedAt
-          });
-        } else {
-          await clearDaemonAutomationEnvelope(cwd);
-        }
-        cycles.push({
-          cycle,
-          directiveKind: input.directive.kind,
-          action: "blocked",
-          runId: activeRunId,
-          taskId: activeTaskId,
-          sessionId: latestSessionId ?? null,
-          summary: input.classification.summary
-        });
-
-        return blockedResult({
-          blockerKind: "operator_required_continuation",
-          reason: input.classification.summary,
-          cycle,
-          activeRunId,
-          activeTaskId,
-          directiveKind: input.directive.kind,
-          nextActions: [...input.directive.nextActions],
-          detailFiles: {
-            continuationStatus: ".archon/work/daemon/continuation-status.json",
-            ...(providerSelection.provider === "claude_app_thread_automation" ||
-            providerSelection.provider === "claude_app_standalone_automation" ||
-            providerSelection.provider === "claude_cli_exec_scheduler"
-              ? {
-                  automationEnvelope: ".archon/work/daemon/automation-envelope.json"
-                }
-              : {})
+            cycles,
+            getSessionId: () => latestSessionId,
+            blockedResult,
+            runDaemonCodexTurn
           }
-        });
-      };
+        );
 
       if (directive.kind === "complete") {
         let advanced: Awaited<ReturnType<typeof executeAdvanceActiveTaskCommandFromArgs>>;
