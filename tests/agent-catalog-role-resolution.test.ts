@@ -31,6 +31,32 @@ test("normalizeAgentRoleId returns undefined for genuinely unknown roles", () =>
   assert.equal(normalizeAgentRoleId(""), undefined);
 });
 
+test("normalizeAgentRoleId trims surrounding whitespace before resolving", () => {
+  assert.equal(normalizeAgentRoleId("  reviewer  "), "reviewer");
+  assert.equal(normalizeAgentRoleId("\tagent-runtime-engineer\n"), "agent_runtime_engineer");
+  assert.equal(normalizeAgentRoleId("   "), undefined);
+});
+
+test("normalizeAgentRoleId returns undefined for non-string input", () => {
+  assert.equal(normalizeAgentRoleId(undefined), undefined);
+  assert.equal(normalizeAgentRoleId(null), undefined);
+  assert.equal(normalizeAgentRoleId(42), undefined);
+  assert.equal(normalizeAgentRoleId({}), undefined);
+});
+
+test("normalizeAgentRoleId does not resolve inherited Object.prototype keys", () => {
+  // `in` against the catalog object would match these; own-key membership must not.
+  assert.equal(normalizeAgentRoleId("__proto__"), undefined);
+  assert.equal(normalizeAgentRoleId("constructor"), undefined);
+  assert.equal(normalizeAgentRoleId("toString"), undefined);
+  assert.equal(normalizeAgentRoleId("hasOwnProperty"), undefined);
+});
+
+test("getAgentCatalogEntry throws for inherited Object.prototype keys", () => {
+  assert.throws(() => getAgentCatalogEntry("__proto__" as AgentRoleId), /__proto__/);
+  assert.throws(() => getAgentCatalogEntry("constructor" as AgentRoleId), /constructor/);
+});
+
 test("getAgentCatalogEntry resolves a hyphenated owner role to the same entry as the underscore key", () => {
   const canonical = getAgentCatalogEntry("agent_runtime_engineer");
   const hyphenated = getAgentCatalogEntry("agent-runtime-engineer" as AgentRoleId);

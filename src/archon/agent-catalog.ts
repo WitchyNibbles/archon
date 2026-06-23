@@ -1239,7 +1239,15 @@ export const agentCatalogEntries = Object.freeze(
 // underscores ("agent_runtime_engineer"). Resolve a raw role string to a canonical
 // catalog key, applying hyphen->underscore normalization. Returns `undefined` for
 // genuinely unknown roles so callers can decide how to reject.
-export function normalizeAgentRoleId(raw: string): AgentRoleId | undefined {
+// Own-key membership set. Using `in` against the object would also match
+// inherited keys ("__proto__", "constructor", "toString", ...), which would
+// resolve to Object.prototype members cast as catalog entries. Match only the
+// catalog's own role ids.
+const agentRoleIdSet: ReadonlySet<string> = new Set(agentRoleIds);
+
+export function normalizeAgentRoleId(raw: unknown): AgentRoleId | undefined {
+  // `raw` is typed `unknown` on purpose: the loosely-typed/`as`-cast runtime
+  // callers this function exists to defend can pass non-string values.
   if (typeof raw !== "string") {
     return undefined;
   }
@@ -1247,11 +1255,11 @@ export function normalizeAgentRoleId(raw: string): AgentRoleId | undefined {
   if (trimmed.length === 0) {
     return undefined;
   }
-  if (trimmed in agentCatalog) {
+  if (agentRoleIdSet.has(trimmed)) {
     return trimmed as AgentRoleId;
   }
   const underscored = trimmed.replace(/-/g, "_");
-  if (underscored in agentCatalog) {
+  if (agentRoleIdSet.has(underscored)) {
     return underscored as AgentRoleId;
   }
   return undefined;
@@ -1262,7 +1270,7 @@ export function getAgentCatalogEntry(role: AgentRoleId): (typeof agentCatalog)[A
   // callers can pass a hyphenated or otherwise non-canonical value at runtime.
   // Normalize first, and fail loud with a diagnostic message instead of returning
   // `undefined` and letting callers crash on a deep property access.
-  const normalized = normalizeAgentRoleId(role as string);
+  const normalized = normalizeAgentRoleId(role);
   if (!normalized) {
     throw new Error(
       `Unknown agent catalog role "${String(role)}": no catalog entry resolves for this role id (after hyphen/underscore normalization). Known roles: ${agentRoleIds.join(", ")}.`
