@@ -13,10 +13,7 @@ import process from "node:process";
 
 
 import { withClient } from "./admin/db.ts";
-import {
-  classifyContinueAnalysisDirective,
-  type ContinueAnalysisDirectiveClassification
-} from "./admin/autonomous-summary.ts";
+import { type ContinueAnalysisDirectiveClassification } from "./admin/autonomous-summary.ts";
 
 
 
@@ -45,7 +42,6 @@ import { INTERNAL_RUNTIME_PREFLIGHT_BYPASS_TOKEN, executeAdvanceActiveTaskComman
 import type { EnvShape, ExecuteAdvanceActiveTaskCommandOptions, ExecuteStatusCommandOptions } from "./workflow.ts";
 import { buildRuntimeExecutionConnectionFailure, executeReconcileRuntimeStateCommandFromArgs, executeRuntimeExecutionPreflight, formatRuntimeExecutionPreflightFailureResult, isRuntimeExecutionPreflightConnectionError } from "./runtime.ts";
 import type { ExecuteDoctorCommandOptions, ExecuteRuntimePreflightCommandOptions, ReconcileRuntimeStateCommandResult } from "./runtime.ts";
-import { closeWorkflowProofCoverageGaps, executeWorkflowProofCommandFromArgs } from "./review.ts";
 import type { RecordReviewCommandInput } from "./review.ts";
 import { AgentRuntimeStore } from "./store/agent-runtime-store.ts";
 import { AgenticLoopController } from "./runtime/agentic-loop.ts";
@@ -328,6 +324,15 @@ import type {
   DaemonReviewDispatchInput
 } from "./daemon/review-dispatch.ts";
 export type { DaemonReviewDispatchDeps, DaemonReviewDispatchInput };
+// Internal-only: the continue-analysis handler is wired solely by the loop
+// wrapper below. Tests import it from ./daemon/continue-analysis.ts directly.
+import { handleDaemonContinueAnalysis as handleDaemonContinueAnalysisStep } from "./daemon/continue-analysis.ts";
+import type {
+  DaemonContinueAnalysisDeps,
+  DaemonContinueAnalysisInput,
+  DaemonContinueAnalysisOutcome
+} from "./daemon/continue-analysis.ts";
+export type { DaemonContinueAnalysisDeps, DaemonContinueAnalysisInput, DaemonContinueAnalysisOutcome };
 
 
 export function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
@@ -1188,6 +1193,34 @@ export async function executeDaemonCommandFromArgs(
             blockedResult
           }
         );
+      // Loop-monolith decomposition (6j): the continue_analysis handler now lives
+      // in ./daemon/continue-analysis.ts. Two adjacent if-blocks were merged into
+      // one handler returning a THREE-WAY outcome. latestSessionId is exposed as
+      // a live getter so any session write from a codex turn is observable.
+      const handleContinueAnalysis = (
+        directive: Extract<RunExecutionPlan["directive"], { kind: "continue_analysis" }>
+      ): Promise<DaemonContinueAnalysisOutcome> =>
+        handleDaemonContinueAnalysisStep(
+          {
+            directive,
+            cycle,
+            activeRunId,
+            activeTaskId
+          },
+          {
+            executeDirectiveStep: options.executeDirectiveStep,
+            getStatusSnapshot: options.getStatusSnapshot,
+            getReviews: options.getReviews,
+            getApprovals: options.getApprovals,
+            upsertCoverageGaps: options.upsertCoverageGaps,
+            staleAfterHours,
+            env,
+            cycles,
+            getSessionId: () => latestSessionId,
+            blockedResult,
+            handleOperatorRequiredContinuation
+          }
+        );
 
       if (directive.kind === "complete") {
         let advanced: Awaited<ReturnType<typeof executeAdvanceActiveTaskCommandFromArgs>>;
@@ -1300,117 +1333,10 @@ export async function executeDaemonCommandFromArgs(
       }
 
       if (directive.kind === "continue_analysis") {
-        if (options.executeDirectiveStep) {
-          const executionResult = await options.executeDirectiveStep(activeRunId, {
-            staleAfterHours,
-            reviewCommands: []
-          });
-          const continueStep = executionResult.steps.find((step) => step.directiveKind === "continue_analysis");
-
-          if (continueStep?.outcome === "executed") {
-            cycles.push({
-              cycle,
-              directiveKind: directive.kind,
-              action: "apply_runtime_continuation",
-              runId: activeRunId,
-              taskId: continueStep.taskId ?? activeTaskId,
-              sessionId: latestSessionId ?? null,
-              summary: continueStep.evidence.join(" | ") || "runtime continuation executed"
-            });
-            continue;
-          }
-
-          if (continueStep?.outcome === "unsupported") {
-            const snapshot = await options.getStatusSnapshot(activeRunId);
-            const classification = classifyContinueAnalysisDirective({
-              directive,
-              state: snapshot.autonomousExecution?.state
-            });
-            if (classification.executionMode === "operator_required") {
-              const handled = await handleOperatorRequiredContinuation({
-                directive,
-                classification
-              });
-              if (handled) {
-                return handled;
-              }
-              continue;
-            }
-          }
-        }
-
-        const workflowProofTaskId = resolveDaemonWorkflowProofTaskId(directive);
-        if (workflowProofTaskId) {
-          try {
-            await executeWorkflowProofCommandFromArgs(
-              ["--run-id", activeRunId, "--task-id", workflowProofTaskId],
-              {
-                env,
-                getStatusSnapshot: options.getStatusSnapshot,
-                getReviews: options.getReviews,
-                getApprovals: options.getApprovals
-              }
-            );
-
-            const closedGapCount = await closeWorkflowProofCoverageGaps(activeRunId, workflowProofTaskId, {
-              getStatusSnapshot: options.getStatusSnapshot,
-              upsertCoverageGaps: options.upsertCoverageGaps
-            });
-
-            cycles.push({
-              cycle,
-              directiveKind: directive.kind,
-              action: "run_workflow_proof",
-              runId: activeRunId,
-              taskId: workflowProofTaskId,
-              sessionId: latestSessionId ?? null,
-              summary:
-                closedGapCount > 0
-                  ? `workflow proof passed for ${workflowProofTaskId}; closed ${closedGapCount} autonomous gap(s)`
-                  : `workflow proof passed for ${workflowProofTaskId}`
-            });
-            continue;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            cycles.push({
-              cycle,
-              directiveKind: directive.kind,
-              action: "blocked",
-              runId: activeRunId,
-              taskId: workflowProofTaskId,
-              sessionId: latestSessionId ?? null,
-              summary: message
-            });
-
-            return blockedResult({
-              blockerKind: "workflow_proof_failure",
-              reason: message,
-              cycle,
-              activeRunId,
-              activeTaskId,
-              directiveKind: directive.kind,
-              nextActions: []
-            });
-          }
-        }
-      }
-
-      if (directive.kind === "continue_analysis") {
-        const snapshot = await options.getStatusSnapshot(activeRunId);
-        const classification = classifyContinueAnalysisDirective({
-          directive,
-          state: snapshot.autonomousExecution?.state
-        });
-        if (classification.executionMode === "operator_required") {
-          const handled = await handleOperatorRequiredContinuation({
-            directive,
-            classification
-          });
-          if (handled) {
-            return handled;
-          }
-          continue;
-        }
+        const outcome = await handleContinueAnalysis(directive);
+        if (outcome.kind === "return") return outcome.result;
+        if (outcome.kind === "continue") continue;
+        // outcome.kind === "fallthrough": do nothing, proceed to the next if-blocks
       }
 
       if (directive.kind === "dispatch_owner" && directive.recommendation.taskId !== activeTaskId) {
