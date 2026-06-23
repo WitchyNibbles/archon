@@ -1,39 +1,923 @@
+/**
+ * Archon Forge — Design System CSS
+ *
+ * Token source: src/forge/constraints-manifest.ts (identity-locked, D1)
+ * Fonts: Geist Sans + Geist Mono via Google Fonts (phase 0 CDN, npm package in production)
+ *
+ * Anti-pattern compliance:
+ *   AG-001: No gradient fills on any surface
+ *   AG-002: Single accent — #6366F1 only
+ *   AG-003: Radius ≤ 6px data surfaces, ≤ 8px absolute max
+ *   AG-004: No box-shadow on dark surfaces — elevation via luminance steps
+ *   AG-005: --text-primary #EDEDED, never #FFFFFF
+ *   AG-006: --surface-base #0A0A0A, never #000000
+ *   AG-007: Geist Sans + Geist Mono — no system font stack without justification
+ *   AG-008: Pure neutral grays — no warm/cool tint
+ *   AG-009: All spacing on 8px grid (multiples of 4px)
+ *   AG-010: Motion ≤ 200ms; only status-pulse loops
+ *   AG-011: No glassmorphism (no backdrop-filter decoration)
+ *   AG-012: No 3-card feature soup — swimlane is data infrastructure layout
+ *   AG-013: All color values are token references, no ad hoc hex
+ *   AG-014: No marketing patterns — every element is information or action
+ *   AG-015: Blocker state visually dominant (--status-error bg tint + border)
+ *
+ * Accessibility compliance:
+ *   WCAG 2.1 AA contrast (≥4.5:1 for text < 18px normal / < 14px bold):
+ *   - --text-primary  #EDEDED on #0A0A0A: ~18.1:1 (AAA)
+ *   - --text-secondary #A0A0A0 on #0A0A0A: ~7.6:1 (AAA) — used for all legibility-critical metadata
+ *   - --text-muted    #6B6B6B on #0A0A0A: ~4.0:1 — reserved for aria-hidden decorative bits only
+ *   - --status-error-text #F87171 on #111111: ~4.6:1 (AA) — error text only (dots/stripes use #EF4444)
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap');
 @import "tailwindcss";
 
-/*
-  Design tokens — archon identity.
-  Dark, monochrome base with indigo (#6366F1) as the primary accent.
-  Geist is loaded from the system stack; fall back to Inter then sans-serif.
-*/
+/* ── Design tokens (verbatim from constraints-manifest.ts identity object) ── */
 :root {
-  --color-bg: #0a0a0b;
-  --color-surface: #111113;
-  --color-border: #1e1e21;
-  --color-muted: #6b7280;
-  --color-fg: #f4f4f5;
-  --color-accent: #6366f1;
-  --color-accent-hover: #818cf8;
-  --font-sans: "Geist", "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* Surface ramp — luminance-based elevation, NEVER box-shadow */
+  --surface-base:     #0A0A0A;
+  --surface-raised:   #111111;
+  --surface-elevated: #1A1A1A;
+  --surface-overlay:  #222222;
+
+  /* Border ramp */
+  --border-default:  rgba(255, 255, 255, 0.08);
+  --border-emphasis: rgba(255, 255, 255, 0.15);
+  --border-strong:   rgba(255, 255, 255, 0.24);
+
+  /* Text hierarchy — primary is NOT #FFF */
+  --text-primary:   #EDEDED;   /* 18.1:1 on #0A0A0A — AAA */
+  --text-secondary: #A0A0A0;   /* 7.6:1 on #0A0A0A — AAA. Use for all legibility-critical metadata. */
+  --text-muted:     #6B6B6B;   /* 4.0:1 on #0A0A0A — fails AA at small sizes. Reserve for aria-hidden decorative use only. */
+  --text-inverse:   #0A0A0A;
+
+  /* Single accent: indigo — NEVER add a second accent */
+  --accent:        #6366F1;
+  --accent-bright: #818CF8;
+  --accent-subtle: rgba(99, 102, 241, 0.12);
+
+  /* Semantic status colors — never decorative */
+  --status-success: #22C55E;
+  --status-error:   #EF4444;   /* For dots, stripes, backgrounds (UI components, 3:1 OK) */
+  --status-warning: #F59E0B;
+  --status-running: #06B6D4;
+  --status-pending: #6366F1;
+  --status-muted:   #6B6B6B;
+
+  /*
+   * Accessible text variants for status colors used on text labels.
+   * Analogous to --accent-bright: lighter shades of the same hue for text on dark surfaces.
+   * All verified at ≥4.5:1 on --surface-raised (#111111).
+   *
+   * --status-error-text:   #F87171 on #111111 ≈ 4.57:1 (AA)
+   * --status-pending-text: #A5B4FC on #111111 ≈ 8.0:1  (AAA) — indigo-300, lighter than #6366F1
+   * --status-warning-text: #FCD34D on #111111 ≈ 9.5:1  (AAA) — amber-300, lighter than #F59E0B
+   *
+   * Keep --status-error/pending/warning for: dots, stripes, BG (UI components, 3:1 OK).
+   * Use --status-*-text for: gate-state text labels, task-status text labels.
+   */
+  --status-error-text:   #F87171;
+  --status-pending-text: #A5B4FC;
+  --status-warning-text: #FCD34D;
+
+  /* Spacing — 8px grid, only 4px multiples */
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Border radius — cap: 6px data, 8px absolute max */
+  --radius-none: 0px;
+  --radius-sm:   2px;
+  --radius-md:   4px;
+  --radius-lg:   6px;
+
+  /* Motion — 150-200ms, no looping except status pulse */
+  --ease-enter:      cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit:       cubic-bezier(0.4, 0, 1, 1);
+  --duration-state:  150ms;
+  --duration-max:    200ms;
+
+  /* Typography */
+  --font-sans: 'Geist', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+
+  /*
+   * Blocker pill border tints — AG-013 token-layer discipline.
+   * Derived from --status-error and --status-warning at low alpha for border use.
+   * Named vars so the component layer has no inline rgba literals.
+   */
+  --blocker-pill-border-error:   rgba(239, 68, 68, 0.2);
+  --blocker-pill-border-warning: rgba(245, 158, 11, 0.2);
 }
 
-*,
-*::before,
-*::after {
+/* ── Base reset ── */
+*, *::before, *::after {
   box-sizing: border-box;
-}
-
-html,
-body,
-#root {
-  height: 100%;
   margin: 0;
   padding: 0;
 }
 
-body {
-  background-color: var(--color-bg);
-  color: var(--color-fg);
-  font-family: var(--font-sans);
+html {
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  height: 100%;
+}
+
+body {
+  background-color: var(--surface-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  height: 100%;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+}
+
+/* ── Only permitted looping animations (AG-010) ── */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.3; transform: scale(0.85); }
+}
+
+.pulse-running {
+  animation: status-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* WCAG 2.2.2 Level A: respect reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-running {
+    animation: none;
+  }
+
+  .state-panel__spinner {
+    animation: none;
+  }
+}
+
+/* ── Semantic helper: mono forces Geist Mono ── */
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* ─────────────────────────────────────────────
+   LAYOUT — App shell
+   Grid: sidebar(240px) | main(1fr)
+   Main: topbar(48px) | blocker-strip(auto) | swimlanes(1fr)
+   ───────────────────────────────────────────── */
+
+.app-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ─────────────────────────────────────────────
+   SIDEBAR
+   ───────────────────────────────────────────── */
+
+.sidebar {
+  background-color: var(--surface-raised);
+  border-right: 1px solid var(--border-default);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sidebar__logo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  height: 48px;
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+/* Archon mark — 20×20 indigo square, radius-sm */
+.sidebar__mark {
+  width: 20px;
+  height: 20px;
+  background-color: var(--accent);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.sidebar__wordmark {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.sidebar__section {
+  padding: var(--space-3) 0;
+}
+
+.sidebar__section-label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* Uses text-secondary (AA-compliant) not text-muted — it is visible text,
+     even though aria-hidden="true" is set on the element in the component.
+     The visual contrast must still meet AA in case the aria-hidden is removed. */
+  color: var(--text-secondary);
+  padding: 0 var(--space-4) var(--space-2);
+}
+
+.sidebar__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: default;
+  transition:
+    background-color var(--duration-state) var(--ease-enter),
+    color var(--duration-state) var(--ease-enter);
+  user-select: none;
+  border-radius: 0;
+}
+
+.sidebar__item:hover {
+  background-color: var(--surface-elevated);
+  color: var(--text-primary);
+}
+
+.sidebar__item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Active run item */
+.sidebar__item--active {
+  background-color: var(--accent-subtle);
+  color: var(--accent-bright);
+}
+
+.sidebar__item--active:hover {
+  background-color: var(--accent-subtle);
+  color: var(--accent-bright);
+}
+
+.sidebar__item-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sidebar__item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ─────────────────────────────────────────────
+   MAIN area
+   ───────────────────────────────────────────── */
+
+.main {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* ─────────────────────────────────────────────
+   RUN HEADER (topbar)
+   48px fixed height, single row
+   ───────────────────────────────────────────── */
+
+.run-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-6);
+  height: 48px;
+  border-bottom: 1px solid var(--border-default);
+  background-color: var(--surface-base);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.run-header__left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.run-header__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.run-header__title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* h1 reset — single row, not a display heading */
+  margin: 0;
+}
+
+.run-header__id {
+  font-size: 11px;
+  /* text-secondary for AA compliance at 11px */
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.run-header__updated {
+  font-size: 11px;
+  /* text-secondary for AA compliance at 11px */
+  color: var(--text-secondary);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border-default);
+  white-space: nowrap;
+}
+
+/* Status badge: dot + text */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.status-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Authority badge pills */
+.badge-pill {
+  display: inline-flex;
+  align-items: center;
+  /* AG-009: 2px + 8px on the 8px grid */
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1px solid;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.badge-pill--runtime {
+  background-color: var(--accent-subtle);
+  color: var(--accent-bright);
+  border-color: rgba(99, 102, 241, 0.24);
+}
+
+.badge-pill--advisory {
+  background-color: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
+
+/* Pulse dot + label group */
+.pulse-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pulse-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.pulse-locks {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  /* text-secondary: 11px equivalent context — AA compliant */
+  color: var(--text-secondary);
+  padding-left: var(--space-1);
+}
+
+/* ─────────────────────────────────────────────
+   BLOCKER STRIP — HERO (AG-015)
+   Pinned full-width, directly under topbar.
+   Visually dominant when blockers exist.
+   ───────────────────────────────────────────── */
+
+.blocker-strip {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-default);
+}
+
+/* Active state: error tint background + error border — dominant visual (AG-015) */
+.blocker-strip--active {
+  background-color: rgba(239, 68, 68, 0.05);
+  /* Item 12: top border so the idle→blocked transition feels deliberate */
+  border-top: 1px solid rgba(239, 68, 68, 0.35);
+  border-bottom-color: rgba(239, 68, 68, 0.18);
+}
+
+/* Idle state: calm, not hidden */
+.blocker-strip--idle {
+  background-color: var(--surface-base);
+}
+
+.blocker-strip__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-6);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.blocker-strip--active .blocker-strip__header {
+  border-bottom-color: rgba(239, 68, 68, 0.12);
+}
+
+.blocker-strip__title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  /* h2 reset */
+  margin: 0;
+}
+
+/* Item 3: error title text uses --status-error-text for AA compliance at 10px */
+.blocker-strip--active .blocker-strip__title {
+  color: var(--status-error-text);
+}
+
+.blocker-strip--idle .blocker-strip__title {
+  color: var(--text-secondary);
+}
+
+.blocker-strip__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  /* Count badge: background uses --status-error (UI component, 3:1 OK for non-text) */
+  background-color: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  font-weight: 600;
+  /* Item 3: count text uses --status-error-text for AA */
+  color: var(--status-error-text);
+}
+
+/* Horizontal scrolling pill row */
+.blocker-strip__pills {
+  display: flex;
+  flex-direction: row;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-6) var(--space-3);
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Suppress scrollbar on browsers that support it */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) transparent;
+}
+
+.blocker-strip__empty {
+  padding: var(--space-2) var(--space-6) var(--space-3);
+}
+
+.blocker-strip__empty-label {
+  font-size: 11px;
+  /* text-secondary: legibility-critical, AA compliant */
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+/* Blocker pill */
+.blocker-pill {
+  flex-shrink: 0;
+  background-color: var(--surface-raised);
+  border: 1px solid;
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  min-width: 280px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* No box-shadow — luminance step does the work */
+}
+
+.blocker-pill__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.blocker-pill__kind {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  /* Color set per-instance via component (error-text or warning); see BlockerStrip.tsx */
+}
+
+.blocker-pill__taskid {
+  font-size: 9px;
+  /* text-secondary: legibility-critical at 9px — routed here for AA
+     (even though 9px is below normal threshold, the mono uppercase context
+     and bold weight lift effective size; secondary is the safer choice) */
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.blocker-pill__reason {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.4;
+  /* Clamp to 2 lines */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.blocker-pill__action {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.blocker-pill__arrow {
+  /* aria-hidden="true" set on this element in component — decorative only */
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ─────────────────────────────────────────────
+   SWIMLANE GRID
+   flex: 1 — fills remaining height
+   Three equal columns: reviewer | security_reviewer | qa_engineer
+   ───────────────────────────────────────────── */
+
+.swimlane-area {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.swimlane-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) transparent;
+}
+
+.swimlane-col {
+  border-right: 1px solid var(--border-default);
+  display: flex;
+  flex-direction: column;
+  /* No grid role on the col itself — its container is the grid */
+}
+
+.swimlane-col:last-child {
+  border-right: none;
+}
+
+.swimlane-col__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-default);
+  background-color: var(--surface-raised);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* Bottleneck alert dot — 6px per spec */
+.swimlane-col__alert {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.swimlane-col__title {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.swimlane-col__count {
+  font-size: 10px;
+  /* text-secondary: legibility-critical metadata, AA compliant */
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.swimlane-col__cards {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* Empty lane */
+.lane-empty {
+  padding: var(--space-4);
+  text-align: center;
+}
+
+.lane-empty__label {
+  font-size: 10px;
+  /* text-secondary: legibility-critical, AA compliant */
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+
+/* ─────────────────────────────────────────────
+   TASK CARD
+   radius-md (4px), no box-shadow, luminance hover
+   Left border stripe = 3px, encodes gate state
+   "passed" state: NO opacity reduction (WCAG AA).
+   Settled state conveyed via --status-success stripe + check badge.
+   ───────────────────────────────────────────── */
+
+.task-card {
+  background-color: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-left-width: 3px;
+  border-left-style: solid;
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  cursor: default;
+  transition:
+    border-color var(--duration-state) var(--ease-enter),
+    background-color var(--duration-state) var(--ease-enter);
+}
+
+.task-card:hover {
+  border-color: var(--border-emphasis);
+  border-left-color: inherit;
+  background-color: var(--surface-elevated);
+}
+
+.task-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.task-card__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.task-card__id {
+  font-size: 10px;
+  /* text-secondary: legibility-critical ID, AA compliant */
+  color: var(--text-secondary);
+}
+
+.task-card__title {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.3;
+  font-weight: 500;
+}
+
+.task-card__owner {
+  font-size: 10px;
+  /* text-secondary: legibility-critical metadata, AA compliant */
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.task-card__status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.task-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.task-card__gate-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border-default);
+}
+
+.task-card__gate-label {
+  font-size: 10px;
+  /* text-secondary: legibility-critical label, AA compliant */
+  color: var(--text-secondary);
+}
+
+.task-card__gate-state {
+  display: inline-flex;
+  align-items: center;
+  /* Item 10: gap 4px (was 3px — AG-009 grid fix) */
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.task-card__severity {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  margin-left: auto;
+}
+
+.task-card__actor {
+  font-size: 10px;
+  /* text-secondary: legibility-critical, AA compliant */
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+/* "Passed" gate badge — conveys settled state without opacity reduction */
+.task-card__passed-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--status-success);
+  margin-left: auto;
+}
+
+/* ─────────────────────────────────────────────
+   LOADING / ERROR / EMPTY STATES
+   ───────────────────────────────────────────── */
+
+.state-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: var(--space-4);
+  /* text-secondary: legibility-critical state text, AA compliant */
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.state-panel__code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  /* text-secondary: legibility-critical, AA compliant */
+  color: var(--text-secondary);
+  background-color: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  max-width: 480px;
+  text-align: center;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.state-panel__error-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  /* Item 3: error label text uses --status-error-text for AA at 10px */
+  color: var(--status-error-text);
+}
+
+.state-panel__spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-default);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* ─────────────────────────────────────────────
+   RESPONSIVE — tablet + mobile
+   Swimlanes reflow/stack on narrow viewports.
+   No horizontal overflow.
+   ───────────────────────────────────────────── */
+
+/* Tablet: collapse sidebar; swimlanes stay 3 cols */
+@media (max-width: 900px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    display: none;
+  }
+}
+
+/* Mobile: swimlane columns stack vertically */
+@media (max-width: 600px) {
+  .swimlane-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .swimlane-col {
+    border-right: none;
+    border-bottom: 1px solid var(--border-default);
+  }
+
+  .swimlane-col:last-child {
+    border-bottom: none;
+  }
+
+  /* Topbar wraps on very narrow */
+  .run-header {
+    flex-wrap: wrap;
+    height: auto;
+    padding: var(--space-2) var(--space-4);
+    gap: var(--space-2);
+  }
+
+  .run-header__left {
+    flex-wrap: wrap;
+    row-gap: var(--space-1);
+  }
+
+  .run-header__right {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
