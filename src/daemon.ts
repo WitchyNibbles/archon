@@ -43,7 +43,7 @@ import type {
   RunStatusSnapshot
 } from "./domain/types.ts";
 import { PostgresStore, PostgresMistakeLedgerStore } from "./store/postgres-store.ts";
-import { INTERNAL_RUNTIME_PREFLIGHT_BYPASS_TOKEN, MAX_DAEMON_STAGNANT_TURNS, buildDefaultProductState, buildDefaultTaskQueue, executeAdvanceActiveTaskCommandFromArgs, resolveCommandFlag, resolveFormatFlag, resolveRunIdForCommand } from "./workflow.ts";
+import { INTERNAL_RUNTIME_PREFLIGHT_BYPASS_TOKEN, buildDefaultProductState, buildDefaultTaskQueue, executeAdvanceActiveTaskCommandFromArgs, resolveCommandFlag, resolveFormatFlag, resolveRunIdForCommand } from "./workflow.ts";
 import type { EnvShape, ExecuteAdvanceActiveTaskCommandOptions, ExecuteStatusCommandOptions } from "./workflow.ts";
 import { buildRuntimeExecutionConnectionFailure, executeReconcileRuntimeStateCommandFromArgs, executeRuntimeExecutionPreflight, formatRuntimeExecutionPreflightFailureResult, isRuntimeExecutionPreflightConnectionError } from "./runtime.ts";
 import type { ExecuteDoctorCommandOptions, ExecuteRuntimePreflightCommandOptions, ReconcileRuntimeStateCommandResult } from "./runtime.ts";
@@ -283,6 +283,22 @@ export {
   createSupportedContinuationExecutor,
   resolveDaemonWorkflowProofTaskId,
   resolveWorkflowProofTaskIdForContinuationAction
+};
+import {
+  computeDaemonStagnantTurnCount,
+  evaluateDaemonNoProgressOutcome
+} from "./daemon/turn-analysis.ts";
+export {
+  computeDaemonStagnantTurnCount,
+  evaluateDaemonNoProgressOutcome
+};
+import type {
+  DaemonNoProgressOutcome,
+  DaemonScopeExpansionPayload
+} from "./daemon/turn-analysis.ts";
+export type {
+  DaemonNoProgressOutcome,
+  DaemonScopeExpansionPayload
 };
 
 
@@ -1155,17 +1171,14 @@ export async function executeDaemonCommandFromArgs(
         });
         const noProgress = beforeProgressKey === afterProgressKey;
         const priorStagnation = readDaemonStagnationMetadata(projectRuntimeState?.metadata);
-        const stagnantTurnCount =
-          noProgress &&
-          priorStagnation &&
-          priorStagnation.runId === input.activeRunId &&
-          priorStagnation.taskId === input.activeTaskId &&
-          priorStagnation.directiveKind === input.directive.kind &&
-          priorStagnation.progressKey === beforeProgressKey
-            ? priorStagnation.count + 1
-            : noProgress
-              ? 1
-              : 0;
+        const stagnantTurnCount = computeDaemonStagnantTurnCount({
+          noProgress,
+          priorStagnation,
+          runId: input.activeRunId,
+          taskId: input.activeTaskId,
+          directiveKind: input.directive.kind,
+          progressKey: beforeProgressKey
+        });
         await options.saveProjectRuntimeState({
           projectId: refreshedProjectRuntimeState?.projectId ?? projectRuntimeState?.projectId ?? projectContext.project.id,
           workspaceId: refreshedProjectRuntimeState?.workspaceId ?? projectRuntimeState?.workspaceId ?? projectContext.workspace.id,
@@ -1216,70 +1229,49 @@ export async function executeDaemonCommandFromArgs(
           summary: parsedTurnMessage?.summary || codexTurn.finalMessage?.slice(0, 160) || "codex turn executed"
         });
 
-        if (noProgress) {
-          const workerSummary =
-            parsedTurnMessage
-              ? [parsedTurnMessage.summary, ...parsedTurnMessage.blockers].filter(Boolean).join(" | ")
-              : "runtime state was unchanged after the Codex turn";
-          const scopeConflict = daemonMessageHasScopeConflict(parsedTurnMessage);
-          const shouldBlockNow =
-            parsedTurnMessage?.status === "blocked" || stagnantTurnCount >= MAX_DAEMON_STAGNANT_TURNS;
-
-          if (shouldBlockNow) {
-            let scopeExpansionRequestPath: string | undefined;
-            if (scopeConflict && parsedTurnMessage?.scopeRequest) {
-              scopeExpansionRequestPath = await writeDaemonScopeExpansionRequest(cwd, {
-                runId: input.activeRunId,
-                taskId: input.activeTaskId,
-                directiveKind: input.directive.kind,
-                blockedPaths: [...parsedTurnMessage.scopeRequest.blockedPaths],
-                requestedWriteScope:
-                  parsedTurnMessage.scopeRequest.requestedWriteScope.length > 0
-                    ? [...parsedTurnMessage.scopeRequest.requestedWriteScope]
-                    : [...parsedTurnMessage.scopeRequest.blockedPaths],
-                reason: parsedTurnMessage.scopeRequest.reason ?? parsedTurnMessage.summary,
-                updatedAt: now().toISOString()
-              });
-            }
-            const reason = scopeConflict
-              ? `daemon stopped after a scope-blocked no-progress turn: ${workerSummary}`
-              : parsedTurnMessage?.status === "blocked"
-                ? `daemon stopped after a blocked no-progress turn: ${workerSummary}`
-                : `daemon detected ${stagnantTurnCount} consecutive no-progress turns for ${input.activeTaskId}: ${workerSummary}`;
-            const nextActions = scopeConflict
-              ? [
-                  "widen the task packet allowed write scope to include the blocked paths or split them into a follow-on task",
-                  "record the exact blocked paths in the blocker handoff before rerouting"
-                ]
-              : [
-                  "inspect the active task packet and daemon session for missing runtime proof, handoff, or verification steps",
-                  "reroute only after a concrete runtime state change is possible"
-                ];
-            cycles.push({
-              cycle,
-              directiveKind: input.directive.kind,
-              action: scopeConflict ? "request_scope_expansion" : "blocked",
+        const noProgressOutcome = evaluateDaemonNoProgressOutcome({
+          noProgress,
+          parsedTurnMessage,
+          stagnantTurnCount,
+          activeTaskId: input.activeTaskId
+        });
+        if (noProgressOutcome.shouldBlock) {
+          let scopeExpansionRequestPath: string | undefined;
+          if (noProgressOutcome.scopeExpansion) {
+            scopeExpansionRequestPath = await writeDaemonScopeExpansionRequest(cwd, {
               runId: input.activeRunId,
               taskId: input.activeTaskId,
-              sessionId: latestSessionId ?? null,
-              summary: reason
-            });
-
-            return blockedResult({
-              blockerKind: scopeConflict ? "scope_expansion_required" : "runtime_blocked",
-              reason,
-              cycle,
-              activeRunId: input.activeRunId,
-              activeTaskId: input.activeTaskId,
               directiveKind: input.directive.kind,
-              nextActions,
-              detailFiles: scopeExpansionRequestPath
-                ? {
-                    scopeExpansionRequest: scopeExpansionRequestPath
-                  }
-                : undefined
+              blockedPaths: noProgressOutcome.scopeExpansion.blockedPaths,
+              requestedWriteScope: noProgressOutcome.scopeExpansion.requestedWriteScope,
+              reason: noProgressOutcome.scopeExpansion.reason,
+              updatedAt: now().toISOString()
             });
           }
+          cycles.push({
+            cycle,
+            directiveKind: input.directive.kind,
+            action: noProgressOutcome.cycleAction,
+            runId: input.activeRunId,
+            taskId: input.activeTaskId,
+            sessionId: latestSessionId ?? null,
+            summary: noProgressOutcome.reason
+          });
+
+          return blockedResult({
+            blockerKind: noProgressOutcome.blockerKind,
+            reason: noProgressOutcome.reason,
+            cycle,
+            activeRunId: input.activeRunId,
+            activeTaskId: input.activeTaskId,
+            directiveKind: input.directive.kind,
+            nextActions: noProgressOutcome.nextActions,
+            detailFiles: scopeExpansionRequestPath
+              ? {
+                  scopeExpansionRequest: scopeExpansionRequestPath
+                }
+              : undefined
+          });
         }
 
         return undefined;
