@@ -320,6 +320,14 @@ export type {
   DaemonOperatorContinuationDeps,
   DaemonOperatorContinuationInput
 };
+// Internal-only: the review-dispatch handler is wired solely by the loop
+// wrapper below. Tests import it from ./daemon/review-dispatch.ts directly.
+import { handleDaemonReviewDispatch as handleDaemonReviewDispatchStep } from "./daemon/review-dispatch.ts";
+import type {
+  DaemonReviewDispatchDeps,
+  DaemonReviewDispatchInput
+} from "./daemon/review-dispatch.ts";
+export type { DaemonReviewDispatchDeps, DaemonReviewDispatchInput };
 
 
 export function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
@@ -1154,6 +1162,32 @@ export async function executeDaemonCommandFromArgs(
             runDaemonCodexTurn
           }
         );
+      // Loop-monolith decomposition (6i): the dispatch_reviews handler now lives
+      // in ./daemon/review-dispatch.ts. latestSessionId is exposed as a live
+      // getter (holder/ref, not a snapshot) so any session write from an earlier
+      // codex turn in the same cycle is observable here. The handler only reads
+      // the session id — it never writes it back.
+      const handleReviewDispatch = (
+        directive: Extract<RunExecutionPlan["directive"], { kind: "dispatch_reviews" }>
+      ): Promise<DaemonCommandResult | undefined> =>
+        handleDaemonReviewDispatchStep(
+          {
+            directive,
+            cycle,
+            activeRunId,
+            activeTaskId,
+            now,
+            cwd,
+            reviewInputDir
+          },
+          {
+            executeDirectiveStep: options.executeDirectiveStep,
+            staleAfterHours,
+            cycles,
+            getSessionId: () => latestSessionId,
+            blockedResult
+          }
+        );
 
       if (directive.kind === "complete") {
         let advanced: Awaited<ReturnType<typeof executeAdvanceActiveTaskCommandFromArgs>>;
@@ -1228,241 +1262,12 @@ export async function executeDaemonCommandFromArgs(
       }
 
       if (directive.kind === "dispatch_reviews") {
-        if (!options.executeDirectiveStep) {
-          cycles.push({
-            cycle,
-            directiveKind: directive.kind,
-            action: "blocked",
-            runId: activeRunId,
-            taskId: activeTaskId,
-            sessionId: latestSessionId ?? null,
-            summary: "runtime surface does not support authenticated review execution"
-          });
-
-          return blockedResult({
-            blockerKind: "review_execution_unsupported",
-            reason: "required authenticated reviews block the active run",
-            cycle,
-            activeRunId,
-            activeTaskId,
-            directiveKind: directive.kind,
-            nextActions: []
-          });
+        // Loop-monolith decomposition (6i): inline block extracted to
+        // ./daemon/review-dispatch.ts — thin wrapper call only.
+        const dispatchResult = await handleReviewDispatch(directive);
+        if (dispatchResult !== undefined) {
+          return dispatchResult;
         }
-
-        let queuedReviewEntries: DaemonReviewQueueEntry[];
-        let failedReviewEntries: FailedDaemonReviewQueueEntry[];
-        try {
-          const queueState = await readDaemonReviewQueueState(reviewInputDir);
-          queuedReviewEntries = queueState.entries;
-          failedReviewEntries = queueState.failedEntries;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          cycles.push({
-            cycle,
-            directiveKind: directive.kind,
-            action: "blocked",
-            runId: activeRunId,
-            taskId: activeTaskId,
-            sessionId: latestSessionId ?? null,
-            summary: `review input queue error: ${message}`
-          });
-
-          return blockedResult({
-            blockerKind: "review_queue",
-            reason: `review input queue error: ${message}`,
-            cycle,
-            activeRunId,
-            activeTaskId,
-            directiveKind: directive.kind,
-            nextActions: []
-          });
-        }
-
-        const expectedReviewTargets = directive.recommendations.map(
-          (recommendation) => `${recommendation.taskId}:${recommendation.targetReviewRole ?? "unknown"}`
-        );
-        if (failedReviewEntries.length > 0) {
-          const timestamp = now().toISOString();
-          await archiveFailedDaemonReviewQueueEntries(failedReviewEntries, cwd, timestamp);
-          await writeDaemonReviewQueueStatus(cwd, {
-            state: "failed",
-            reviewInputDir,
-            reason: `${failedReviewEntries.length} queued review action file(s) were invalid and moved to failed-review-actions`,
-            expectedReviewTargets,
-            queuedFiles: queuedReviewEntries.map((entry) => path.basename(entry.filePath)),
-            failedFiles: failedReviewEntries.map((entry) => ({
-              file: path.basename(entry.filePath),
-              error: entry.error
-            })),
-            updatedAt: timestamp
-          });
-        }
-
-        if (queuedReviewEntries.length === 0) {
-          await writeDaemonReviewQueueStatus(cwd, {
-            state: failedReviewEntries.length > 0 ? "failed" : "blocked",
-            reviewInputDir,
-            reason: `required authenticated reviews are pending; no usable review action files were found in ${reviewInputDir}`,
-            expectedReviewTargets,
-            failedFiles: failedReviewEntries.map((entry) => ({
-              file: path.basename(entry.filePath),
-              error: entry.error
-            })),
-            updatedAt: now().toISOString()
-          });
-          cycles.push({
-            cycle,
-            directiveKind: directive.kind,
-            action: "blocked",
-            runId: activeRunId,
-            taskId: activeTaskId,
-            sessionId: latestSessionId ?? null,
-            summary: `required authenticated reviews are pending; no review action files were found in ${reviewInputDir}`
-          });
-
-          return blockedResult({
-            blockerKind: "review_queue",
-            reason: "required authenticated reviews block the active run",
-            cycle,
-            activeRunId,
-            activeTaskId,
-            directiveKind: directive.kind,
-            nextActions: [],
-            detailFiles: {
-              reviewQueueStatus: ".archon/work/daemon/review-queue-status.json"
-            }
-          });
-        }
-
-        const executionResult = await options.executeDirectiveStep(activeRunId, {
-          staleAfterHours,
-          reviewCommands: queuedReviewEntries.map((entry) => entry.command)
-        });
-
-        const consumedEntries: DaemonReviewQueueEntry[] = [];
-        const staleEntries: StaleDaemonReviewQueueEntry[] = [];
-        for (const step of executionResult.steps) {
-          if (
-            step.directiveKind !== "dispatch_reviews" ||
-            step.outcome !== "executed" ||
-            !step.taskId ||
-            !step.reviewRole
-          ) {
-            continue;
-          }
-
-          const matchIndex = queuedReviewEntries.findIndex(
-            (entry) =>
-              entry.command.runId === activeRunId &&
-              entry.command.taskId === step.taskId &&
-              entry.command.review.reviewerRole === step.reviewRole &&
-              (step.actor ? entry.command.actor === step.actor : true)
-          );
-          if (matchIndex >= 0) {
-            const consumed = queuedReviewEntries.splice(matchIndex, 1)[0]!;
-            consumedEntries.push(consumed);
-          }
-
-          cycles.push({
-            cycle,
-            directiveKind: directive.kind,
-            action: "record_review",
-            runId: activeRunId,
-            taskId: step.taskId,
-            sessionId: latestSessionId ?? null,
-            summary: `recorded ${step.reviewRole}${step.actor ? ` via ${step.actor}` : ""}`
-          });
-        }
-
-        if (consumedEntries.length > 0) {
-          await archiveConsumedDaemonReviewQueueEntries(consumedEntries, cwd);
-        }
-
-        if (queuedReviewEntries.length > 0) {
-          staleEntries.push(
-            ...queuedReviewEntries.map((entry) => ({
-              filePath: entry.filePath,
-              reason: "queued review action no longer matched the active runtime review directives"
-            }))
-          );
-          await archiveStaleDaemonReviewQueueEntries(
-            staleEntries,
-            cwd,
-            now().toISOString(),
-            expectedReviewTargets
-          );
-          queuedReviewEntries = [];
-        }
-
-        if (!executionResult.steps.some((step) => step.directiveKind === "dispatch_reviews" && step.outcome === "executed")) {
-          const unsupportedStep = executionResult.steps.find((step) => step.directiveKind === "dispatch_reviews");
-          const mismatchReason =
-            staleEntries.length > 0
-              ? `queued review actions did not match the pending runtime review directives from ${reviewInputDir}`
-              : undefined;
-          const detailedReason =
-            unsupportedStep?.evidence.join(" | ") ||
-            `queued review actions did not match the pending runtime review directives from ${reviewInputDir}`;
-          await writeDaemonReviewQueueStatus(cwd, {
-            state: "blocked",
-            reviewInputDir,
-            reason: mismatchReason ? `${mismatchReason}: ${detailedReason}` : detailedReason,
-            expectedReviewTargets,
-            queuedFiles: queuedReviewEntries.map((entry) => path.basename(entry.filePath)),
-            failedFiles: failedReviewEntries.map((entry) => ({
-              file: path.basename(entry.filePath),
-              error: entry.error
-            })),
-            staleFiles: staleEntries.map((entry) => ({
-              file: path.basename(entry.filePath),
-              reason: entry.reason
-            })),
-            updatedAt: now().toISOString()
-          });
-          cycles.push({
-            cycle,
-            directiveKind: directive.kind,
-            action: "blocked",
-            runId: activeRunId,
-            taskId: activeTaskId,
-            sessionId: latestSessionId ?? null,
-            summary:
-              mismatchReason ? `${mismatchReason}: ${detailedReason}` : detailedReason
-          });
-
-          return blockedResult({
-            blockerKind: "review_queue",
-            reason: "required authenticated reviews block the active run",
-            cycle,
-            activeRunId,
-            activeTaskId,
-            directiveKind: directive.kind,
-            nextActions: [],
-            detailFiles: {
-              reviewQueueStatus: ".archon/work/daemon/review-queue-status.json"
-            }
-          });
-        }
-
-        await writeDaemonReviewQueueStatus(cwd, {
-          state: "processed",
-          reviewInputDir,
-          reason: "queued authenticated review actions were applied",
-          expectedReviewTargets,
-          consumedFiles: consumedEntries.map((entry) => path.basename(entry.filePath)),
-          queuedFiles: queuedReviewEntries.map((entry) => path.basename(entry.filePath)),
-          failedFiles: failedReviewEntries.map((entry) => ({
-            file: path.basename(entry.filePath),
-            error: entry.error
-          })),
-          staleFiles: staleEntries.map((entry) => ({
-            file: path.basename(entry.filePath),
-            reason: entry.reason
-          })),
-          updatedAt: now().toISOString()
-        });
-
         continue;
       }
 
