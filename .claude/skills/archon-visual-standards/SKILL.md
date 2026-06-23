@@ -52,10 +52,17 @@ Do NOT use pure `#FFFFFF` for body text — causes eye strain on OLED and looks 
 
 ```css
 --text-primary:   #EDEDED;  /* primary content */
---text-secondary: #A0A0A0;  /* labels, metadata, timestamps */
---text-muted:     #6B6B6B;  /* disabled, placeholder, decorative */
+--text-secondary: #A0A0A0;  /* labels, metadata, timestamps — readable muted */
+--text-muted:     #6B6B6B;  /* DECORATIVE ONLY: dividers, disabled, placeholder */
 --text-inverse:   #0A0A0A;  /* text on light/accent backgrounds */
 ```
+
+**WCAG AA contrast (CRITICAL):** `--text-muted #6B6B6B` measures ~3.7:1 on `--surface-base`
+and drops below 3:1 on `--surface-overlay`, so it **fails WCAG 2.1 AA (4.5:1)** for normal-size
+text. Use it only for non-essential decorative elements (dividers, disabled controls, placeholder
+text — all WCAG-exempt). For any legibility-critical "muted" or low-emphasis text, use
+`--text-secondary #A0A0A0` (≥6:1 on every surface). `--text-primary` and `--text-secondary` pass
+AA on all four surfaces.
 
 ### Accent (one, used sparingly)
 
@@ -78,6 +85,30 @@ Never use the accent for: decorative backgrounds, section fills, hover states on
 --status-pending:  #6366F1;  /* ready, queued — same as accent */
 --status-muted:    #6B6B6B;  /* done/archived, no longer active */
 ```
+
+The status colors above are calibrated for **fills, dots, borders, and icons** (non-text or
+large-text use). Two of them — `--status-pending #6366F1` (~4.4:1) and `--status-muted #6B6B6B`
+(~3.7:1) — **fail WCAG AA for normal-size text**, and `--status-error #EF4444` fails on
+`--surface-overlay`. Never render status as small text using these base values.
+
+### Readable Status Text (use when a status is rendered AS text)
+
+When a status appears as a text label, count, or message (not just a dot/badge fill), use the
+readable variant. Each passes WCAG 2.1 AA (≥4.5:1) on **every** surface in the ramp, including
+`--surface-overlay`:
+
+```css
+--status-success-text:  #4ADE80;  /* ≥9.1:1 — "passed", "approved" as text */
+--status-error-text:    #F87171;  /* ≥5.7:1 — "failed", "blocked" as text */
+--status-warning-text:  #FCD34D;  /* ≥11:1  — "stale", "degraded" as text */
+--status-running-text:  #67E8F9;  /* ≥10.9:1 — "running", "active" as text */
+--status-pending-text:  #A5B4FC;  /* ≥7.9:1 — "ready", "queued" as text */
+--status-muted-text:    #A0A0A0;  /* ≥6:1   — "done", "archived" as text (= --text-secondary) */
+```
+
+Rule of thumb: **saturated base = fill/dot/border; `-text` variant = legible text.** The
+forge constraints-manifest (`src/forge/constraints-manifest.ts`) transcribes these as
+`identity.statusTextColors` so the visual critic and any codegen inherit them automatically.
 
 ---
 
@@ -216,7 +247,7 @@ Put all tokens in `@theme` block as CSS custom properties:
   --color-border-emphasis:  rgba(255, 255, 255, 0.15);
   --color-text-primary:     #EDEDED;
   --color-text-secondary:   #A0A0A0;
-  --color-text-muted:       #6B6B6B;
+  --color-text-muted:       #6B6B6B;  /* DECORATIVE ONLY — fails WCAG AA as text */
   --color-accent:           #6366F1;
   --color-accent-bright:    #818CF8;
   --color-status-success:   #22C55E;
@@ -224,6 +255,14 @@ Put all tokens in `@theme` block as CSS custom properties:
   --color-status-warning:   #F59E0B;
   --color-status-running:   #06B6D4;
   --color-status-pending:   #6366F1;
+  --color-status-muted:     #6B6B6B;  /* DECORATIVE ONLY — fails WCAG AA as text */
+  /* AA-compliant readable text variants (use when status is rendered as text) */
+  --color-status-success-text: #4ADE80;
+  --color-status-error-text:   #F87171;
+  --color-status-warning-text: #FCD34D;
+  --color-status-running-text: #67E8F9;
+  --color-status-pending-text: #A5B4FC;
+  --color-status-muted-text:   #A0A0A0;
 }
 ```
 
