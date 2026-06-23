@@ -229,8 +229,14 @@ describe("constraints-manifest", () => {
     );
   });
 
-  it("has version = 1", () => {
-    assert.equal(CONSTRAINTS_MANIFEST.version, 1);
+  it("has version = 2", () => {
+    assert.equal(CONSTRAINTS_MANIFEST.version, 2);
+  });
+
+  it("exposes a statusTextColors variant for every statusColors key", () => {
+    const statusKeys = Object.keys(CONSTRAINTS_MANIFEST.identity.statusColors).sort();
+    const textKeys = Object.keys(CONSTRAINTS_MANIFEST.identity.statusTextColors).sort();
+    assert.deepEqual(textKeys, statusKeys, "statusTextColors must map 1:1 to statusColors");
   });
 
   it("every antiGenericRule has a unique id matching AG-NNN", () => {

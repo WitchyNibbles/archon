@@ -92,7 +92,7 @@ export type AntiGenericConstraint = z.infer<typeof AntiGenericConstraintSchema>;
 
 export const ConstraintsManifestSchema = z.object({
   /** Manifest schema version — increment when breaking changes are made. */
-  version: z.literal(1),
+  version: z.literal(2),
 
   /**
    * Identity: fixed archon design identity (D1 — zero divergence allowed).
@@ -130,8 +130,27 @@ export const ConstraintsManifestSchema = z.object({
       bright: z.string(),
       subtle: z.string()
     }),
-    /** Semantic status colors. Source: visual-standards semantic status colors. */
+    /**
+     * Semantic status colors for fills, dots, borders, and icons.
+     * Source: visual-standards semantic status colors.
+     * NOTE: several of these (pending, muted, and error-on-overlay) fail WCAG AA
+     * as small text — render status text with `statusTextColors` instead.
+     */
     statusColors: z.object({
+      success: z.string(),
+      error: z.string(),
+      warning: z.string(),
+      running: z.string(),
+      pending: z.string(),
+      muted: z.string()
+    }),
+    /**
+     * WCAG 2.1 AA-compliant (≥4.5:1 on every surface in the ramp, including
+     * overlay) text variants of the status colors. Use these whenever a status
+     * is rendered AS TEXT (label, count, message) rather than as a fill/dot.
+     * Source: visual-standards "Readable Status Text" section.
+     */
+    statusTextColors: z.object({
       success: z.string(),
       error: z.string(),
       warning: z.string(),
@@ -215,7 +234,7 @@ export type ConstraintsManifest = z.infer<typeof ConstraintsManifestSchema>;
 // ---------------------------------------------------------------------------
 
 export const CONSTRAINTS_MANIFEST: ConstraintsManifest = {
-  version: 1,
+  version: 2,
 
   identity: {
     // Source: archon-visual-standards --surface-base
@@ -236,8 +255,8 @@ export const CONSTRAINTS_MANIFEST: ConstraintsManifest = {
 
     textHierarchy: {
       primary:   "#EDEDED",  // --text-primary: primary content
-      secondary: "#A0A0A0",  // --text-secondary: labels, metadata, timestamps
-      muted:     "#6B6B6B",  // --text-muted: disabled, placeholder, decorative
+      secondary: "#A0A0A0",  // --text-secondary: labels, metadata, timestamps (readable muted)
+      muted:     "#6B6B6B",  // --text-muted: DECORATIVE ONLY — fails WCAG AA (~3.7:1) for text; use secondary for legible muted text
       inverse:   "#0A0A0A"   // --text-inverse: text on light/accent backgrounds
     },
 
@@ -250,11 +269,24 @@ export const CONSTRAINTS_MANIFEST: ConstraintsManifest = {
 
     statusColors: {
       success: "#22C55E",  // --status-success: passed, complete, approved
-      error:   "#EF4444",  // --status-error: failed, blocked, critical
+      error:   "#EF4444",  // --status-error: failed, blocked, critical (fails AA on overlay as text)
       warning: "#F59E0B",  // --status-warning: stale, degraded, needs attention
       running: "#06B6D4",  // --status-running: active/in-progress (pair with pulse)
-      pending: "#6366F1",  // --status-pending: ready, queued (same as accent)
-      muted:   "#6B6B6B"   // --status-muted: done/archived
+      pending: "#6366F1",  // --status-pending: ready, queued (same as accent; fails AA as text)
+      muted:   "#6B6B6B"   // --status-muted: done/archived (fails AA as text)
+    },
+
+    // AA-compliant readable text variants — use when a status is rendered AS TEXT
+    // (label/count/message), not as a fill/dot. Each is ≥4.5:1 on every surface in
+    // the ramp (verified by tests/forge-contrast.test.ts). Source: visual-standards
+    // "Readable Status Text".
+    statusTextColors: {
+      success: "#4ADE80",  // --status-success-text: ≥9.1:1
+      error:   "#F87171",  // --status-error-text:   ≥5.7:1
+      warning: "#FCD34D",  // --status-warning-text: ≥11:1
+      running: "#67E8F9",  // --status-running-text: ≥10.9:1
+      pending: "#A5B4FC",  // --status-pending-text: ≥7.9:1
+      muted:   "#A0A0A0"   // --status-muted-text:   ≥6:1 (= --text-secondary)
     },
 
     typefaces: {
