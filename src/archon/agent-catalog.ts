@@ -1233,6 +1233,40 @@ export const agentCatalogEntries = Object.freeze(
   }))
 );
 
+// Role ids reach the runtime from loosely-typed sources: task packets authored
+// by hand, `.claude/agents/` filenames, and `as`-cast owner roles. Those sources
+// spell roles with hyphens ("agent-runtime-engineer") while the catalog keys with
+// underscores ("agent_runtime_engineer"). Resolve a raw role string to a canonical
+// catalog key, applying hyphen->underscore normalization. Returns `undefined` for
+// genuinely unknown roles so callers can decide how to reject.
+export function normalizeAgentRoleId(raw: string): AgentRoleId | undefined {
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  if (trimmed in agentCatalog) {
+    return trimmed as AgentRoleId;
+  }
+  const underscored = trimmed.replace(/-/g, "_");
+  if (underscored in agentCatalog) {
+    return underscored as AgentRoleId;
+  }
+  return undefined;
+}
+
 export function getAgentCatalogEntry(role: AgentRoleId): (typeof agentCatalog)[AgentRoleId] {
-  return agentCatalog[role];
+  // The declared parameter type is AgentRoleId, but loosely-typed/`as`-cast
+  // callers can pass a hyphenated or otherwise non-canonical value at runtime.
+  // Normalize first, and fail loud with a diagnostic message instead of returning
+  // `undefined` and letting callers crash on a deep property access.
+  const normalized = normalizeAgentRoleId(role as string);
+  if (!normalized) {
+    throw new Error(
+      `Unknown agent catalog role "${String(role)}": no catalog entry resolves for this role id (after hyphen/underscore normalization). Known roles: ${agentRoleIds.join(", ")}.`
+    );
+  }
+  return agentCatalog[normalized];
 }
