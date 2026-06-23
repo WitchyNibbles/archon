@@ -10,3 +10,7 @@ e2e/__screenshots__/
 # Live run snapshot — generated from real archon state, never committed.
 # The committed sample fixture is public/snapshot.json (tracked).
 public/snapshot.live.json
+
+# Build-time generated types — produced by src/forge/gen-dashboard-types.ts.
+# Run `npm run gen:types` or `npm run build` to regenerate.  Never commit.
+src/types/dashboard.generated.ts

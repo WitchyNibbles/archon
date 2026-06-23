@@ -5,7 +5,10 @@
   "type": "module",
   "description": "Archon Forge web UI — Vite + React 19 + Tailwind 4. Toolchain lives exclusively here; never hoisted to root.",
   "scripts": {
+    "gen:types": "node --experimental-strip-types ../src/forge/gen-dashboard-types.ts src/types/dashboard.generated.ts",
+    "predev": "npm run gen:types",
     "dev": "vite",
+    "prebuild": "npm run gen:types",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "lint": "eslint . --max-warnings 0",
