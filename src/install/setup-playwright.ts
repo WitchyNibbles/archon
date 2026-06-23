@@ -1,9 +1,33 @@
 import { access, mkdir } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 interface CliArgs {
   verifyOnly: boolean;
+}
+
+// Canonical archon control-layer root for Playwright assets. The installer
+// (src/install/merge.ts) writes the MCP config to `.archon/playwright/`, and
+// cli.ts treats `.archon/playwright` as a recursive overlay root, so the setup
+// script MUST read/create the same location. Keeping these derivations in one
+// place (and exporting them) is what the regression test pins so the
+// historical `.devgod`→`.archon` rename can never drift back out of sync.
+export const PLAYWRIGHT_CONFIG_DIR = path.join(".archon", "playwright");
+export const PLAYWRIGHT_ARTIFACTS_DIR = path.join(".archon", "work", "artifacts", "playwright");
+
+/** Relative paths of the required Playwright MCP configs, matching merge.ts. */
+export function playwrightConfigRelativePaths(): readonly string[] {
+  return [
+    path.join(PLAYWRIGHT_CONFIG_DIR, "mcp.json"),
+    path.join(PLAYWRIGHT_CONFIG_DIR, "mcp.vision.json")
+  ];
+}
+
+/** Absolute browsers cache path (PLAYWRIGHT_BROWSERS_PATH) under the repo root. */
+export function playwrightBrowsersPath(repoRoot: string): string {
+  return path.join(repoRoot, PLAYWRIGHT_CONFIG_DIR, "browsers");
 }
 
 function parseArgs(argv: readonly string[]): CliArgs {
@@ -12,11 +36,10 @@ function parseArgs(argv: readonly string[]): CliArgs {
   };
 }
 
-function buildPlaywrightEnv(repoRoot: string): NodeJS.ProcessEnv {
-  const browsersPath = path.join(repoRoot, ".devgod", "playwright", "browsers");
+export function buildPlaywrightEnv(repoRoot: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    PLAYWRIGHT_BROWSERS_PATH: browsersPath,
+    PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsersPath(repoRoot),
     PLAYWRIGHT_SKIP_BROWSER_GC: "1"
   };
 }
@@ -57,15 +80,12 @@ function spawnCommand(
 }
 
 async function ensurePlaywrightArtifactsDirs(repoRoot: string): Promise<void> {
-  await mkdir(path.join(repoRoot, ".devgod", "playwright"), { recursive: true });
-  await mkdir(path.join(repoRoot, ".devgod", "work", "artifacts", "playwright"), { recursive: true });
+  await mkdir(path.join(repoRoot, PLAYWRIGHT_CONFIG_DIR), { recursive: true });
+  await mkdir(path.join(repoRoot, PLAYWRIGHT_ARTIFACTS_DIR), { recursive: true });
 }
 
 async function ensureConfigExists(repoRoot: string): Promise<void> {
-  for (const relativePath of [
-    path.join(".devgod", "playwright", "mcp.json"),
-    path.join(".devgod", "playwright", "mcp.vision.json")
-  ]) {
+  for (const relativePath of playwrightConfigRelativePaths()) {
     try {
       await access(path.join(repoRoot, relativePath));
     } catch {
@@ -123,8 +143,29 @@ async function main(): Promise<void> {
   console.log(args.verifyOnly ? "playwright verified" : "playwright setup complete");
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(message);
-  process.exitCode = 1;
-});
+// Only run as a CLI entry point — guard so the module can be imported by tests
+// (and by tooling) without triggering a real Playwright install.
+//
+// Compare the invoked script path against this module's path, resolving symlinks
+// on BOTH sides. Node canonicalizes symlinks in import.meta.url, but a consumer
+// that runs `node ./node_modules/archon/src/install/setup-playwright.ts` where
+// node_modules/archon is a symlink (npm link / workspaces) passes the symlinked
+// path in argv[1]. Without realpath on both sides the comparison is false and the
+// installer's `archon:setup:playwright` script would silently no-op.
+function canonical(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+const invokedPath = typeof process.argv[1] === "string" ? canonical(process.argv[1]) : "";
+const isDirectRun = invokedPath !== "" && canonical(fileURLToPath(import.meta.url)) === invokedPath;
+
+if (isDirectRun) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(message);
+    process.exitCode = 1;
+  });
+}
