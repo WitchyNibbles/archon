@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+/*
+  Design tokens — archon identity.
+  Dark, monochrome base with indigo (#6366F1) as the primary accent.
+  Geist is loaded from the system stack; fall back to Inter then sans-serif.
+*/
+:root {
+  --color-bg: #0a0a0b;
+  --color-surface: #111113;
+  --color-border: #1e1e21;
+  --color-muted: #6b7280;
+  --color-fg: #f4f4f5;
+  --color-accent: #6366f1;
+  --color-accent-hover: #818cf8;
+  --font-sans: "Geist", "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
