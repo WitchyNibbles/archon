@@ -364,6 +364,15 @@ export type { DaemonBlockedResultFactoryDeps };
 import { createDaemonRuntimeReconcile } from "./daemon/runtime-reconcile.ts";
 import type { DaemonRuntimeReconcileFactoryDeps, ReconcileRuntimeStateFn } from "./daemon/runtime-reconcile.ts";
 export type { DaemonRuntimeReconcileFactoryDeps, ReconcileRuntimeStateFn };
+// Loop-monolith decomposition (6n — THE FINAL CUT): the loop tail (dispatch_owner
+// mismatch guard + codex fallthrough turn) is now in ./daemon/dispatch-owner-turn.ts.
+// Internal-only: tests import it directly from the module path.
+import { handleDaemonDispatchOwnerTurnStep } from "./daemon/dispatch-owner-turn.ts";
+import type {
+  DaemonDispatchOwnerTurnInput,
+  DaemonDispatchOwnerTurnDeps
+} from "./daemon/dispatch-owner-turn.ts";
+export type { DaemonDispatchOwnerTurnInput, DaemonDispatchOwnerTurnDeps };
 
 
 export function getRecentCommits(cwd: string, limit = 20): Array<{ hash: string; message: string }> {
@@ -1181,44 +1190,14 @@ export async function executeDaemonCommandFromArgs(
         // outcome.kind === "fallthrough": do nothing, proceed to the next if-blocks
       }
 
-      if (directive.kind === "dispatch_owner" && directive.recommendation.taskId !== activeTaskId) {
-        const reconciled = await attemptRuntimeReconcile(cycle);
-        if (reconciled?.runtimeStateChanged) {
-          continue;
-        }
-        cycles.push({
-          cycle,
-          directiveKind: directive.kind,
-          action: "blocked",
-          runId: activeRunId,
-          taskId: activeTaskId,
-          sessionId: latestSessionId ?? null,
-          summary: `runtime wants ${directive.recommendation.taskId} but active task is ${activeTaskId}`
-        });
-
-        return blockedResult({
-          blockerKind: "active_task_mismatch",
-          reason: "runtime active-task pointer does not match the owner dispatch target",
-          cycle,
-          activeRunId,
-          activeTaskId,
-          directiveKind: directive.kind,
-          nextActions: [
-            "inspect `npm run archon:status -- --format json` to compare the active runtime task and owner dispatch target",
-            "run `npm run archon:reconcile` to align the active runtime task with the authoritative owner-dispatch target"
-          ]
-        });
+      const tailResult = await handleDaemonDispatchOwnerTurnStep(
+        { directive, cycle, activeRunId, activeTaskId },
+        { attemptRuntimeReconcile, runDaemonCodexTurn, blockedResult, cycles, getSessionId: () => latestSessionId }
+      );
+      if (tailResult !== undefined) {
+        return tailResult;
       }
-
-      const codexResult = await runDaemonCodexTurn({
-        directive,
-        summaryAction: directive.kind === "dispatch_owner" ? "run_codex_owner" : "run_codex_analysis",
-        activeRunId,
-        activeTaskId
-      });
-      if (codexResult) {
-        return codexResult;
-      }
+      // undefined → fall through to the next loop cycle (was: `continue` / natural loop-around)
     }
 
     const projectContext = await options.getProjectContext({
