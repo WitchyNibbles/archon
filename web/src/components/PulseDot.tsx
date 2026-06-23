@@ -13,14 +13,17 @@ interface PulseDotProps {
   activeLockCount: number;
 }
 
+// dotColor = saturated base (fill/dot — 3:1 UI-component contrast is fine).
+// textColor = AA-compliant `-text` variant (the label is small text and MUST
+// clear 4.5:1; --status-muted #6B6B6B fails AA, so idle routes to muted-text).
 const STATE_CONFIG: Record<
   PulseState,
-  { color: string; label: string; pulse: boolean }
+  { dotColor: string; textColor: string; label: string; pulse: boolean }
 > = {
-  running: { color: "var(--status-running)", label: "LIVE", pulse: true },
-  blocked: { color: "var(--status-error)", label: "BLOCKED", pulse: false },
-  complete: { color: "var(--status-success)", label: "DONE", pulse: false },
-  idle: { color: "var(--status-muted)", label: "IDLE", pulse: false },
+  running: { dotColor: "var(--status-running)", textColor: "var(--status-running-text)", label: "LIVE", pulse: true },
+  blocked: { dotColor: "var(--status-error)", textColor: "var(--status-error-text)", label: "BLOCKED", pulse: false },
+  complete: { dotColor: "var(--status-success)", textColor: "var(--status-success-text)", label: "DONE", pulse: false },
+  idle: { dotColor: "var(--status-muted)", textColor: "var(--status-muted-text)", label: "IDLE", pulse: false },
 };
 
 export function PulseDot({ pulseState, activeLockCount }: PulseDotProps) {
@@ -30,10 +33,10 @@ export function PulseDot({ pulseState, activeLockCount }: PulseDotProps) {
     <div className="pulse-group" aria-label={`Run status: ${config.label}`}>
       <span
         className={config.pulse ? "pulse-dot pulse-running" : "pulse-dot"}
-        style={{ backgroundColor: config.color }}
+        style={{ backgroundColor: config.dotColor }}
         aria-hidden="true"
       />
-      <span className="pulse-label" style={{ color: config.color }}>
+      <span className="pulse-label" style={{ color: config.textColor }}>
         {config.label}
       </span>
       {activeLockCount > 0 && (

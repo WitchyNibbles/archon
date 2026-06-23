@@ -29,11 +29,49 @@
  */
 
 import { writeFile } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
+import { realpathSync } from "node:fs";
+import { resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DashboardViewModelSchema } from "./dashboard-contract.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, "..", "..");
+
+/** Sentinel for "write to stdout" rather than a file path. */
+export const STDOUT_TARGET = "-";
+
+/**
+ * Resolve + bounds-check the snapshot output target from a CLI argument.
+ *
+ * - `undefined` → the default tracked sample at web/public/snapshot.json.
+ * - "-"         → stdout (STDOUT_TARGET).
+ * - any path    → resolved relative to the repo root and REQUIRED to stay
+ *                 inside it with a `.json` extension. This stops a stray or
+ *                 hostile argument (e.g. `../../etc/cron.d/x` or an absolute
+ *                 path) from making this read-only generator write outside the
+ *                 repository. Throws a descriptive error otherwise.
+ */
+export function resolveSnapshotOutputPath(
+  arg: string | undefined,
+  repoRoot: string = REPO_ROOT
+): string {
+  if (arg === undefined) {
+    return resolve(repoRoot, "web", "public", "snapshot.json");
+  }
+  if (arg === STDOUT_TARGET) {
+    return STDOUT_TARGET;
+  }
+  const resolved = resolve(repoRoot, arg);
+  if (resolved !== repoRoot && !resolved.startsWith(`${repoRoot}${sep}`)) {
+    throw new Error(
+      `snapshot output path must stay within the repository (${repoRoot}); refusing to write to ${resolved}`
+    );
+  }
+  if (!resolved.endsWith(".json")) {
+    throw new Error(`snapshot output path must end in .json; got ${resolved}`);
+  }
+  return resolved;
+}
 
 /**
  * Builds a representative sample DashboardViewModel from the actual
@@ -45,7 +83,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * report surface (archon_report CLI or the status service) and parse
  * the output through DashboardViewModelSchema.
  */
-function buildSampleSnapshot() {
+export function buildSampleSnapshot() {
   return DashboardViewModelSchema.parse({
     header: {
       runId: "run_forge_phase0_a7d01b78",
@@ -173,14 +211,10 @@ function buildSampleSnapshot() {
  */
 async function main() {
   const snapshot = buildSampleSnapshot();
-
-  const outputPath =
-    process.argv[2] ??
-    resolve(__dirname, "../../web/public/snapshot.json");
-
+  const outputPath = resolveSnapshotOutputPath(process.argv[2]);
   const json = JSON.stringify(snapshot, null, 2);
 
-  if (outputPath === "-") {
+  if (outputPath === STDOUT_TARGET) {
     process.stdout.write(json + "\n");
     process.stderr.write("✓ Snapshot validated against DashboardViewModelSchema\n");
   } else {
@@ -189,8 +223,21 @@ async function main() {
   }
 }
 
-main().catch((err: unknown) => {
-  const message = err instanceof Error ? err.message : String(err);
-  process.stderr.write(`Snapshot generation failed: ${message}\n`);
-  process.exit(1);
-});
+// Run only as a CLI entry point — guard so importing the module (e.g. from
+// tests) does not execute main(). Symlinks are resolved on both sides so the
+// guard holds when invoked through a symlinked path.
+function canonicalPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+const invokedPath = typeof process.argv[1] === "string" ? canonicalPath(process.argv[1]) : "";
+if (invokedPath !== "" && canonicalPath(fileURLToPath(import.meta.url)) === invokedPath) {
+  main().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`Snapshot generation failed: ${message}\n`);
+    process.exit(1);
+  });
+}

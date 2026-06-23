@@ -6,3 +6,7 @@ test-results/
 playwright-report/
 playwright/.cache/
 e2e/__screenshots__/
+
+# Live run snapshot — generated from real archon state, never committed.
+# The committed sample fixture is public/snapshot.json (tracked).
+public/snapshot.live.json
