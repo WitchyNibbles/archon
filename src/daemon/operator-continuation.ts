@@ -34,52 +34,18 @@ import {
 } from "./state-writers.ts";
 // Type-only back-reference to daemon.ts (erased at runtime — no value cycle).
 import type { DaemonCommandResult, DaemonCycleRecord } from "../daemon.ts";
-
-/**
- * Input to the loop's blockedResult builder. Mirrors the inline shape declared
- * in executeDaemonCommandFromArgs so the closure can be passed as a dependency.
- */
-export interface DaemonBlockedResultInput {
-  blockerKind:
-    | "bootstrapping"
-    | "runtime_preflight"
-    | "missing_active_runtime"
-    | "review_queue"
-    | "review_execution_unsupported"
-    | "operator_required_continuation"
-    | "workflow_proof_failure"
-    | "scope_expansion_required"
-    | "runtime_blocked"
-    | "recovery_required"
-    | "runtime_task_missing"
-    | "active_task_mismatch"
-    | "uncommitted_deliverables";
-  reason: string;
-  cycle: number;
-  activeRunId: string | null;
-  activeTaskId: string | null;
-  directiveKind?: RunExecutionPlan["directive"]["kind"] | undefined;
-  nextActions?: string[] | undefined;
-  detailFiles?:
-    | {
-        continuationStatus?: string | undefined;
-        reviewQueueStatus?: string | undefined;
-        scopeExpansionRequest?: string | undefined;
-      }
-    | undefined;
-}
-
-export type DaemonBlockedResultBuilder = (
-  input: DaemonBlockedResultInput
-) => Promise<DaemonCommandResult>;
-
-export type DaemonCodexTurnRunner = (input: {
-  directive: RunExecutionPlan["directive"];
-  summaryAction: "run_codex_owner" | "run_codex_analysis";
-  activeRunId: string;
-  activeTaskId: string;
-  operatorNotes?: string | undefined;
-}) => Promise<DaemonCommandResult | undefined>;
+// The blocked-result and codex-turn-runner contracts live in codex-turn.ts (the
+// foundational turn module this handler depends on). Re-export them so existing
+// importers of these names keep resolving through operator-continuation.ts.
+import type {
+  DaemonBlockedResultBuilder,
+  DaemonCodexTurnRunner
+} from "./codex-turn.ts";
+export type {
+  DaemonBlockedResultBuilder,
+  DaemonBlockedResultInput,
+  DaemonCodexTurnRunner
+} from "./codex-turn.ts";
 
 /** Stable (per-invocation) dependencies the handler needs from the loop. */
 export interface DaemonOperatorContinuationDeps {
