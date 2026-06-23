@@ -26,7 +26,7 @@
  *   - --text-primary  #EDEDED on #0A0A0A: ~18.1:1 (AAA)
  *   - --text-secondary #A0A0A0 on #0A0A0A: ~7.6:1 (AAA) — used for all legibility-critical metadata
  *   - --text-muted    #6B6B6B on #0A0A0A: ~4.0:1 — reserved for aria-hidden decorative bits only
- *   - --status-error-text #F87171 on #111111: ~4.6:1 (AA) — error text only (dots/stripes use #EF4444)
+ *   - --status-error-text #F87171 on #111111: ~4.57:1 (AA) — error text only (dots/stripes use #EF4444)
  */
 
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap');
@@ -72,13 +72,21 @@
    * --status-error-text:   #F87171 on #111111 ≈ 4.57:1 (AA)
    * --status-pending-text: #A5B4FC on #111111 ≈ 8.0:1  (AAA) — indigo-300, lighter than #6366F1
    * --status-warning-text: #FCD34D on #111111 ≈ 9.5:1  (AAA) — amber-300, lighter than #F59E0B
+   * --status-success-text: #4ADE80 on #111111 ≈ 10.8:1 (AAA) — green-400, lighter than #22C55E
+   * --status-running-text: #67E8F9 on #111111 ≈ 13.0:1 (AAA) — cyan-300, lighter than #06B6D4
+   * --status-muted-text:   #A0A0A0 on #111111 ≈ 7.2:1  (AAA) — = --text-secondary; #6B6B6B fails AA as text
    *
-   * Keep --status-error/pending/warning for: dots, stripes, BG (UI components, 3:1 OK).
-   * Use --status-*-text for: gate-state text labels, task-status text labels.
+   * Canonical source: archon-visual-standards SKILL + src/forge/constraints-manifest
+   * (identity.statusTextColors). Keep the saturated base tokens (error, muted, etc.)
+   * for dots, stripes, BG (UI components, 3:1 OK). Use the -text variants for
+   * gate-state and task-status text labels.
    */
   --status-error-text:   #F87171;
   --status-pending-text: #A5B4FC;
   --status-warning-text: #FCD34D;
+  --status-success-text: #4ADE80;
+  --status-running-text: #67E8F9;
+  --status-muted-text:   #A0A0A0;
 
   /* Spacing — 8px grid, only 4px multiples */
   --space-1:   4px;

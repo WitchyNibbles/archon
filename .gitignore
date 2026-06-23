@@ -6,6 +6,10 @@ dist/
 
 # Runtime artifacts
 .archon/work/daemon/
+# Playwright browser binaries + run artifacts (created by archon:setup:playwright).
+# Chromium is hundreds of MB; the MCP configs under .archon/playwright/ ARE tracked.
+.archon/playwright/browsers/
+.archon/work/artifacts/
 .archon/work/briefs/
 .archon/work/plans/
 .archon/work/tasks/
