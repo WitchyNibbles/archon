@@ -41,7 +41,7 @@ import type {
   RunStatusSnapshot
 } from "./domain/types.ts";
 import { PostgresStore, PostgresMistakeLedgerStore } from "./store/postgres-store.ts";
-import { INTERNAL_RUNTIME_PREFLIGHT_BYPASS_TOKEN, buildDefaultProductState, buildDefaultTaskQueue, executeAdvanceActiveTaskCommandFromArgs, resolveCommandFlag, resolveFormatFlag, resolveRunIdForCommand } from "./workflow.ts";
+import { INTERNAL_RUNTIME_PREFLIGHT_BYPASS_TOKEN, executeAdvanceActiveTaskCommandFromArgs, resolveCommandFlag, resolveFormatFlag, resolveRunIdForCommand } from "./workflow.ts";
 import type { EnvShape, ExecuteAdvanceActiveTaskCommandOptions, ExecuteStatusCommandOptions } from "./workflow.ts";
 import { buildRuntimeExecutionConnectionFailure, executeReconcileRuntimeStateCommandFromArgs, executeRuntimeExecutionPreflight, formatRuntimeExecutionPreflightFailureResult, isRuntimeExecutionPreflightConnectionError } from "./runtime.ts";
 import type { ExecuteDoctorCommandOptions, ExecuteRuntimePreflightCommandOptions, ReconcileRuntimeStateCommandResult } from "./runtime.ts";
@@ -300,6 +300,12 @@ export type {
 };
 import { handleDaemonOperatorRequiredContinuation } from "./daemon/operator-continuation.ts";
 export { handleDaemonOperatorRequiredContinuation };
+// Internal-only: the codex-turn runner is wired solely by the loop wrapper
+// below. It is intentionally NOT re-exported from daemon.ts — direct invocation
+// would bypass the loop's cycle accounting, preflight, and blocked-result
+// context. Tests import it from ./daemon/codex-turn.ts directly.
+import { runDaemonCodexTurn as runDaemonCodexTurnStep } from "./daemon/codex-turn.ts";
+import type { DaemonCodexTurnInput } from "./daemon/codex-turn.ts";
 import type {
   DaemonBlockedResultBuilder,
   DaemonBlockedResultInput,
@@ -922,6 +928,7 @@ export async function executeDaemonCommandFromArgs(
         continuationStatus?: string | undefined;
         reviewQueueStatus?: string | undefined;
         scopeExpansionRequest?: string | undefined;
+        automationEnvelope?: string | undefined;
       } | undefined;
     }) => {
       await writeDaemonOperatorHandoff(cwd, {
@@ -1087,209 +1094,36 @@ export async function executeDaemonCommandFromArgs(
         }
       );
       const directive = loop.result.finalPlan.directive;
-      const runDaemonCodexTurn = async (input: {
-        directive: RunExecutionPlan["directive"];
-        summaryAction: "run_codex_owner" | "run_codex_analysis";
-        activeRunId: string;
-        activeTaskId: string;
-        operatorNotes?: string | undefined;
-      }) => {
-        const snapshot = await options.getStatusSnapshot(input.activeRunId);
-        const taskRecord = snapshot.tasks.find((task) => task.packet.taskId === input.activeTaskId);
-        if (!taskRecord) {
-          const reconciled = await attemptRuntimeReconcile(cycle);
-          if (reconciled?.runtimeStateChanged) {
-            return undefined;
-          }
-          cycles.push({
-            cycle,
-            directiveKind: input.directive.kind,
-            action: "blocked",
-            runId: input.activeRunId,
-            taskId: input.activeTaskId,
-            sessionId: latestSessionId ?? null,
-            summary: "active runtime task is missing from the run snapshot"
-          });
-
-          return blockedResult({
-            blockerKind: "runtime_task_missing",
-            reason: "active runtime task is missing from the run snapshot",
-            cycle,
-            activeRunId: input.activeRunId,
-            activeTaskId: input.activeTaskId,
-            directiveKind: input.directive.kind,
-            nextActions: [
-              "inspect `npm run archon:status -- --format json` to confirm the runtime task snapshot",
-              "run `npm run archon:reconcile` to repair safe runtime/local task drift before retrying the daemon"
-            ]
-          });
-        }
-        const beforeProgressKey = buildDaemonProgressKey({
-          runtimeState: projectRuntimeState,
-          snapshot,
-          directive: input.directive,
-          activeTaskId: input.activeTaskId
-        });
-        const promptMetadata = readDaemonPromptMetadata(projectRuntimeState?.metadata);
-        const packetFingerprint = buildDaemonTaskPacketFingerprint(taskRecord.packet);
-        const promptMode = determineDaemonPromptMode({
-          sessionId: latestSessionId,
-          previousTaskId: promptMetadata?.taskId,
-          previousPacketFingerprint: promptMetadata?.packetFingerprint,
-          taskId: input.activeTaskId,
-          packetFingerprint
-        });
-        const latestCheckpoint = snapshot.autonomousExecution?.state.checkpoints.at(-1);
-
-        const prompt = buildDaemonTaskPrompt({
-          promptMode,
-          directive: input.directive,
-          taskId: input.activeTaskId,
-          packet: taskRecord.packet,
-          operatorNotes: input.operatorNotes,
-          compressedContextSummary:
-            promptMode === "delta"
-              ? latestCheckpoint?.compressedContextSummary
-              : undefined,
-          compressedContextRef:
-            promptMode === "delta"
-              ? latestCheckpoint?.compressedContextRef
-              : undefined
-        });
-        const codexTurn = await runCodexTurn({
+      // Loop-monolith decomposition (6h): the codex-turn runner now lives in
+      // ./daemon/codex-turn.ts. This thin wrapper threads the per-cycle inputs
+      // plus the loop's mutable state. latestSessionId is exposed as a holder
+      // (getSessionId/setSessionId) — NOT a captured value — because the runner
+      // both reads and writes it, and pass-by-value would silently break the
+      // session continuity that the next turn depends on.
+      const runDaemonCodexTurn = (input: DaemonCodexTurnInput): Promise<DaemonCommandResult | undefined> =>
+        runDaemonCodexTurnStep(input, {
+          cycle,
+          projectContext,
+          projectRuntimeState,
+          attemptRuntimeReconcile,
+          cycles,
+          blockedResult,
+          getSessionId: () => latestSessionId,
+          setSessionId: (sessionId) => {
+            latestSessionId = sessionId;
+          },
           claudeBin,
           cwd,
           env,
-          prompt,
-          sessionId: latestSessionId
+          now,
+          staleAfterHours,
+          runCodexTurn,
+          getStatusSnapshot: options.getStatusSnapshot,
+          getProjectRuntimeState: options.getProjectRuntimeState,
+          getExecutionPlan: options.getExecutionPlan,
+          saveProjectRuntimeState: options.saveProjectRuntimeState,
+          checkpointRun: options.checkpointRun
         });
-
-        latestSessionId = codexTurn.sessionId ?? latestSessionId;
-        const parsedTurnMessage = parseDaemonTurnMessage(codexTurn.finalMessage);
-        await persistDaemonTurnCheckpoint({
-          runId: input.activeRunId,
-          taskId: input.activeTaskId,
-          snapshot,
-          message: parsedTurnMessage,
-          checkpointRun: options.checkpointRun,
-          now
-        });
-        const refreshedProjectRuntimeState = await options.getProjectRuntimeState(projectContext.project.id);
-        const refreshedSnapshot = await options.getStatusSnapshot(input.activeRunId);
-        const refreshedPlan = await options.getExecutionPlan(input.activeRunId, staleAfterHours);
-        const afterProgressKey = buildDaemonProgressKey({
-          runtimeState: refreshedProjectRuntimeState,
-          snapshot: refreshedSnapshot,
-          directive: refreshedPlan.directive,
-          activeTaskId: input.activeTaskId
-        });
-        const noProgress = beforeProgressKey === afterProgressKey;
-        const priorStagnation = readDaemonStagnationMetadata(projectRuntimeState?.metadata);
-        const stagnantTurnCount = computeDaemonStagnantTurnCount({
-          noProgress,
-          priorStagnation,
-          runId: input.activeRunId,
-          taskId: input.activeTaskId,
-          directiveKind: input.directive.kind,
-          progressKey: beforeProgressKey
-        });
-        await options.saveProjectRuntimeState({
-          projectId: refreshedProjectRuntimeState?.projectId ?? projectRuntimeState?.projectId ?? projectContext.project.id,
-          workspaceId: refreshedProjectRuntimeState?.workspaceId ?? projectRuntimeState?.workspaceId ?? projectContext.workspace.id,
-          activeRunId: refreshedProjectRuntimeState?.activeRunId,
-          activeTaskId: refreshedProjectRuntimeState?.activeTaskId,
-          taskQueue: refreshedProjectRuntimeState?.taskQueue ?? projectRuntimeState?.taskQueue ?? buildDefaultTaskQueue(),
-          productState: refreshedProjectRuntimeState?.productState ?? projectRuntimeState?.productState ?? buildDefaultProductState(),
-          lastVerifiedRunId: refreshedProjectRuntimeState?.lastVerifiedRunId ?? projectRuntimeState?.lastVerifiedRunId,
-          metadata: {
-            ...(refreshedProjectRuntimeState?.metadata ?? projectRuntimeState?.metadata ?? {}),
-            archonDaemon: {
-              sessionId: latestSessionId,
-              lastRunId: input.activeRunId,
-              lastTaskId: input.activeTaskId,
-              lastDirectiveKind: input.directive.kind,
-              lastPromptTaskId: input.activeTaskId,
-              lastPromptPacketFingerprint: packetFingerprint,
-              lastPromptMode: promptMode,
-              ...(noProgress
-                ? {
-                    stagnation: {
-                      runId: input.activeRunId,
-                      taskId: input.activeTaskId,
-                      directiveKind: input.directive.kind,
-                      progressKey: beforeProgressKey,
-                      count: stagnantTurnCount,
-                      updatedAt: now().toISOString(),
-                      lastStatus: parsedTurnMessage?.status,
-                      lastSummary: parsedTurnMessage?.summary,
-                      lastBlockers: parsedTurnMessage?.blockers
-                    }
-                  }
-                : {}),
-              updatedAt: now().toISOString()
-            }
-          },
-          createdAt: refreshedProjectRuntimeState?.createdAt ?? projectRuntimeState?.createdAt ?? now().toISOString(),
-          updatedAt: now().toISOString()
-        });
-
-        cycles.push({
-          cycle,
-          directiveKind: input.directive.kind,
-          action: input.summaryAction,
-          runId: input.activeRunId,
-          taskId: input.activeTaskId,
-          sessionId: latestSessionId ?? null,
-          summary: parsedTurnMessage?.summary || codexTurn.finalMessage?.slice(0, 160) || "codex turn executed"
-        });
-
-        const noProgressOutcome = evaluateDaemonNoProgressOutcome({
-          noProgress,
-          parsedTurnMessage,
-          stagnantTurnCount,
-          activeTaskId: input.activeTaskId
-        });
-        if (noProgressOutcome.shouldBlock) {
-          let scopeExpansionRequestPath: string | undefined;
-          if (noProgressOutcome.scopeExpansion) {
-            scopeExpansionRequestPath = await writeDaemonScopeExpansionRequest(cwd, {
-              runId: input.activeRunId,
-              taskId: input.activeTaskId,
-              directiveKind: input.directive.kind,
-              blockedPaths: noProgressOutcome.scopeExpansion.blockedPaths,
-              requestedWriteScope: noProgressOutcome.scopeExpansion.requestedWriteScope,
-              reason: noProgressOutcome.scopeExpansion.reason,
-              updatedAt: now().toISOString()
-            });
-          }
-          cycles.push({
-            cycle,
-            directiveKind: input.directive.kind,
-            action: noProgressOutcome.cycleAction,
-            runId: input.activeRunId,
-            taskId: input.activeTaskId,
-            sessionId: latestSessionId ?? null,
-            summary: noProgressOutcome.reason
-          });
-
-          return blockedResult({
-            blockerKind: noProgressOutcome.blockerKind,
-            reason: noProgressOutcome.reason,
-            cycle,
-            activeRunId: input.activeRunId,
-            activeTaskId: input.activeTaskId,
-            directiveKind: input.directive.kind,
-            nextActions: noProgressOutcome.nextActions,
-            detailFiles: scopeExpansionRequestPath
-              ? {
-                  scopeExpansionRequest: scopeExpansionRequestPath
-                }
-              : undefined
-          });
-        }
-
-        return undefined;
-      };
       // Loop-monolith decomposition (6g): the operator-required continuation
       // handler now lives in ./daemon/operator-continuation.ts. This thin
       // wrapper threads the per-cycle inputs plus the loop's mutable state —
