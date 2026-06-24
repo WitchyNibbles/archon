@@ -35,6 +35,7 @@ import { resolveArchonContextPolicy } from "./runtime/context-budget.ts";
 import { PostgresStore } from "./store/postgres-store.ts";
 import { initTaskCommand } from "./admin/init-task.ts";
 import { recordCouncilCommand } from "./admin/record-council.ts";
+import { forgeCommand } from "./admin/forge.ts";
 import { advanceActiveTaskCommand, checkpointCommand, coverageCommand, gapsCommand, githubDispatchCommand, opsCommand, repairTaskQueueCommand, reportCommand, resumeCommand, statusCommand, syncRuntimeExportsCommand } from "./workflow.ts";
 import { bootstrapProject, doctorCommand, health, migrate, reconcileRuntimeStateCommand, recoverCommand, refreshRepoContextCommand, verifyLiveMigrations, verifySetup } from "./runtime.ts";
 import { indexRepoMarkdownCommand, planContextCommand, refreshRetrievalCommand, runEmbeddingJobsCommand } from "./memory.ts";
@@ -242,6 +243,11 @@ async function main() {
       withClient: (fn) => withClient((client) => fn(client)),
       createStore: (client) => new PostgresStore(client as ConstructorParameters<typeof PostgresStore>[0])
     });
+    return;
+  }
+
+  if (command === "forge") {
+    await forgeCommand(args);
     return;
   }
 
