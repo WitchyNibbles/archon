@@ -47,8 +47,8 @@ function Dashboard({ data }: { data: DashboardViewModel }) {
 
       {/* Main content area */}
       <main className="main">
-        {/* Topbar: run title, runId, status, authority badge, pulse */}
-        <RunHeader header={data.header} pulse={data.pulse} />
+        {/* Topbar: run title, runId, status, authority badge, pulse, snapshot age */}
+        <RunHeader header={data.header} pulse={data.pulse} generatedAt={data.generatedAt} />
 
         {/* HERO: blocker strip — always rendered, dominant when blockers exist */}
         <BlockerStrip blockers={data.blockers} />

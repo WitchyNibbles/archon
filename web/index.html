@@ -2,6 +2,39 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Content Security Policy — P1-S2b (C7).
+
+      Policy rationale:
+        default-src 'self'   — no external origin for any resource type
+        script-src  'self'   — Vite production build emits only external module
+                               scripts (type="module" src="..."); no inline scripts.
+                               If Decision 4 ever adds a live HTTP server, keep 'self'
+                               and add the nonce/hash for any inline bootstrap only if
+                               truly unavoidable.
+        style-src   'self'   — Vite extracts CSS to an external file in production
+                               (assets/index-*.css). No 'unsafe-inline' required.
+                               Dev-mode (vite dev) injects styles via JS; the meta CSP
+                               is production-only semantics — the dev server is not
+                               served to end users.
+        font-src    'self'   — Geist is self-hosted in /fonts/ (C7). No CDN.
+        img-src     'self'   — favicon.svg served from 'self'. No data: URIs used.
+        object-src  'none'   — No Flash/plugins (required by C7 and best practice).
+        base-uri    'self'   — Prevent base-tag injection attacks.
+        connect-src 'self'   — /snapshot.live.json and /snapshot.json are same-origin
+                               static files (Decision 4 Option A). If this ever moves
+                               to an HTTP server (Decision 4 Option B), add the
+                               endpoint origin here AND move the entire policy to a
+                               response header (meta CSP cannot set frame-ancestors).
+
+      NOTE: frame-ancestors cannot be set via <meta> per the CSP spec (§5.2); it
+      requires a response header. Add `Content-Security-Policy: frame-ancestors 'none'`
+      to the HTTP server if Decision 4 Option B is ever adopted.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; object-src 'none'; base-uri 'self'; connect-src 'self'"
+    />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Archon</title>

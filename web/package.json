@@ -12,6 +12,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "lint": "eslint . --max-warnings 0",
+    "pretypecheck": "npm run gen:types",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",
+    "geist": "^1.7.2",
     "@eslint/js": "^9.29.0",
     "@playwright/test": "^1.61.0",
     "@types/react": "^19.1.6",
