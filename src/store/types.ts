@@ -108,6 +108,14 @@ export interface ArchonStore {
   savePlan(plan: PlanArtifact): Promise<void>;
   getPlan(runId: string): Promise<PlanArtifact | undefined>;
   replaceTasks(tasks: TaskRecord[]): Promise<void>;
+  /**
+   * Append new tasks to an existing run without deleting any existing tasks.
+   * Throws if any task_key in `tasks` already exists in the run, if any
+   * dependency edge is dangling (key absent from both existing run tasks and
+   * the appended batch), or if tasks span more than one runId.
+   * Implementations must be atomic: a failed integrity check inserts NOTHING.
+   */
+  appendTasks(tasks: TaskRecord[]): Promise<void>;
   getTasksByRun(runId: string): Promise<TaskRecord[]>;
   getTask(runId: string, taskId: string): Promise<TaskRecord | undefined>;
   updateTask(task: TaskRecord): Promise<void>;

@@ -1277,6 +1277,68 @@ export class ArchonCoreService {
     return tasks;
   }
 
+  /**
+   * Append new tasks to an existing run without deleting or modifying any
+   * existing tasks and without changing the run status.
+   *
+   * Uses the same packet-to-TaskRecord mapping path as createTaskGraph
+   * (mapTaskPacketToQueueClass) and rebuilds project_runtime_state.task_queue
+   * over the FULL union of existing + appended tasks, identical to the
+   * createTaskGraph rebuild at lines 1255-1266.
+   *
+   * Throws (atomically — nothing is inserted) if:
+   *   - Any task_key in taskPackets already exists in the run.
+   *   - Any dependency edge references a key absent from both existing run tasks
+   *     and the appended batch.
+   *   - The run does not exist.
+   */
+  async appendTasks(runId: string, taskPackets: TaskPacketInput[]): Promise<TaskRecord[]> {
+    if (taskPackets.length === 0) {
+      return [];
+    }
+
+    const run = await this.requireRun(runId);
+    const now = timestamp();
+
+    const newTasks: TaskRecord[] = taskPackets.map((packet) => ({
+      id: randomUUID(),
+      runId,
+      workspaceId: run.workspaceId,
+      projectId: run.projectId,
+      class: mapTaskPacketToQueueClass(packet),
+      packet,
+      status: "ready" as const,
+      createdAt: now,
+      updatedAt: now
+    }));
+
+    // Delegate integrity validation + atomic insert to the store layer.
+    await this.store.appendTasks(newTasks);
+
+    // Rebuild task_queue over the FULL union of existing + appended tasks,
+    // using the same path as createTaskGraph (lines 1255-1266).
+    const allTasks = await this.store.getTasksByRun(runId);
+    const existingState = await this.store.getProjectRuntimeState(run.projectId);
+    await this.store.saveProjectRuntimeState({
+      projectId: run.projectId,
+      workspaceId: run.workspaceId,
+      activeRunId: run.id,
+      activeTaskId: existingState?.activeTaskId,
+      taskQueue: buildRuntimeTaskQueue(
+        run.status,
+        allTasks,
+        existingState?.activeTaskId
+      ),
+      productState: existingState?.productState ?? buildDefaultProductState(),
+      lastVerifiedRunId: existingState?.lastVerifiedRunId,
+      metadata: existingState?.metadata ?? {},
+      createdAt: existingState?.createdAt ?? now,
+      updatedAt: now
+    });
+
+    return newTasks;
+  }
+
   async claimTask(runId: string, taskId: string, actor: string): Promise<TaskRecord> {
     const task = await this.requireTask(runId, taskId);
     if (task.status !== "ready") {

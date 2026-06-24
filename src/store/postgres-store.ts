@@ -33,7 +33,7 @@ import type {
 // Sub-module free functions
 import { ensureProjectContext, getProjectContext, saveProjectRuntimeRegistration, getProjectRuntimeRegistration, saveRuntimeMigrationJournal, listRuntimeMigrationJournals, saveProjectRuntimeState, getProjectRuntimeState, saveWorkflowDocument, listWorkflowDocuments } from "./postgres/project-state.ts";
 import { createRun, getRun, findLatestRun, findLatestRunForTask, findRunsByProjectActivity, updateRun } from "./postgres/runs.ts";
-import { savePlan, getPlan, replaceTasks, getTasksByRun, getTask, updateTask } from "./postgres/tasks.ts";
+import { savePlan, getPlan, replaceTasks, appendTasks, getTasksByRun, getTask, updateTask } from "./postgres/tasks.ts";
 import { createLock, releaseLocksForTask, getActiveLocks, saveHandoff, getHandoffs } from "./postgres/handoffs-locks.ts";
 import { saveReview, getReviews, getOrchestratorReviews, saveOrchestratorReview, saveApproval, getApprovals, saveReviewFloorReduction, getReviewFloorReductions } from "./postgres/reviews.ts";
 import { saveMemoryEntry, listMemoryEntries, replaceMarkdownArtifacts, loadArtifactsByIds } from "./postgres/memory.ts";
@@ -152,6 +152,10 @@ export class PostgresStore implements ArchonStore {
 
   async replaceTasks(tasks: TaskRecord[]): Promise<void> {
     return replaceTasks(this.client, tasks);
+  }
+
+  async appendTasks(tasks: TaskRecord[]): Promise<void> {
+    return appendTasks(this.client, tasks);
   }
 
   async getTasksByRun(runId: string): Promise<TaskRecord[]> {
