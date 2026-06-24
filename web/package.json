@@ -22,10 +22,10 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.11.3",
+    "@axe-core/playwright": "4.11.3",
     "geist": "^1.7.2",
     "@eslint/js": "^9.29.0",
-    "@playwright/test": "^1.61.0",
+    "@playwright/test": "1.61.0",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.5.2",
