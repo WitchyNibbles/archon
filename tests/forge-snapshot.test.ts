@@ -18,9 +18,16 @@ import {
 const REPO = "/tmp/archon-repo";
 
 describe("resolveSnapshotOutputPath", () => {
-  it("defaults to the tracked sample at web/public/snapshot.json", () => {
+  it("defaults to the gitignored live path (snapshot.live.json) when no mode given", () => {
     assert.equal(
       resolveSnapshotOutputPath(undefined, REPO),
+      path.join(REPO, "web", "public", "snapshot.live.json")
+    );
+  });
+
+  it("defaults to the committed sample path (snapshot.json) in sample mode", () => {
+    assert.equal(
+      resolveSnapshotOutputPath(undefined, REPO, "sample"),
       path.join(REPO, "web", "public", "snapshot.json")
     );
   });

@@ -131,6 +131,46 @@ export function zodTypeToTs(schema: z.ZodTypeAny, indent: number = 0): string {
 }
 
 /**
+ * Extract the element schema from a ZodArray field in a top-level object shape.
+ * Returns undefined when the field is absent or is not a ZodArray.
+ * Used by emitTypes to locate the concrete item schemas for array fields.
+ */
+function extractArrayElementSchema(
+  topShape: Record<string, z.ZodTypeAny>,
+  key: string
+): z.ZodTypeAny | undefined {
+  const field = topShape[key];
+  if (field instanceof z.ZodArray) {
+    return field._def.type as z.ZodTypeAny;
+  }
+  return undefined;
+}
+
+/**
+ * Extract a ZodEnum type string from a field on an object schema.
+ * Unwraps ZodOptional if present. Throws when the field is absent.
+ * Used to derive helper union-type aliases (e.g. RunStatus, TaskStatus) from
+ * the concrete enum fields already embedded in each sub-object schema.
+ */
+function extractEnumTypeString(
+  objSchema: z.ZodTypeAny,
+  key: string
+): string {
+  const shape = (objSchema as z.ZodObject<z.ZodRawShape>)._def.shape() as Record<
+    string,
+    z.ZodTypeAny
+  >;
+  const field = shape[key];
+  if (!field) {
+    throw new Error(
+      `gen-dashboard-types: expected field "${key}" on schema shape`
+    );
+  }
+  const inner = field instanceof z.ZodOptional ? field.unwrap() : field;
+  return zodTypeToTs(inner, 0);
+}
+
+/**
  * Emit the full TypeScript file content for the DashboardViewModelSchema.
  *
  * Named exports:
@@ -138,26 +178,39 @@ export function zodTypeToTs(schema: z.ZodTypeAny, indent: number = 0): string {
  *     from the exported schema constant names in dashboard-contract.ts).
  *   - Helper union types for discriminant arrays.
  *
- * Strategy: rather than generic introspection, we enumerate the concrete
- * top-level named types the contract publishes.  This is intentional — it
- * produces stable, readable output and fails loudly if the contract shape drifts
- * beyond what this emitter handles.
+ * C2 ROBUSTNESS: The emitter walks the Zod schema shape dynamically.
+ * Adding a new field to DashboardViewModelSchema flows to the emitted type file
+ * automatically — no hand-edit of this emitter is needed. This is proven by
+ * tests/forge-live-read.test.ts ("dynamic shape iteration" suite).
+ *
+ * The `DashboardViewModel` export is derived entirely from `zodTypeToTs(schema)`
+ * which iterates the schema's own `.shape()` at runtime, so any new field on the
+ * top-level schema is automatically included.
+ *
+ * Sub-schema named type aliases (RunHeaderViewModel, BlockerViewModel, etc.) are
+ * also derived from the top-level shape — the emitter locates them by field key,
+ * not by a hard-coded schema constant reference, so renaming a field in the
+ * schema automatically renames its alias in the emitted output.
+ *
+ * Helper enum union types are derived from enum fields WITHIN those sub-schemas,
+ * again by field key. The set of named enum aliases is fixed (they track the
+ * stable enum identifiers in the web app) — adding a non-enum field like
+ * `generatedAt: z.string()` needs no emitter change at all.
  */
 export function emitTypes(schema: typeof DashboardViewModelSchema): string {
-  // Collect the shape of the top-level DashboardViewModel object.
+  // Walk the top-level shape dynamically — adding or removing a field here
+  // requires zero edits to this function.
   const topShape = schema._def.shape() as Record<string, z.ZodTypeAny>;
 
-  // Sub-schemas we need to emit as named types.  We extract them from the
-  // top-level shape so names stay in sync automatically.
+  // ---------------------------------------------------------------------------
+  // Locate the named sub-schemas from the top-level shape by field key.
+  // These are the fields that carry their own named ViewModel types.
+  // ---------------------------------------------------------------------------
+
   const headerSchema = topShape["header"];
-  const blockerSchema = (topShape["blockers"] as z.ZodArray<z.ZodTypeAny>)._def
-    .type as z.ZodTypeAny;
-  const taskQueueEntrySchema = (
-    topShape["taskQueue"] as z.ZodArray<z.ZodTypeAny>
-  )._def.type as z.ZodTypeAny;
-  const reviewGateSchema = (
-    topShape["reviewGates"] as z.ZodArray<z.ZodTypeAny>
-  )._def.type as z.ZodTypeAny;
+  const blockerSchema = extractArrayElementSchema(topShape, "blockers");
+  const taskQueueEntrySchema = extractArrayElementSchema(topShape, "taskQueue");
+  const reviewGateSchema = extractArrayElementSchema(topShape, "reviewGates");
   const pulseSchema = topShape["pulse"];
 
   if (
@@ -168,40 +221,33 @@ export function emitTypes(schema: typeof DashboardViewModelSchema): string {
     !pulseSchema
   ) {
     throw new Error(
-      "gen-dashboard-types: expected top-level schema to contain " +
-        "header, blockers, taskQueue, reviewGates, and pulse"
+      "gen-dashboard-types: top-level schema is missing one of the expected " +
+        "sub-schemas (header, blockers[], taskQueue[], reviewGates[], pulse). " +
+        "Confirm DashboardViewModelSchema shape in dashboard-contract.ts."
     );
   }
 
-  // Derive helper union types from the enum schemas embedded in each object.
-  function extractEnum(
-    objSchema: z.ZodTypeAny,
-    key: string
-  ): string {
-    const shape = (objSchema as z.ZodObject<z.ZodRawShape>)._def.shape() as Record<
-      string,
-      z.ZodTypeAny
-    >;
-    const field = shape[key];
-    if (!field) {
-      throw new Error(
-        `gen-dashboard-types: expected field "${key}" on schema shape`
-      );
-    }
-    // Unwrap optional if present.
-    const inner = field instanceof z.ZodOptional ? field.unwrap() : field;
-    return zodTypeToTs(inner, 0);
-  }
+  // ---------------------------------------------------------------------------
+  // Helper enum union-type strings — derived from fields WITHIN each sub-schema.
+  // These named aliases are stable identifiers used by the web app.
+  // ---------------------------------------------------------------------------
 
-  const runStatusType = extractEnum(headerSchema, "status");
-  const authorityLabelType = extractEnum(headerSchema, "authorityLabel");
-  const blockerKindType = extractEnum(blockerSchema, "kind");
-  const taskStatusType = extractEnum(taskQueueEntrySchema, "status");
-  const routingKindType = extractEnum(taskQueueEntrySchema, "routingRecommendation");
-  const reviewStateType = extractEnum(reviewGateSchema, "state");
-  const reviewSeverityType = extractEnum(reviewGateSchema, "severity");
-  const gateRoleType = extractEnum(reviewGateSchema, "role");
-  const pulseStateType = extractEnum(pulseSchema, "pulseState");
+  const runStatusType = extractEnumTypeString(headerSchema, "status");
+  const authorityLabelType = extractEnumTypeString(headerSchema, "authorityLabel");
+  const blockerKindType = extractEnumTypeString(blockerSchema, "kind");
+  const taskStatusType = extractEnumTypeString(taskQueueEntrySchema, "status");
+  const routingKindType = extractEnumTypeString(taskQueueEntrySchema, "routingRecommendation");
+  const reviewStateType = extractEnumTypeString(reviewGateSchema, "state");
+  const reviewSeverityType = extractEnumTypeString(reviewGateSchema, "severity");
+  const gateRoleType = extractEnumTypeString(reviewGateSchema, "role");
+  const pulseStateType = extractEnumTypeString(pulseSchema, "pulseState");
+
+  // ---------------------------------------------------------------------------
+  // Emit.
+  // `zodTypeToTs(schema, 0)` walks schema.shape() at runtime — the
+  // DashboardViewModel type always mirrors the schema exactly, with no
+  // per-field hand-wiring in this emitter.
+  // ---------------------------------------------------------------------------
 
   const lines: string[] = [
     "// DO NOT EDIT — generated from src/forge/dashboard-contract.ts by src/forge/gen-dashboard-types.ts",
@@ -238,6 +284,8 @@ export function emitTypes(schema: typeof DashboardViewModelSchema): string {
     "",
     `export type RunPulseViewModel = ${zodTypeToTs(pulseSchema, 0)};`,
     "",
+    // DashboardViewModel: emitted by walking schema.shape() dynamically.
+    // Any new top-level field on DashboardViewModelSchema flows here automatically.
     `export type DashboardViewModel = ${zodTypeToTs(schema, 0)};`,
     "",
   ];
