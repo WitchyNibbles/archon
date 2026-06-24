@@ -298,20 +298,21 @@ describe("forge snapshot verb — file write mode", () => {
     assert.equal(stdoutChunks.length, 0, "stdout must be empty when writing to file");
   });
 
-  it("calls writeFile with the default path when no --out is given", async () => {
+  it("calls writeFile with the default live path (snapshot.live.json) when no --out is given", async () => {
     const fileWriteCalls: Array<{ path: string; data: string }> = [];
-    const expectedPath = path.join(FAKE_REPO, "web", "public", "snapshot.json");
+    // Default mode is "live" → writes to the gitignored snapshot.live.json path.
+    const expectedPath = path.join(FAKE_REPO, "web", "public", "snapshot.live.json");
 
     const deps: ForgeSnapshotDeps = {
       buildSnapshot: buildSampleSnapshot,
-      resolveOutputPath: (arg) => resolveSnapshotOutputPath(arg, FAKE_REPO),
+      resolveOutputPath: (arg, _repoRoot, mode) => resolveSnapshotOutputPath(arg, FAKE_REPO, mode),
       writeFile: async (p, d) => { fileWriteCalls.push({ path: p, data: d }); },
       writeStdout: () => { /* must not be called */ },
       writeStderr: () => { /* noop */ }
     };
 
     const result = await executeSnapshotVerb([], deps);
-    assert.equal(result.outputPath, expectedPath, "should use default output path");
+    assert.equal(result.outputPath, expectedPath, "should use gitignored live path by default");
     assert.equal(fileWriteCalls.length, 1, "writeFile must be called exactly once");
     assert.equal(fileWriteCalls[0]!.path, expectedPath);
   });
@@ -376,11 +377,11 @@ describe("forge snapshot verb — file write mode", () => {
 
   it("treats a single-dash flag like '-v' as a flag, not a positional path", async () => {
     // "-v" must NOT be picked up as the output path (it is not bare "-"); it
-    // resolves through the default path instead of producing a misleading .json error.
+    // resolves through the default live path instead of producing a misleading .json error.
     const fileWriteCalls: Array<{ path: string; data: string }> = [];
     const deps: ForgeSnapshotDeps = {
       buildSnapshot: buildSampleSnapshot,
-      resolveOutputPath: (arg) => resolveSnapshotOutputPath(arg, FAKE_REPO),
+      resolveOutputPath: (arg, _repoRoot, mode) => resolveSnapshotOutputPath(arg, FAKE_REPO, mode),
       writeFile: async (p, d) => { fileWriteCalls.push({ path: p, data: d }); },
       writeStdout: () => { /* noop */ },
       writeStderr: () => { /* noop */ }
@@ -388,8 +389,8 @@ describe("forge snapshot verb — file write mode", () => {
     const result = await executeSnapshotVerb(["-v"], deps);
     assert.equal(
       result.outputPath,
-      path.join(FAKE_REPO, "web", "public", "snapshot.json"),
-      "'-v' must not be consumed as the output path"
+      path.join(FAKE_REPO, "web", "public", "snapshot.live.json"),
+      "'-v' must not be consumed as the output path; default live path used"
     );
     assert.equal(fileWriteCalls.length, 1);
   });
