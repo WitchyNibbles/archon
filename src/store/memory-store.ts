@@ -321,6 +321,68 @@ export class MemoryStore implements ArchonStore {
     }
   }
 
+  async appendTasks(tasks: TaskRecord[]): Promise<void> {
+    if (tasks.length === 0) {
+      return;
+    }
+
+    const runId = tasks[0]!.runId;
+
+    // Validate: all tasks must belong to the same run.
+    for (const task of tasks) {
+      if (task.runId !== runId) {
+        throw new Error(
+          `appendTasks: all tasks must share the same runId; ` +
+          `expected '${runId}', found '${task.runId}' on task '${task.packet.taskId}'`
+        );
+      }
+    }
+
+    // Collect existing task keys for this run.
+    const existingKeys = new Set(
+      [...this.tasks.values()]
+        .filter((t) => t.runId === runId)
+        .map((t) => t.packet.taskId)
+    );
+
+    // Check 1: no duplicate task keys (intra-batch or collision with existing).
+    const seenInBatch = new Set<string>();
+    for (const task of tasks) {
+      if (seenInBatch.has(task.packet.taskId)) {
+        throw new Error(
+          `appendTasks: task_key '${task.packet.taskId}' appears more than once in the appended batch`
+        );
+      }
+      seenInBatch.add(task.packet.taskId);
+      if (existingKeys.has(task.packet.taskId)) {
+        throw new Error(
+          `appendTasks: task_key '${task.packet.taskId}' already exists in run '${runId}'`
+        );
+      }
+    }
+
+    // Build the full set of known keys: existing + incoming batch (after duplicate check).
+    const incomingKeys = seenInBatch;
+
+    // Check 2: no dangling dependency edges.
+    const allKnownKeys = new Set([...existingKeys, ...incomingKeys]);
+    for (const task of tasks) {
+      for (const dep of task.packet.dependencies) {
+        if (!allKnownKeys.has(dep)) {
+          throw new Error(
+            `appendTasks: task '${task.packet.taskId}' has a dangling dependency '${dep}' ` +
+            `that is not present in the run or the appended batch`
+          );
+        }
+      }
+    }
+
+    // All checks passed — insert (no delete, no rollback needed for in-memory).
+    for (const task of tasks) {
+      this.tasks.set(task.id, task);
+    }
+  }
+
   async getTasksByRun(runId: string): Promise<TaskRecord[]> {
     return [...this.tasks.values()].filter((task) => task.runId === runId);
   }
