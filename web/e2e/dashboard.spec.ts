@@ -13,6 +13,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { readFileSync } from "node:fs";
 
 /* ─── helpers ──────────────────────────────────────────────────────────────── */
 
@@ -39,7 +40,7 @@ test.describe("Happy path", () => {
 
     // Run ID in run header (mono, aria-label) — scoped to header element
     await expect(
-      page.locator("header").getByLabel("Run ID: run_forge_phase0_a7d01b78")
+      page.locator("header").getByLabel("Run ID: sample-run-001")
     ).toBeVisible();
 
     // Status badge: review_blocked — scoped to the run header to avoid
@@ -77,6 +78,13 @@ test.describe("Happy path", () => {
   });
 
   test("error panel shown when snapshot fails to load", async ({ page }) => {
+    // The loader tries snapshot.live.json FIRST, then falls back to snapshot.json.
+    // Stub the live path to 404 so the fallback is exercised — otherwise a stray
+    // local web/public/snapshot.live.json (from a prior `forge snapshot` run) would
+    // satisfy fetchLive() and the error panel would never render (silent pass).
+    await page.route("**/snapshot.live.json", (route) =>
+      route.fulfill({ status: 404, body: "Not Found" })
+    );
     // Intercept snapshot.json and return an error payload
     await page.route("**/snapshot.json", (route) =>
       route.fulfill({ status: 500, body: "Internal Server Error" })
@@ -140,9 +148,9 @@ test.describe("Gate state rendering", () => {
       })
     ).toBeVisible();
 
-    // The task card in qa_engineer column for forgePhase0Skeleton should have
+    // The task card in qa_engineer column for sample-task-alpha should have
     // the passed badge (task-card__passed-badge) — actor is "qa_engineer"
-    // Article aria-label: "Task forgePhase0Skeleton: ..., gate state: passed"
+    // Article aria-label: "Task sample-task-alpha: ..., gate state: passed"
     const passedCard = qaLane.locator("article[aria-label*='gate state: passed']");
     await expect(passedCard).toBeVisible();
 
@@ -246,6 +254,175 @@ test.describe("Responsive layout", () => {
     // Zero console errors expected — catches React rendering crashes,
     // snapshot validation failures, or unhandled promise rejections
     expect(consoleErrors).toHaveLength(0);
+  });
+});
+
+/* ─── P1-S2b viewer done-bar (C5) ──────────────────────────────────────────── */
+
+/**
+ * Falsifiable viewer gate (C5).
+ *
+ * Asserts that, against the committed synthetic sample (snapshot.json):
+ *   (a) A review_blocked run AND at least one of its blocking gates/roles is visible
+ *       above the fold without scrolling — the blocker strip is the hero element.
+ *   (b) A snapshot-age element (data-testid="snapshot-age") is present and contains
+ *       readable age text ("snapshot … old").
+ *
+ * "Above the fold" is validated by checking the element's bounding box — top must be
+ * within the viewport height (900px desktop). Playwright's isVisible() alone does
+ * NOT prove above-the-fold placement; boundingBox() does.
+ */
+test.describe("P1-S2b viewer done-bar (C5)", () => {
+  test("blocked run and blocking gate are visible above the fold", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // (a1) A review_blocked run must be shown — verify via the run header status badge.
+    // The sample snapshot has status: "review_blocked".
+    const statusBadge = page.locator("header.run-header").getByLabel(
+      "Status: review_blocked"
+    );
+    await expect(statusBadge).toBeVisible();
+
+    // Confirm it is above the fold: bounding box y (top edge) must be < viewport height.
+    // Playwright boundingBox() returns { x, y, width, height } — y is the top edge.
+    const headerBox = await statusBadge.boundingBox();
+    expect(headerBox).not.toBeNull();
+    const viewportHeight = page.viewportSize()?.height ?? 900;
+    expect(headerBox!.y).toBeLessThan(viewportHeight);
+
+    // (a2) The blocker strip (HERO element) must be visible — it shows the blocking
+    // gate/role (security_reviewer, approval_missing, etc.).
+    const blockerStrip = page.getByRole("region", { name: "Active blockers" });
+    await expect(blockerStrip).toBeVisible();
+
+    const stripBox = await blockerStrip.boundingBox();
+    expect(stripBox).not.toBeNull();
+    expect(stripBox!.y).toBeLessThan(viewportHeight);
+
+    // (a3) At least one blocking gate reason referencing a gate role is visible
+    // in the blocker strip — proves the blocker content is above the fold.
+    const blockerReasonEl = page.getByText(
+      "security_reviewer gate not passed",
+      { exact: false }
+    );
+    await expect(blockerReasonEl).toBeVisible();
+
+    const reasonBox = await blockerReasonEl.boundingBox();
+    expect(reasonBox).not.toBeNull();
+    expect(reasonBox!.y).toBeLessThan(viewportHeight);
+  });
+
+  test("snapshot-age element is present with readable age text", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // (b) The SnapshotAge component must render with data-testid="snapshot-age".
+    const ageEl = page.getByTestId("snapshot-age");
+    await expect(ageEl).toBeVisible();
+
+    // The element must contain the word "snapshot" as the semantic prefix and "old"
+    // as the suffix — making it a complete readable sentence ("snapshot Xm old").
+    const ageText = await ageEl.textContent();
+    expect(ageText).toMatch(/snapshot/i);
+    expect(ageText).toMatch(/old/i);
+
+    // The aria-label must include "Snapshot generated" so screen readers
+    // get a clear accessible name — not just the visual shorthand.
+    const ariaLabel = await ageEl.getAttribute("aria-label");
+    expect(ariaLabel).toMatch(/Snapshot generated/i);
+
+    // The <time> element with a datetime attribute must be present inside
+    // the age element for machine-readable semantics (WCAG 1.3.1).
+    const timeEl = ageEl.locator("time");
+    await expect(timeEl).toBeAttached();
+    const datetime = await timeEl.getAttribute("datetime");
+    expect(datetime).not.toBeNull();
+    // datetime must be a parseable ISO string
+    const parsed = new Date(datetime!);
+    expect(isNaN(parsed.getTime())).toBe(false);
+  });
+
+  test("snapshot-age reads 'just now' cleanly for a future-dated snapshot (no 'just now ago'/'just now old')", async ({
+    page,
+  }) => {
+    // Regression guard: when the snapshot is future-dated (clock skew),
+    // formatRelativeAge returns the complete phrase "just now"; the component
+    // must NOT append " ago"/" old" (that yields incoherent text read verbatim
+    // by screen readers — WCAG 1.3.1). Serve a future generatedAt to hit it.
+    const sample = JSON.parse(
+      readFileSync(new URL("../public/snapshot.json", import.meta.url), "utf8")
+    ) as Record<string, unknown>;
+    const future = new Date(Date.now() + 60_000).toISOString();
+    await page.route("**/snapshot.live.json", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...sample, generatedAt: future }),
+      })
+    );
+
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const ageEl = page.getByTestId("snapshot-age");
+    await expect(ageEl).toBeVisible();
+
+    const ariaLabel = await ageEl.getAttribute("aria-label");
+    expect(ariaLabel).toBe("Snapshot generated just now");
+    expect(ariaLabel).not.toMatch(/just now ago/i);
+
+    const ageText = await ageEl.textContent();
+    expect(ageText).toMatch(/just now/i);
+    expect(ageText).not.toMatch(/just now old/i);
+  });
+
+  test("snapshot-age is visually distinct from authority badge and data timestamp", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // Authority badge: has aria-label "Authority: runtime authoritative"
+    // and renders as a .badge-pill element (indigo pill).
+    const authorityBadge = page.getByLabel("Authority: runtime authoritative");
+    await expect(authorityBadge).toBeVisible();
+
+    // Data timestamp: aria-label "Last updated: ..."
+    const dataTimestamp = page.getByLabel(/Last updated:/);
+    await expect(dataTimestamp).toBeVisible();
+
+    // Snapshot age: aria-label "Snapshot generated X ago"
+    const snapshotAge = page.getByLabel(/Snapshot generated/);
+    await expect(snapshotAge).toBeVisible();
+
+    // All three must be distinct DOM elements with distinct accessible names.
+    // We verify via aria-label content — each carries a different label that
+    // cannot be confused with the others semantically.
+    const authorityAriaLabel = await authorityBadge.getAttribute("aria-label");
+    const timestampAriaLabel = await dataTimestamp.getAttribute("aria-label");
+    const ageAriaLabel = await snapshotAge.getAttribute("aria-label");
+
+    expect(authorityAriaLabel).toMatch(/Authority:/i);
+    expect(timestampAriaLabel).toMatch(/Last updated:/i);
+    expect(ageAriaLabel).toMatch(/Snapshot generated/i);
+
+    // Labels must all differ from one another
+    expect(authorityAriaLabel).not.toBe(ageAriaLabel);
+    expect(timestampAriaLabel).not.toBe(ageAriaLabel);
+    expect(authorityAriaLabel).not.toBe(timestampAriaLabel);
+
+    // The snapshot-age element must NOT carry the word "RUNTIME" or "ADVISORY"
+    // (those belong to the authority badge only).
+    const ageText = await snapshotAge.textContent();
+    expect(ageText).not.toMatch(/RUNTIME|ADVISORY/i);
+
+    // The snapshot-age must contain "snapshot" prefix (semantic differentiator)
+    expect(ageText).toMatch(/snapshot/i);
   });
 });
 

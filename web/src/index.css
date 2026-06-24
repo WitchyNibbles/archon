@@ -2,7 +2,11 @@
  * Archon Forge — Design System CSS
  *
  * Token source: src/forge/constraints-manifest.ts (identity-locked, D1)
- * Fonts: Geist Sans + Geist Mono via Google Fonts (phase 0 CDN, npm package in production)
+ * Fonts: Geist Sans + Geist Mono — self-hosted via /fonts/ (OFL, Vercel).
+ *        Variable woff2 files copied from node_modules/geist/dist/fonts during
+ *        development; committed to web/public/fonts/ so they are served from
+ *        'self' and the CSP needs no external font-src origin.
+ *        CDN @import removed (P1-S2b, C7).
  *
  * Anti-pattern compliance:
  *   AG-001: No gradient fills on any surface
@@ -29,8 +33,33 @@
  *   - --status-error-text #F87171 on #111111: ~4.57:1 (AA) — error text only (dots/stripes use #EF4444)
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap');
+/*
+ * Tailwind must be imported first — @import rules must precede all other
+ * statements per the CSS spec (PostCSS enforces this at build time).
+ * @font-face declarations follow immediately after.
+ */
 @import "tailwindcss";
+
+/*
+ * Self-hosted Geist variable fonts — P1-S2b (C7).
+ * @font-face is placed after @import per CSS spec ordering rules.
+ * font-display: swap — text remains visible during font load (WCAG 2.1 §3.1.3 advisory).
+ */
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/GeistSans-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('/fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 
 /* ── Design tokens (verbatim from constraints-manifest.ts identity object) ── */
 :root {
@@ -370,6 +399,41 @@ body {
   padding-left: var(--space-3);
   border-left: 1px solid var(--border-default);
   white-space: nowrap;
+}
+
+/*
+ * Snapshot age indicator — P1-S2b (C5).
+ *
+ * DISTINCT from:
+ *   .badge-pill           — the authority trust pill (indigo, uppercase, solid bg)
+ *   .run-header__updated  — data freshness timestamp (no "snapshot" prefix, right of divider)
+ *
+ * This element sits LEFT of the divider group (before updatedAt) with its own
+ * left-border separator to signal it is a different kind of metadata.
+ * No pill shape, no indigo, no background — plain mono text with a subtle prefix
+ * so the user can read "snapshot 3m old" and immediately understand it is the
+ * age of the VIEW (not the run or the last gate update).
+ *
+ * Contrast: --text-secondary #A0A0A0 on --surface-base #0A0A0A = 7.6:1 (AAA).
+ */
+.snapshot-age {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  /* text-secondary: AAA (7.6:1) — compliant at this size */
+  color: var(--text-secondary);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border-default);
+  white-space: nowrap;
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+
+.snapshot-age__value {
+  /* Keep the <time> element inline with surrounding text */
+  display: inline;
 }
 
 /* Status badge: dot + text */

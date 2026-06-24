@@ -2,7 +2,13 @@
  * RunHeader — one 48px row below the topbar (spec section 2).
  *
  * Contains: run title | runId (mono) | status badge | authority badge | updatedAt (mono)
- * Right side: PulseDot composed here per the spec layout binding note.
+ * Right side: PulseDot | SnapshotAge | updatedAt
+ *
+ * P1-S2b (C5): adds SnapshotAge to show how old the snapshot file is.
+ * DISTINCT signals in the right rail:
+ *   PulseDot    — live run state (running/blocked/idle)
+ *   SnapshotAge — when this view was generated ("snapshot 3m old")
+ *   updatedAt   — when the run data was last written in the database
  *
  * The run title is h1 for the page (landmark heading). One h1 per page.
  */
@@ -10,11 +16,14 @@
 import type { RunHeaderViewModel } from "../types/dashboard.ts";
 import { AuthorityBadge } from "./AuthorityBadge.tsx";
 import { PulseDot } from "./PulseDot.tsx";
+import { SnapshotAge } from "./SnapshotAge.tsx";
 import type { RunPulseViewModel } from "../types/dashboard.ts";
 
 interface RunHeaderProps {
   header: RunHeaderViewModel;
   pulse: RunPulseViewModel;
+  /** ISO timestamp when the snapshot file was generated (P1-S2b, C5). */
+  generatedAt: string;
 }
 
 /*
@@ -51,7 +60,7 @@ function formatTimestamp(iso: string): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}Z`;
 }
 
-export function RunHeader({ header, pulse }: RunHeaderProps) {
+export function RunHeader({ header, pulse, generatedAt }: RunHeaderProps) {
   const statusColor = STATUS_COLOR[header.status] ?? "var(--status-muted)";
 
   /*
@@ -87,6 +96,13 @@ export function RunHeader({ header, pulse }: RunHeaderProps) {
           pulseState={pulse.pulseState}
           activeLockCount={pulse.activeLockCount}
         />
+        {/*
+         * SnapshotAge: how old is the snapshot file (view staleness).
+         * DISTINCT from updatedAt (data freshness) and AuthorityBadge (trust level).
+         * Visual distinction: plain mono text with "snapshot" prefix vs the indigo
+         * authority pill and the run data timestamp with no prefix.
+         */}
+        <SnapshotAge generatedAt={generatedAt} />
         <span className="run-header__updated mono" aria-label={`Last updated: ${header.updatedAt}`}>
           {formatTimestamp(header.updatedAt)}
         </span>
