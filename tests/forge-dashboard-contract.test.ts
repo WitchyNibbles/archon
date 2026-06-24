@@ -31,6 +31,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const representativeRun: DashboardViewModel = {
+  generatedAt: "2026-06-23T10:00:00.000Z",
   header: {
     runId: "run-abc-001",
     title: "Frontend Forge Phase-0",

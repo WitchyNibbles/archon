@@ -278,7 +278,25 @@ export const DashboardViewModelSchema = z.object({
    */
   reviewGates: z.array(ReviewGateViewModelSchema),
   /** Live pulse indicator for the run. */
-  pulse: RunPulseViewModelSchema
+  pulse: RunPulseViewModelSchema,
+  /**
+   * ISO-8601 timestamp at which THIS snapshot was emitted.
+   *
+   * Three-way distinction:
+   *  - `generatedAt`         (this field) — when the snapshot JSON was built/written.
+   *                          Tells the dashboard how stale the snapshot file is.
+   *                          Set by the forge snapshot generator at emission time.
+   *  - `header.updatedAt`    — when the runtime RUN RECORD was last mutated in the DB.
+   *                          Tracks data freshness of the underlying run state.
+   *                          Source: RunRecord.updatedAt.
+   *  - `header.authorityLabel` — the TRUST MODE of the routing data:
+   *                          "runtime_authoritative" = came from a trusted Postgres plan;
+   *                          "derived_only"          = advisory routing, not from trusted runtime.
+   *                          Does NOT indicate when anything happened.
+   *
+   * Source: new Date().toISOString() at the moment buildSnapshot/projectLiveSnapshot runs.
+   */
+  generatedAt: z.string()
 });
 
 export type DashboardViewModel = z.infer<typeof DashboardViewModelSchema>;
