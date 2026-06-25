@@ -1,12 +1,12 @@
 {
-  "project_status": "done",
-  "current_task_id": null,
+  "project_status": "in_progress",
+  "current_task_id": "ahrP4InteractiveWatcher",
   "tasks": [
     {
-      "id": "hookOutsideRepoCanonicalize",
-      "title": "Harden outside-repo detection via path canonicalization + MultiEdit/NotebookEdit coverage",
-      "status": "done",
-      "class": "security_sensitive",
+      "id": "ahrP4InteractiveWatcher",
+      "title": "P4 interactive Stop-hook watcher + atomic respawn lease",
+      "status": "in_progress",
+      "class": "prototype_slice",
       "depends_on": [],
       "acceptance_criteria": [],
       "verification": [],
