@@ -104,6 +104,7 @@ export const assetStatusValues = [
   "sent_to_codex",
   "generated",
   "needs_regeneration",
+  "needs_action",
   "rejected"
 ] as const;
 
