@@ -42,6 +42,12 @@ web/dist/
 web/src/assets/generated/*
 !web/src/assets/generated/.gitkeep
 
+# Secret store — guards the Pillar B encrypted-file backend data root at dataRoot/secrets/
+# (CC-16). This rule is anchored to the repo-relative dataRoot/secrets/ path specifically; a
+# runtime data root configured to live ELSEWHERE on disk is naturally outside the repo and
+# therefore not git-trackable. Encrypted secret material must never be committed (P5-S3).
+dataRoot/secrets/
+
 # Logs
 *.log
 npm-debug.log*

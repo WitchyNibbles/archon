@@ -71,6 +71,50 @@ export default tseslint.config(
     }
   },
   {
+    // Forge import wall (CC-15): src/forge/** MUST NOT import from anything outside
+    // src/forge/**, src/domain/**, zod, or node built-ins.
+    //
+    // Rationale: src/forge/ is shipped in the published package (files[] — P5-S1/CC-14).
+    // Every import that escapes these four allowed zones would silently drag an unshipped
+    // or service-coupled module into the consuming-repo install tree, breaking cross-repo
+    // usage (X-1). Mirror style and rationale of the R2-C web-wall block above.
+    //
+    // The rule bans named forbidden zones (src/archon, src/core, src/admin, src/install,
+    // src/mcp, src/runtime, src/store, src/evals, src/sql, src/grafana, web/**) rather
+    // than trying to allowlist everything else, so new service modules cannot be silently
+    // dragged in without a lint failure.
+    //
+    // Safe zones (not banned): node:*, zod, src/forge/**, src/domain/**.
+    files: ["src/forge/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "**/src/archon/**", "../archon/**", "../../archon/**",
+                "**/src/core/**", "../core/**", "../../core/**",
+                "**/src/admin/**", "../admin/**", "../../admin/**",
+                "**/src/install/**", "../install/**", "../../install/**",
+                "**/src/mcp/**", "../mcp/**", "../../mcp/**",
+                "**/src/runtime/**", "../runtime/**", "../../runtime/**",
+                "**/src/store/**", "../store/**", "../../store/**",
+                "**/src/evals/**", "../evals/**", "../../evals/**",
+                "**/src/sql/**", "../sql/**", "../../sql/**",
+                "**/src/grafana/**", "../grafana/**", "../../grafana/**",
+                "**/web/**", "../web/**", "../../web/**",
+              ],
+              message:
+                "src/forge/** must only import from src/forge/**, src/domain/**, zod, or node built-ins (CC-15). " +
+                "Importing service-coupled or unshipped modules breaks consuming-repo cross-repo usage (X-1/R2-C).",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ["**/*.ts"],
     plugins: { "unused-imports": unusedImports },
     rules: {

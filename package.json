@@ -127,7 +127,8 @@
     "src/mcp/",
     "src/runtime/",
     "src/sql/migrations/",
-    "src/store/"
+    "src/store/",
+    "src/forge/"
   ],
   "engines": {
     "node": ">=22.0.0"
