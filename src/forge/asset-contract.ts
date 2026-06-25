@@ -25,17 +25,21 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 
 /**
- * MVP asset providers. Per §12 of the roadmap:
+ * Asset providers.  Per §12 of the roadmap the MVP providers are:
  *   - codex_builtin_imagegen: Codex CLI $imagegen, no API key required
  *   - manual_upload: user-owned brand assets, logos, screenshots
  *   - placeholder_svg: cheap drafts, test fixtures, CI runs
  *
- * openai_api_later_optional is explicitly NOT included in the MVP.
+ * openai_api_later_optional (P5-S5): opt-in API image provider.
+ *   Disabled by default; requires ARCHON_FORGE_API_PROVIDER_ENABLED=true,
+ *   a key in the secret-manager, and an explicit spend cap. CI always uses
+ *   placeholder_svg regardless. (CC-DEC-1/2/3)
  */
 export const assetProviderValues = [
   "codex_builtin_imagegen",
   "manual_upload",
-  "placeholder_svg"
+  "placeholder_svg",
+  "openai_api_later_optional",
 ] as const;
 
 export type AssetProvider = typeof assetProviderValues[number];
@@ -148,8 +152,8 @@ export const AssetRequestSchema = z.object({
 
   /**
    * The generation provider.
-   * MVP providers: codex_builtin_imagegen | manual_upload | placeholder_svg.
-   * openai_api_later_optional is explicitly excluded from the MVP.
+   * Providers: codex_builtin_imagegen | manual_upload | placeholder_svg |
+   * openai_api_later_optional (opt-in, disabled by default — P5-S5).
    */
   provider: z.enum(assetProviderValues),
 
