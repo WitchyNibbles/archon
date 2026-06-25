@@ -36,6 +36,7 @@ import { PostgresStore } from "./store/postgres-store.ts";
 import { initTaskCommand } from "./admin/init-task.ts";
 import { recordCouncilCommand } from "./admin/record-council.ts";
 import { forgeCommand } from "./admin/forge.ts";
+import { secretCommand } from "./admin/secret.ts";
 import { advanceActiveTaskCommand, checkpointCommand, coverageCommand, gapsCommand, githubDispatchCommand, opsCommand, repairTaskQueueCommand, reportCommand, resumeCommand, statusCommand, syncRuntimeExportsCommand } from "./workflow.ts";
 import { bootstrapProject, doctorCommand, health, migrate, reconcileRuntimeStateCommand, recoverCommand, refreshRepoContextCommand, verifyLiveMigrations, verifySetup } from "./runtime.ts";
 import { indexRepoMarkdownCommand, planContextCommand, refreshRetrievalCommand, runEmbeddingJobsCommand } from "./memory.ts";
@@ -248,6 +249,11 @@ async function main() {
 
   if (command === "forge") {
     await forgeCommand(args);
+    return;
+  }
+
+  if (command === "secret") {
+    await secretCommand(args);
     return;
   }
 
