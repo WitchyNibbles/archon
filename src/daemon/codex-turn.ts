@@ -47,6 +47,7 @@ import type { ContextBudgetMonitor } from "../runtime/context-budget.ts";
 import type { ContextBudgetState } from "../runtime/context-budget.ts";
 import { computeUsedPct, resolveModelContextTokens } from "../runtime/context-usage.ts";
 import type { HandoffController } from "../runtime/handoff-controller.ts";
+import { resolveRespawnBudget } from "../runtime/respawn-budget.ts";
 
 /**
  * Input to the loop's blockedResult builder. Single source of truth shared by
@@ -411,6 +412,56 @@ export async function runDaemonCodexTurn(
       }
 
       if (existingHandoff !== undefined) {
+        // Phase 3 (ahrP3RespawnBudget): budget gate.
+        // Check BEFORE building the bundle so we avoid unnecessary I/O on block.
+        //
+        // Effective respawn count is scoped to the current activeTaskId:
+        //   - If respawnTaskId !== activeTaskId, the stored count is for a different
+        //     task → treat as 0 (task changed, counter starts fresh).
+        //   - Otherwise, use the stored count (or 0 if absent).
+        const storedRespawnCount =
+          typeof archonDaemonMeta?.respawnCount === "number"
+            ? archonDaemonMeta.respawnCount
+            : 0;
+        const storedRespawnTaskId =
+          typeof archonDaemonMeta?.respawnTaskId === "string"
+            ? archonDaemonMeta.respawnTaskId
+            : undefined;
+        const effectiveRespawnCount =
+          storedRespawnTaskId === input.activeTaskId ? storedRespawnCount : 0;
+        const respawnBudget = resolveRespawnBudget();
+
+        if (effectiveRespawnCount >= respawnBudget) {
+          // Budget exhausted: block without resetting.
+          cycles.push({
+            cycle,
+            directiveKind: input.directive.kind,
+            action: "blocked",
+            runId: input.activeRunId,
+            taskId: input.activeTaskId,
+            sessionId: deps.getSessionId() ?? null,
+            summary: `Respawn budget exhausted for task ${input.activeTaskId} (${effectiveRespawnCount}/${respawnBudget})`
+          });
+          return deps.blockedResult({
+            blockerKind: "recovery_required",
+            reason: `respawn budget exhausted for task ${input.activeTaskId} (${effectiveRespawnCount}/${respawnBudget})`,
+            cycle,
+            activeRunId: input.activeRunId,
+            activeTaskId: input.activeTaskId,
+            directiveKind: input.directive.kind,
+            nextActions: [
+              `Raise ARCHON_MAX_RESPAWNS_PER_TASK (currently ${respawnBudget}) if the task needs more respawns`,
+              "Investigate why the task is respawning repeatedly — check for stagnation or a broken handoff packet",
+              "Use `npm run archon:status` to inspect the last handoff record and task progress",
+              "Once the root cause is resolved, restart the daemon to reset the respawn counter"
+            ]
+          });
+        }
+
+        // Budget allows this respawn. nextRespawnCount will be written atomically
+        // with justHandedOff=true in the ARCH-C3 write below (P3 requirement).
+        const nextRespawnCount = effectiveRespawnCount + 1;
+
         // Build continuation bundle — handoff content is sanitized in buildContinuationPrompt.
         // Pass the authoritative task-record allowedWriteScope so the trusted
         // section uses the runtime value, not the agent-written packet.scope.
@@ -464,6 +515,8 @@ export async function runDaemonCodexTurn(
         // ARCH-C3: set sessionId=undefined AND justHandedOff=true in the SAME
         // saveProjectRuntimeState write. This is an early-return write — the
         // normal saveProjectRuntimeState below will NOT execute.
+        // P3 (ahrP3RespawnBudget): respawnCount and respawnTaskId are also written
+        // atomically here (nextRespawnCount is already computed above the bundle write).
         deps.setSessionId(undefined);
         await deps.saveProjectRuntimeState({
           projectId: projectRuntimeState?.projectId ?? projectContext.project.id,
@@ -479,6 +532,9 @@ export async function runDaemonCodexTurn(
               ...(archonDaemonMeta ?? {}),
               sessionId: undefined,
               justHandedOff: true,
+              // P3: increment counter atomically with the reset write.
+              respawnCount: nextRespawnCount,
+              respawnTaskId: input.activeTaskId,
               lastRunId: input.activeRunId,
               lastTaskId: input.activeTaskId,
               lastDirectiveKind: input.directive.kind,

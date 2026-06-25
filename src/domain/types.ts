@@ -1015,6 +1015,15 @@ export interface ProjectRuntimeMetadata extends Record<string, unknown> {
      * the fresh continuation turn. ARCH-C3: must be set in the same write as
      * sessionId=undefined. */
     justHandedOff?: boolean | undefined;
+    /** Phase 3 (ahrP3RespawnBudget): number of respawns consumed for the task
+     * identified by respawnTaskId. Incremented atomically with justHandedOff in
+     * the P2 reset write. Reset to 0 (by omitting the field) when the active task
+     * changes (respawnTaskId !== current activeTaskId). */
+    respawnCount?: number | undefined;
+    /** Phase 3 (ahrP3RespawnBudget): the task ID the respawnCount is scoped to.
+     * When this differs from the current activeTaskId the counter is stale and
+     * must be treated as 0. */
+    respawnTaskId?: string | undefined;
     lastRunId?: string | undefined;
     lastTaskId?: string | undefined;
     lastDirectiveKind?: string | undefined;
