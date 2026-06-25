@@ -38,6 +38,8 @@ import type {
   DaemonCycleRecord,
   ExecuteDaemonCommandOptions
 } from "../daemon.ts";
+import type { ContextBudgetMonitor } from "../runtime/context-budget.ts";
+import { computeUsedPct, resolveModelContextTokens } from "../runtime/context-usage.ts";
 
 /**
  * Input to the loop's blockedResult builder. Single source of truth shared by
@@ -124,6 +126,12 @@ export interface DaemonCodexTurnDeps {
   saveProjectRuntimeState: ExecuteDaemonCommandOptions["saveProjectRuntimeState"];
   // Optional: when absent, persistDaemonTurnCheckpoint no-ops (no checkpoint).
   checkpointRun?: ExecuteDaemonCommandOptions["checkpointRun"];
+  /** Invocation ID for this codex turn (from AgenticLoopController.startInvocation).
+   * When absent, context sampling is skipped (graceful degradation). */
+  invocationId?: string | undefined;
+  /** Context budget monitor. When absent or when invocationId is absent,
+   * sampling is skipped — observe-only, never throws. */
+  monitor?: ContextBudgetMonitor | undefined;
 }
 
 /**
@@ -209,6 +217,32 @@ export async function runDaemonCodexTurn(
   });
 
   deps.setSessionId(codexTurn.sessionId ?? deps.getSessionId());
+
+  // Phase 1 (ahrP1Sampling): sample context usage from the turn's token report.
+  // Observe-only — never throws, never resets/respawns. Sampling is best-effort:
+  // missing invocationId, missing monitor, missing usage, or zero window → skip.
+  if (deps.invocationId !== undefined && deps.monitor !== undefined && codexTurn.usage !== undefined) {
+    const contextWindowTokens = resolveModelContextTokens(deps.env);
+    const usedPct = computeUsedPct(codexTurn.usage, contextWindowTokens);
+    if (usedPct !== undefined) {
+      // Fire-and-forget with best-effort error suppression: a DB write failure
+      // must not abort the turn that the operator is waiting for.
+      deps.monitor.recordSample(
+        deps.invocationId,
+        input.activeRunId,
+        input.activeTaskId,
+        "sdk",
+        usedPct,
+        { usage: codexTurn.usage }
+      ).catch((_err: unknown) => {
+        // Intentional: sampling failure is non-fatal. The error is swallowed so
+        // the daemon turn result is unaffected. In production, the ContextBudget-
+        // Monitor's caller (archon-stop hook) will detect the missing sample and
+        // degrade gracefully.
+      });
+    }
+  }
+
   const parsedTurnMessage = parseDaemonTurnMessage(codexTurn.finalMessage);
   await persistDaemonTurnCheckpoint({
     runId: input.activeRunId,

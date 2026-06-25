@@ -45,9 +45,10 @@ import type { ExecuteDoctorCommandOptions, ExecuteRuntimePreflightCommandOptions
 import type { RecordReviewCommandInput } from "./review.ts";
 import { AgentRuntimeStore } from "./store/agent-runtime-store.ts";
 import { AgenticLoopController } from "./runtime/agentic-loop.ts";
+import type { AgenticLoopStoreLike } from "./runtime/agentic-loop.ts";
 import { ContinuationContextBuilder } from "./runtime/continuation-context.ts";
 import { recoverOrphanedInvocations } from "./runtime/crash-recovery.ts";
-import { resolveArchonContextPolicy } from "./runtime/context-budget.ts";
+import { ContextBudgetMonitor, resolveArchonContextPolicy } from "./runtime/context-budget.ts";
 // Daemon split (by concern) — leaf module. Import for daemon-internal use, then
 // re-export the same bindings to preserve the public surface for existing callers.
 import {
@@ -457,6 +458,12 @@ export interface ExecuteDaemonCommandOptions extends ExecuteAdvanceActiveTaskCom
     }
   ) => Promise<unknown>) | undefined;
   now?: (() => Date) | undefined;
+  /** Optional agentic loop store. When present, the daemon:
+   *   1. Constructs a ContextBudgetMonitor for per-turn context sampling (P1).
+   *   2. Calls startInvocation on dispatch_owner directives to capture invocationId.
+   * When absent, both sampling and invocation recording are skipped (graceful
+   * degradation — tests that don't inject a store still work). */
+  agentLoopStore?: AgenticLoopStoreLike | undefined;
 }
 
 
@@ -919,6 +926,14 @@ export async function executeDaemonCommandFromArgs(
   const runCodexTurn = options.runCodexTurn ?? runCodexTurnViaCli;
   const now = options.now ?? (() => new Date());
 
+  // Phase 1 (ahrP1Sampling): construct a ContextBudgetMonitor once for the
+  // daemon run so all cycles share a single in-memory state-cache. When no
+  // agentLoopStore is provided (e.g. in tests that don't inject one), the
+  // monitor is undefined and sampling is silently skipped per cycle.
+  const contextBudgetMonitor = options.agentLoopStore !== undefined
+    ? new ContextBudgetMonitor(options.agentLoopStore)
+    : undefined;
+
   const result = await withDaemonLock(cwd, async () => {
     const cycles: DaemonCycleRecord[] = [];
     let latestSessionId: string | undefined;
@@ -1029,6 +1044,28 @@ export async function executeDaemonCommandFromArgs(
         }
       );
       const directive = loop.result.finalPlan.directive;
+
+      // Phase 1 (ahrP1Sampling): capture invocationId when the directive is
+      // dispatch_owner, so the codex-turn runner can record context samples.
+      // Best-effort: startInvocation failure must not block the loop turn.
+      let cycleInvocationId: string | undefined;
+      if (
+        directive.kind === "dispatch_owner" &&
+        options.agentLoopStore !== undefined &&
+        activeRunId !== null &&
+        activeTaskId !== null
+      ) {
+        try {
+          const rec = directive.recommendation;
+          const role = rec.targetRole ?? "specialist_owner";
+          const loopController = new AgenticLoopController(options.agentLoopStore, { runId: activeRunId });
+          cycleInvocationId = await loopController.startInvocation(rec.taskId, role);
+        } catch (_invErr: unknown) {
+          // Intentional: invocation recording failure is non-fatal.
+          // cycleInvocationId remains undefined → sampling is skipped this cycle.
+        }
+      }
+
       // Loop-monolith decomposition (6h): the codex-turn runner now lives in
       // ./daemon/codex-turn.ts. This thin wrapper threads the per-cycle inputs
       // plus the loop's mutable state. latestSessionId is exposed as a holder
@@ -1057,7 +1094,9 @@ export async function executeDaemonCommandFromArgs(
           getProjectRuntimeState: options.getProjectRuntimeState,
           getExecutionPlan: options.getExecutionPlan,
           saveProjectRuntimeState: options.saveProjectRuntimeState,
-          checkpointRun: options.checkpointRun
+          checkpointRun: options.checkpointRun,
+          invocationId: cycleInvocationId,
+          monitor: contextBudgetMonitor
         });
       // Loop-monolith decomposition (6g): the operator-required continuation
       // handler now lives in ./daemon/operator-continuation.ts. This thin
@@ -1238,6 +1277,10 @@ export async function daemonCommand(args: readonly string[]) {
     await withClient(async (client) => {
       const store = new PostgresStore(client);
       const service = new ArchonCoreService(store);
+      // Phase 1 (ahrP1Sampling): AgentRuntimeStore implements both
+      // ContextBudgetStoreLike and AgenticLoopStoreLike, making it the single
+      // store dependency for context budget monitoring and invocation recording.
+      const agentStore = new AgentRuntimeStore(client);
       const { format: resolvedFormat, result } = await executeDaemonCommandFromArgs(args, {
         cwd,
         env,
@@ -1327,7 +1370,8 @@ export async function daemonCommand(args: readonly string[]) {
         },
         getApprovals(runId, taskId) {
           return store.getApprovals(runId, taskId);
-        }
+        },
+        agentLoopStore: agentStore
       });
 
       if (resolvedFormat === "text") {

@@ -30,12 +30,22 @@ export interface RunCodexTurnInput {
 }
 
 
+export interface RunCodexTurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
 export interface RunCodexTurnResult {
   sessionId?: string | undefined;
   finalMessage?: string | undefined;
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** Token usage from the `result` event of the stream-json output. Undefined when
+   * the event was absent or its usage block was missing or malformed. */
+  usage?: RunCodexTurnUsage | undefined;
 }
 
 
@@ -406,9 +416,11 @@ export function daemonMessageHasScopeConflict(message: ParsedDaemonTurnMessage |
 export function parseClaudeStreamJsonOutput(
   stdout: string,
   initialSessionId?: string | undefined
-): { sessionId: string | undefined; finalMessage: string | undefined } {
+): { sessionId: string | undefined; finalMessage: string | undefined; usage: RunCodexTurnUsage | undefined } {
   let sessionId = initialSessionId;
   let finalMessage: string | undefined;
+  let usage: RunCodexTurnUsage | undefined;
+
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
@@ -445,10 +457,22 @@ export function parseClaudeStreamJsonOutput(
       if (typeof event.result === "string" && event.result.trim().length > 0) {
         finalMessage = event.result.trim();
       }
+      // Extract usage block — fail-closed: missing/malformed → undefined, never throw
+      if (event.usage !== null && typeof event.usage === "object" && !Array.isArray(event.usage)) {
+        const u = event.usage as Record<string, unknown>;
+        const toInt = (v: unknown): number =>
+          typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
+        usage = {
+          inputTokens: toInt(u.input_tokens),
+          outputTokens: toInt(u.output_tokens),
+          cacheReadTokens: toInt(u.cache_read_input_tokens),
+          cacheCreationTokens: toInt(u.cache_creation_input_tokens)
+        };
+      }
     }
     // Unknown event types are intentionally ignored to stay forward-compatible
   }
-  return { sessionId, finalMessage };
+  return { sessionId, finalMessage, usage };
 }
 
 
@@ -478,8 +502,8 @@ export async function runCodexTurnViaCli(input: RunCodexTurnInput): Promise<RunC
     throw new Error(`claude -p failed: ${reason}`);
   }
 
-  const { sessionId, finalMessage } = parseClaudeStreamJsonOutput(stdout, input.sessionId);
-  return { sessionId, finalMessage, stdout, stderr, exitCode };
+  const { sessionId, finalMessage, usage } = parseClaudeStreamJsonOutput(stdout, input.sessionId);
+  return { sessionId, finalMessage, stdout, stderr, exitCode, usage };
 }
 
 
