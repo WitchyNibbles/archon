@@ -15,10 +15,15 @@ import path from "node:path";
 import {
   PLAYWRIGHT_CONFIG_DIR,
   PLAYWRIGHT_ARTIFACTS_DIR,
+  PLAYWRIGHT_VERSION,
   playwrightConfigRelativePaths,
   playwrightBrowsersPath,
+  playwrightPackageSpec,
+  validateNpxBinOverride,
   buildPlaywrightEnv
 } from "../src/install/setup-playwright.ts";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { playwrightMcpConfigFragment } from "../src/install/merge.ts";
 
 test("setup-playwright derives paths under .archon, never .devgod", () => {
@@ -77,4 +82,60 @@ test("importing the module does not execute the CLI main() (import.meta.url guar
   // suite would hang or fail in CI. Reaching this assertion proves the guard
   // kept the module side-effect-free on import.
   assert.ok(typeof buildPlaywrightEnv === "function");
+});
+
+test("Playwright version is pinned exact (never @latest) and matches the web workspace", () => {
+  // Exact pin — reproducible, supply-chain-safe.
+  assert.match(PLAYWRIGHT_VERSION, /^\d+\.\d+\.\d+$/, "PLAYWRIGHT_VERSION must be an exact version");
+  assert.equal(playwrightPackageSpec(), `playwright@${PLAYWRIGHT_VERSION}`);
+  assert.ok(!playwrightPackageSpec().includes("@latest"), "must never use @latest");
+
+  // Must line up with the web workspace's @playwright/test pin so the browser
+  // binaries the installer fetches match the version web-e2e runs against.
+  const webPkgPath = fileURLToPath(new URL("../web/package.json", import.meta.url));
+  const webPkg = JSON.parse(readFileSync(webPkgPath, "utf8")) as {
+    devDependencies?: Record<string, string>;
+  };
+  const webPin = webPkg.devDependencies?.["@playwright/test"];
+  assert.equal(
+    webPin,
+    PLAYWRIGHT_VERSION,
+    `installer PLAYWRIGHT_VERSION (${PLAYWRIGHT_VERSION}) must match web @playwright/test (${webPin})`
+  );
+});
+
+test("the installer source contains no unpinned playwright@latest reference", () => {
+  // Belt-and-suspenders: scan the module source so a future edit reintroducing
+  // `playwright@latest` fails loudly here.
+  const srcPath = fileURLToPath(new URL("../src/install/setup-playwright.ts", import.meta.url));
+  const src = readFileSync(srcPath, "utf8");
+  assert.ok(!src.includes("playwright@latest"), "setup-playwright.ts must not reference playwright@latest");
+});
+
+test("validateNpxBinOverride accepts plain binary names and metacharacter-free paths", () => {
+  for (const ok of ["npx", "npx.cmd", "/usr/bin/npx", "/opt/my-tools/npx", "C:/tools/npx.cmd"]) {
+    assert.equal(validateNpxBinOverride(ok), ok, `should accept ${ok}`);
+  }
+});
+
+test("validateNpxBinOverride rejects whitespace, control, and shell-metacharacter values", () => {
+  const bad = [
+    "npx;evil",
+    "npx|cat",
+    "npx $(whoami)",
+    "bad name",
+    "npx\nrm",
+    "npx&background",
+    "npx>out",
+    "npx<in",
+    "a'b",
+    'a"b'
+  ];
+  for (const value of bad) {
+    assert.throws(
+      () => validateNpxBinOverride(value),
+      /ARCHON_PLAYWRIGHT_NPX_BIN contains disallowed characters/,
+      `should reject ${JSON.stringify(value)}`
+    );
+  }
 });
