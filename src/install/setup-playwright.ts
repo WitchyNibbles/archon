@@ -69,14 +69,29 @@ export function buildPlaywrightEnv(repoRoot: string): NodeJS.ProcessEnv {
  * Returns the value unchanged when valid; throws a descriptive error otherwise.
  */
 export function validateNpxBinOverride(value: string): string {
-  // Disallow control chars (incl. newlines/NUL) and shell metacharacters. A
-  // legitimate binary name or path uses none of these.
-  if (/[\s;&|<>$`"'\\(){}*?!\u0000-\u001f]/.test(value)) {
+  const reject = (): never => {
     throw new Error(
       `ARCHON_PLAYWRIGHT_NPX_BIN contains disallowed characters (whitespace, control, or shell metacharacters): ` +
         `${JSON.stringify(value)}. Set it to a plain executable name (e.g. "npx") or a metacharacter-free path.`
     );
+  };
+
+  // Reject control characters (C0 range incl. NUL/newlines, and DEL) by code
+  // point. Done numerically rather than via a control-character regex range so
+  // the source stays free of control chars (and the no-control-regex lint rule).
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) {
+      reject();
+    }
   }
+
+  // Reject whitespace and shell metacharacters. A legitimate binary name or path
+  // (e.g. "npx", "/opt/my-tools/npx", "npx.cmd") uses none of these.
+  if (/[\s;&|<>$`"'\\(){}*?!]/.test(value)) {
+    reject();
+  }
+
   return value;
 }
 
