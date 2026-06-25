@@ -48,6 +48,12 @@ web/src/assets/generated/*
 # therefore not git-trackable. Encrypted secret material must never be committed (P5-S3).
 dataRoot/secrets/
 
+# Prune-orphans backups — the `archon prune-orphans --confirm` verb writes a pre-delete
+# JSON snapshot of the removed task/run rows here (default <dataRoot>/prune-backups/, which
+# can resolve to the repo root). These are local recovery artifacts of internal runtime
+# state and must never be committed.
+prune-backups/
+
 # Logs
 *.log
 npm-debug.log*
