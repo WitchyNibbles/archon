@@ -531,3 +531,163 @@ test("runDaemonCodexTurn: a resumed session with a matching packet builds a delt
   const meta = harness.saved[0]!.metadata as { archonDaemon?: { lastPromptMode?: string } };
   assert.equal(meta.archonDaemon?.lastPromptMode, "delta");
 });
+
+// ---------------------------------------------------------------------------
+// Phase 1 (ahrP1Sampling) — monitor.recordSample integration tests
+//
+// RED phase: these tests import the ContextBudgetMonitor type and add
+// invocationId + monitor to DaemonCodexTurnDeps, which does not yet exist.
+// They FAIL until codex-turn.ts is modified.
+// ---------------------------------------------------------------------------
+
+import {
+  ContextBudgetMonitor,
+  type ContextBudgetStoreLike
+} from "../src/runtime/context-budget.ts";
+import type { RecordContextSampleInput } from "../src/store/agent-runtime-store.ts";
+import type { ContextSample } from "../src/domain/types.ts";
+
+class StubContextBudgetStore implements ContextBudgetStoreLike {
+  readonly samples: RecordContextSampleInput[] = [];
+
+  async recordContextSample(data: RecordContextSampleInput): Promise<void> {
+    this.samples.push({ ...data });
+  }
+
+  async getLatestContextSample(invocationId: string): Promise<ContextSample | undefined> {
+    const matching = this.samples.filter((s) => s.invocationId === invocationId);
+    if (matching.length === 0) return undefined;
+    const last = matching[matching.length - 1]!;
+    return {
+      invocationId: last.invocationId,
+      runId: last.runId,
+      taskId: last.taskId,
+      source: last.source,
+      usedPercentage: last.usedPercentage,
+      sampledAt: last.sampledAt ?? new Date().toISOString(),
+      raw: last.raw ?? {}
+    };
+  }
+
+  async hasCommittedHandoff(_invocationId: string): Promise<boolean> {
+    return false;
+  }
+}
+
+test("runDaemonCodexTurn: when invocationId and monitor are provided and codex turn returns usage, monitor.recordSample is called", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "archon-codexturn-ahr-p1-"));
+  const stubStore = new StubContextBudgetStore();
+  const monitor = new ContextBudgetMonitor(stubStore);
+
+  const harness = makeDeps({
+    cwd: dir,
+    directive: directive(),
+    initialSnapshot: snapshotWithTask({ taskId: "task-1", runStatus: "in_progress" }),
+    refreshedSnapshot: snapshotWithTask({ taskId: "task-1", runStatus: "in_review" }),
+    projectRuntimeState: runtimeState(),
+    refreshedProjectRuntimeState: runtimeState(),
+    codexResult: {
+      sessionId: "sess-monitor",
+      finalMessage: JSON.stringify({ status: "completed", summary: "done" }),
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      // HIGH usage that should trigger handoff_required (>= 70%)
+      usage: {
+        inputTokens: 150_000,
+        outputTokens: 10_000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0
+      }
+    },
+    initialSession: "sess-monitor-0"
+  });
+
+  // Inject invocationId and monitor into deps (RED: fields don't exist yet on DaemonCodexTurnDeps)
+  (harness.deps as DaemonCodexTurnDeps & { invocationId?: string; monitor?: ContextBudgetMonitor }).invocationId = "inv-test-001";
+  (harness.deps as DaemonCodexTurnDeps & { invocationId?: string; monitor?: ContextBudgetMonitor }).monitor = monitor;
+
+  const result = await runDaemonCodexTurn(turnInput(), harness.deps);
+
+  // Turn should still succeed (observe-only)
+  assert.equal(result, undefined, "high usage does not block the turn in observe-only mode");
+  // Session id is unchanged by sampling
+  assert.equal(harness.session(), "sess-monitor", "setSessionId still writes the holder normally");
+  // monitor.recordSample was called
+  assert.equal(stubStore.samples.length, 1, "one context sample was recorded");
+  assert.equal(stubStore.samples[0]!.invocationId, "inv-test-001");
+  assert.equal(stubStore.samples[0]!.runId, "run-1");
+  assert.equal(stubStore.samples[0]!.taskId, "task-1");
+  assert.equal(stubStore.samples[0]!.source, "sdk");
+  // usedPct = (150000+10000) / 200000 * 100 = 80 (exactly hardStopPct)
+  // or with default 200000 window: (150000+10000+0+0)/200000*100 = 80
+  assert.ok(
+    typeof stubStore.samples[0]!.usedPercentage === "number" && stubStore.samples[0]!.usedPercentage > 0,
+    `usedPercentage should be a positive number, got ${stubStore.samples[0]!.usedPercentage}`
+  );
+});
+
+test("runDaemonCodexTurn: when invocationId and monitor are absent, no error is thrown and turn runs normally", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "archon-codexturn-ahr-p1-nomon-"));
+
+  const harness = makeDeps({
+    cwd: dir,
+    directive: directive(),
+    initialSnapshot: snapshotWithTask({ taskId: "task-1", runStatus: "in_progress" }),
+    refreshedSnapshot: snapshotWithTask({ taskId: "task-1", runStatus: "in_review" }),
+    projectRuntimeState: runtimeState(),
+    refreshedProjectRuntimeState: runtimeState(),
+    codexResult: {
+      sessionId: "sess-nomon",
+      finalMessage: JSON.stringify({ status: "completed", summary: "done" }),
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      usage: {
+        inputTokens: 50_000,
+        outputTokens: 5_000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0
+      }
+    },
+    initialSession: "sess-nomon-0"
+  });
+
+  // No invocationId or monitor on deps — turn should still work
+  const result = await runDaemonCodexTurn(turnInput(), harness.deps);
+
+  assert.equal(result, undefined, "no error when monitor is absent");
+  assert.equal(harness.session(), "sess-nomon");
+});
+
+test("runDaemonCodexTurn: when codex turn returns no usage, monitor.recordSample is NOT called", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "archon-codexturn-ahr-p1-nousage-"));
+  const stubStore = new StubContextBudgetStore();
+  const monitor = new ContextBudgetMonitor(stubStore);
+
+  const harness = makeDeps({
+    cwd: dir,
+    directive: directive(),
+    initialSnapshot: snapshotWithTask({ taskId: "task-1", runStatus: "in_progress" }),
+    refreshedSnapshot: snapshotWithTask({ taskId: "task-1", runStatus: "in_review" }),
+    projectRuntimeState: runtimeState(),
+    refreshedProjectRuntimeState: runtimeState(),
+    codexResult: {
+      sessionId: "sess-nousage",
+      finalMessage: JSON.stringify({ status: "completed", summary: "done" }),
+      stdout: "",
+      stderr: "",
+      exitCode: 0
+      // no usage field
+    },
+    initialSession: "sess-nousage-0"
+  });
+
+  (harness.deps as DaemonCodexTurnDeps & { invocationId?: string; monitor?: ContextBudgetMonitor }).invocationId = "inv-test-002";
+  (harness.deps as DaemonCodexTurnDeps & { invocationId?: string; monitor?: ContextBudgetMonitor }).monitor = monitor;
+
+  const result = await runDaemonCodexTurn(turnInput(), harness.deps);
+
+  assert.equal(result, undefined, "no error when usage is absent");
+  assert.equal(stubStore.samples.length, 0, "no sample recorded when usage is absent");
+});
