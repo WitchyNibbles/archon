@@ -47,7 +47,6 @@ import type { ContextBudgetMonitor } from "../runtime/context-budget.ts";
 import type { ContextBudgetState } from "../runtime/context-budget.ts";
 import { computeUsedPct, resolveModelContextTokens } from "../runtime/context-usage.ts";
 import type { HandoffController } from "../runtime/handoff-controller.ts";
-import type { ContinuationContextBuilder } from "../runtime/continuation-context.ts";
 
 /**
  * Input to the loop's blockedResult builder. Single source of truth shared by
@@ -146,12 +145,10 @@ export interface DaemonCodexTurnDeps {
   // All optional: when absent, P2 reset logic is skipped (graceful degradation).
   // ---------------------------------------------------------------------------
 
-  /** Controller for handoff record retrieval, recovery, and consumption.
+  /** Controller for handoff record retrieval, recovery, consumption, and
+   * continuation prompt building.
    * Required for P2 reset; skipped when absent. */
   handoffController?: HandoffController | undefined;
-  /** Builder for continuation bundles (wraps handoff packet into a prompt).
-   * Required for P2 reset; skipped when absent. */
-  continuationBuilder?: ContinuationContextBuilder | undefined;
   /** Role of the current invocation (e.g. "specialist_owner").
    * Used for crash-recovery packet creation; defaults to "unknown" when absent. */
   role?: string | undefined;
@@ -240,6 +237,22 @@ export async function runDaemonCodexTurn(
     if (continuationBundle !== undefined) {
       // Consume the file immediately — SEC-MED-2: deleted before the turn executes.
       await clearDaemonContinuationContext(deps.cwd);
+    } else {
+      // Fresh turn (justHandedOff=true, no session) but continuation file is
+      // absent. This can happen if the daemon restarted after the file was
+      // cleaned up by the OS, or if a prior startNextInvocation rollback
+      // deleted it. Log to stderr so operators can investigate, then fall
+      // through to a standard full-prompt turn.
+      process.stderr.write(
+        JSON.stringify({
+          tag: "archon-context-monitor",
+          event: "continuation_context_missing",
+          invocationId: deps.invocationId,
+          runId: input.activeRunId,
+          taskId: input.activeTaskId,
+          note: "justHandedOff=true but continuation context file not found; falling back to standard prompt"
+        }) + "\n"
+      );
     }
   }
 
@@ -338,7 +351,6 @@ export async function runDaemonCodexTurn(
   if (
     isEnforceMode &&
     deps.handoffController !== undefined &&
-    deps.continuationBuilder !== undefined &&
     deps.startNextInvocation !== undefined &&
     deps.invocationId !== undefined
   ) {
@@ -357,13 +369,11 @@ export async function runDaemonCodexTurn(
       input.activeTaskId
     );
 
-    // Additional committed-handoff check via the store's hasCommittedHandoff if
-    // available (exposed via HandoffStoreLike extension in tests).
-    let committedHandoff = false;
-    const storeAny = (deps.handoffController as unknown as { store?: { hasCommittedHandoff?: (id: string) => Promise<boolean> } }).store;
-    if (storeAny?.hasCommittedHandoff !== undefined) {
-      committedHandoff = await storeAny.hasCommittedHandoff(deps.invocationId);
-    }
+    // Check via HandoffController.hasCommittedHandoff — typed method on the
+    // controller, backed by HandoffStoreLike.hasCommittedHandoff (part of the
+    // public interface). Returns true when the current invocation already
+    // committed a handoff record (status = handoff_written/needs_followup).
+    const committedHandoff = await deps.handoffController.hasCommittedHandoff(deps.invocationId);
 
     const shouldReset = stateRequiresReset || committedHandoff;
 
@@ -397,17 +407,46 @@ export async function runDaemonCodexTurn(
 
       if (existingHandoff !== undefined) {
         // Build continuation bundle — handoff content is sanitized in buildContinuationPrompt.
-        // Use handoffController directly for the prompt (sanitization applied there).
-        const bundle = deps.handoffController.buildContinuationPrompt(existingHandoff);
+        // Pass the authoritative task-record allowedWriteScope so the trusted
+        // section uses the runtime value, not the agent-written packet.scope.
+        const taskAllowedWriteScope = Array.isArray(taskRecord.packet.allowedWriteScope)
+          ? (taskRecord.packet.allowedWriteScope as string[])
+          : [];
+        const bundle = deps.handoffController.buildContinuationPrompt(existingHandoff, taskAllowedWriteScope);
 
         // Persist the bundle so the fresh turn can pick it up.
         await writeDaemonContinuationContext(deps.cwd, bundle);
 
         // Start the next invocation record before consuming the handoff.
-        const nextInvocationId = await deps.startNextInvocation(
-          input.activeTaskId,
-          deps.role ?? "unknown"
-        );
+        // If startNextInvocation fails, clean up the bundle and leave the
+        // session intact — do NOT reset, so the daemon can retry on the
+        // next iteration without leaving a stale context file on disk.
+        let nextInvocationId: string;
+        try {
+          nextInvocationId = await deps.startNextInvocation(
+            input.activeTaskId,
+            deps.role ?? "unknown"
+          );
+        } catch (activateErr: unknown) {
+          // Roll back: delete the continuation context file so it cannot be
+          // consumed by a future turn that has no matching invocation.
+          await clearDaemonContinuationContext(deps.cwd);
+          process.stderr.write(
+            JSON.stringify({
+              tag: "archon-context-monitor",
+              event: "startNextInvocation_failure",
+              invocationId: deps.invocationId,
+              runId: input.activeRunId,
+              taskId: input.activeTaskId,
+              error: activateErr instanceof Error ? activateErr.message : String(activateErr)
+            }) + "\n"
+          );
+          // Non-fatal: fall through to the normal session-update path.
+          // The session id is NOT cleared; the daemon will retry the reset
+          // next cycle when the context threshold is still exceeded.
+          deps.setSessionId(codexTurn.sessionId ?? deps.getSessionId());
+          return undefined;
+        }
 
         // Consume the handoff (links it to the next invocation).
         await deps.handoffController.consume({

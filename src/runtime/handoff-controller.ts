@@ -19,24 +19,48 @@ import type { AgentInvocation } from "../domain/types.ts";
 /**
  * Sanitize a single untrusted content string before embedding it in a
  * continuation prompt:
- *   - Strip Markdown headings (lines starting with `#`).
- *   - Strip fenced code blocks (lines starting with ` ``` `).
- *   - Truncate to `maxLength` characters.
+ *   1. Collapse ALL embedded newlines/carriage-returns to a single space
+ *      (prevents multiline injection via a single "string" field).
+ *   2. Strip case-insensitive structural marker strings that could be used to
+ *      spoof the trusted identity section boundary:
+ *      `---`, `[CONTENT FIELDS`, `Runtime authority`, `Allowed write scope`.
+ *   3. Strip Markdown headings (lines starting with `#`).
+ *   4. Strip fenced code blocks (lines starting with ` ``` `).
+ *   5. Truncate to `maxLength` characters.
  *
  * Used for packet content fields (summary, nextActions, evidenceRefs,
  * decisions) that originate from agent output and must not be trusted.
  */
 function sanitizeContentField(raw: string, maxLength: number): string {
-  const lines = raw.split("\n");
+  // Step 1: collapse ALL newlines/CRs to space BEFORE line-based stripping.
+  // This prevents injecting heading/fence lines via embedded `\n` characters
+  // in a single "string" field value.
+  const collapsed = raw.replace(/[\r\n]+/g, " ");
+
+  // Step 2: strip case-insensitive structural boundary markers that could
+  // spoof the trusted identity section inside the continuation prompt.
+  const MARKER_RE = /(-{3,}|\[CONTENT FIELDS[^\]]*\]|Runtime authority|Allowed write scope)/gi;
+  const stripped = collapsed.replace(MARKER_RE, "");
+
+  // Step 3: strip inline heading injection (#…) that may appear anywhere in
+  // the collapsed string (not just at line starts). After \n-collapse, a
+  // heading from an injected line like "text\n## SYSTEM" becomes
+  // "text ## SYSTEM" — still dangerous if re-split later, so strip globally.
+  // Also strip fenced code block opening/closing patterns.
+  const noHeadings = stripped.replace(/#{1,6}[^\S\n]*/g, "");
+  const noFences = noHeadings.replace(/```[^`]*/g, "");
+
+  // Step 4: split on any remaining newlines (guard), filter residual headings/fences.
+  const lines = noFences.split("\n");
   const filtered = lines.filter((line) => {
     const trimmed = line.trimStart();
-    // Strip heading injection.
     if (trimmed.startsWith("#")) return false;
-    // Strip fenced code block delimiters.
     if (trimmed.startsWith("```")) return false;
     return true;
   });
-  const joined = filtered.join("\n").trimEnd();
+
+  // Step 5: rejoin and truncate.
+  const joined = filtered.join(" ").trimEnd();
   return joined.length > maxLength ? `${joined.slice(0, maxLength)}…` : joined;
 }
 
@@ -67,6 +91,13 @@ export interface HandoffStoreLike {
   ): Promise<HandoffRecord | undefined>;
 
   markHandoffConsumed(handoffId: string, toInvocationId: string): Promise<void>;
+
+  /**
+   * Return true if the given invocation has already committed a handoff record
+   * (status = handoff_written or needs_followup). Used by the reset path to
+   * detect agent-driven handoffs before the context monitor fires.
+   */
+  hasCommittedHandoff(invocationId: string): Promise<boolean>;
 
   updateAgentInvocationStatus(
     id: string,
@@ -360,6 +391,23 @@ What could break if the next invocation proceeds blindly?
   }
 
   // -------------------------------------------------------------------------
+  // hasCommittedHandoff — check if an invocation has a committed handoff
+  // -------------------------------------------------------------------------
+
+  /**
+   * Return true if the given invocation has already committed a handoff record
+   * (e.g. status = handoff_written or needs_followup in the store).
+   *
+   * I/O contract:
+   *   Input:  invocationId
+   *   Output: boolean
+   *   Side effects: none
+   */
+  async hasCommittedHandoff(invocationId: string): Promise<boolean> {
+    return this.store.hasCommittedHandoff(invocationId);
+  }
+
+  // -------------------------------------------------------------------------
   // getLatestForTask — retrieve latest unconsumed handoff for a task
   // -------------------------------------------------------------------------
 
@@ -392,9 +440,16 @@ What could break if the next invocation proceeds blindly?
    * Security (SEC-HIGH-1): packet content fields (summary, nextActions,
    * evidenceRefs, decisions) are UNTRUSTED — they originate from agent output
    * and may contain heading/code injection. Identity fields (toRole, taskId,
-   * runId, handoffId, allowedWriteScope) are trusted (set by the runtime).
+   * runId, handoffId) are trusted (set by the runtime).
+   *
+   * IMPORTANT: `allowedWriteScope` in the trusted section MUST come from the
+   * authoritative task record (passed as `taskAllowedWriteScope`), NOT from
+   * `packet.scope.allowedWriteScope` which is agent-written content. The packet
+   * scope is untrusted and may be used to widen access.
    *
    * Sanitization applied to content fields:
+   *   - Embedded newlines/CRs collapsed to space (prevents multiline injection).
+   *   - Structural boundary markers stripped (prevents identity-section spoofing).
    *   - Markdown headings (`#` lines) stripped.
    *   - Fenced code blocks (``` lines) stripped.
    *   - summary capped at 2000 chars.
@@ -402,11 +457,11 @@ What could break if the next invocation proceeds blindly?
    *   - Lists capped at 20 items.
    *
    * I/O contract:
-   *   Input:  record (HandoffRecord)
+   *   Input:  record (HandoffRecord), taskAllowedWriteScope (from authoritative task record)
    *   Output: string (markdown prompt ready for the next invocation)
    *   Side effects: none
    */
-  buildContinuationPrompt(record: HandoffRecord): string {
+  buildContinuationPrompt(record: HandoffRecord, taskAllowedWriteScope?: readonly string[] | undefined): string {
     const packet = record.packet as Partial<HandoffPacketV1>;
 
     // Identity fields — trusted (set by runtime, not agent content).
@@ -414,8 +469,9 @@ What could break if the next invocation proceeds blindly?
     const taskId = record.taskId;
     const runId = record.runId;
     const handoffId = record.id;
-    const scope = packet.scope;
-    const allowedWriteScope = scope?.allowedWriteScope ?? [];
+    // allowedWriteScope MUST come from the authoritative task record passed in
+    // by the caller — NOT from packet.scope which is agent-written (untrusted).
+    const allowedWriteScope = taskAllowedWriteScope ?? [];
     const writeScope =
       allowedWriteScope.length > 0 ? allowedWriteScope.join(", ") : "(inherited from task packet)";
 
@@ -510,16 +566,12 @@ Rules:
   }): Promise<ConsumeResult> {
     await this.store.markHandoffConsumed(params.handoffId, params.toInvocationId);
 
-    // Re-fetch to get the updated record (store may set consumed_at server-side).
-    // If the record is gone (already consumed by another), surface it as an error.
-    const record = await this.store.getLatestUnconsumedHandoff(
-      params.runId,
-      params.taskId
-    );
-
-    // Build a synthetic record from what we know if the row is now consumed
-    // (which is expected — consumed rows are filtered out by the query).
-    const fallback: HandoffRecord = {
+    // Return a confirmation record built from the known identity fields.
+    // We do NOT re-fetch post-consume: the row is now marked consumed so
+    // getLatestUnconsumedHandoff would return undefined (filtered out), and
+    // an extra DB round-trip serves no purpose — the caller already has the
+    // handoff record from getLatestForTask.
+    const record: HandoffRecord = {
       id: params.handoffId,
       runId: params.runId,
       taskId: params.taskId,
@@ -536,7 +588,7 @@ Rules:
     };
 
     return {
-      record: record ?? fallback,
+      record,
       toInvocationId: params.toInvocationId
     };
   }
