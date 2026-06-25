@@ -55,7 +55,7 @@ const ROUTING_KINDS = new Set(["owner_dispatch", "review_dispatch", "wait"]);
 
 const BLOCKER_KINDS = new Set([
   "review_missing", "approval_missing", "lock_conflict",
-  "dependency_unresolved", "stale_recovery", "generic",
+  "dependency_unresolved", "stale_recovery", "reasoning_quality", "generic",
 ]);
 
 // ── Field validators ──────────────────────────────────────────────────────────
@@ -99,6 +99,12 @@ function validateHeader(raw: unknown): void {
   requireEnum(obj, "status", RUN_STATUSES, "header");
   requireEnum(obj, "authorityLabel", AUTHORITY_LABELS, "header");
   requireString(obj, "updatedAt", "header");
+  // sealed is required — reject snapshots missing it (no silent fallback).
+  if (typeof obj["sealed"] !== "boolean") {
+    throw new SnapshotFetchError(
+      `header.sealed must be a boolean (got ${JSON.stringify(obj["sealed"])})`
+    );
+  }
 }
 
 function validateBlocker(raw: unknown, i: number): void {
@@ -111,6 +117,12 @@ function validateBlocker(raw: unknown, i: number): void {
   // taskId is optional — skip if absent
   if ("taskId" in obj && obj["taskId"] !== undefined) {
     requireString(obj, "taskId", ctx);
+  }
+  // advisory is required — reject snapshots missing it (no silent fallback).
+  if (typeof obj["advisory"] !== "boolean") {
+    throw new SnapshotFetchError(
+      `${ctx}.advisory must be a boolean (got ${JSON.stringify(obj["advisory"])})`
+    );
   }
 }
 

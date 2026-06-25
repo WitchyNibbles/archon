@@ -4,7 +4,8 @@
     "title": "forge-web-dashboard",
     "status": "review_blocked",
     "authorityLabel": "runtime_authoritative",
-    "updatedAt": "2026-06-23T14:32:11Z"
+    "updatedAt": "2026-06-23T14:32:11Z",
+    "sealed": false
   },
   "blockers": [
     {
@@ -15,7 +16,8 @@
         "Invoke security_reviewer agent on sample-task-alpha",
         "Run: npx tsx ./src/admin.ts workflow-proof --run-id latest --task-id sample-task-alpha"
       ],
-      "taskId": "sample-task-alpha"
+      "taskId": "sample-task-alpha",
+      "advisory": false
     },
     {
       "id": "blocker-approval-missing-beta",
@@ -24,7 +26,8 @@
       "nextActions": [
         "Run workflow-proof then write approval record via admin CLI"
       ],
-      "taskId": "sample-task-beta"
+      "taskId": "sample-task-beta",
+      "advisory": false
     }
   ],
   "taskQueue": [
