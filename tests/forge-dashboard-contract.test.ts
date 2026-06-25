@@ -37,7 +37,8 @@ const representativeRun: DashboardViewModel = {
     title: "Frontend Forge Phase-0",
     status: "review_blocked",
     authorityLabel: "runtime_authoritative",
-    updatedAt: "2026-06-23T10:00:00.000Z"
+    updatedAt: "2026-06-23T10:00:00.000Z",
+    sealed: false
   },
   blockers: [
     {
@@ -45,14 +46,16 @@ const representativeRun: DashboardViewModel = {
       kind: "review_missing",
       reason: "reviewer review required but no trusted review record found",
       nextActions: ["dispatch reviewer agent", "run workflow-proof after review"],
-      taskId: "forgePhase0Skeleton"
+      taskId: "forgePhase0Skeleton",
+      advisory: false
     },
     {
       id: "blk-002",
       kind: "review_missing",
       reason: "security_reviewer review required but no trusted review record found",
       nextActions: ["dispatch security_reviewer agent"],
-      taskId: "forgePhase0Skeleton"
+      taskId: "forgePhase0Skeleton",
+      advisory: false
     }
   ],
   taskQueue: [

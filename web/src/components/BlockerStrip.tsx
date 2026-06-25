@@ -5,8 +5,13 @@
  * scrolling blocker pills. Never disappears — empty state shows a calm
  * "no active blockers" row (disappearing UI is disorienting per spec).
  *
+ * Blocker classification (forgeDashboardBlockerClarity):
+ * - advisory:false → HERO panel (error/warning tinted, dominant)
+ * - advisory:true  → SEPARATE "Advisories (N)" section (muted, de-emphasised)
+ *
  * Each pill: kind badge | taskId | reason (2-line clamp) | first nextAction.
  * Blocked kind = red left-stripe. Warning kinds (stale_recovery, generic) = amber.
+ * Reasoning_quality kind = muted (advisory-only).
  *
  * Visual dominance: --status-error tint background + error border bottom (AG-015).
  *
@@ -80,53 +85,119 @@ function BlockerPill({ blocker }: { blocker: BlockerViewModel }) {
   );
 }
 
-export function BlockerStrip({ blockers }: BlockerStripProps) {
-  const hasBlockers = blockers.length > 0;
+function AdvisoryPill({ blocker }: { blocker: BlockerViewModel }) {
+  const firstAction = blocker.nextActions[0];
 
   return (
-    <section
-      className={`blocker-strip${hasBlockers ? " blocker-strip--active" : " blocker-strip--idle"}`}
-      aria-label="Active blockers"
-      aria-live="polite"
+    <article
+      className="advisory-pill"
+      aria-label={`advisory signal${blocker.taskId ? ` for ${blocker.taskId}` : ""}`}
     >
-      <div className="blocker-strip__header">
-        <h2 className="blocker-strip__title mono">
-          Active Blockers
-        </h2>
-        {hasBlockers && (
-          <span
-            className="blocker-strip__count mono"
-            aria-label={`${blockers.length} active blockers`}
-          >
-            {blockers.length}
-          </span>
+      <div className="advisory-pill__meta">
+        <span className="advisory-pill__kind mono">
+          {blocker.kind}
+        </span>
+        {blocker.taskId && (
+          <span className="advisory-pill__taskid mono">{blocker.taskId}</span>
         )}
       </div>
-
-      {hasBlockers ? (
-        <div
-          className="blocker-strip__pills"
-          role="list"
-          /*
-           * tabIndex="0" makes this scrollable region keyboard-accessible
-           * (WCAG 2.1 SC 2.1.1, axe rule: scrollable-region-focusable).
-           * At narrow viewports the pill row overflows and requires scrolling.
-           */
-          tabIndex={0}
-        >
-          {blockers.map((b) => (
-            <div key={b.id} role="listitem">
-              <BlockerPill blocker={b} />
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="blocker-strip__empty">
-          <span className="blocker-strip__empty-label mono">
-            No active blockers
+      <p className="advisory-pill__reason">{blocker.reason}</p>
+      {firstAction && (
+        <div className="advisory-pill__action">
+          <span className="advisory-pill__arrow mono" aria-hidden="true">
+            →
           </span>
+          <span>{firstAction}</span>
         </div>
       )}
-    </section>
+    </article>
+  );
+}
+
+export function BlockerStrip({ blockers }: BlockerStripProps) {
+  const realBlockers = blockers.filter((b) => !b.advisory);
+  const advisoryBlockers = blockers.filter((b) => b.advisory);
+  const hasRealBlockers = realBlockers.length > 0;
+  const hasAdvisories = advisoryBlockers.length > 0;
+
+  return (
+    <div className="blocker-strip-container">
+      {/* HERO: real blockers section */}
+      <section
+        className={`blocker-strip${hasRealBlockers ? " blocker-strip--active" : " blocker-strip--idle"}`}
+        aria-label="Active blockers"
+        aria-live="polite"
+      >
+        <div className="blocker-strip__header">
+          <h2 className="blocker-strip__title mono">
+            Active Blockers
+          </h2>
+          {hasRealBlockers && (
+            <span
+              className="blocker-strip__count mono"
+              aria-label={`${realBlockers.length} active blockers`}
+            >
+              {realBlockers.length}
+            </span>
+          )}
+        </div>
+
+        {hasRealBlockers ? (
+          <div
+            className="blocker-strip__pills"
+            role="list"
+            /*
+             * tabIndex="0" makes this scrollable region keyboard-accessible
+             * (WCAG 2.1 SC 2.1.1, axe rule: scrollable-region-focusable).
+             * At narrow viewports the pill row overflows and requires scrolling.
+             */
+            tabIndex={0}
+          >
+            {realBlockers.map((b) => (
+              <div key={b.id} role="listitem">
+                <BlockerPill blocker={b} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="blocker-strip__empty">
+            <span className="blocker-strip__empty-label mono">
+              No active blockers
+            </span>
+          </div>
+        )}
+      </section>
+
+      {/* Advisory signals — de-emphasised, NOT hero styling */}
+      {hasAdvisories && (
+        <section
+          className="advisory-strip"
+          aria-label={`Advisories (${advisoryBlockers.length})`}
+        >
+          <div className="advisory-strip__header">
+            <h3 className="advisory-strip__title mono">
+              Advisories
+            </h3>
+            <span
+              className="advisory-strip__count mono"
+              aria-label={`${advisoryBlockers.length} advisory signals`}
+            >
+              {advisoryBlockers.length}
+            </span>
+          </div>
+          <div
+            className="advisory-strip__pills"
+            role="list"
+            tabIndex={0}
+          >
+            {advisoryBlockers.map((b) => (
+              <div key={b.id} role="listitem">
+                <AdvisoryPill blocker={b} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
   );
 }

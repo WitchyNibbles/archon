@@ -108,7 +108,13 @@ export const RunHeaderViewModelSchema = z.object({
    */
   authorityLabel: z.enum(authorityLabelValues),
   /** ISO-8601 timestamp. Source: RunRecord.updatedAt */
-  updatedAt: z.string()
+  updatedAt: z.string(),
+  /**
+   * Sealed flag: true when all tasks are approved/done.
+   * Derived from task statuses — does NOT change header.status (which stays honest/raw).
+   * When sealed, the dashboard shows a "Sealed" success badge and pulse is "complete".
+   */
+  sealed: z.boolean()
 });
 
 export type RunHeaderViewModel = z.infer<typeof RunHeaderViewModelSchema>;
@@ -125,6 +131,7 @@ export const blockerKindValues = [
   "lock_conflict",
   "dependency_unresolved",
   "stale_recovery",
+  "reasoning_quality",
   "generic"
 ] as const;
 
@@ -141,6 +148,7 @@ export const BlockerViewModelSchema = z.object({
    * "lock_conflict"        → orphan lock or scope conflict
    * "dependency_unresolved"→ predecessor task not done
    * "stale_recovery"       → recovery issue (stale_task, stale_approval etc.)
+   * "reasoning_quality"    → advisory routing-readiness / reasoning signal
    * "generic"              → any other blocker message
    */
   kind: z.enum(blockerKindValues),
@@ -155,7 +163,15 @@ export const BlockerViewModelSchema = z.object({
    * The task this blocker belongs to, if it is task-scoped.
    * Undefined for run-level blockers (RunStatusSnapshot.blockers).
    */
-  taskId: z.string().optional()
+  taskId: z.string().optional(),
+  /**
+   * Advisory flag: true when this blocker is a reasoning-quality or
+   * routing-readiness signal (not a hard gate blocker).
+   * Advisory blockers are rendered in a separate de-emphasised section,
+   * NOT in the hero blocker panel.
+   * false for real gate blockers (review_missing, approval_missing, etc.).
+   */
+  advisory: z.boolean()
 });
 
 export type BlockerViewModel = z.infer<typeof BlockerViewModelSchema>;

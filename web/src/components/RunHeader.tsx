@@ -89,6 +89,21 @@ export function RunHeader({ header, pulse, generatedAt }: RunHeaderProps) {
           />
           {header.status}
         </span>
+        {/*
+         * Sealed badge: shown when all tasks are approved/done/memorized.
+         * Uses --status-success-text (AA-safe, 10.8:1 on dark surface).
+         * Does NOT replace the authority badge — both remain visible.
+         * No second accent: success green is a semantic status color only.
+         */}
+        {header.sealed && (
+          <span
+            className="sealed-badge mono"
+            aria-label="Run sealed: all tasks complete"
+            data-testid="sealed-badge"
+          >
+            Sealed
+          </span>
+        )}
         <AuthorityBadge authorityLabel={header.authorityLabel} />
       </div>
       <div className="run-header__right">

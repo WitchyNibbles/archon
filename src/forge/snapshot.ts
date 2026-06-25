@@ -113,9 +113,67 @@ const LOCK_CONFLICT_PATTERN = /lock.*conflict|orphan.*lock|scope.*conflict/i;
 const DEPENDENCY_PATTERN = /dependency|predecessor|unresolved/i;
 const STALE_RECOVERY_PATTERN = /stale|recovery/i;
 
+/**
+ * Defense-in-depth hard-gate guard.
+ *
+ * A reason that matches this pattern MUST NEVER be classified as advisory,
+ * even if it appears in the reasoning-quality origin set (rqSet). This prevents
+ * adversarial blocker messages that happen to share reasoning vocabulary from
+ * being hidden in the advisory strip.
+ *
+ * Patterns covered:
+ *   - severity qualifiers (critical, high) — real security findings
+ *   - security_reviewer mentions
+ *   - "security finding" / "security gate" / CVE
+ *   - "waived" — approval/waiver gate decisions are real, never advisory
+ *   - "approval record absent" / "review record absent" — gate record status
+ */
+const HARD_GATE_PATTERN =
+  /\b(critical|high)\b|security[_ ]reviewer|security finding|security gate|\bCVE\b|waived|approval record absent|review record absent/i;
+
+/**
+ * Returns true when a reason string contains hard-gate markers that must never
+ * be classified as advisory, regardless of any other classification.
+ *
+ * Exported for testing: the hard-gate guard is the last line of defence.
+ */
+export function isHardGateReason(reason: string): boolean {
+  return HARD_GATE_PATTERN.test(reason);
+}
+
+/**
+ * Build the reasoning-quality origin set for a single RoutingRecommendation.
+ *
+ * The runtime (service.ts ~line 2338) always prefixes reasoning-quality blocker
+ * messages with `"reasoning-quality: "` when they are added to `rationale[]`.
+ * The SAME raw message appears verbatim in `blockers[]` (no prefix). So exact
+ * set-membership against the stripped rationale entries is the reliable origin
+ * classifier — it is immune to false positives from reasoning vocabulary that
+ * happens to appear in real security or gate blocker messages.
+ *
+ * A blocker `reason` is reasoning-quality (potentially advisory) IFF:
+ *   rqSet.has(reason) && !isHardGateReason(reason)
+ *
+ * Run-level blockers (`snapshot.blockers`) are ALWAYS advisory:false —
+ * they never originate from per-task reasoning assessments and have no
+ * associated rationale[] to inspect.
+ */
+function buildReasoningQualitySet(rationale: readonly string[]): Set<string> {
+  const PREFIX = "reasoning-quality: ";
+  const rqSet = new Set<string>();
+  for (const entry of rationale) {
+    if (entry.startsWith(PREFIX)) {
+      rqSet.add(entry.slice(PREFIX.length));
+    }
+  }
+  return rqSet;
+}
+
 function classifyBlockerKind(
-  reason: string
-): "review_missing" | "approval_missing" | "lock_conflict" | "dependency_unresolved" | "stale_recovery" | "generic" {
+  reason: string,
+  isAdvisory: boolean
+): "review_missing" | "approval_missing" | "lock_conflict" | "dependency_unresolved" | "stale_recovery" | "reasoning_quality" | "generic" {
+  if (isAdvisory) return "reasoning_quality";
   if (REVIEW_MISSING_PATTERN.test(reason)) return "review_missing";
   if (APPROVAL_MISSING_PATTERN.test(reason)) return "approval_missing";
   if (LOCK_CONFLICT_PATTERN.test(reason)) return "lock_conflict";
@@ -123,6 +181,18 @@ function classifyBlockerKind(
   if (STALE_RECOVERY_PATTERN.test(reason)) return "stale_recovery";
   return "generic";
 }
+
+/** Task status values that mark a task as sealed (no further work expected). */
+const SEALED_TASK_STATUSES = new Set(["approved", "done"]);
+
+/**
+ * Status values used in the SEALED derivation for header.sealed.
+ * Includes "memorized" because it is a valid RunStatus that indicates
+ * a run's knowledge has been committed to memory (fully complete).
+ * For task-level filtering we only use approved/done since "memorized"
+ * is a RunStatus, not a TaskStatus.
+ */
+const SEALED_RUN_STATUSES = new Set(["approved", "done", "memorized"]);
 
 // Derive a stable slug-id from a blocker reason string for React key stability.
 function slugifyBlockerId(prefix: string, reason: string): string {
@@ -140,8 +210,12 @@ function slugifyBlockerId(prefix: string, reason: string): string {
 
 function derivePulseState(
   runStatus: RunStatusSnapshot["run"]["status"],
-  activeLockCount: number
+  activeLockCount: number,
+  allSealed: boolean
 ): "idle" | "running" | "blocked" | "complete" {
+  // When every task is sealed, the run is effectively complete regardless of
+  // the raw run.status (which may still read "in_progress" in the DB).
+  if (allSealed) return "complete";
   if (runStatus === "in_progress" && activeLockCount > 0) return "running";
   if (runStatus === "review_blocked") return "blocked";
   if (runStatus === "done" || runStatus === "approved" || runStatus === "memorized") return "complete";
@@ -208,7 +282,18 @@ export function projectLiveSnapshot(
   );
 
   // ---------------------------------------------------------------------------
+  // Sealed derivation — a run is sealed when EVERY task is approved/done.
+  // "memorized" is a RunStatus, not a TaskStatus, so SEALED_RUN_STATUSES
+  // and SEALED_TASK_STATUSES are equivalent in practice for task.status checks.
+  // Sealed tasks emit no blockers (routing-readiness is irrelevant for sealed work).
+  // The same sealed flag drives header.sealed and derivePulseState.
+  // ---------------------------------------------------------------------------
+  const headerSealed =
+    tasks.length > 0 && tasks.every((t) => SEALED_RUN_STATUSES.has(t.status));
+
+  // ---------------------------------------------------------------------------
   // Header — explicit field mapping from RunRecord fields only.
+  // header.status stays honest/raw (the DB value); sealed is derived separately.
   // ---------------------------------------------------------------------------
   const header = {
     runId: run.id,
@@ -218,29 +303,57 @@ export function projectLiveSnapshot(
     // not from a verified RunExecutionPlan with mode==="runtime_authoritative".
     authorityLabel: "derived_only" as const,
     updatedAt: run.updatedAt,
+    sealed: headerSealed,
   };
 
   // ---------------------------------------------------------------------------
   // Blockers — run-level blockers first, then per-task routing blockers.
+  //
+  // Sealed tasks (approved/done) are SKIPPED: routing-readiness is irrelevant.
+  //
+  // Advisory classification — ORIGIN-BASED, not free-text heuristic:
+  //   For each RoutingRecommendation r, build rqSet from rationale entries that
+  //   start with "reasoning-quality: ". A blocker reason is advisory:true iff
+  //   rqSet.has(reason) AND !isHardGateReason(reason) (defense-in-depth).
+  //
+  // Run-level blockers (snapshot.blockers) are ALWAYS advisory:false — they
+  // come from the runtime, never from per-task reasoning assessments.
   // ---------------------------------------------------------------------------
   const blockers = [
     ...runBlockers.map((reason, idx) => ({
       id: slugifyBlockerId(`run-${idx}`, reason),
-      kind: classifyBlockerKind(reason),
+      kind: classifyBlockerKind(reason, false),
       reason,
       nextActions: [] as string[],
+      // Run-level blockers are always real — never advisory.
+      advisory: false as const,
     })),
     ...routing.recommendations
-      .filter((r) => r.blockers.length > 0)
-      .flatMap((r) =>
-        r.blockers.map((reason, idx) => ({
-          id: slugifyBlockerId(`task-${r.taskId}-${idx}`, reason),
-          kind: classifyBlockerKind(reason),
-          reason,
-          nextActions: r.rationale,
-          taskId: r.taskId,
-        }))
-      ),
+      .filter((r) => {
+        // Skip sealed tasks entirely — no blockers should emanate from them.
+        const task = tasks.find((t) => t.packet.taskId === r.taskId);
+        if (task !== undefined && SEALED_TASK_STATUSES.has(task.status)) {
+          return false;
+        }
+        return r.blockers.length > 0;
+      })
+      .flatMap((r) => {
+        // Build the exact origin set for this recommendation's reasoning-quality
+        // messages. Only messages in this set CAN be advisory (and only if they
+        // also pass the hard-gate guard).
+        const rqSet = buildReasoningQualitySet(r.rationale);
+        return r.blockers.map((reason, idx) => {
+          const isAdvisory = rqSet.has(reason) && !isHardGateReason(reason);
+          return {
+            id: slugifyBlockerId(`task-${r.taskId}-${idx}`, reason),
+            kind: classifyBlockerKind(reason, isAdvisory),
+            reason,
+            nextActions: r.rationale,
+            taskId: r.taskId,
+            advisory: isAdvisory,
+          };
+        });
+      }),
   ];
 
   // ---------------------------------------------------------------------------
@@ -310,7 +423,7 @@ export function projectLiveSnapshot(
   // ---------------------------------------------------------------------------
   const activeLockCount = activeLocks.length;
   const lockedTaskIds = activeLocks.map((l) => l.taskId);
-  const pulseState = derivePulseState(run.status, activeLockCount);
+  const pulseState = derivePulseState(run.status, activeLockCount, headerSealed);
 
   // ---------------------------------------------------------------------------
   // Strip parse — C6 field-leak guard.
@@ -387,6 +500,7 @@ export function buildSampleSnapshot(): DashboardViewModel {
       status: "review_blocked",
       authorityLabel: "runtime_authoritative",
       updatedAt: "2026-06-23T14:32:11Z",
+      sealed: false,
     },
 
     blockers: [
@@ -400,6 +514,7 @@ export function buildSampleSnapshot(): DashboardViewModel {
           "Run: npx tsx ./src/admin.ts workflow-proof --run-id latest --task-id sample-task-alpha",
         ],
         taskId: "sample-task-alpha",
+        advisory: false,
       },
       {
         id: "blocker-approval-missing-beta",
@@ -410,6 +525,7 @@ export function buildSampleSnapshot(): DashboardViewModel {
           "Run workflow-proof then write approval record via admin CLI",
         ],
         taskId: "sample-task-beta",
+        advisory: false,
       },
     ],
 

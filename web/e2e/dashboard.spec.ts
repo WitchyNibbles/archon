@@ -522,3 +522,342 @@ test.describe("Accessibility (axe-core)", () => {
     expect(focused).toBeTruthy();
   });
 });
+
+/* ─── 5. forgeDashboardBlockerClarity — advisory/sealed rendering ────────── */
+
+/**
+ * Helpers to build synthetic snapshot payloads for the advisory/sealed tests.
+ * These route the live JSON via page.route() so they work against the running
+ * vite preview server with no DB needed.
+ */
+
+function readCommittedSample(): Record<string, unknown> {
+  return JSON.parse(
+    readFileSync(new URL("../public/snapshot.json", import.meta.url), "utf8")
+  ) as Record<string, unknown>;
+}
+
+/** Serve a custom snapshot payload for both live and sample paths. */
+async function serveSnapshot(page: Parameters<typeof test>[1]["page"], payload: Record<string, unknown>): Promise<void> {
+  const body = JSON.stringify(payload);
+  await page.route("**/snapshot.live.json", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body })
+  );
+  await page.route("**/snapshot.json", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body })
+  );
+}
+
+test.describe("forgeDashboardBlockerClarity — advisory section", () => {
+  test("real blockers appear in the HERO panel (Active Blockers), not advisory", async ({ page }) => {
+    // The committed sample has advisory:false blockers — they should appear in hero.
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // HERO section is visible
+    const heroSection = page.getByRole("region", { name: "Active blockers" });
+    await expect(heroSection).toBeVisible();
+
+    // The real blockers from snapshot are in the hero panel
+    await expect(
+      page.getByText("security_reviewer gate not passed", { exact: false })
+    ).toBeVisible();
+
+    // Advisory section must NOT be present when there are no advisory blockers
+    await expect(
+      page.getByRole("region", { name: /Advisories/i })
+    ).not.toBeVisible();
+  });
+
+  test("advisory blockers render in a SEPARATE de-emphasised section", async ({ page }) => {
+    const sample = readCommittedSample();
+
+    // Inject a snapshot with one real + one advisory blocker
+    const withAdvisory = {
+      ...sample,
+      blockers: [
+        {
+          id: "real-blocker-001",
+          kind: "review_missing",
+          reason: "security_reviewer gate not passed. No ReviewRecord found.",
+          nextActions: ["Invoke security_reviewer agent"],
+          taskId: "sample-task-alpha",
+          advisory: false,
+        },
+        {
+          id: "advisory-blocker-001",
+          kind: "reasoning_quality",
+          reason: "Task sample-task-alpha: reasoning-quality check failed — task records no reasoning verdict.",
+          nextActions: ["Update task reasoning quality record"],
+          taskId: "sample-task-alpha",
+          advisory: true,
+        },
+      ],
+    };
+
+    await serveSnapshot(page, withAdvisory);
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // Hero section shows the real blocker count (1)
+    const heroSection = page.getByRole("region", { name: "Active blockers" });
+    await expect(heroSection).toBeVisible();
+    await expect(
+      page.getByText("security_reviewer gate not passed", { exact: false })
+    ).toBeVisible();
+
+    // Advisory section is rendered separately
+    const advisorySection = page.getByRole("region", { name: /Advisories/i });
+    await expect(advisorySection).toBeVisible();
+    await expect(
+      page.getByText("reasoning-quality check failed", { exact: false })
+    ).toBeVisible();
+
+    // The advisory reason must NOT appear inside the hero section
+    const advisoryReasonInHero = heroSection.getByText(
+      "reasoning-quality check failed",
+      { exact: false }
+    );
+    await expect(advisoryReasonInHero).not.toBeVisible();
+  });
+
+  test("hero shows only real blockers when advisory blockers exist alongside them", async ({ page }) => {
+    const sample = readCommittedSample();
+
+    const mixedSnapshot = {
+      ...sample,
+      blockers: [
+        {
+          id: "real-001",
+          kind: "review_missing",
+          reason: "reviewer gate not passed",
+          nextActions: [],
+          advisory: false,
+        },
+        {
+          id: "advisory-001",
+          kind: "reasoning_quality",
+          reason: "strict reasoning policy not met",
+          nextActions: [],
+          advisory: true,
+        },
+        {
+          id: "advisory-002",
+          kind: "reasoning_quality",
+          reason: "not yet ready for routing",
+          nextActions: [],
+          advisory: true,
+        },
+      ],
+    };
+
+    await serveSnapshot(page, mixedSnapshot);
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // Advisory section shows count 2
+    const advisorySection = page.getByRole("region", { name: /Advisories/i });
+    await expect(advisorySection).toBeVisible();
+    // The advisory count badge should contain "2"
+    await expect(
+      advisorySection.getByText("2", { exact: true })
+    ).toBeVisible();
+
+    // Hero section shows count 1
+    const heroSection = page.getByRole("region", { name: "Active blockers" });
+    await expect(
+      heroSection.getByText("1", { exact: true })
+    ).toBeVisible();
+  });
+
+  test("advisory section is absent when all blockers are real (no advisory:true)", async ({ page }) => {
+    // The committed sample has no advisory blockers — advisory strip must not render.
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    await expect(
+      page.getByRole("region", { name: /Advisories/i })
+    ).not.toBeVisible();
+  });
+
+  test("hero shows empty state when all blockers are advisory", async ({ page }) => {
+    const sample = readCommittedSample();
+
+    const allAdvisory = {
+      ...sample,
+      header: { ...(sample.header as Record<string, unknown>), sealed: false },
+      blockers: [
+        {
+          id: "advisory-001",
+          kind: "reasoning_quality",
+          reason: "reasoning-quality check failed",
+          nextActions: [],
+          advisory: true,
+        },
+      ],
+    };
+
+    await serveSnapshot(page, allAdvisory);
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // Hero shows "No active blockers"
+    const heroSection = page.getByRole("region", { name: "Active blockers" });
+    await expect(heroSection).toBeVisible();
+    await expect(heroSection.getByText("No active blockers")).toBeVisible();
+
+    // Advisory section still renders with the advisory
+    const advisorySection = page.getByRole("region", { name: /Advisories/i });
+    await expect(advisorySection).toBeVisible();
+  });
+
+  test("advisory section: axe 0 critical/serious violations", async ({ page }) => {
+    const sample = readCommittedSample();
+
+    const withAdvisory = {
+      ...sample,
+      blockers: [
+        {
+          id: "real-001",
+          kind: "review_missing",
+          reason: "security_reviewer gate not passed",
+          nextActions: ["Invoke security_reviewer"],
+          taskId: "sample-task-alpha",
+          advisory: false,
+        },
+        {
+          id: "advisory-001",
+          kind: "reasoning_quality",
+          reason: "reasoning-quality check failed",
+          nextActions: [],
+          taskId: "sample-task-alpha",
+          advisory: true,
+        },
+      ],
+    };
+
+    await serveSnapshot(page, withAdvisory);
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+
+    const criticalOrSerious = results.violations.filter(
+      (v) => v.impact === "critical" || v.impact === "serious"
+    );
+
+    if (criticalOrSerious.length > 0) {
+      const formatted = criticalOrSerious
+        .map(
+          (v) =>
+            `[${v.impact?.toUpperCase()}] ${v.id}: ${v.description}\n` +
+            v.nodes.slice(0, 3).map((n) => `  - ${n.html.substring(0, 120)}`).join("\n")
+        )
+        .join("\n\n");
+      throw new Error(
+        `axe (advisory section) found ${criticalOrSerious.length} critical/serious violation(s):\n\n${formatted}`
+      );
+    }
+
+    expect(criticalOrSerious).toHaveLength(0);
+  });
+});
+
+test.describe("forgeDashboardBlockerClarity — sealed badge", () => {
+  test("sealed badge is NOT shown for a non-sealed run", async ({ page }) => {
+    // Committed sample: sealed: false
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    await expect(page.getByTestId("sealed-badge")).not.toBeVisible();
+  });
+
+  test("sealed badge IS shown when header.sealed = true", async ({ page }) => {
+    const sample = readCommittedSample();
+
+    const sealedSnapshot = {
+      ...sample,
+      header: {
+        ...(sample.header as Record<string, unknown>),
+        sealed: true,
+      },
+      blockers: [],
+      pulse: { pulseState: "complete", activeLockCount: 0, lockedTaskIds: [] },
+    };
+
+    await serveSnapshot(page, sealedSnapshot);
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // Sealed badge must appear
+    const sealedBadge = page.getByTestId("sealed-badge");
+    await expect(sealedBadge).toBeVisible();
+    await expect(sealedBadge).toHaveText("Sealed");
+
+    // Authority badge must still be present alongside the sealed badge
+    await expect(
+      page.getByLabel("Authority: runtime authoritative")
+    ).toBeVisible();
+  });
+
+  test("sealed badge aria-label is accessible", async ({ page }) => {
+    const sample = readCommittedSample();
+
+    const sealedSnapshot = {
+      ...sample,
+      header: { ...(sample.header as Record<string, unknown>), sealed: true },
+      blockers: [],
+      pulse: { pulseState: "complete", activeLockCount: 0, lockedTaskIds: [] },
+    };
+
+    await serveSnapshot(page, sealedSnapshot);
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const badge = page.getByTestId("sealed-badge");
+    await expect(badge).toBeVisible();
+    const ariaLabel = await badge.getAttribute("aria-label");
+    expect(ariaLabel).toMatch(/sealed/i);
+    expect(ariaLabel).toMatch(/all tasks complete/i);
+  });
+
+  test("sealed run: axe 0 critical/serious violations", async ({ page }) => {
+    const sample = readCommittedSample();
+
+    const sealedSnapshot = {
+      ...sample,
+      header: { ...(sample.header as Record<string, unknown>), sealed: true },
+      blockers: [],
+      pulse: { pulseState: "complete", activeLockCount: 0, lockedTaskIds: [] },
+    };
+
+    await serveSnapshot(page, sealedSnapshot);
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+
+    const criticalOrSerious = results.violations.filter(
+      (v) => v.impact === "critical" || v.impact === "serious"
+    );
+
+    if (criticalOrSerious.length > 0) {
+      const formatted = criticalOrSerious
+        .map(
+          (v) =>
+            `[${v.impact?.toUpperCase()}] ${v.id}: ${v.description}\n` +
+            v.nodes.slice(0, 3).map((n) => `  - ${n.html.substring(0, 120)}`).join("\n")
+        )
+        .join("\n\n");
+      throw new Error(
+        `axe (sealed run) found ${criticalOrSerious.length} critical/serious violation(s):\n\n${formatted}`
+      );
+    }
+
+    expect(criticalOrSerious).toHaveLength(0);
+  });
+});

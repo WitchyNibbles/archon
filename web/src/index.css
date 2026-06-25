@@ -675,6 +675,159 @@ body {
 }
 
 /* ─────────────────────────────────────────────
+   ADVISORY STRIP — de-emphasised signals section
+   Separate from the HERO blocker strip.
+   Uses muted text tokens, NOT error/hero styling.
+   Advisory = reasoning-quality / routing-readiness signals.
+   ───────────────────────────────────────────── */
+
+.blocker-strip-container {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.advisory-strip {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-default);
+  background-color: var(--surface-base);
+}
+
+.advisory-strip__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-6);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.advisory-strip__title {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  /* text-secondary: AA-safe (7.6:1) — muted, de-emphasised vs hero */
+  color: var(--text-secondary);
+  /* h3 reset */
+  margin: 0;
+}
+
+.advisory-strip__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background-color: var(--surface-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  font-weight: 500;
+  /* text-secondary: legibility-critical count, AA compliant */
+  color: var(--text-secondary);
+}
+
+.advisory-strip__pills {
+  display: flex;
+  flex-direction: row;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-6) var(--space-3);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) transparent;
+}
+
+/* Advisory pill — muted, no error stripe */
+.advisory-pill {
+  flex-shrink: 0;
+  background-color: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-left-width: 3px;
+  border-left-color: var(--border-emphasis);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  min-width: 280px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.advisory-pill__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.advisory-pill__kind {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  /* text-secondary: AA-safe (7.6:1) — advisory, not hero */
+  color: var(--text-secondary);
+}
+
+.advisory-pill__taskid {
+  font-size: 9px;
+  /* text-secondary: legibility-critical, AA compliant */
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.advisory-pill__reason {
+  font-size: 12px;
+  /* text-secondary: de-emphasised body text for advisory signals */
+  color: var(--text-secondary);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.advisory-pill__action {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 11px;
+  /* text-muted: de-emphasised action hint — advisory context only */
+  color: var(--text-muted);
+}
+
+.advisory-pill__arrow {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ─────────────────────────────────────────────
+   SEALED BADGE — success token, run header
+   Shown when header.sealed = true (all tasks
+   approved / done / memorized).
+   Keeps authority badge visible alongside it.
+   ───────────────────────────────────────────── */
+
+.sealed-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  /* status-success-text: 10.8:1 on dark surface — AAA */
+  color: var(--status-success-text);
+  background-color: rgba(34, 197, 94, 0.10);
+  border: 1px solid rgba(34, 197, 94, 0.22);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ─────────────────────────────────────────────
    SWIMLANE GRID
    flex: 1 — fills remaining height
    Three equal columns: reviewer | security_reviewer | qa_engineer
