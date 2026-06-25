@@ -1,8 +1,9 @@
 // Phase 3 (ahrP3RespawnBudget): per-task respawn budget resolver.
 //
-// Reads ARCHON_MAX_RESPAWNS_PER_TASK from the environment and returns a
-// clamped integer in [1, 50]. Invalid values (non-numeric, out-of-range,
-// non-integer, empty, or absent) fall back to the default of 8.
+// Reads ARCHON_MAX_RESPAWNS_PER_TASK from the environment. Valid values are
+// integers in [1, 50]. Any value outside that range, non-integer, non-finite,
+// empty, or absent falls back to the default of 8 — it is NOT clamped to the
+// boundary but replaced with the default.
 //
 // SEC-MED-1: values outside [1, 50] resolve to the default, not the raw
 // value, so that a misconfigured env var cannot open an unbounded respawn loop.

@@ -1017,8 +1017,11 @@ export interface ProjectRuntimeMetadata extends Record<string, unknown> {
     justHandedOff?: boolean | undefined;
     /** Phase 3 (ahrP3RespawnBudget): number of respawns consumed for the task
      * identified by respawnTaskId. Incremented atomically with justHandedOff in
-     * the P2 reset write. Reset to 0 (by omitting the field) when the active task
-     * changes (respawnTaskId !== current activeTaskId). */
+     * the ARCH-C3 reset write. Forwarded (carried through) on every normal-path
+     * (non-reset) turn so the counter survives productive turns — i.e. this is a
+     * per-task-lifetime counter, not a max-consecutive counter. Reset to undefined
+     * (by omitting the field) ONLY when the active task changes
+     * (respawnTaskId !== current activeTaskId). */
     respawnCount?: number | undefined;
     /** Phase 3 (ahrP3RespawnBudget): the task ID the respawnCount is scoped to.
      * When this differs from the current activeTaskId the counter is stale and

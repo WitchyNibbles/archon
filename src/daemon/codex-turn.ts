@@ -593,6 +593,40 @@ export async function runDaemonCodexTurn(
     directiveKind: input.directive.kind,
     progressKey: beforeProgressKey
   });
+
+  // Phase 3 (ahrP3RespawnBudget): carry respawnCount and respawnTaskId forward
+  // through the normal-path (non-reset) write so that the per-task counter
+  // survives productive turns. Without this, any productive turn between respawns
+  // silently drops the counter to 0, making the budget a "max consecutive" limit
+  // rather than a "max per task lifetime" limit (bypass-able by alternating
+  // respawns and productive turns).
+  //
+  // Strategy: prefer the refreshed state's archonDaemon meta (most current DB
+  // read), then fall back to the pre-turn snapshot. Only forward the counter when
+  // respawnTaskId matches the current activeTaskId — on a task change the counter
+  // is stale and must NOT be forwarded (let it naturally reset to undefined).
+  const refreshedArchonDaemonMeta =
+    refreshedProjectRuntimeState?.metadata &&
+    typeof refreshedProjectRuntimeState.metadata === "object" &&
+    !Array.isArray(refreshedProjectRuntimeState.metadata)
+      ? ((refreshedProjectRuntimeState.metadata as Record<string, unknown>).archonDaemon as Record<string, unknown> | undefined)
+      : undefined;
+  const canonicalDaemonMeta = refreshedArchonDaemonMeta ?? archonDaemonMeta;
+  const storedRespawnCount =
+    typeof canonicalDaemonMeta?.respawnCount === "number"
+      ? canonicalDaemonMeta.respawnCount
+      : undefined;
+  const storedRespawnTaskId =
+    typeof canonicalDaemonMeta?.respawnTaskId === "string"
+      ? canonicalDaemonMeta.respawnTaskId
+      : undefined;
+  // Forward only when the counter belongs to the current task. On task change,
+  // omit both fields so the counter starts fresh (natural reset to undefined).
+  const respawnCarryFields =
+    storedRespawnTaskId === input.activeTaskId && storedRespawnCount !== undefined
+      ? { respawnCount: storedRespawnCount, respawnTaskId: storedRespawnTaskId }
+      : {};
+
   await deps.saveProjectRuntimeState({
     projectId: refreshedProjectRuntimeState?.projectId ?? projectRuntimeState?.projectId ?? projectContext.project.id,
     workspaceId: refreshedProjectRuntimeState?.workspaceId ?? projectRuntimeState?.workspaceId ?? projectContext.workspace.id,
@@ -608,6 +642,10 @@ export async function runDaemonCodexTurn(
         // Phase 2 (ahrP2ResetOnHandoff): clear justHandedOff flag after the
         // fresh continuation turn completes. The flag is consumed here.
         justHandedOff: false,
+        // Phase 3 (ahrP3RespawnBudget): forward counter from current-task meta.
+        // Omitted when the task changed (respawnCarryFields is empty), allowing
+        // the natural reset to undefined (counter starts fresh for the new task).
+        ...respawnCarryFields,
         lastRunId: input.activeRunId,
         lastTaskId: input.activeTaskId,
         lastDirectiveKind: input.directive.kind,
