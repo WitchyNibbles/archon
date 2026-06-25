@@ -17,6 +17,19 @@ interface CliArgs {
 export const PLAYWRIGHT_CONFIG_DIR = path.join(".archon", "playwright");
 export const PLAYWRIGHT_ARTIFACTS_DIR = path.join(".archon", "work", "artifacts", "playwright");
 
+// Pinned Playwright version for the system/MCP browser install. Kept exact (no
+// `@latest`) so a fresh install is reproducible and cannot silently pull a new
+// or compromised Playwright release. MUST match the web workspace pin
+// (web/package.json `@playwright/test`) so the browser binaries the daemon
+// installs line up with the version the web-e2e suite runs against. Bump both
+// together (and re-verify the browser install) when upgrading.
+export const PLAYWRIGHT_VERSION = "1.61.0";
+
+/** The exact `playwright@<version>` spec passed to npx (never `@latest`). */
+export function playwrightPackageSpec(): string {
+  return `playwright@${PLAYWRIGHT_VERSION}`;
+}
+
 /** Relative paths of the required Playwright MCP configs, matching merge.ts. */
 export function playwrightConfigRelativePaths(): readonly string[] {
   return [
@@ -44,9 +57,48 @@ export function buildPlaywrightEnv(repoRoot: string): NodeJS.ProcessEnv {
   };
 }
 
+/**
+ * Validate an operator-supplied npx binary override (ARCHON_PLAYWRIGHT_NPX_BIN).
+ *
+ * This is a trusted local override (it names the executable used to run the
+ * Playwright install), but it is passed to `spawn` WITHOUT `shell: true`, so it
+ * is never shell-interpreted. We still reject obviously-malformed values —
+ * whitespace, newlines, NUL, and shell metacharacters — so a typo or an injected
+ * value fails loudly with a clear message instead of spawning something unexpected
+ * (or being interpreted as a shell string by a future caller that adds `shell`).
+ * Returns the value unchanged when valid; throws a descriptive error otherwise.
+ */
+export function validateNpxBinOverride(value: string): string {
+  const reject = (): never => {
+    throw new Error(
+      `ARCHON_PLAYWRIGHT_NPX_BIN contains disallowed characters (whitespace, control, or shell metacharacters): ` +
+        `${JSON.stringify(value)}. Set it to a plain executable name (e.g. "npx") or a metacharacter-free path.`
+    );
+  };
+
+  // Reject control characters (C0 range incl. NUL/newlines, and DEL) by code
+  // point. Done numerically rather than via a control-character regex range so
+  // the source stays free of control chars (and the no-control-regex lint rule).
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) {
+      reject();
+    }
+  }
+
+  // Reject whitespace and shell metacharacters. A legitimate binary name or path
+  // (e.g. "npx", "/opt/my-tools/npx", "npx.cmd") uses none of these.
+  if (/[\s;&|<>$`"'\\(){}*?!]/.test(value)) {
+    reject();
+  }
+
+  return value;
+}
+
 function npxCommand(): string {
-  if (typeof process.env.ARCHON_PLAYWRIGHT_NPX_BIN === "string" && process.env.ARCHON_PLAYWRIGHT_NPX_BIN.length > 0) {
-    return process.env.ARCHON_PLAYWRIGHT_NPX_BIN;
+  const override = process.env.ARCHON_PLAYWRIGHT_NPX_BIN;
+  if (typeof override === "string" && override.length > 0) {
+    return validateNpxBinOverride(override);
   }
 
   return process.platform === "win32" ? "npx.cmd" : "npx";
@@ -96,7 +148,7 @@ async function ensureConfigExists(repoRoot: string): Promise<void> {
 
 async function installChromium(repoRoot: string): Promise<void> {
   const env = buildPlaywrightEnv(repoRoot);
-  const args = ["--yes", "playwright@latest", "install"];
+  const args = ["--yes", playwrightPackageSpec(), "install"];
   if (process.platform === "linux" && (process.env.CI === "true" || process.env.ARCHON_PLAYWRIGHT_INSTALL_DEPS === "1")) {
     args.push("--with-deps");
   }
@@ -111,7 +163,7 @@ async function verifyChromiumLaunch(repoRoot: string): Promise<void> {
     npxCommand(),
     [
       "--yes",
-      "--package=playwright@latest",
+      `--package=${playwrightPackageSpec()}`,
       "node",
       "-e",
       [
