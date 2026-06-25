@@ -1010,6 +1010,11 @@ export interface ProjectRuntimeMetadata extends Record<string, unknown> {
     | undefined;
   archonDaemon?: {
     sessionId?: string | undefined;
+    /** Phase 2 (ahrP2ResetOnHandoff): true when session was just reset by a
+     * handoff. Cleared to false in the first saveProjectRuntimeState write of
+     * the fresh continuation turn. ARCH-C3: must be set in the same write as
+     * sessionId=undefined. */
+    justHandedOff?: boolean | undefined;
     lastRunId?: string | undefined;
     lastTaskId?: string | undefined;
     lastDirectiveKind?: string | undefined;

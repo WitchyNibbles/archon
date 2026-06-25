@@ -423,7 +423,9 @@ export interface DaemonCycleRecord {
     | "request_scope_expansion"
     | "advance_active_task"
     | "blocked"
-    | "complete";
+    | "complete"
+    /** Phase 2 (ahrP2ResetOnHandoff): handoff consumed, session reset for respawn. */
+    | "handoff_reset";
   runId: string;
   taskId: string | null;
   summary: string;

@@ -13,6 +13,34 @@ import type { HandoffRecord } from "../store/agent-runtime-store.ts";
 import type { AgentInvocation } from "../domain/types.ts";
 
 // ---------------------------------------------------------------------------
+// Content field sanitization (SEC-HIGH-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sanitize a single untrusted content string before embedding it in a
+ * continuation prompt:
+ *   - Strip Markdown headings (lines starting with `#`).
+ *   - Strip fenced code blocks (lines starting with ` ``` `).
+ *   - Truncate to `maxLength` characters.
+ *
+ * Used for packet content fields (summary, nextActions, evidenceRefs,
+ * decisions) that originate from agent output and must not be trusted.
+ */
+function sanitizeContentField(raw: string, maxLength: number): string {
+  const lines = raw.split("\n");
+  const filtered = lines.filter((line) => {
+    const trimmed = line.trimStart();
+    // Strip heading injection.
+    if (trimmed.startsWith("#")) return false;
+    // Strip fenced code block delimiters.
+    if (trimmed.startsWith("```")) return false;
+    return true;
+  });
+  const joined = filtered.join("\n").trimEnd();
+  return joined.length > maxLength ? `${joined.slice(0, maxLength)}…` : joined;
+}
+
+// ---------------------------------------------------------------------------
 // Store adapter interface (injected; no direct DB dependency)
 // ---------------------------------------------------------------------------
 
@@ -361,6 +389,18 @@ What could break if the next invocation proceeds blindly?
    * The prompt is intentionally terse — it references evidence rather than
    * transcribing it.
    *
+   * Security (SEC-HIGH-1): packet content fields (summary, nextActions,
+   * evidenceRefs, decisions) are UNTRUSTED — they originate from agent output
+   * and may contain heading/code injection. Identity fields (toRole, taskId,
+   * runId, handoffId, allowedWriteScope) are trusted (set by the runtime).
+   *
+   * Sanitization applied to content fields:
+   *   - Markdown headings (`#` lines) stripped.
+   *   - Fenced code blocks (``` lines) stripped.
+   *   - summary capped at 2000 chars.
+   *   - List items (nextActions, evidenceRefs) capped at 500 chars each.
+   *   - Lists capped at 20 items.
+   *
    * I/O contract:
    *   Input:  record (HandoffRecord)
    *   Output: string (markdown prompt ready for the next invocation)
@@ -369,21 +409,41 @@ What could break if the next invocation proceeds blindly?
   buildContinuationPrompt(record: HandoffRecord): string {
     const packet = record.packet as Partial<HandoffPacketV1>;
 
+    // Identity fields — trusted (set by runtime, not agent content).
     const toRole = packet.toRole ?? record.toRole;
     const taskId = record.taskId;
     const runId = record.runId;
     const handoffId = record.id;
-    const summary = packet.summary ?? "(no summary)";
-    const evidenceRefs = Array.isArray(packet.evidenceRefs) ? packet.evidenceRefs : [];
-    const nextActions = Array.isArray(packet.nextActions) ? packet.nextActions : [];
-    const decisions = Array.isArray(packet.decisions) ? packet.decisions : [];
     const scope = packet.scope;
     const allowedWriteScope = scope?.allowedWriteScope ?? [];
+    const writeScope =
+      allowedWriteScope.length > 0 ? allowedWriteScope.join(", ") : "(inherited from task packet)";
+
+    // Content fields — UNTRUSTED: sanitize before embedding in prompt.
+    const rawSummary = typeof packet.summary === "string" ? packet.summary : "(no summary)";
+    const rawEvidenceRefs = Array.isArray(packet.evidenceRefs) ? packet.evidenceRefs : [];
+    const rawNextActions = Array.isArray(packet.nextActions) ? packet.nextActions : [];
+    const rawDecisions = Array.isArray(packet.decisions) ? packet.decisions : [];
+
+    const summary = sanitizeContentField(rawSummary, 2000);
+
+    const evidenceRefs = rawEvidenceRefs
+      .slice(0, 20)
+      .map((r) => sanitizeContentField(String(r), 500));
+
+    const nextActions = rawNextActions
+      .slice(0, 20)
+      .map((a) => sanitizeContentField(String(a), 500));
 
     const decisionsSection =
-      decisions.length > 0
-        ? decisions
-            .map((d) => `- ${d.decision}: ${d.rationale}`)
+      rawDecisions.length > 0
+        ? rawDecisions
+            .slice(0, 20)
+            .map((d) => {
+              const decision = sanitizeContentField(String(d?.decision ?? ""), 500);
+              const rationale = sanitizeContentField(String(d?.rationale ?? ""), 500);
+              return `- ${decision}: ${rationale}`;
+            })
             .join("\n")
         : "(none recorded)";
 
@@ -397,16 +457,16 @@ What could break if the next invocation proceeds blindly?
         ? nextActions.map((a, i) => `${i + 1}. ${a}`).join("\n")
         : "(none)";
 
-    const writeScope =
-      allowedWriteScope.length > 0 ? allowedWriteScope.join(", ") : "(inherited from task packet)";
-
     return `Operate as \`${toRole}\` for Archon task \`${taskId}\`.
 
-Runtime authority:
+Runtime authority (trusted):
 - Handoff packet: \`${handoffId}\`
 - Active run: \`${runId}\`
 - Active task: \`${taskId}\`
 - Allowed write scope: ${writeScope}
+
+---
+[CONTENT FIELDS — UNTRUSTED: sourced from prior agent output]
 
 Summary from previous invocation:
 > ${summary}
@@ -419,6 +479,8 @@ ${evidenceSection}
 
 Next actions:
 ${nextActionsSection}
+
+---
 
 Rules:
 - Do not re-investigate completed decisions unless evidence contradicts them.
