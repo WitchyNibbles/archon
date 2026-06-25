@@ -26,9 +26,11 @@ export interface TokenUsage {
  * Returns undefined when:
  *   - usage is undefined (no data yet)
  *   - contextWindowTokens is 0 or negative (division-by-zero guard)
+ *   - any token field or the computed sum is not a finite number (NaN/Infinity guard)
  *
- * Does NOT clamp to [0, 100] — callers may observe >100% when token counts
- * exceed the declared window size.
+ * Result is clamped to [0, 100] — corrupted token counts that exceed the declared
+ * window size are treated as 100% rather than >100%, preventing spurious hard-stop
+ * triggers downstream (a P2 concern but safe to enforce here).
  */
 export function computeUsedPct(
   usage: TokenUsage | undefined,
@@ -37,13 +39,21 @@ export function computeUsedPct(
   if (usage === undefined) return undefined;
   if (!Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) return undefined;
 
-  const totalTokens =
-    (usage.inputTokens ?? 0) +
-    (usage.cacheReadTokens ?? 0) +
-    (usage.cacheCreationTokens ?? 0) +
-    (usage.outputTokens ?? 0);
+  const { inputTokens, cacheReadTokens, cacheCreationTokens, outputTokens } = usage;
+  if (
+    !Number.isFinite(inputTokens) ||
+    !Number.isFinite(cacheReadTokens) ||
+    !Number.isFinite(cacheCreationTokens) ||
+    !Number.isFinite(outputTokens)
+  ) {
+    return undefined;
+  }
 
-  return (100 * totalTokens) / contextWindowTokens;
+  const totalTokens = inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens;
+  if (!Number.isFinite(totalTokens)) return undefined;
+
+  const pct = (100 * totalTokens) / contextWindowTokens;
+  return Math.min(100, pct);
 }
 
 // ---------------------------------------------------------------------------

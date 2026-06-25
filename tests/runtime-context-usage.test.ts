@@ -69,13 +69,42 @@ describe("computeUsedPct", () => {
     assert.equal(result, 50);
   });
 
-  it("can return over 100% when tokens exceed window (no clamping)", () => {
+  it("clamps to 100 when tokens exceed window (no spurious >100% telemetry)", () => {
     const result = computeUsedPct(
       { inputTokens: 250_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
       200_000
     );
-    // 250000 / 200000 * 100 = 125
-    assert.equal(result, 125);
+    // 250000 / 200000 * 100 = 125, but clamped to 100
+    assert.equal(result, 100);
+  });
+
+  it("returns undefined when inputTokens is NaN", () => {
+    assert.equal(
+      computeUsedPct(
+        { inputTokens: NaN, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        200_000
+      ),
+      undefined
+    );
+  });
+
+  it("returns undefined when outputTokens is Infinity", () => {
+    assert.equal(
+      computeUsedPct(
+        { inputTokens: 0, outputTokens: Infinity, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        200_000
+      ),
+      undefined
+    );
+  });
+
+  it("clamps to exactly 100 when token sum equals window size", () => {
+    const result = computeUsedPct(
+      { inputTokens: 200_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      200_000
+    );
+    // 200000 / 200000 * 100 = 100 (exactly at ceiling, not exceeding it)
+    assert.equal(result, 100);
   });
 });
 

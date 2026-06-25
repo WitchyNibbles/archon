@@ -603,9 +603,9 @@ test("runDaemonCodexTurn: when invocationId and monitor are provided and codex t
     initialSession: "sess-monitor-0"
   });
 
-  // Inject invocationId and monitor into deps (RED: fields don't exist yet on DaemonCodexTurnDeps)
-  (harness.deps as DaemonCodexTurnDeps & { invocationId?: string; monitor?: ContextBudgetMonitor }).invocationId = "inv-test-001";
-  (harness.deps as DaemonCodexTurnDeps & { invocationId?: string; monitor?: ContextBudgetMonitor }).monitor = monitor;
+  // invocationId and monitor are now first-class fields on DaemonCodexTurnDeps — no cast needed.
+  harness.deps.invocationId = "inv-test-001";
+  harness.deps.monitor = monitor;
 
   const result = await runDaemonCodexTurn(turnInput(), harness.deps);
 
@@ -619,12 +619,8 @@ test("runDaemonCodexTurn: when invocationId and monitor are provided and codex t
   assert.equal(stubStore.samples[0]!.runId, "run-1");
   assert.equal(stubStore.samples[0]!.taskId, "task-1");
   assert.equal(stubStore.samples[0]!.source, "sdk");
-  // usedPct = (150000+10000) / 200000 * 100 = 80 (exactly hardStopPct)
-  // or with default 200000 window: (150000+10000+0+0)/200000*100 = 80
-  assert.ok(
-    typeof stubStore.samples[0]!.usedPercentage === "number" && stubStore.samples[0]!.usedPercentage > 0,
-    `usedPercentage should be a positive number, got ${stubStore.samples[0]!.usedPercentage}`
-  );
+  // usedPct = (150000+10000+0+0) / 200000 * 100 = 80 (exactly hardStopPct)
+  assert.equal(stubStore.samples[0]!.usedPercentage, 80, "usedPercentage is exactly 80");
 });
 
 test("runDaemonCodexTurn: when invocationId and monitor are absent, no error is thrown and turn runs normally", async () => {
@@ -683,11 +679,62 @@ test("runDaemonCodexTurn: when codex turn returns no usage, monitor.recordSample
     initialSession: "sess-nousage-0"
   });
 
-  (harness.deps as DaemonCodexTurnDeps & { invocationId?: string; monitor?: ContextBudgetMonitor }).invocationId = "inv-test-002";
-  (harness.deps as DaemonCodexTurnDeps & { invocationId?: string; monitor?: ContextBudgetMonitor }).monitor = monitor;
+  harness.deps.invocationId = "inv-test-002";
+  harness.deps.monitor = monitor;
 
   const result = await runDaemonCodexTurn(turnInput(), harness.deps);
 
   assert.equal(result, undefined, "no error when usage is absent");
   assert.equal(stubStore.samples.length, 0, "no sample recorded when usage is absent");
+});
+
+test("runDaemonCodexTurn: recordContextSample throwing does not prevent the turn from resolving (fire-and-forget)", async () => {
+  // Proves that the fire-and-forget .catch() pattern makes DB write failures
+  // non-fatal. A throwing store must not propagate to the caller.
+  const dir = await mkdtemp(path.join(tmpdir(), "archon-codexturn-ahr-p1-throw-"));
+
+  const throwingStore: ContextBudgetStoreLike = {
+    async recordContextSample(_data) {
+      throw new Error("simulated DB write failure");
+    },
+    async getLatestContextSample(_invocationId) {
+      return undefined;
+    },
+    async hasCommittedHandoff(_invocationId) {
+      return false;
+    }
+  };
+  const throwingMonitor = new ContextBudgetMonitor(throwingStore);
+
+  const harness = makeDeps({
+    cwd: dir,
+    directive: directive(),
+    initialSnapshot: snapshotWithTask({ taskId: "task-1", runStatus: "in_progress" }),
+    refreshedSnapshot: snapshotWithTask({ taskId: "task-1", runStatus: "in_review" }),
+    projectRuntimeState: runtimeState(),
+    refreshedProjectRuntimeState: runtimeState(),
+    codexResult: {
+      sessionId: "sess-throw",
+      finalMessage: JSON.stringify({ status: "completed", summary: "done" }),
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      usage: {
+        inputTokens: 100_000,
+        outputTokens: 10_000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0
+      }
+    },
+    initialSession: "sess-throw-0"
+  });
+
+  harness.deps.invocationId = "inv-throw-001";
+  harness.deps.monitor = throwingMonitor;
+
+  // Must resolve (not reject) even though recordContextSample throws.
+  const result = await runDaemonCodexTurn(turnInput(), harness.deps);
+
+  assert.equal(result, undefined, "turn resolves normally despite recordContextSample throwing");
+  assert.equal(harness.session(), "sess-throw", "session id still written through the holder");
 });

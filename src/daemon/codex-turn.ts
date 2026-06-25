@@ -222,7 +222,7 @@ export async function runDaemonCodexTurn(
   // Observe-only — never throws, never resets/respawns. Sampling is best-effort:
   // missing invocationId, missing monitor, missing usage, or zero window → skip.
   if (deps.invocationId !== undefined && deps.monitor !== undefined && codexTurn.usage !== undefined) {
-    const contextWindowTokens = resolveModelContextTokens(deps.env as Record<string, string | undefined>);
+    const contextWindowTokens = resolveModelContextTokens(deps.env);
     const usedPct = computeUsedPct(codexTurn.usage, contextWindowTokens);
     if (usedPct !== undefined) {
       // Fire-and-forget with best-effort error suppression: a DB write failure
