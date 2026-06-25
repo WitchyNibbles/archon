@@ -32,10 +32,16 @@ import type { AgentInvocation } from "../domain/types.ts";
  * decisions) that originate from agent output and must not be trusted.
  */
 function sanitizeContentField(raw: string, maxLength: number): string {
+  // Step 0: Unicode-normalize to NFKC so that homoglyphs (e.g. Cyrillic
+  // lookalikes of ASCII letters) are mapped to their canonical equivalents
+  // before any regex matching.  This prevents "Runtіme authority" (with a
+  // Cyrillic і) from surviving the marker-strip regex.
+  const normalized = raw.normalize("NFKC");
+
   // Step 1: collapse ALL newlines/CRs to space BEFORE line-based stripping.
   // This prevents injecting heading/fence lines via embedded `\n` characters
   // in a single "string" field value.
-  const collapsed = raw.replace(/[\r\n]+/g, " ");
+  const collapsed = normalized.replace(/[\r\n]+/g, " ");
 
   // Step 2: strip case-insensitive structural boundary markers that could
   // spoof the trusted identity section inside the continuation prompt.

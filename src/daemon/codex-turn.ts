@@ -358,22 +358,27 @@ export async function runDaemonCodexTurn(
     const stateRequiresReset =
       sampledState === "handoff_required" || sampledState === "hard_stop";
 
-    // hasCommittedHandoff check: HandoffStoreLike does not expose this directly
-    // from HandoffController, but we may have a handoff record waiting (already
-    // committed by the agent). Use getLatestForTask as a proxy — if a record
-    // exists AND status is handoff_written/needs_followup → committed.
-    // The simpler signal: if state requires reset, we reset; OR if the store
-    // has an unconsumed handoff record (committed before this sample).
+    // Two independent reset signals:
+    //   1. stateRequiresReset — monitor sampled handoff_required or hard_stop.
+    //   2. committedHandoff   — agent already wrote a handoff record
+    //      (status = handoff_written / needs_followup) before the monitor fired.
+    // Either signal triggers the reset path.
+    //
+    // getLatestForTask is fetched here (not as a commit-proxy) so the packet
+    // quality check below can inspect the record regardless of which signal
+    // fired.  hasCommittedHandoff is the authoritative commit signal; it is
+    // skipped when stateRequiresReset is already true (one DB round-trip).
     let existingHandoff = await deps.handoffController.getLatestForTask(
       input.activeRunId,
       input.activeTaskId
     );
 
-    // Check via HandoffController.hasCommittedHandoff — typed method on the
-    // controller, backed by HandoffStoreLike.hasCommittedHandoff (part of the
-    // public interface). Returns true when the current invocation already
-    // committed a handoff record (status = handoff_written/needs_followup).
-    const committedHandoff = await deps.handoffController.hasCommittedHandoff(deps.invocationId);
+    // Only call hasCommittedHandoff when the state-monitor signal is absent —
+    // if stateRequiresReset is already true the reset is unconditional and the
+    // extra DB round-trip is unnecessary.
+    const committedHandoff = stateRequiresReset
+      ? false
+      : await deps.handoffController.hasCommittedHandoff(deps.invocationId);
 
     const shouldReset = stateRequiresReset || committedHandoff;
 
