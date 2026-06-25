@@ -300,3 +300,62 @@ describe("runAssetQA — report shape", () => {
     fs.unlinkSync(svgPath);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Defense-in-depth path guard (repoRoot supplied)
+// ---------------------------------------------------------------------------
+
+describe("runAssetQA — defense-in-depth path guard", () => {
+  it("throws before reading when assetPath escapes the repoRoot", () => {
+    // The TMP_DIR is outside any synthetic repo root so we use a synthetic repo.
+    const syntheticRepo = fs.mkdtempSync(path.join(os.tmpdir(), "archon-qa-repo-guard-"));
+    // A path in TMP_DIR (outside syntheticRepo) should be rejected.
+    const outsidePath = writeTmp(TMP_DIR, "guard-test.svg", GOOD_SVG);
+    const req = makeRequest({ outputPath: outsidePath });
+    try {
+      assert.throws(
+        () => runAssetQA(outsidePath, req, syntheticRepo),
+        (err: unknown) => {
+          assert.ok(err instanceof Error, "expected Error");
+          assert.ok(
+            err.message.includes("outside the repository"),
+            `expected repo-escape error, got: ${err.message}`
+          );
+          return true;
+        }
+      );
+    } finally {
+      fs.unlinkSync(outsidePath);
+      fs.rmdirSync(syntheticRepo);
+    }
+  });
+
+  it("does NOT throw when assetPath is inside the repoRoot (path guard ok)", () => {
+    const syntheticRepo = fs.mkdtempSync(path.join(os.tmpdir(), "archon-qa-repo-guard-ok-"));
+    const insidePath = writeTmp(syntheticRepo, "inside.svg", GOOD_SVG);
+    const req = makeRequest({ outputPath: insidePath, preferredFormat: "svg" });
+    try {
+      // Must not throw — path is inside the repo root.
+      const report = runAssetQA(insidePath, req, syntheticRepo);
+      assert.equal(report.pass, true, "inside-repo good SVG must pass QA");
+    } finally {
+      // cleanup: inside.svg may already be removed by the check; best-effort
+      try { fs.unlinkSync(insidePath); } catch { /* best-effort */ }
+      fs.rmdirSync(syntheticRepo);
+    }
+  });
+
+  it("skips the guard (no throw) when repoRoot is omitted", () => {
+    // Path is in TMP_DIR (outside any synthetic repo) — but no repoRoot given
+    // so the bounds check is skipped entirely.
+    const outsidePath = writeTmp(TMP_DIR, "no-guard-test.svg", GOOD_SVG);
+    const req = makeRequest({ outputPath: outsidePath });
+    try {
+      // Must not throw — no repoRoot means no check.
+      const report = runAssetQA(outsidePath, req);
+      assert.ok(typeof report.pass === "boolean", "expected a valid report");
+    } finally {
+      fs.unlinkSync(outsidePath);
+    }
+  });
+});

@@ -23,6 +23,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -382,7 +383,9 @@ export function runForgeBaseline(): ForgeEvalReport {
   {
     const badContent = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><script>alert(1)</script></svg>`;
     const tmpDir = os.tmpdir();
-    const tmpPath = path.join(tmpDir, "archon-eval-bad-asset.svg");
+    // Use a random suffix to avoid parallel CI shard collisions on the fixed filename.
+    const randSuffix = crypto.randomBytes(8).toString("hex");
+    const tmpPath = path.join(tmpDir, `archon-eval-bad-asset-${randSuffix}.svg`);
     let report;
     try {
       fs.writeFileSync(tmpPath, badContent, "utf8");

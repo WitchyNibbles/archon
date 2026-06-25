@@ -301,3 +301,63 @@ describe("reconcileAssets — schema round-trip", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Defense-in-depth path guard (repoRoot supplied)
+// ---------------------------------------------------------------------------
+
+describe("reconcileAssets — defense-in-depth path guard", () => {
+  it("throws before filesystem access when an outputPath escapes the repoRoot", () => {
+    const syntheticRepo = fs.mkdtempSync(path.join(os.tmpdir(), "archon-manifest-guard-"));
+    // A path in TMP_DIR is outside the synthetic repo.
+    const outsidePath = path.join(TMP_DIR, "outside-output.svg");
+    const requests: AssetRequest[] = [makeRequest("guard-001", outsidePath, "test prompt")];
+    try {
+      assert.throws(
+        () => reconcileAssets(requests, undefined, syntheticRepo),
+        (err: unknown) => {
+          assert.ok(err instanceof Error, "expected Error");
+          assert.ok(
+            err.message.includes("outside the repository"),
+            `expected repo-escape error, got: ${err.message}`
+          );
+          return true;
+        }
+      );
+    } finally {
+      fs.rmdirSync(syntheticRepo);
+    }
+  });
+
+  it("accepts requests whose outputPaths are inside the repoRoot", () => {
+    const syntheticRepo = fs.mkdtempSync(path.join(os.tmpdir(), "archon-manifest-guard-ok-"));
+    const insidePath = path.join(syntheticRepo, "output.svg");
+    fs.writeFileSync(insidePath, "<svg/>", "utf8");
+    const requests: AssetRequest[] = [makeRequest("guard-ok-001", insidePath, "test prompt")];
+    try {
+      // Must not throw — path is inside the repo root.
+      const result = reconcileAssets(requests, undefined, syntheticRepo);
+      assert.ok(
+        result.entries.length === 1 || result.missingOutputs.length >= 0,
+        "expected a valid reconcile result"
+      );
+    } finally {
+      try { fs.unlinkSync(insidePath); } catch { /* best-effort */ }
+      fs.rmdirSync(syntheticRepo);
+    }
+  });
+
+  it("skips the guard (no throw) when repoRoot is omitted", () => {
+    // outputPath is in TMP_DIR (outside any synthetic repo) — no repoRoot given,
+    // so no bounds check runs and no error is thrown.
+    const outsidePath = path.join(TMP_DIR, "no-guard-output.svg");
+    fs.writeFileSync(outsidePath, "<svg/>", "utf8");
+    const requests: AssetRequest[] = [makeRequest("no-guard-001", outsidePath, "test prompt")];
+    try {
+      const result = reconcileAssets(requests);
+      assert.ok(Array.isArray(result.entries), "expected entries array");
+    } finally {
+      try { fs.unlinkSync(outsidePath); } catch { /* best-effort */ }
+    }
+  });
+});

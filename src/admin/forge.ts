@@ -25,7 +25,10 @@
  */
 
 import { readFile, writeFile as fsWriteFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import process from "node:process";
+import { resolveWithinRepo } from "../forge/repo-path.ts";
 import {
   buildSampleSnapshot,
   buildSnapshotFromLive,
@@ -49,6 +52,10 @@ import type {
   RoutingRecommendationReport,
   ReviewRecord
 } from "../domain/types.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+/** Absolute path to the repository root (two levels up from src/admin/). */
+const REPO_ROOT = resolve(__dirname, "..", "..");
 
 /** Default maximum cycles for --watch when --max-cycles is not specified. */
 const DEFAULT_MAX_WATCH_CYCLES = 60;
@@ -127,6 +134,12 @@ export interface ForgeCriticDeps {
   writeStdout: (data: string) => void;
   /** Write the human summary to stderr. */
   writeStderr: (data: string) => void;
+  /**
+   * Optional repo root for defense-in-depth path guard. When provided, the
+   * snapshot path MUST resolve within this root (symlinks resolved) before
+   * the file is read. When omitted, no bounds check is performed.
+   */
+  repoRoot?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +467,19 @@ export async function executeCriticVerb(
     );
   }
 
+  // Defense-in-depth: guard snapshot path before reading (symlinks resolved).
+  // Only runs when deps.repoRoot is supplied by the caller.
+  if (deps.repoRoot !== undefined) {
+    try {
+      resolveWithinRepo(snapshotPath, { repoRoot: deps.repoRoot });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `forge critic: snapshot path "${snapshotPath}" is outside the repository root: ${msg}`
+      );
+    }
+  }
+
   // Read the file — surface errors with a readable prefix.
   let raw: string;
   try {
@@ -632,11 +658,19 @@ export async function forgeCommand(
   }
 
   if (verb === "critic") {
+    // Wire the real repo root for the defense-in-depth path guard only when no
+    // caller-supplied deps override the critic configuration. When tests inject
+    // deps, they are responsible for setting repoRoot if they want the guard.
+    // This avoids test-path collisions where "/tmp/snap.json" (a common test
+    // fixture path) would be rejected by the real REPO_ROOT guard.
+    const repoRootForCritic: { repoRoot?: string } =
+      deps?.critic === undefined ? { repoRoot: REPO_ROOT } : {};
     const criticDeps: ForgeCriticDeps = {
       readFile: (path) => readFile(path, "utf8"),
       runChecker: runAntiGenericChecker,
       writeStdout: (data) => process.stdout.write(data),
       writeStderr: (data) => process.stderr.write(data),
+      ...repoRootForCritic,
       ...deps?.critic
     };
     const result = await executeCriticVerb(args.slice(1), criticDeps);

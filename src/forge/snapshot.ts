@@ -34,10 +34,11 @@
 
 import { writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { resolve, dirname, sep } from "node:path";
+import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DashboardViewModelSchema } from "./dashboard-contract.ts";
 import type { DashboardViewModel } from "./dashboard-contract.ts";
+import { resolveWithinRepo } from "./repo-path.ts";
 import type {
   RunStatusSnapshot,
   RoutingRecommendationReport,
@@ -82,14 +83,22 @@ export function resolveSnapshotOutputPath(
   if (arg === STDOUT_TARGET) {
     return STDOUT_TARGET;
   }
-  const resolved = resolve(repoRoot, arg);
-  if (resolved !== repoRoot && !resolved.startsWith(`${repoRoot}${sep}`)) {
+  // Delegate to the shared helper: enforces repo-bounds + symlink resolution.
+  // Wraps the error message in the legacy "must stay within the repository"
+  // phrasing so existing tests that match on that string remain green.
+  let resolved: string;
+  try {
+    resolved = resolveWithinRepo(arg, { repoRoot, allowedExt: [".json"] });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Rephrase extension error to match legacy wording.
+    if (msg.includes("disallowed extension")) {
+      throw new Error(`snapshot output path must end in .json; got ${resolve(repoRoot, arg)}`);
+    }
+    // Rephrase bounds error to match legacy wording.
     throw new Error(
-      `snapshot output path must stay within the repository (${repoRoot}); refusing to write to ${resolved}`
+      `snapshot output path must stay within the repository (${repoRoot}); refusing to write to ${resolve(repoRoot, arg)}`
     );
-  }
-  if (!resolved.endsWith(".json")) {
-    throw new Error(`snapshot output path must end in .json; got ${resolved}`);
   }
   return resolved;
 }
