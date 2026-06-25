@@ -46,6 +46,8 @@ import type { RecordReviewCommandInput } from "./review.ts";
 import { AgentRuntimeStore } from "./store/agent-runtime-store.ts";
 import { AgenticLoopController } from "./runtime/agentic-loop.ts";
 import type { AgenticLoopStoreLike } from "./runtime/agentic-loop.ts";
+import { HandoffController } from "./runtime/handoff-controller.ts";
+import type { HandoffStoreLike } from "./runtime/handoff-controller.ts";
 import { ContinuationContextBuilder } from "./runtime/continuation-context.ts";
 import { recoverOrphanedInvocations } from "./runtime/crash-recovery.ts";
 import { ContextBudgetMonitor, resolveArchonContextPolicy } from "./runtime/context-budget.ts";
@@ -423,7 +425,9 @@ export interface DaemonCycleRecord {
     | "request_scope_expansion"
     | "advance_active_task"
     | "blocked"
-    | "complete";
+    | "complete"
+    /** Phase 2 (ahrP2ResetOnHandoff): handoff consumed, session reset for respawn. */
+    | "handoff_reset";
   runId: string;
   taskId: string | null;
   summary: string;
@@ -464,6 +468,11 @@ export interface ExecuteDaemonCommandOptions extends ExecuteAdvanceActiveTaskCom
    * When absent, both sampling and invocation recording are skipped (graceful
    * degradation — tests that don't inject a store still work). */
   agentLoopStore?: AgenticLoopStoreLike | undefined;
+  /** Optional handoff store. When present (P2 ahrP2ResetOnHandoff), the daemon
+   * constructs a HandoffController and wires the session-reset path. When
+   * absent, P2 reset is skipped (graceful degradation). In production this is
+   * the same AgentRuntimeStore that also satisfies agentLoopStore. */
+  handoffStore?: HandoffStoreLike | undefined;
 }
 
 
@@ -934,6 +943,14 @@ export async function executeDaemonCommandFromArgs(
     ? new ContextBudgetMonitor(options.agentLoopStore)
     : undefined;
 
+  // Phase 2 (ahrP2ResetOnHandoff): construct HandoffController from the
+  // optional handoffStore. When absent, the P2 reset path is skipped
+  // (graceful degradation). In production daemonCommand() passes the same
+  // AgentRuntimeStore for both agentLoopStore and handoffStore.
+  const handoffController = options.handoffStore !== undefined
+    ? new HandoffController(options.handoffStore)
+    : undefined;
+
   const result = await withDaemonLock(cwd, async () => {
     const cycles: DaemonCycleRecord[] = [];
     let latestSessionId: string | undefined;
@@ -1049,6 +1066,7 @@ export async function executeDaemonCommandFromArgs(
       // dispatch_owner, so the codex-turn runner can record context samples.
       // Best-effort: startInvocation failure must not block the loop turn.
       let cycleInvocationId: string | undefined;
+      let cycleRole: string | undefined;
       if (
         directive.kind === "dispatch_owner" &&
         options.agentLoopStore !== undefined &&
@@ -1057,14 +1075,24 @@ export async function executeDaemonCommandFromArgs(
       ) {
         try {
           const rec = directive.recommendation;
-          const role = rec.targetRole ?? "specialist_owner";
+          cycleRole = rec.targetRole ?? "specialist_owner";
           const loopController = new AgenticLoopController(options.agentLoopStore, { runId: activeRunId });
-          cycleInvocationId = await loopController.startInvocation(rec.taskId, role);
+          cycleInvocationId = await loopController.startInvocation(rec.taskId, cycleRole);
         } catch (_invErr: unknown) {
           // Intentional: invocation recording failure is non-fatal.
           // cycleInvocationId remains undefined → sampling is skipped this cycle.
         }
       }
+
+      // Phase 2 (ahrP2ResetOnHandoff): startNextInvocation registers the
+      // continuation invocation in the agentic loop store so the reset path
+      // can consume the handoff and link it to the next turn.
+      const startNextInvocation = options.agentLoopStore !== undefined && activeRunId !== null
+        ? async (taskId: string, role: string): Promise<string> => {
+            const loopController = new AgenticLoopController(options.agentLoopStore!, { runId: activeRunId! });
+            return loopController.startInvocation(taskId, role);
+          }
+        : undefined;
 
       // Loop-monolith decomposition (6h): the codex-turn runner now lives in
       // ./daemon/codex-turn.ts. This thin wrapper threads the per-cycle inputs
@@ -1096,7 +1124,11 @@ export async function executeDaemonCommandFromArgs(
           saveProjectRuntimeState: options.saveProjectRuntimeState,
           checkpointRun: options.checkpointRun,
           invocationId: cycleInvocationId,
-          monitor: contextBudgetMonitor
+          monitor: contextBudgetMonitor,
+          // Phase 2 (ahrP2ResetOnHandoff): wire the reset deps.
+          handoffController,
+          role: cycleRole,
+          startNextInvocation
         });
       // Loop-monolith decomposition (6g): the operator-required continuation
       // handler now lives in ./daemon/operator-continuation.ts. This thin
@@ -1371,7 +1403,10 @@ export async function daemonCommand(args: readonly string[]) {
         getApprovals(runId, taskId) {
           return store.getApprovals(runId, taskId);
         },
-        agentLoopStore: agentStore
+        agentLoopStore: agentStore,
+        // Phase 2 (ahrP2ResetOnHandoff): AgentRuntimeStore satisfies both
+        // AgenticLoopStoreLike and HandoffStoreLike — pass it for both.
+        handoffStore: agentStore
       });
 
       if (resolvedFormat === "text") {

@@ -1532,7 +1532,8 @@ export async function runOrchestrationBaseline(): Promise<OrchestrationEvalRepor
         return fakeHandoffRecord;
       },
       async markHandoffConsumed() { /* no-op */ },
-      async updateAgentInvocationStatus() { /* no-op */ }
+      async updateAgentInvocationStatus() { /* no-op */ },
+      async hasCommittedHandoff() { return false; }
     };
 
     const builder = new ContinuationContextBuilder(mockHandoffStore);
@@ -1769,7 +1770,8 @@ export async function runOrchestrationBaseline(): Promise<OrchestrationEvalRepor
       async createHandoff() { return positiveHandoffRecord; },
       async getLatestUnconsumedHandoff() { return positiveHandoffRecord; },
       async markHandoffConsumed() { /* no-op */ },
-      async updateAgentInvocationStatus() { /* no-op */ }
+      async updateAgentInvocationStatus() { /* no-op */ },
+      async hasCommittedHandoff() { return false; }
     };
 
     const builder = new ContinuationContextBuilder(mockHandoffStore);
@@ -1871,7 +1873,8 @@ export async function runOrchestrationBaseline(): Promise<OrchestrationEvalRepor
       async createHandoff() { return negativeHandoffRecord; },
       async getLatestUnconsumedHandoff() { return negativeHandoffRecord; },
       async markHandoffConsumed() { /* no-op */ },
-      async updateAgentInvocationStatus() { /* no-op */ }
+      async updateAgentInvocationStatus() { /* no-op */ },
+      async hasCommittedHandoff() { return false; }
     };
 
     const builder = new ContinuationContextBuilder(mockHandoffStore);

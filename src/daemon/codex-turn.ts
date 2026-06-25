@@ -31,7 +31,12 @@ import {
   computeDaemonStagnantTurnCount,
   evaluateDaemonNoProgressOutcome
 } from "./turn-analysis.ts";
-import { writeDaemonScopeExpansionRequest } from "./state-writers.ts";
+import {
+  writeDaemonScopeExpansionRequest,
+  writeDaemonContinuationContext,
+  readDaemonContinuationContext,
+  clearDaemonContinuationContext
+} from "./state-writers.ts";
 // Type-only back-reference to daemon.ts (erased at runtime — no value cycle).
 import type {
   DaemonCommandResult,
@@ -39,7 +44,9 @@ import type {
   ExecuteDaemonCommandOptions
 } from "../daemon.ts";
 import type { ContextBudgetMonitor } from "../runtime/context-budget.ts";
+import type { ContextBudgetState } from "../runtime/context-budget.ts";
 import { computeUsedPct, resolveModelContextTokens } from "../runtime/context-usage.ts";
+import type { HandoffController } from "../runtime/handoff-controller.ts";
 
 /**
  * Input to the loop's blockedResult builder. Single source of truth shared by
@@ -132,6 +139,25 @@ export interface DaemonCodexTurnDeps {
   /** Context budget monitor. When absent or when invocationId is absent,
    * sampling is skipped — observe-only, never throws. */
   monitor?: ContextBudgetMonitor | undefined;
+
+  // ---------------------------------------------------------------------------
+  // Phase 2 (ahrP2ResetOnHandoff) — session-reset deps.
+  // All optional: when absent, P2 reset logic is skipped (graceful degradation).
+  // ---------------------------------------------------------------------------
+
+  /** Controller for handoff record retrieval, recovery, consumption, and
+   * continuation prompt building.
+   * Required for P2 reset; skipped when absent. */
+  handoffController?: HandoffController | undefined;
+  /** Role of the current invocation (e.g. "specialist_owner").
+   * Used for crash-recovery packet creation; defaults to "unknown" when absent. */
+  role?: string | undefined;
+  /** Register the next invocation in the agentic loop store and return its ID.
+   * Required for P2 reset handoff consumption; skipped when absent. */
+  startNextInvocation?: (
+    taskId: string,
+    role: string
+  ) => Promise<string>;
 }
 
 /**
@@ -193,7 +219,44 @@ export async function runDaemonCodexTurn(
   });
   const latestCheckpoint = snapshot.autonomousExecution?.state.checkpoints.at(-1);
 
-  const prompt = buildDaemonTaskPrompt({
+  // Phase 2 (ahrP2ResetOnHandoff): if getSessionId()===undefined AND
+  // justHandedOff=true in metadata, this is a fresh respawned turn — use the
+  // continuation bundle as the prompt and clear the flag.
+  const archonDaemonMeta =
+    projectRuntimeState?.metadata &&
+    typeof projectRuntimeState.metadata === "object" &&
+    !Array.isArray(projectRuntimeState.metadata)
+      ? ((projectRuntimeState.metadata as Record<string, unknown>).archonDaemon as Record<string, unknown> | undefined)
+      : undefined;
+  const isJustHandedOff = archonDaemonMeta?.justHandedOff === true;
+  const isFreshTurn = deps.getSessionId() === undefined && isJustHandedOff;
+
+  let continuationBundle: string | undefined;
+  if (isFreshTurn) {
+    continuationBundle = await readDaemonContinuationContext(deps.cwd);
+    if (continuationBundle !== undefined) {
+      // Consume the file immediately — SEC-MED-2: deleted before the turn executes.
+      await clearDaemonContinuationContext(deps.cwd);
+    } else {
+      // Fresh turn (justHandedOff=true, no session) but continuation file is
+      // absent. This can happen if the daemon restarted after the file was
+      // cleaned up by the OS, or if a prior startNextInvocation rollback
+      // deleted it. Log to stderr so operators can investigate, then fall
+      // through to a standard full-prompt turn.
+      process.stderr.write(
+        JSON.stringify({
+          tag: "archon-context-monitor",
+          event: "continuation_context_missing",
+          invocationId: deps.invocationId,
+          runId: input.activeRunId,
+          taskId: input.activeTaskId,
+          note: "justHandedOff=true but continuation context file not found; falling back to standard prompt"
+        }) + "\n"
+      );
+    }
+  }
+
+  const prompt = continuationBundle ?? buildDaemonTaskPrompt({
     promptMode,
     directive: input.directive,
     taskId: input.activeTaskId,
@@ -216,32 +279,235 @@ export async function runDaemonCodexTurn(
     sessionId: deps.getSessionId()
   });
 
-  deps.setSessionId(codexTurn.sessionId ?? deps.getSessionId());
+  // Phase 1 (ahrP1Sampling) + Phase 2 (ahrP2ResetOnHandoff):
+  //
+  // In "observe" mode (default / ARCHON_CONTEXT_MONITOR unset or "observe"):
+  //   - Sample fire-and-forget; any error is swallowed.
+  //   - Never resets session. setSessionId from turn result as before.
+  //
+  // In "enforce" mode (ARCHON_CONTEXT_MONITOR=enforce):
+  //   - Await recordSample; emit tagged stderr JSON on failure (non-fatal).
+  //   - If resulting state is handoff_required or hard_stop, OR the current
+  //     invocation already has a committed handoff → reset path.
+  //   - Reset path: build continuation bundle, persist, start next invocation,
+  //     consume handoff, save state with sessionId=undefined + justHandedOff=true,
+  //     early return to respawn a fresh claude -p in the next loop iteration.
+  //
+  // ARCH-C1: gate is on process.env.ARCHON_CONTEXT_MONITOR directly — NOT on
+  // monitor state — because context-budget.ts:159-161 downgrades
+  // handoff_required→warning in observe mode but NOT hard_stop, so hard_stop
+  // would otherwise reset in observe mode.
+  const isEnforceMode = process.env.ARCHON_CONTEXT_MONITOR === "enforce";
 
-  // Phase 1 (ahrP1Sampling): sample context usage from the turn's token report.
-  // Observe-only — never throws, never resets/respawns. Sampling is best-effort:
-  // missing invocationId, missing monitor, missing usage, or zero window → skip.
+  let sampledState: ContextBudgetState | undefined;
   if (deps.invocationId !== undefined && deps.monitor !== undefined && codexTurn.usage !== undefined) {
     const contextWindowTokens = resolveModelContextTokens(deps.env);
     const usedPct = computeUsedPct(codexTurn.usage, contextWindowTokens);
     if (usedPct !== undefined) {
-      // Fire-and-forget with best-effort error suppression: a DB write failure
-      // must not abort the turn that the operator is waiting for.
-      deps.monitor.recordSample(
-        deps.invocationId,
-        input.activeRunId,
-        input.activeTaskId,
-        "sdk",
-        usedPct,
-        { usage: codexTurn.usage }
-      ).catch((_err: unknown) => {
-        // Intentional: sampling failure is non-fatal. The error is swallowed so
-        // the daemon turn result is unaffected. In production, the ContextBudget-
-        // Monitor's caller (archon-stop hook) will detect the missing sample and
-        // degrade gracefully.
-      });
+      if (isEnforceMode) {
+        // Await in enforce mode so we can react to the returned state and emit
+        // stderr on failure (SEC-MED-2).
+        try {
+          sampledState = await deps.monitor.recordSample(
+            deps.invocationId,
+            input.activeRunId,
+            input.activeTaskId,
+            "sdk",
+            usedPct,
+            { usage: codexTurn.usage }
+          );
+        } catch (err: unknown) {
+          // SEC-MED-2: non-fatal but tagged stderr for observability.
+          process.stderr.write(
+            JSON.stringify({
+              tag: "archon-context-monitor",
+              event: "recordSample_failure",
+              invocationId: deps.invocationId,
+              runId: input.activeRunId,
+              taskId: input.activeTaskId,
+              error: err instanceof Error ? err.message : String(err)
+            }) + "\n"
+          );
+          // sampledState stays undefined — no reset on DB failure.
+        }
+      } else {
+        // Observe mode: fire-and-forget (P1 contract preserved).
+        deps.monitor.recordSample(
+          deps.invocationId,
+          input.activeRunId,
+          input.activeTaskId,
+          "sdk",
+          usedPct,
+          { usage: codexTurn.usage }
+        ).catch((_err: unknown) => {
+          // Intentional: sampling failure is non-fatal. Error swallowed so
+          // the daemon turn result is unaffected.
+        });
+      }
     }
   }
+
+  // Phase 2 reset decision (enforce mode only — ARCH-C1).
+  if (
+    isEnforceMode &&
+    deps.handoffController !== undefined &&
+    deps.startNextInvocation !== undefined &&
+    deps.invocationId !== undefined
+  ) {
+    // Check if state threshold crossed OR there is already a committed handoff.
+    const stateRequiresReset =
+      sampledState === "handoff_required" || sampledState === "hard_stop";
+
+    // Two independent reset signals:
+    //   1. stateRequiresReset — monitor sampled handoff_required or hard_stop.
+    //   2. committedHandoff   — agent already wrote a handoff record
+    //      (status = handoff_written / needs_followup) before the monitor fired.
+    // Either signal triggers the reset path.
+    //
+    // getLatestForTask is fetched here (not as a commit-proxy) so the packet
+    // quality check below can inspect the record regardless of which signal
+    // fired.  hasCommittedHandoff is the authoritative commit signal; it is
+    // skipped when stateRequiresReset is already true (one DB round-trip).
+    let existingHandoff = await deps.handoffController.getLatestForTask(
+      input.activeRunId,
+      input.activeTaskId
+    );
+
+    // Only call hasCommittedHandoff when the state-monitor signal is absent —
+    // if stateRequiresReset is already true the reset is unconditional and the
+    // extra DB round-trip is unnecessary.
+    const committedHandoff = stateRequiresReset
+      ? false
+      : await deps.handoffController.hasCommittedHandoff(deps.invocationId);
+
+    const shouldReset = stateRequiresReset || committedHandoff;
+
+    if (shouldReset) {
+      // Packet quality check: if no record or summary < 10 chars or no nextActions
+      // → recoverCrashedInvocation.
+      const packetRaw = existingHandoff?.packet as (Record<string, unknown> | undefined);
+      const summaryOk =
+        typeof packetRaw?.summary === "string" && (packetRaw.summary as string).length >= 10;
+      const actionsOk =
+        Array.isArray(packetRaw?.nextActions) && (packetRaw.nextActions as unknown[]).length > 0;
+      const packetQualityOk = existingHandoff !== undefined && summaryOk && actionsOk;
+
+      if (!packetQualityOk) {
+        // Crash-recovery path: synthesize a recovery handoff.
+        const contextWindowTokens = resolveModelContextTokens(deps.env);
+        const usedPct =
+          codexTurn.usage !== undefined
+            ? computeUsedPct(codexTurn.usage, contextWindowTokens)
+            : undefined;
+        const recovered = await deps.handoffController.recoverCrashedInvocation({
+          invocationId: deps.invocationId,
+          runId: input.activeRunId,
+          taskId: input.activeTaskId,
+          role: deps.role ?? "unknown",
+          contextUsedPct: usedPct,
+          evidenceRefs: []
+        });
+        existingHandoff = recovered.record;
+      }
+
+      if (existingHandoff !== undefined) {
+        // Build continuation bundle — handoff content is sanitized in buildContinuationPrompt.
+        // Pass the authoritative task-record allowedWriteScope so the trusted
+        // section uses the runtime value, not the agent-written packet.scope.
+        const taskAllowedWriteScope = Array.isArray(taskRecord.packet.allowedWriteScope)
+          ? (taskRecord.packet.allowedWriteScope as string[])
+          : [];
+        const bundle = deps.handoffController.buildContinuationPrompt(existingHandoff, taskAllowedWriteScope);
+
+        // Persist the bundle so the fresh turn can pick it up.
+        await writeDaemonContinuationContext(deps.cwd, bundle);
+
+        // Start the next invocation record before consuming the handoff.
+        // If startNextInvocation fails, clean up the bundle and leave the
+        // session intact — do NOT reset, so the daemon can retry on the
+        // next iteration without leaving a stale context file on disk.
+        let nextInvocationId: string;
+        try {
+          nextInvocationId = await deps.startNextInvocation(
+            input.activeTaskId,
+            deps.role ?? "unknown"
+          );
+        } catch (activateErr: unknown) {
+          // Roll back: delete the continuation context file so it cannot be
+          // consumed by a future turn that has no matching invocation.
+          await clearDaemonContinuationContext(deps.cwd);
+          process.stderr.write(
+            JSON.stringify({
+              tag: "archon-context-monitor",
+              event: "startNextInvocation_failure",
+              invocationId: deps.invocationId,
+              runId: input.activeRunId,
+              taskId: input.activeTaskId,
+              error: activateErr instanceof Error ? activateErr.message : String(activateErr)
+            }) + "\n"
+          );
+          // Non-fatal: fall through to the normal session-update path.
+          // The session id is NOT cleared; the daemon will retry the reset
+          // next cycle when the context threshold is still exceeded.
+          deps.setSessionId(codexTurn.sessionId ?? deps.getSessionId());
+          return undefined;
+        }
+
+        // Consume the handoff (links it to the next invocation).
+        await deps.handoffController.consume({
+          handoffId: existingHandoff.id,
+          toInvocationId: nextInvocationId,
+          runId: input.activeRunId,
+          taskId: input.activeTaskId
+        });
+
+        // ARCH-C3: set sessionId=undefined AND justHandedOff=true in the SAME
+        // saveProjectRuntimeState write. This is an early-return write — the
+        // normal saveProjectRuntimeState below will NOT execute.
+        deps.setSessionId(undefined);
+        await deps.saveProjectRuntimeState({
+          projectId: projectRuntimeState?.projectId ?? projectContext.project.id,
+          workspaceId: projectRuntimeState?.workspaceId ?? projectContext.workspace.id,
+          activeRunId: projectRuntimeState?.activeRunId,
+          activeTaskId: projectRuntimeState?.activeTaskId,
+          taskQueue: projectRuntimeState?.taskQueue ?? buildDefaultTaskQueue(),
+          productState: projectRuntimeState?.productState ?? buildDefaultProductState(),
+          lastVerifiedRunId: projectRuntimeState?.lastVerifiedRunId,
+          metadata: {
+            ...(projectRuntimeState?.metadata ?? {}),
+            archonDaemon: {
+              ...(archonDaemonMeta ?? {}),
+              sessionId: undefined,
+              justHandedOff: true,
+              lastRunId: input.activeRunId,
+              lastTaskId: input.activeTaskId,
+              lastDirectiveKind: input.directive.kind,
+              updatedAt: deps.now().toISOString()
+            }
+          },
+          createdAt: projectRuntimeState?.createdAt ?? deps.now().toISOString(),
+          updatedAt: deps.now().toISOString()
+        });
+
+        cycles.push({
+          cycle,
+          directiveKind: input.directive.kind,
+          action: "handoff_reset",
+          runId: input.activeRunId,
+          taskId: input.activeTaskId,
+          sessionId: null,
+          summary: `Context reset: handoff ${existingHandoff.id} consumed → next invocation ${nextInvocationId}`
+        });
+
+        // Early return: the next loop iteration will spawn a fresh claude -p
+        // (sessionId is now undefined, so runCodexTurn will not --resume).
+        return undefined;
+      }
+    }
+  }
+
+  // Non-reset path: update session id from turn result (P1 contract preserved).
+  deps.setSessionId(codexTurn.sessionId ?? deps.getSessionId());
 
   const parsedTurnMessage = parseDaemonTurnMessage(codexTurn.finalMessage);
   await persistDaemonTurnCheckpoint({
@@ -283,6 +549,9 @@ export async function runDaemonCodexTurn(
       ...(refreshedProjectRuntimeState?.metadata ?? projectRuntimeState?.metadata ?? {}),
       archonDaemon: {
         sessionId: deps.getSessionId(),
+        // Phase 2 (ahrP2ResetOnHandoff): clear justHandedOff flag after the
+        // fresh continuation turn completes. The flag is consumed here.
+        justHandedOff: false,
         lastRunId: input.activeRunId,
         lastTaskId: input.activeTaskId,
         lastDirectiveKind: input.directive.kind,

@@ -273,6 +273,22 @@ export interface AgenticStateForTask {
 // Context Status — Phase 2
 // ---------------------------------------------------------------------------
 
+/**
+ * Phase 2 (ahrP2ResetOnHandoff) — respawn chain visibility (PROD-C1).
+ * Present when the daemon has reset the session due to context handoff.
+ */
+export interface RespawnChainObservation {
+  /** True when daemon has set sessionId=undefined and justHandedOff=true.
+   * The fresh claude -p will be spawned on the next loop iteration. */
+  pendingRespawn: boolean;
+  /** ISO timestamp when the last respawn was initiated. */
+  lastRespawnAt: string | undefined;
+  /** Run ID of the last completed handoff. */
+  lastHandoffRunId: string | undefined;
+  /** Task ID of the last completed handoff. */
+  lastHandoffTaskId: string | undefined;
+}
+
 export interface ContextStatusObservation {
   invocationId: string;
   state: ContextBudgetState;
@@ -285,17 +301,38 @@ export interface ContextStatusObservation {
     hardStopPct: number;
   };
   summary: string;
+  /** Phase 2 (ahrP2ResetOnHandoff): respawn chain state. Present when
+   * archonDaemon metadata is provided; undefined otherwise. */
+  respawnChain?: RespawnChainObservation | undefined;
 }
 
 export async function buildContextStatusObservation(
   invocationId: string,
-  store: ContextBudgetStoreLike
+  store: ContextBudgetStoreLike,
+  /** Optional archonDaemon metadata from ProjectRuntimeMetadata.archonDaemon.
+   * When provided, populates respawnChain (PROD-C1). */
+  archonDaemonMeta?: {
+    justHandedOff?: boolean | undefined;
+    lastRunId?: string | undefined;
+    lastTaskId?: string | undefined;
+    updatedAt?: string | undefined;
+  } | undefined
 ): Promise<ContextStatusObservation> {
   const monitor = new ContextBudgetMonitor(store);
   const sample = await store.getLatestContextSample(invocationId);
   const state = await monitor.getStateFromStore(invocationId);
   const hasCommittedHandoff = await store.hasCommittedHandoff(invocationId);
   const summary = await monitor.buildStatusSummary(invocationId);
+
+  // Phase 2 (ahrP2ResetOnHandoff): build respawn chain observation (PROD-C1).
+  const respawnChain: RespawnChainObservation | undefined = archonDaemonMeta
+    ? {
+        pendingRespawn: archonDaemonMeta.justHandedOff === true,
+        lastRespawnAt: archonDaemonMeta.updatedAt,
+        lastHandoffRunId: archonDaemonMeta.lastRunId,
+        lastHandoffTaskId: archonDaemonMeta.lastTaskId
+      }
+    : undefined;
 
   return {
     invocationId,
@@ -304,7 +341,8 @@ export async function buildContextStatusObservation(
     sampledAt: sample?.sampledAt,
     hasCommittedHandoff,
     policy: { ...defaultArchonContextPolicy },
-    summary
+    summary,
+    respawnChain
   };
 }
 

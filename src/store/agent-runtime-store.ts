@@ -553,7 +553,9 @@ export class AgentRuntimeStore {
   async hasCommittedHandoff(invocationId: string): Promise<boolean> {
     const result = await this.client.query(
       `select 1 from agent_handoffs
-       where from_invocation_id = $1 and consumed_at is null
+       where from_invocation_id = $1
+         and consumed_at is null
+         and status in ('handoff_written', 'needs_followup')
        limit 1`,
       [invocationId]
     );
