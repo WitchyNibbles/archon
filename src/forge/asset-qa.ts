@@ -31,6 +31,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AssetRequest } from "./asset-contract.ts";
+import { resolveWithinRepo } from "./repo-path.ts";
 
 // ---------------------------------------------------------------------------
 // Finding severity + shape
@@ -288,9 +289,22 @@ function checkNoXlinkHref(content: string): QAFinding {
  *
  * @param assetPath - Absolute or repo-relative path to the asset file.
  * @param request   - The AssetRequest that generated (or describes) this asset.
+ * @param repoRoot  - Optional repo root. When provided, the assetPath MUST
+ *                    resolve within this root (defense-in-depth path guard,
+ *                    symlinks resolved). When omitted, no bounds check is run.
  * @returns A structured AssetQAReport.
+ * @throws  When `repoRoot` is provided and `assetPath` escapes it.
  */
-export function runAssetQA(assetPath: string, request: AssetRequest): AssetQAReport {
+export function runAssetQA(
+  assetPath: string,
+  request: AssetRequest,
+  repoRoot?: string | undefined
+): AssetQAReport {
+  // Defense-in-depth: verify the asset path stays within the repo before
+  // any file I/O. Runs only when the caller supplies a repoRoot.
+  if (repoRoot !== undefined) {
+    resolveWithinRepo(assetPath, { repoRoot });
+  }
   const findings: QAFinding[] = [];
 
   // QA-001: file existence (must run first; if absent, skip content checks)

@@ -712,6 +712,65 @@ describe("forgeCommand — unknown and missing verb", () => {
 });
 
 // ---------------------------------------------------------------------------
+// forge critic — defense-in-depth path guard (repoRoot in deps)
+// ---------------------------------------------------------------------------
+
+describe("forge critic verb — defense-in-depth path guard", () => {
+  it("throws a repo-escape error when snapshotPath escapes the repoRoot", async () => {
+    const syntheticRepo = "/tmp/archon-critic-guard-test-repo";
+    // /etc/passwd is obviously outside syntheticRepo.
+    const outsidePath = "/etc/passwd";
+    const deps: ForgeCriticDeps = {
+      readFile: async () => { throw new Error("readFile must not be called"); },
+      runChecker: runAntiGenericChecker,
+      writeStdout: () => { /* noop */ },
+      writeStderr: () => { /* noop */ },
+      repoRoot: syntheticRepo
+    };
+    await assert.rejects(
+      () => executeCriticVerb([outsidePath], deps),
+      (err: unknown) => {
+        assert.ok(err instanceof Error, "expected Error");
+        assert.ok(
+          err.message.includes("forge critic:") && err.message.includes("outside the repository"),
+          `expected repo-escape error, got: ${err.message}`
+        );
+        return true;
+      }
+    );
+  });
+
+  it("does not apply path guard when repoRoot is omitted from deps", async () => {
+    // snapshotPath = /etc/passwd would normally escape any repo, but with no
+    // repoRoot the guard is skipped. The readFile dep throws a predictable error
+    // so we can distinguish "guard error" from "read error".
+    const deps: ForgeCriticDeps = {
+      readFile: async (p: string) => { throw new Error(`ENOENT: no such file '${p}'`); },
+      runChecker: runAntiGenericChecker,
+      writeStdout: () => { /* noop */ },
+      writeStderr: () => { /* noop */ }
+      // repoRoot intentionally omitted
+    };
+    await assert.rejects(
+      () => executeCriticVerb(["/etc/passwd"], deps),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        // Must be a file-read error, NOT a path-guard error.
+        assert.ok(
+          err.message.includes("could not read file"),
+          `expected file-read error (guard skipped), got: ${err.message}`
+        );
+        assert.ok(
+          !err.message.includes("outside the repository"),
+          "must not have path-guard error when repoRoot omitted"
+        );
+        return true;
+      }
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema validation: RenderedSnapshotSchema round-trip
 // ---------------------------------------------------------------------------
 

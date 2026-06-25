@@ -27,6 +27,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
 import type { AssetRequest, AssetManifestEntry } from "./asset-contract.ts";
+import { resolveWithinRepo } from "./repo-path.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -104,10 +105,15 @@ function computePromptHash(prompt: string): string {
  *   `requestDir/<id>.json`; otherwise it falls back to the bare `<id>.json`.
  *   Either way the value is non-empty, so entries satisfy
  *   `AssetManifestEntrySchema` (`originalRequestPath` is `z.string().min(1)`).
+ * @param repoRoot   optional repo root. When provided, each `req.outputPath`
+ *   MUST resolve within this root (defense-in-depth path guard, symlinks
+ *   resolved). Throws before any filesystem access when a path escapes.
+ *   When omitted, no bounds check is run.
  */
 export function reconcileAssets(
   requests: AssetRequest[],
-  requestDir?: string
+  requestDir?: string,
+  repoRoot?: string | undefined
 ): ReconcileResult {
   // --- Duplicate path detection -------------------------------------------
   const pathCounts = new Map<string, number>();
@@ -125,6 +131,11 @@ export function reconcileAssets(
   const missingOutputs: string[] = [];
 
   for (const req of requests) {
+    // Defense-in-depth: guard each outputPath before filesystem access.
+    // Only runs when the caller supplies a repoRoot.
+    if (repoRoot !== undefined) {
+      resolveWithinRepo(req.outputPath, { repoRoot });
+    }
     const fileExists = fs.existsSync(req.outputPath);
 
     if (!fileExists) {
