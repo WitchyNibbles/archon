@@ -148,10 +148,12 @@ describe("AssetRequestSchema", () => {
     assert.equal(result.success, false, "preferredFormat=gif must fail");
   });
 
-  it("fails loudly when provider is an api-key provider", () => {
+  it("accepts openai_api_later_optional as a valid provider (additive P5-S5)", () => {
+    // openai_api_later_optional was added in P5-S5. It is a valid schema value;
+    // the disable-by-default gate lives in selectAssetProviderWithReason, not the schema.
     const req = { ...validRequest(), provider: "openai_api_later_optional" };
     const result = AssetRequestSchema.safeParse(req);
-    assert.equal(result.success, false, "Non-MVP provider must fail");
+    assert.equal(result.success, true, "openai_api_later_optional must now parse (P5-S5 additive)");
   });
 
   it("rejects extra unknown fields (strict — no passthrough)", () => {

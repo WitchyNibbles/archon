@@ -192,9 +192,10 @@ function buildManifestEntry(req: AssetRequest, requestDir?: string): AssetManife
 /** Human-readable attribution label for each provider. */
 function providerLabel(provider: AssetRequest["provider"]): string {
   switch (provider) {
-    case "codex_builtin_imagegen": return "codex:$imagegen";
-    case "manual_upload":          return "manual_upload";
-    case "placeholder_svg":        return "placeholder_svg";
+    case "codex_builtin_imagegen":    return "codex:$imagegen";
+    case "manual_upload":             return "manual_upload";
+    case "placeholder_svg":           return "placeholder_svg";
+    case "openai_api_later_optional": return "openai_api_imagegen";
     // TypeScript exhaustiveness — unreachable if provider vocabulary is maintained
     default: {
       const _exhaustive: never = provider;

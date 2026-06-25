@@ -1,37 +1,8 @@
 /**
  * @module forge/asset-provider
  *
- * AssetProvider abstraction + three implementations for the Archon Frontend
- * Forge pipeline (Phase 2, task forgeP2AssetProvider).
- *
- * Providers:
- *   - PlaceholderSvgProvider   — always available; writes a deterministic SVG
- *   - ManualUploadProvider     — verifies the operator file already exists
- *   - CodexBuiltinImagegenProvider — headless codex $imagegen; CI-safe gated
- *
- * Security contract (D2 hard gate):
- *   1. The codex command is built as an argv ARRAY and passed to spawn with
- *      NO `shell: true`. Prompt text is a single literal argument — shell
- *      metacharacters in the prompt cannot escape into the shell.
- *   2. `--dangerously-bypass-approvals-and-sandbox` is used ONLY in the real
- *      CodexImagegenRunner.run() implementation and ONLY for the asset-gen
- *      worker subprocess. It is never used anywhere else in this module.
- *   3. All output paths are guarded via `resolveWithinRepo` before any file
- *      I/O is performed.
- *   4. The runner-supplied source image path is bounded to the codex output
- *      root (CODEX_HOME/generated_images or os.tmpdir()) via realpath
- *      resolution — an attacker-controlled runner returning "/etc/shadow"
- *      is rejected before any fs.copyFileSync.
- *   5. The codex path is gated: CI=true or no codex login → placeholder_svg;
- *      codex is NEVER invoked in CI or without a valid login.
- *      `selectAssetProvider`'s env parameter defaults to `process.env` so
- *      the CI gate fires correctly when the caller omits env.
- *   6. The subprocess is bounded by a configurable timeout; on timeout the
- *      child and its process group are killed.
- *   7. No secrets or tokens are logged.
- *
- * Import wall: this module does NOT import from web/. It may import from
- * src/forge/* (read-only), node built-ins, and nothing else.
+ * AssetProvider abstraction + implementations for the Archon Frontend Forge pipeline.
+ * Import wall: no import from web/. Only src/forge/*, node built-ins.
  */
 
 import { spawn } from "node:child_process";
@@ -41,45 +12,34 @@ import * as path from "node:path";
 import type { AssetRequest } from "./asset-contract.ts";
 import { generatePlaceholderSvg } from "./placeholder-assets.ts";
 import { resolveWithinRepo } from "./repo-path.ts";
+import { SpendCapBucket, getRunBucket } from "./spend-cap.ts";
+// Re-export the spend-cap surface so existing importers (tests) keep working.
+export { SpendCapBucket, resetRunBucket } from "./spend-cap.ts";
+
+// Minimal secret-manager interfaces — defined inline so src/forge/ stays self-contained (CC-15).
+/** Minimal secret-value interface: expose only reveal() (CC-DEC-2). */
+interface ForgeSecretValue { reveal(): string; }
+/** Minimal secret-manager interface consumed by forge providers. */
+interface ForgeSecretManager { get(ref: string): Promise<ForgeSecretValue | undefined>; }
 
 // ---------------------------------------------------------------------------
 // Result types
 // ---------------------------------------------------------------------------
 
-/**
- * The outcome status of an asset generation attempt.
- *
- *   generated          — file written to disk at outputPath; ready for QA.
- *   needs_regeneration — generation failed (codex timeout, missing output, etc.)
- *                        Caller should retry or fall back.
- *   needs_action       — manual_upload: operator must provide the file.
- *   rejected           — hard failure (e.g. path escapes repo). Not retried.
- */
+/** Outcome status of an asset generation attempt. */
 export type GenerationStatus =
   | "generated"
   | "needs_regeneration"
   | "needs_action"
   | "rejected";
 
-/**
- * Structured result returned by every AssetProvider.generate() call.
- *
- * Carries enough information to update the AssetManifestEntry status field
- * and feed the Phase-3 QA stage. Does NOT run QA itself.
- *
- * Note: `needs_action` is also in `assetStatusValues` (asset-contract.ts) so
- * Phase-3 can round-trip this value through Zod without rejection.
- */
+/** Structured result returned by every AssetProvider.generate() call. */
 export interface AssetGenerationResult {
-  /** Matches AssetRequest.id. */
   readonly id: string;
-  /** Which provider produced (or attempted) this result. */
   readonly provider: AssetRequest["provider"];
-  /** Outcome status. */
   readonly status: GenerationStatus;
-  /** Absolute path where the asset was written (present when status=generated). */
   readonly outputAbsPath?: string | undefined;
-  /** Human-readable reason for non-generated outcomes. */
+  /** Human-readable reason for non-generated outcomes. CC-8: never contains the API key. */
   readonly message?: string | undefined;
 }
 
@@ -89,12 +49,7 @@ export interface AssetGenerationResult {
 
 /**
  * Result from a CodexImagegenRunner.run() call.
- *
- * ok=true  → imagePath is the absolute path of the produced image.
- * ok=false → reason describes the failure; timedOut signals a timeout.
- *             killCalled is a test seam that the provider invokes when it
- *             detects timedOut:true — fake runners set this to let tests
- *             assert that process-group kill happened.
+ * ok=true → imagePath is the produced image. ok=false → reason + optional timedOut/killCalled.
  */
 export type CodexRunnerResult =
   | { readonly ok: true; readonly imagePath: string }
@@ -102,30 +57,14 @@ export type CodexRunnerResult =
       readonly ok: false;
       readonly reason: string;
       readonly timedOut?: boolean | undefined;
-      /** Test seam: the PROVIDER calls this when it detects timedOut:true. */
       readonly killCalled?: (() => void) | undefined;
     };
 
 /**
- * Injectable dep that runs the codex $imagegen subprocess and harvests its
- * output image.
- *
- * The production default (RealCodexImagegenRunner) spawns codex without
- * shell:true and harvests the newest image written to the codex output dir
- * after the run completes. Tests inject a fake that records the argv and
- * returns a deterministic result — no real codex runs in tests.
+ * Injectable dep that runs the codex $imagegen subprocess.
+ * Production: RealCodexImagegenRunner. Tests: fake that returns deterministic results.
  */
 export interface CodexImagegenRunner {
-  /**
-   * @param argv             Full argv array for the codex subprocess. The first
-   *                         element is the binary name ("codex"). No shell expansion.
-   * @param timeoutMs        Hard timeout in milliseconds; real runner kills on expiry.
-   * @param codexOutputRoot  Root directory where codex writes generated_images/.
-   *                         Injected so tests can supply a fake CODEX_HOME without
-   *                         touching the real filesystem.
-   * @param runStartedAt     Epoch ms just before the subprocess was launched.
-   *                         Used to find only images created by THIS run.
-   */
   run(
     argv: readonly string[],
     timeoutMs: number,
@@ -142,76 +81,46 @@ export interface CodexImagegenRunner {
  * Dependencies injected into provider.generate() at call time.
  *
  * repoRoot        — repo root for resolveWithinRepo; defaults to process.cwd().
- * codexRunner     — only consumed by CodexBuiltinImagegenProvider; required
- *                   when that provider is used.
- * timeoutMs       — codex subprocess timeout (default: 120_000ms).
- * codexOutputRoot — root where codex writes generated_images/. Defaults to
- *                   $CODEX_HOME or ~/.codex. Injectable for tests.
+ * codexRunner     — only consumed by CodexBuiltinImagegenProvider.
+ * timeoutMs       — codex subprocess timeout (default 120 000 ms).
+ * codexOutputRoot — root where codex writes generated_images/.
+ * secretManager   — optional; consumed by OpenAiApiImagegenProvider (CC-DEC-2).
+ *                   Additive: existing providers ignore it.
  */
 export interface ProviderDeps {
   readonly repoRoot?: string | undefined;
   readonly codexRunner?: CodexImagegenRunner | undefined;
   readonly timeoutMs?: number | undefined;
   readonly codexOutputRoot?: string | undefined;
+  /** Secret-manager instance — only OpenAiApiImagegenProvider reads from this. */
+  readonly secretManager?: ForgeSecretManager | undefined;
 }
 
 // ---------------------------------------------------------------------------
 // AssetProvider interface
 // ---------------------------------------------------------------------------
 
-/**
- * Common interface for all asset generation strategies.
- *
- * Each implementation is stateless — all state is in the deps/request args.
- */
+/** Common interface for all asset generation strategies. */
 export interface AssetProvider {
   generate(request: AssetRequest, deps: ProviderDeps): Promise<AssetGenerationResult>;
 }
 
 // ---------------------------------------------------------------------------
-// Valid image extensions recognised as codex output
+// Valid image extensions
 // ---------------------------------------------------------------------------
 
 const VALID_IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp",
-  ".gif",
-  ".avif",
+  ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif",
 ]);
 
 // ---------------------------------------------------------------------------
 // Codex output root helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve the root directory that is the allowed source for codex-produced
- * images. Codex writes images under:
- *   $CODEX_HOME/generated_images/<thread>/ig_<hash>.png
- *
- * The allowed source roots are:
- *   1. The codexOutputRoot dep (injectable — used in tests and real code).
- *   2. os.tmpdir() — codex may write to the system temp dir on some platforms.
- *
- * Both are resolved via realpathSync to defeat symlink-based escapes before
- * comparison.
- */
 function resolveCodexOutputRoot(codexOutputRoot: string): string {
-  try {
-    return fs.realpathSync(codexOutputRoot);
-  } catch {
-    // Not yet created — return as-is (realpath fails on non-existent dirs).
-    return codexOutputRoot;
-  }
+  try { return fs.realpathSync(codexOutputRoot); } catch { return codexOutputRoot; }
 }
 
-/**
- * Determine the default codex output root from environment.
- *
- * Codex stores its state in $CODEX_HOME (default ~/.codex).
- * Generated images land under $CODEX_HOME/generated_images/.
- */
 function defaultCodexOutputRoot(): string {
   const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? "";
   const codexHome = process.env["CODEX_HOME"] ?? path.join(home, ".codex");
@@ -219,48 +128,24 @@ function defaultCodexOutputRoot(): string {
 }
 
 /**
- * Assert that `imagePath` (the runner-supplied source) is inside one of the
- * permitted codex output roots (codexOutputRoot or os.tmpdir()).
- *
- * This prevents a compromised or misbehaving runner from returning an arbitrary
- * path (e.g. "/etc/shadow") that would be copied into the repo.
- *
- * The path is realpath-resolved before comparison so symlinks cannot escape.
- *
- * @throws Error if the path is outside all permitted roots.
+ * Assert imagePath is inside the permitted codex output root.
+ * Throws if the path escapes — prevents runner returning "/etc/shadow" being copied in.
  */
-function assertImagePathInAllowedRoot(
-  imagePath: string,
-  codexOutputRoot: string,
-): void {
-  // Realpath the candidate. If it does not exist, we will already have failed
-  // the existence check before reaching this function. Use safeRealpath.
+function assertImagePathInAllowedRoot(imagePath: string, codexOutputRoot: string): void {
   let canonicalImage: string;
-  try {
-    canonicalImage = fs.realpathSync(imagePath);
-  } catch {
-    // Non-existent — cannot be inside any root; let the existence check handle it.
-    canonicalImage = path.resolve(imagePath);
-  }
+  try { canonicalImage = fs.realpathSync(imagePath); }
+  catch { canonicalImage = path.resolve(imagePath); }
 
-  // Only the injected codexOutputRoot is allowed as a source.
-  // Allowing os.tmpdir() wholesale would permit any file in /tmp to be copied
-  // into the repo, which is too broad. The real runner harvests from
-  // <codexOutputRoot>/generated_images/ so this root is sufficient.
-  const allowedRoots = [
-    resolveCodexOutputRoot(codexOutputRoot),
-  ];
-
-  const inAllowedRoot = allowedRoots.some((root) => {
-    const sep = path.sep;
-    return canonicalImage === root || canonicalImage.startsWith(root + sep);
-  });
+  const allowedRoots = [resolveCodexOutputRoot(codexOutputRoot)];
+  const sep = path.sep;
+  const inAllowedRoot = allowedRoots.some(
+    (root) => canonicalImage === root || canonicalImage.startsWith(root + sep),
+  );
 
   if (!inAllowedRoot) {
     throw new Error(
       `Codex runner returned an image path "${imagePath}" (canonical: "${canonicalImage}") ` +
-        `that is outside the permitted codex output roots: ` +
-        `${allowedRoots.join(", ")}. ` +
+        `that is outside the permitted codex output roots: ${allowedRoots.join(", ")}. ` +
         `This path is rejected as a security measure.`,
     );
   }
@@ -271,36 +156,16 @@ function assertImagePathInAllowedRoot(
 // ---------------------------------------------------------------------------
 
 /**
- * Always-available provider. Generates a deterministic placeholder SVG from
- * the AssetRequest (via generatePlaceholderSvg) and writes it to the
- * repo-bounded outputPath.
- *
- * The SVG content is controlled entirely by the fixed vocabulary in
- * placeholder-assets.ts — no user input is interpolated into the SVG body.
+ * Always-available provider. Generates a deterministic placeholder SVG and writes
+ * it to the repo-bounded outputPath.
  */
 export class PlaceholderSvgProvider implements AssetProvider {
-  async generate(
-    request: AssetRequest,
-    deps: ProviderDeps,
-  ): Promise<AssetGenerationResult> {
-    // Guard output path before any I/O.
-    const absPath = resolveWithinRepo(request.outputPath, {
-      repoRoot: deps.repoRoot,
-    });
-
-    // Generate SVG content (deterministic, no user text in SVG body).
+  async generate(request: AssetRequest, deps: ProviderDeps): Promise<AssetGenerationResult> {
+    const absPath = resolveWithinRepo(request.outputPath, { repoRoot: deps.repoRoot });
     const svgContent = generatePlaceholderSvg(request);
-
-    // Write to disk, creating parent directories as needed.
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     fs.writeFileSync(absPath, svgContent, "utf-8");
-
-    return {
-      id: request.id,
-      provider: "placeholder_svg",
-      status: "generated",
-      outputAbsPath: absPath,
-    };
+    return { id: request.id, provider: "placeholder_svg", status: "generated", outputAbsPath: absPath };
   }
 }
 
@@ -309,31 +174,15 @@ export class PlaceholderSvgProvider implements AssetProvider {
 // ---------------------------------------------------------------------------
 
 /**
- * No-generation provider. Verifies that the operator-provided file already
- * exists at outputPath. Reports missing as a needs-action result (not an error).
- *
- * `needs_action` maps to `assetStatusValues` in asset-contract.ts so this
- * result round-trips through the Phase-3 Zod schema without rejection.
+ * No-generation provider. Verifies operator-provided file already exists at outputPath.
+ * Missing → needs_action (not an error).
  */
 export class ManualUploadProvider implements AssetProvider {
-  async generate(
-    request: AssetRequest,
-    deps: ProviderDeps,
-  ): Promise<AssetGenerationResult> {
-    // Guard output path before any I/O.
-    const absPath = resolveWithinRepo(request.outputPath, {
-      repoRoot: deps.repoRoot,
-    });
-
+  async generate(request: AssetRequest, deps: ProviderDeps): Promise<AssetGenerationResult> {
+    const absPath = resolveWithinRepo(request.outputPath, { repoRoot: deps.repoRoot });
     if (fs.existsSync(absPath)) {
-      return {
-        id: request.id,
-        provider: "manual_upload",
-        status: "generated",
-        outputAbsPath: absPath,
-      };
+      return { id: request.id, provider: "manual_upload", status: "generated", outputAbsPath: absPath };
     }
-
     return {
       id: request.id,
       provider: "manual_upload",
@@ -348,57 +197,33 @@ export class ManualUploadProvider implements AssetProvider {
 // RealCodexImagegenRunner (production default)
 // ---------------------------------------------------------------------------
 
-/** Default codex subprocess timeout (ms). Non-trivial; codex $imagegen is slow. */
 const DEFAULT_CODEX_TIMEOUT_MS = 120_000;
 
 /**
- * Harvest: after codex exits 0, find the newest image file written under
- * `<codexOutputRoot>/generated_images/` with a timestamp >= `runStartedAt`.
- *
- * Codex writes images to:
- *   <CODEX_HOME>/generated_images/<thread-id>/ig_<hash>.{png,webp,jpg,…}
- *
- * We do a breadth-first walk (max depth 3) and return the newest file whose
- * mtime >= runStartedAt and whose extension is in VALID_IMAGE_EXTENSIONS.
- *
- * Returns `undefined` if no such file is found.
+ * After codex exits 0, find the newest image written under
+ * `<codexOutputRoot>/generated_images/` with mtime >= runStartedAt.
  */
-export function harvestCodexImage(
-  codexOutputRoot: string,
-  runStartedAt: number,
-): string | undefined {
+export function harvestCodexImage(codexOutputRoot: string, runStartedAt: number): string | undefined {
   const generatedImagesDir = path.join(codexOutputRoot, "generated_images");
-  if (!fs.existsSync(generatedImagesDir)) {
-    return undefined;
-  }
+  if (!fs.existsSync(generatedImagesDir)) return undefined;
 
   let best: { mtimeMs: number; filePath: string } | undefined;
 
   function walk(dir: string, depth: number): void {
     if (depth > 3) return;
     let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(fullPath, depth + 1);
-      } else if (entry.isFile()) {
-        const ext = path.extname(entry.name).toLowerCase();
-        if (!VALID_IMAGE_EXTENSIONS.has(ext)) continue;
-        let stat: fs.Stats;
-        try {
-          stat = fs.statSync(fullPath);
-        } catch {
-          continue;
-        }
-        if (stat.mtimeMs < runStartedAt) continue;
-        if (best === undefined || stat.mtimeMs > best.mtimeMs) {
-          best = { mtimeMs: stat.mtimeMs, filePath: fullPath };
-        }
+      if (entry.isDirectory()) { walk(fullPath, depth + 1); continue; }
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!VALID_IMAGE_EXTENSIONS.has(ext)) continue;
+      let stat: fs.Stats;
+      try { stat = fs.statSync(fullPath); } catch { continue; }
+      if (stat.mtimeMs < runStartedAt) continue;
+      if (best === undefined || stat.mtimeMs > best.mtimeMs) {
+        best = { mtimeMs: stat.mtimeMs, filePath: fullPath };
       }
     }
   }
@@ -408,22 +233,12 @@ export function harvestCodexImage(
 }
 
 /**
- * Production CodexImagegenRunner. Spawns codex with shell:false, bounds the
- * subprocess with a configurable timeout, then harvests the newest image from
- * the codex output directory.
+ * Production CodexImagegenRunner. Spawns codex with shell:false, bounds with configurable
+ * timeout, then harvests the newest image from the codex output directory.
  *
- * Security rationale for --dangerously-bypass-approvals-and-sandbox:
- *   Codex's default interactive mode requires human approval for every tool
- *   call. Running headless (no TTY, no interactive session) requires bypassing
- *   that gate. The bypass is scoped ONLY to this asset-gen subprocess and is
- *   NOT a project-wide setting. The workspace is ephemeral (--ephemeral flag)
- *   so no state persists between runs. The prompt is passed as a single argv
- *   argument, never interpolated into a shell string, so prompt injection cannot
- *   escalate to shell command injection.
- *
- * Process-group kill: on timeout we kill the entire process group (negative PID
- * + SIGKILL) so any child subprocesses spawned by codex are also terminated.
- * This prevents unbounded hangs even if codex forks children.
+ * Security: --dangerously-bypass-approvals-and-sandbox is required for headless execution;
+ * scoped ONLY to this asset-gen subprocess. Prompt is a single argv arg — no shell injection.
+ * On timeout the entire process group is killed (negative PID + SIGKILL).
  */
 export class RealCodexImagegenRunner implements CodexImagegenRunner {
   async run(
@@ -433,9 +248,7 @@ export class RealCodexImagegenRunner implements CodexImagegenRunner {
     runStartedAt: number,
   ): Promise<CodexRunnerResult> {
     const [bin, ...args] = argv;
-    if (bin === undefined) {
-      return { ok: false, reason: "empty argv" };
-    }
+    if (bin === undefined) return { ok: false, reason: "empty argv" };
 
     let childPid: number | undefined;
     let timedOut = false;
@@ -443,82 +256,38 @@ export class RealCodexImagegenRunner implements CodexImagegenRunner {
 
     const killGroup = (): void => {
       if (childPid === undefined) return;
-      try {
-        // Negative PID → send signal to the entire process group.
-        // SIGKILL: no chance for the child to ignore or defer.
-        process.kill(-childPid, "SIGKILL");
-      } catch {
-        // Process already exited — ignore.
-      }
+      try { process.kill(-childPid, "SIGKILL"); } catch { /* already exited */ }
     };
 
     try {
       const spawnResult = await new Promise<{ ok: boolean; reason?: string }>((resolve) => {
-        // spawn with shell:false (default) — argv elements are literal strings.
-        // Detached so we can kill the entire process group on timeout.
-        const child = spawn(bin, args, {
-          // Detached: lets us kill the entire process group on timeout.
-          detached: true,
-          // shell: false is the default for spawn; explicit for clarity.
-          shell: false,
-          // Ignore stdin; pipe stdout/stderr so the process doesn't block on TTY.
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-
+        const child = spawn(bin, args, { detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
         childPid = child.pid;
-
-        // Detach so Node's event loop doesn't wait for codex.
         child.unref();
 
         child.on("error", (err: Error) => {
-          if (timer !== undefined) {
-            clearTimeout(timer);
-            timer = undefined;
-          }
-          if (!timedOut) {
-            resolve({ ok: false, reason: `codex spawn error: ${err.message}` });
-          }
+          if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+          if (!timedOut) resolve({ ok: false, reason: `codex spawn error: ${err.message}` });
         });
 
         child.on("close", (code: number | null) => {
-          if (timer !== undefined) {
-            clearTimeout(timer);
-            timer = undefined;
-          }
+          if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
           if (timedOut) return;
-          if (code !== 0) {
-            resolve({
-              ok: false,
-              reason: `codex exited with code ${code ?? "null"}`,
-            });
-            return;
-          }
+          if (code !== 0) { resolve({ ok: false, reason: `codex exited with code ${code ?? "null"}` }); return; }
           resolve({ ok: true });
         });
 
         timer = setTimeout(() => {
           timedOut = true;
           killGroup();
-          if (timer !== undefined) {
-            clearTimeout(timer);
-            timer = undefined;
-          }
-          resolve({
-            ok: false,
-            reason: "codex $imagegen timed out",
-          });
+          if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
+          resolve({ ok: false, reason: "codex $imagegen timed out" });
         }, timeoutMs);
       });
 
-      if (timedOut) {
-        return { ok: false, reason: "codex $imagegen timed out", timedOut: true };
-      }
+      if (timedOut) return { ok: false, reason: "codex $imagegen timed out", timedOut: true };
+      if (!spawnResult.ok) return { ok: false, reason: spawnResult.reason ?? "codex failed" };
 
-      if (!spawnResult.ok) {
-        return { ok: false, reason: spawnResult.reason ?? "codex failed" };
-      }
-
-      // Harvest the generated image from the codex output directory.
       const imagePath = harvestCodexImage(codexOutputRoot, runStartedAt);
       if (imagePath === undefined) {
         return {
@@ -527,12 +296,9 @@ export class RealCodexImagegenRunner implements CodexImagegenRunner {
             `with mtime >= ${runStartedAt}`,
         };
       }
-
       return { ok: true, imagePath };
     } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 }
@@ -542,216 +308,433 @@ export class RealCodexImagegenRunner implements CodexImagegenRunner {
 // ---------------------------------------------------------------------------
 
 /**
- * Headless codex $imagegen provider.
- *
- * Builds the codex argv as a literal string array (NO shell expansion), calls
- * the injected CodexImagegenRunner, then validates + copies the produced image
- * to the repo-bounded outputPath.
- *
- * The runner-supplied source image path is additionally bounded to the codex
- * output root (via assertImagePathInAllowedRoot) before any copy is attempted.
- *
- * All failure modes return a structured result — never an uncaught throw.
+ * Headless codex $imagegen provider. Builds argv as a literal string array
+ * (no shell expansion), calls the injected runner, validates + copies the result
+ * to the repo-bounded outputPath. All failure modes return structured results.
  */
 export class CodexBuiltinImagegenProvider implements AssetProvider {
-  async generate(
-    request: AssetRequest,
-    deps: ProviderDeps,
-  ): Promise<AssetGenerationResult> {
-    // 1. Guard output path BEFORE calling the runner.
-    //    This is the first I/O gate — an invalid path is rejected here,
-    //    not after we've spent ≥120s waiting for codex.
-    const absOutputPath = resolveWithinRepo(request.outputPath, {
-      repoRoot: deps.repoRoot,
-    });
-
+  async generate(request: AssetRequest, deps: ProviderDeps): Promise<AssetGenerationResult> {
+    const absOutputPath = resolveWithinRepo(request.outputPath, { repoRoot: deps.repoRoot });
     const runner = deps.codexRunner;
     if (runner === undefined) {
-      return {
-        id: request.id,
-        provider: "codex_builtin_imagegen",
-        status: "needs_regeneration",
-        message: "No CodexImagegenRunner injected; cannot invoke codex.",
-      };
+      return { id: request.id, provider: "codex_builtin_imagegen", status: "needs_regeneration",
+        message: "No CodexImagegenRunner injected; cannot invoke codex." };
     }
 
     const timeoutMs = deps.timeoutMs ?? DEFAULT_CODEX_TIMEOUT_MS;
     const codexOutputRoot = deps.codexOutputRoot ?? defaultCodexOutputRoot();
     const runStartedAt = Date.now();
 
-    // 2. Build the codex argv ARRAY.
-    //
-    //    Structure:
-    //      codex exec --ephemeral --dangerously-bypass-approvals-and-sandbox
-    //            -C <workspace> '<$imagegen instruction>'
-    //
-    //    The $imagegen instruction string embeds the full prompt as a single
-    //    argv element. No shell expansion occurs because we never use
-    //    shell:true — spawn receives these as literal process arguments.
-    //    A prompt containing "; rm -rf /" is passed verbatim to codex, not
-    //    to a shell, so no injection is possible.
-    //
-    //    Security note: --dangerously-bypass-approvals-and-sandbox is required
-    //    here because headless codex has no TTY and cannot present interactive
-    //    approval prompts. The flag is scoped to THIS subprocess only.
     const workspace = path.dirname(absOutputPath);
     const outputFilename = path.basename(absOutputPath);
-    const imagegenInstruction =
-      `$imagegen ${request.prompt}. Save as ${outputFilename}.`;
+    const imagegenInstruction = `$imagegen ${request.prompt}. Save as ${outputFilename}.`;
 
     const argv: readonly string[] = [
-      "codex",
-      "exec",
-      "--ephemeral",
-      // SECURITY: required for headless execution only; scoped to asset-gen subprocess.
+      "codex", "exec", "--ephemeral",
       "--dangerously-bypass-approvals-and-sandbox",
-      "-C",
-      workspace,
-      imagegenInstruction,
+      "-C", workspace, imagegenInstruction,
     ];
 
-    // 3. Invoke the runner (injected dep — real or fake).
     const runResult = await runner.run(argv, timeoutMs, codexOutputRoot, runStartedAt);
 
-    // 4. If the runner reports a timeout, invoke the kill callback (test seam).
-    //    The real runner kills the process group itself before returning timedOut:true.
-    //    Fake runners set killCalled so tests can assert kill happened.
     if (!runResult.ok && runResult.timedOut && runResult.killCalled !== undefined) {
       runResult.killCalled();
     }
 
     if (!runResult.ok) {
-      return {
-        id: request.id,
-        provider: "codex_builtin_imagegen",
-        status: "needs_regeneration",
-        message: `codex runner failed: ${runResult.reason}`,
-      };
+      return { id: request.id, provider: "codex_builtin_imagegen", status: "needs_regeneration",
+        message: `codex runner failed: ${runResult.reason}` };
     }
 
     const imagePath = runResult.imagePath;
 
-    // 5a. Validate existence before the source-root guard (non-existence means
-    //     there is nothing to check or copy).
     if (!fs.existsSync(imagePath)) {
-      return {
-        id: request.id,
-        provider: "codex_builtin_imagegen",
-        status: "needs_regeneration",
-        message: `codex produced image path "${imagePath}" does not exist on disk.`,
-      };
+      return { id: request.id, provider: "codex_builtin_imagegen", status: "needs_regeneration",
+        message: `codex produced image path "${imagePath}" does not exist on disk.` };
     }
 
-    // 5b. Guard the SOURCE path to the codex output root (security gate).
-    //     This prevents a runner returning "/etc/shadow" from being copied in.
-    //     assertImagePathInAllowedRoot throws if the path escapes the root.
-    try {
-      assertImagePathInAllowedRoot(imagePath, codexOutputRoot);
-    } catch (err) {
-      return {
-        id: request.id,
-        provider: "codex_builtin_imagegen",
-        status: "needs_regeneration",
-        message: err instanceof Error ? err.message : String(err),
-      };
+    try { assertImagePathInAllowedRoot(imagePath, codexOutputRoot); }
+    catch (err) {
+      return { id: request.id, provider: "codex_builtin_imagegen", status: "needs_regeneration",
+        message: err instanceof Error ? err.message : String(err) };
     }
 
-    // 5c. Validate size > 0.
     const stat = fs.statSync(imagePath);
     if (stat.size === 0) {
-      return {
-        id: request.id,
-        provider: "codex_builtin_imagegen",
-        status: "needs_regeneration",
-        message: `codex produced an empty file at "${imagePath}" (0 bytes).`,
-      };
+      return { id: request.id, provider: "codex_builtin_imagegen", status: "needs_regeneration",
+        message: `codex produced an empty file at "${imagePath}" (0 bytes).` };
     }
 
-    // 5d. Validate extension is a recognised image format.
     const ext = path.extname(imagePath).toLowerCase();
     if (!VALID_IMAGE_EXTENSIONS.has(ext)) {
-      return {
-        id: request.id,
-        provider: "codex_builtin_imagegen",
-        status: "needs_regeneration",
+      return { id: request.id, provider: "codex_builtin_imagegen", status: "needs_regeneration",
         message: `codex output "${imagePath}" has unrecognised extension "${ext}". ` +
-          `Expected one of: ${[...VALID_IMAGE_EXTENSIONS].join(", ")}.`,
-      };
+          `Expected one of: ${[...VALID_IMAGE_EXTENSIONS].join(", ")}.` };
     }
 
-    // 5e. Copy to the repo-bounded output path.
     fs.mkdirSync(path.dirname(absOutputPath), { recursive: true });
     fs.copyFileSync(imagePath, absOutputPath);
-
-    return {
-      id: request.id,
-      provider: "codex_builtin_imagegen",
-      status: "generated",
-      outputAbsPath: absOutputPath,
-    };
+    return { id: request.id, provider: "codex_builtin_imagegen", status: "generated", outputAbsPath: absOutputPath };
   }
 }
 
 // ---------------------------------------------------------------------------
-// selectAssetProvider — provider selection with injected availability check
+// CC-9: sanitizeErrorMessage — strips credential/header fragments (P5-S5)
 // ---------------------------------------------------------------------------
 
 /**
- * A function that checks whether codex is available on this machine.
+ * Strips any fragment resembling an Authorization header value or API key from `msg`.
+ * Called on every error message before it reaches AssetGenerationResult or the manifest.
+ * (CC-9)
  *
- * The real implementation checks for a stored codex login token.
- * Tests inject () => true or () => false to test the gating logic without
- * touching the filesystem.
+ * KNOWN LIMITATION: this matches plain `Authorization: Bearer <tok>`, `Bearer <tok>`,
+ * `sk-...` keys, and long base64-ish runs. It does NOT decode percent/URL-encoded
+ * credentials (e.g. a `https://user:sk-...@host` style userinfo that got URL-encoded).
+ * The primary containment is that the key is NEVER placed into a message in the first
+ * place (CC-8 — only HTTP status + asset id are recorded); this sanitizer is the
+ * defence-in-depth backstop, and `globalThis.fetch` does not emit encoded-credential
+ * errors. If a future code path could surface encoded credentials, extend this.
  */
-export type CodexAvailabilityCheck = () => boolean;
+export function sanitizeErrorMessage(msg: string): string {
+  let s = msg.replace(/authorization\s*:\s*bearer\s+\S+/gi, "[REDACTED]");
+  s = s.replace(/bearer\s+\S{8,}/gi, "[REDACTED]");
+  s = s.replace(/sk-[A-Za-z0-9\-_]{20,}/g, "[REDACTED]");
+  s = s.replace(/[A-Za-z0-9+/=_-]{32,}/g, "[REDACTED]");
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// OpenAiApiImagegenProvider (P5-S5)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_API_TIMEOUT_MS = 60_000;
 
 /**
- * Default availability check: look for a codex login token file.
+ * OpenAI REST API image-generation provider (gpt-image-1). Opt-in, disabled by default.
  *
- * Codex stores its auth token in $CODEX_HOME (default ~/.codex) or the
- * standard config directories. We check the most common location without
- * importing codex internals.
- *
- * This is a best-effort check; the real runner will fail if the token is
- * stale, at which point the result will be needs_regeneration.
+ * CC-8: Authorization header value never logged/serialized/in-message. On failure: HTTP status + asset id only.
+ * CC-9: All error messages pass through sanitizeErrorMessage().
+ * CC-10: SpendCapBucket debited BEFORE network call.
+ * CC-DEC-2: Key read via SecretManager.get("forge.openai_api_key").reveal() inside generate().
  */
+export class OpenAiApiImagegenProvider implements AssetProvider {
+  readonly #bucket: SpendCapBucket;
+  readonly #timeoutMs: number;
+
+  constructor(bucket: SpendCapBucket, timeoutMs: number = DEFAULT_API_TIMEOUT_MS) {
+    this.#bucket = bucket;
+    this.#timeoutMs = timeoutMs;
+  }
+
+  async generate(request: AssetRequest, deps: ProviderDeps): Promise<AssetGenerationResult> {
+    // 1. Guard output path BEFORE any I/O or network call.
+    let absOutputPath: string;
+    try {
+      absOutputPath = resolveWithinRepo(request.outputPath, { repoRoot: deps.repoRoot });
+    } catch (err) {
+      return { id: request.id, provider: "openai_api_later_optional", status: "rejected",
+        message: sanitizeErrorMessage(err instanceof Error ? err.message : String(err)) };
+    }
+
+    // 2. Atomically reserve budget BEFORE the network call (CC-10). tryDebit is a single
+    //    check-and-decrement so concurrent generate() calls cannot both spend the last unit.
+    if (!this.#bucket.tryDebit()) {
+      return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+        message: `cap_exceeded: spend cap exhausted (asset ${request.id})` };
+    }
+
+    // 3. Read key via secret-manager at point-of-use (CC-DEC-2). Never stored in deps.
+    const secretManager = deps.secretManager;
+    if (secretManager === undefined) {
+      return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+        message: `no_key: SecretManager not available for asset ${request.id}` };
+    }
+
+    let rawKey: string;
+    try {
+      // Pass the ref as a plain string — ForgeSecretManager.get() accepts string.
+      // The ref "forge.openai_api_key" is the canonical name (matches SecretRef allowlist).
+      const secretValue = await secretManager.get("forge.openai_api_key");
+      if (secretValue === undefined) {
+        return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+          message: `no_key: forge.openai_api_key not in secret-manager (asset ${request.id})` };
+      }
+      rawKey = secretValue.reveal(); // reveal at point-of-use; not stored beyond this block
+    } catch (err) {
+      return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+        message: sanitizeErrorMessage(
+          `key-read error for asset ${request.id}: ` + (err instanceof Error ? err.message : String(err))) };
+    }
+
+    // 4. Call the API (built-in fetch + AbortController). rawKey used ONLY for Authorization header.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
+    let responseStatus: number | undefined;
+
+    try {
+      const response = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          // CC-8: rawKey used here only; never logged, spread, or put in any message/error.
+          "Authorization": `Bearer ${rawKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-image-1",
+          prompt: request.prompt,
+          n: 1,
+          size: mapPreferredSize(request.preferredSize ?? "wide"),
+          response_format: "b64_json",
+        }),
+      });
+
+      responseStatus = response.status;
+
+      if (!response.ok) {
+        // CC-8: report only HTTP status + asset id; never the key.
+        return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+          message: `API error HTTP ${responseStatus} for asset ${request.id}` };
+      }
+
+      const json = await response.json() as unknown;
+      const b64 = extractB64Json(json);
+      if (b64 === undefined) {
+        return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+          message: `API response missing b64_json data for asset ${request.id}` };
+      }
+
+      const imageBytes = Buffer.from(b64, "base64");
+      if (imageBytes.byteLength === 0) {
+        return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+          message: `API returned empty image body for asset ${request.id}` };
+      }
+
+      const ext = path.extname(absOutputPath).toLowerCase();
+      if (!VALID_IMAGE_EXTENSIONS.has(ext)) {
+        return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+          message: `Output path "${absOutputPath}" has unrecognised extension "${ext}".` };
+      }
+
+      fs.mkdirSync(path.dirname(absOutputPath), { recursive: true });
+      fs.writeFileSync(absOutputPath, imageBytes);
+
+      return { id: request.id, provider: "openai_api_later_optional", status: "generated",
+        outputAbsPath: absOutputPath };
+
+    } catch (fetchErr) {
+      if (controller.signal.aborted) {
+        return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+          message: sanitizeErrorMessage(`API timeout after ${this.#timeoutMs}ms for asset ${request.id}`) };
+      }
+      return { id: request.id, provider: "openai_api_later_optional", status: "needs_regeneration",
+        // CC-9: sanitize — fetch error must not carry Authorization header fragments
+        message: sanitizeErrorMessage(
+          `API fetch error for asset ${request.id}: ` +
+            (fetchErr instanceof Error ? fetchErr.message : String(fetchErr))) };
+    } finally {
+      clearTimeout(timer);
+      // CC-8: rawKey is no longer referenced after this point. GC will collect it.
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for OpenAiApiImagegenProvider
+// ---------------------------------------------------------------------------
+
+function mapPreferredSize(preferredSize: string): string {
+  switch (preferredSize) {
+    case "square": return "1024x1024";
+    case "portrait": return "1024x1792";
+    case "landscape": case "wide": return "1792x1024";
+    default: return "1024x1024";
+  }
+}
+
+function extractB64Json(json: unknown): string | undefined {
+  if (json === null || typeof json !== "object" || !("data" in json)) return undefined;
+  const data = (json as { data: unknown }).data;
+  if (!Array.isArray(data) || data.length === 0) return undefined;
+  const first = data[0];
+  if (first === null || typeof first !== "object" || !("b64_json" in first)) return undefined;
+  const b64 = (first as { b64_json: unknown }).b64_json;
+  if (typeof b64 !== "string" || b64.length === 0) return undefined;
+  return b64;
+}
+
+// ---------------------------------------------------------------------------
+// selectAssetProvider — provider selection
+// ---------------------------------------------------------------------------
+
+/** A function that checks whether codex is available on this machine. */
+export type CodexAvailabilityCheck = () => boolean;
+
 function defaultCodexAvailability(): boolean {
   const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? "";
   const codexHome = process.env["CODEX_HOME"] ?? path.join(home, ".codex");
-  // Codex stores credentials in auth.json or similar within the codex home.
   const authCandidates = [
     path.join(codexHome, "auth.json"),
     path.join(codexHome, "config.json"),
     path.join(codexHome, ".credentials"),
   ];
-  return authCandidates.some((p) => {
-    try {
-      return fs.existsSync(p);
-    } catch {
-      return false;
-    }
-  });
+  return authCandidates.some((p) => { try { return fs.existsSync(p); } catch { return false; } });
 }
+
+// ---------------------------------------------------------------------------
+// SelectionReason — structured reason for every selectAssetProviderWithReason result
+// ---------------------------------------------------------------------------
+
+/**
+ * Structured reason for each selectAssetProviderWithReason outcome (CC-11).
+ *
+ * explicit_manual      — request.provider === "manual_upload"
+ * explicit_placeholder — request.provider === "placeholder_svg"
+ * codex_available      — codex login present and not CI (codex provider selected)
+ * api_available        — openai_api_later_optional enabled + key + budget (API provider selected)
+ * ci                   — env.CI === "true" (codex or openai_api_later_optional)
+ * no_login             — codex availability check returned false
+ * provider_disabled    — ARCHON_FORGE_API_PROVIDER_ENABLED !== "true" (openai)
+ * no_key               — key not in secret-manager (openai)
+ * no_spend_cap         — cap absent/zero/invalid/negative (openai, CC-10)
+ * cap_exceeded         — run-level bucket exhausted (openai, CC-10)
+ */
+export type SelectionReason =
+  | "explicit_manual"
+  | "explicit_placeholder"
+  | "codex_available"
+  | "api_available"
+  | "ci"
+  | "no_login"
+  | "provider_disabled"
+  | "no_key"
+  | "no_spend_cap"
+  | "cap_exceeded";
+
+/** Result of selectAssetProviderWithReason. */
+export interface SelectionResult {
+  readonly provider: AssetProvider;
+  readonly reason: SelectionReason;
+}
+
+// ---------------------------------------------------------------------------
+// selectAssetProviderWithReason (CC-11/12/C-DEC-1) — ADDITIVE
+// ---------------------------------------------------------------------------
+
+/**
+ * Extended deps for selectAssetProviderWithReason: injectable overrides for testing.
+ * Not part of the core ProviderDeps interface (additive; existing callers unaffected).
+ *
+ * spendCapBucket — pre-built bucket (bypasses the process-level singleton in tests).
+ * secretManager  — for future async selection path; not used in synchronous selection.
+ * keyAvailable   — pre-resolved boolean from an async secret-manager look-up.
+ *                  When false and provider === "openai_api_later_optional", selection
+ *                  returns { reason: "no_key" }. Defaults to true (unknown = optimistic;
+ *                  the provider's generate() will catch a missing key at call time).
+ *                  Tests inject false to assert the no_key selection path.
+ */
+export interface SelectionDeps {
+  readonly spendCapBucket?: SpendCapBucket | undefined;
+  readonly secretManager?: ForgeSecretManager | undefined;
+  readonly keyAvailable?: boolean | undefined;
+}
+
+/**
+ * Select the AssetProvider for a request with a structured reason (CC-11, C-DEC-1).
+ *
+ * For openai_api_later_optional, evaluates in order:
+ *   CI=true → placeholder (ci)
+ *   ARCHON_FORGE_API_PROVIDER_ENABLED !== "true" → placeholder (provider_disabled)
+ *   no key in secret-manager (sync check not possible; checked synchronously via capString)
+ *   cap absent/zero/invalid → placeholder (no_spend_cap)
+ *   cap exhausted → placeholder (cap_exceeded)
+ *   else → OpenAiApiImagegenProvider
+ *
+ * The existing codex paths are also attributed:
+ *   manual_upload → explicit_manual
+ *   placeholder_svg → explicit_placeholder
+ *   codex + CI=true → ci (placeholder)
+ *   codex + no login → no_login (placeholder)
+ *   codex + login → codex_available
+ *
+ * @param request            The AssetRequest.
+ * @param env                Environment variables (default: process.env).
+ * @param availabilityCheck  Codex login check (injectable for tests).
+ * @param selectionDeps      Optional bucket + secretManager overrides for tests.
+ */
+export function selectAssetProviderWithReason(
+  request: AssetRequest,
+  env: Partial<Record<string, string>> = process.env,
+  availabilityCheck: CodexAvailabilityCheck = defaultCodexAvailability,
+  selectionDeps: SelectionDeps = {},
+): SelectionResult {
+  // Existing explicit providers — unchanged behaviour.
+  if (request.provider === "manual_upload") {
+    return { provider: new ManualUploadProvider(), reason: "explicit_manual" };
+  }
+  if (request.provider === "placeholder_svg") {
+    return { provider: new PlaceholderSvgProvider(), reason: "explicit_placeholder" };
+  }
+
+  // codex_builtin_imagegen — existing gating logic, now attributed.
+  if (request.provider === "codex_builtin_imagegen") {
+    if (env["CI"] === "true") {
+      return { provider: new PlaceholderSvgProvider(), reason: "ci" };
+    }
+    if (!availabilityCheck()) {
+      return { provider: new PlaceholderSvgProvider(), reason: "no_login" };
+    }
+    return { provider: new CodexBuiltinImagegenProvider(), reason: "codex_available" };
+  }
+
+  // openai_api_later_optional — two-layer disable + spend cap (CC-11/12/C-DEC-1/CC-10).
+  if (request.provider === "openai_api_later_optional") {
+    // Layer 1: CI gate — placeholder always (CC-12).
+    if (env["CI"] === "true") {
+      return { provider: new PlaceholderSvgProvider(), reason: "ci" };
+    }
+    // Layer 1: explicit opt-in (C-DEC-1).
+    if (env["ARCHON_FORGE_API_PROVIDER_ENABLED"] !== "true") {
+      return { provider: new PlaceholderSvgProvider(), reason: "provider_disabled" };
+    }
+    // Layer 2: key presence check. The selection function is synchronous; callers
+    // that need the selection-level no_key reason must pre-resolve key availability
+    // and pass it as selectionDeps.keyAvailable. When false → placeholder (no_key).
+    // When undefined (unknown) the selection is optimistic; the provider generate()
+    // will return no_key at call time if the key is actually absent.
+    if (selectionDeps.keyAvailable === false) {
+      return { provider: new PlaceholderSvgProvider(), reason: "no_key" };
+    }
+    // Layer 2: spend cap (CC-10 — deny-by-default).
+    const capString = env["ARCHON_FORGE_API_SPEND_CAP"];
+    const bucket = selectionDeps.spendCapBucket ?? getRunBucket(capString);
+
+    if (!bucket.isConfigured) {
+      return { provider: new PlaceholderSvgProvider(), reason: "no_spend_cap" };
+    }
+    if (!bucket.hasRemaining) {
+      return { provider: new PlaceholderSvgProvider(), reason: "cap_exceeded" };
+    }
+
+    return { provider: new OpenAiApiImagegenProvider(bucket), reason: "api_available" };
+  }
+
+  // Fallback for any future unhandled provider value: placeholder.
+  return { provider: new PlaceholderSvgProvider(), reason: "explicit_placeholder" };
+}
+
+// ---------------------------------------------------------------------------
+// selectAssetProvider — existing API; now delegates to selectAssetProviderWithReason
+// ---------------------------------------------------------------------------
 
 /**
  * Select the appropriate AssetProvider for the given request and environment.
  *
- * Selection rules (evaluated in priority order):
- *   1. If request.provider === "manual_upload" → ManualUploadProvider.
- *   2. If request.provider === "placeholder_svg" → PlaceholderSvgProvider.
- *   3. If request.provider === "codex_builtin_imagegen":
- *      a. env.CI === "true" → PlaceholderSvgProvider (NEVER codex in CI).
- *      b. availabilityCheck() returns false → PlaceholderSvgProvider.
- *      c. Otherwise → CodexBuiltinImagegenProvider.
- *
- * The availability check is injectable so tests can probe the CI/no-login
- * gating without touching the real filesystem or environment.
+ * Delegates to selectAssetProviderWithReason and returns only the provider.
+ * Existing callers are unaffected (same signature, same behaviour).
  *
  * @param request           The AssetRequest being processed.
- * @param env               Environment variables. Defaults to `process.env` so
- *                          a production caller that omits this argument
- *                          automatically inherits CI=true when running in CI.
- *                          Pass a custom object only when testing.
+ * @param env               Environment variables. Defaults to `process.env`.
  * @param availabilityCheck Optional override for the codex login check.
  */
 export function selectAssetProvider(
@@ -759,26 +742,5 @@ export function selectAssetProvider(
   env: Partial<Record<string, string>> = process.env,
   availabilityCheck: CodexAvailabilityCheck = defaultCodexAvailability,
 ): AssetProvider {
-  // Honour explicit manual_upload requests regardless of availability.
-  if (request.provider === "manual_upload") {
-    return new ManualUploadProvider();
-  }
-
-  // Honour explicit placeholder_svg requests.
-  if (request.provider === "placeholder_svg") {
-    return new PlaceholderSvgProvider();
-  }
-
-  // codex_builtin_imagegen: gate on CI and login availability.
-  // CI=true → NEVER attempt codex, even if a token exists.
-  if (env["CI"] === "true") {
-    return new PlaceholderSvgProvider();
-  }
-
-  // No codex login token → fall back to placeholder.
-  if (!availabilityCheck()) {
-    return new PlaceholderSvgProvider();
-  }
-
-  return new CodexBuiltinImagegenProvider();
+  return selectAssetProviderWithReason(request, env, availabilityCheck).provider;
 }
