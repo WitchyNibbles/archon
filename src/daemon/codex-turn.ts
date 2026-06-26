@@ -45,6 +45,10 @@ import type {
 } from "../daemon.ts";
 import type { ContextBudgetMonitor } from "../runtime/context-budget.ts";
 import type { ContextBudgetState } from "../runtime/context-budget.ts";
+import {
+  resolveDaemonContextMonitorMode,
+  resolveArchonContextPolicy
+} from "../runtime/context-budget.ts";
 import { computeUsedPct, resolveModelContextTokens } from "../runtime/context-usage.ts";
 import type { HandoffController } from "../runtime/handoff-controller.ts";
 import { resolveRespawnBudget } from "../runtime/respawn-budget.ts";
@@ -296,23 +300,29 @@ export async function runDaemonCodexTurn(
 
   // Phase 1 (ahrP1Sampling) + Phase 2 (ahrP2ResetOnHandoff):
   //
-  // In "observe" mode (default / ARCHON_CONTEXT_MONITOR unset or "observe"):
-  //   - Sample fire-and-forget; any error is swallowed.
-  //   - Never resets session. setSessionId from turn result as before.
+  // Daemon enforce-default (P3 / C4): enforce is the default mode — ARCHON_CONTEXT_MONITOR
+  // unset or any non-"observe" value resolves to enforce via resolveDaemonContextMonitorMode.
   //
-  // In "enforce" mode (ARCHON_CONTEXT_MONITOR=enforce):
+  // In "observe" mode (ARCHON_CONTEXT_MONITOR=observe — operator kill switch):
+  //   - Sample fire-and-forget; any error is swallowed.
+  //   - Suppresses daemon auto-respawn: reset path is skipped even when state is
+  //     handoff_required or hard_stop. Emits "observe_kill_switch_suppressed_reset"
+  //     stderr event when a would-be reset is suppressed (C4 minimum observability).
+  //
+  // In "enforce" mode (default / ARCHON_CONTEXT_MONITOR unset or "enforce"):
   //   - Await recordSample; emit tagged stderr JSON on failure (non-fatal).
   //   - If resulting state is handoff_required or hard_stop, OR the current
   //     invocation already has a committed handoff → reset path.
   //   - Reset path: build continuation bundle, persist, start next invocation,
   //     consume handoff, save state with sessionId=undefined + justHandedOff=true,
   //     early return to respawn a fresh claude -p in the next loop iteration.
+  //   - Emits "enforce_reset" stderr event when the reset proceeds (C4).
   //
-  // ARCH-C1: gate is on process.env.ARCHON_CONTEXT_MONITOR directly — NOT on
+  // ARCH-C1: gate is on resolveDaemonContextMonitorMode(deps.env) — NOT on
   // monitor state — because context-budget.ts:159-161 downgrades
   // handoff_required→warning in observe mode but NOT hard_stop, so hard_stop
   // would otherwise reset in observe mode.
-  const isEnforceMode = process.env.ARCHON_CONTEXT_MONITOR === "enforce";
+  const isEnforceMode = resolveDaemonContextMonitorMode(deps.env) === "enforce";
 
   let sampledState: ContextBudgetState | undefined;
   if (deps.invocationId !== undefined && deps.monitor !== undefined && codexTurn.usage !== undefined) {
@@ -358,6 +368,30 @@ export async function runDaemonCodexTurn(
           // Intentional: sampling failure is non-fatal. Error swallowed so
           // the daemon turn result is unaffected.
         });
+
+        // C4 (P3 observability): emit when the observe kill switch suppresses a
+        // would-be reset. context-budget.ts:159 downgrades handoff_required→warning
+        // in observe mode before returning, so the returned state cannot be used to
+        // detect this suppression; compare usedPct directly against policy thresholds.
+        const policy = resolveArchonContextPolicy();
+        const wouldBeState: "hard_stop" | "handoff_required" | null =
+          usedPct >= policy.hardStopPct
+            ? "hard_stop"
+            : usedPct >= policy.handoffPct
+              ? "handoff_required"
+              : null;
+        if (wouldBeState !== null) {
+          process.stderr.write(
+            JSON.stringify({
+              tag: "archon-context-monitor",
+              event: "observe_kill_switch_suppressed_reset",
+              invocationId: deps.invocationId,
+              runId: input.activeRunId,
+              taskId: input.activeTaskId,
+              wouldBeState
+            }) + "\n"
+          );
+        }
       }
     }
   }
@@ -508,6 +542,20 @@ export async function runDaemonCodexTurn(
             return undefined;
           }
         }
+
+        // C4 (P3 observability): emit when the daemon proceeds with an enforce reset.
+        // Fired after budget check + lease claim confirm the reset is committed.
+        process.stderr.write(
+          JSON.stringify({
+            tag: "archon-context-monitor",
+            event: "enforce_reset",
+            invocationId: deps.invocationId,
+            runId: input.activeRunId,
+            taskId: input.activeTaskId,
+            sampledState,
+            respawnCount: nextRespawnCount
+          }) + "\n"
+        );
 
         // Build continuation bundle — handoff content is sanitized in buildContinuationPrompt.
         // Pass the authoritative task-record allowedWriteScope so the trusted
