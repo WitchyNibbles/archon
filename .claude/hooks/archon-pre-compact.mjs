@@ -78,19 +78,28 @@ async function main() {
               taskId: data.taskId,
               role: data.role,
               agentKind: "specialist_owner",
-              model: "sonnet",
+              model: "claude-sonnet-4-6",
               effort: "high",
               status: "running",
               contextPolicyId: "default",
               startedAt: data.startedAt
             });
           } catch (err) {
-            // Idempotent: a duplicate id on repeated compaction is expected. A
-            // genuine failure surfaces downstream when the commit cannot find
-            // the invocation (caught by the outer try).
-            process.stderr.write(
-              `[archon-pre-compact] upsertInteractiveInvocation: ${String(err)}\n`
-            );
+            // Postgres unique_violation (23505) = the invocation row already
+            // exists (repeated compaction) — expected and idempotent, log quietly.
+            // Any OTHER error is a STRUCTURAL failure (FK, schema): the handoff
+            // commit will then fail to find the invocation, so surface it loudly
+            // so the silent loss of session protection is diagnosable.
+            const code = err && typeof err === "object" ? err.code : undefined;
+            if (code === "23505") {
+              process.stderr.write(
+                `[archon-pre-compact] invocation ${data.id} already exists (idempotent)\n`
+              );
+            } else {
+              process.stderr.write(
+                `[archon-pre-compact][WARN] upsertInteractiveInvocation structural failure (handoff will be lost): ${String(err)}\n`
+              );
+            }
           }
         }
       };

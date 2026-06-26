@@ -21,6 +21,32 @@ import { HandoffController, type HandoffStoreLike } from "./handoff-controller.t
 export type { HandoffStoreLike };
 
 // ---------------------------------------------------------------------------
+// normalizeRole — injection-proof role identity for the trusted prompt section
+// ---------------------------------------------------------------------------
+
+/**
+ * Constrain a role string to a strict, bounded token before it can flow into
+ * HandoffController identity fields (fromRole/toRole). buildContinuationPrompt
+ * embeds toRole in the TRUSTED identity section without sanitization, so the
+ * value must never contain newlines, spaces, section markers, or arbitrary
+ * length. Anything that does not match `^[a-z][a-z0-9_-]{0,39}$` falls back to
+ * the safe default "interactive".
+ *
+ * This is the authoritative boundary: the context-guard.json `role` field and
+ * ARCHON_ROLE env are both untrusted (attacker-writable), so validation here
+ * cannot be skipped by a caller that wrote a clean value upstream.
+ */
+export function normalizeRole(raw: unknown): string {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (/^[a-z][a-z0-9_-]{0,39}$/.test(trimmed)) {
+      return trimmed;
+    }
+  }
+  return "interactive";
+}
+
+// ---------------------------------------------------------------------------
 // InteractiveHandoffStoreLike — extends HandoffStoreLike with on-demand
 // invocation creation for the interactive (plain `claude`) surface.
 // ---------------------------------------------------------------------------
@@ -183,10 +209,13 @@ export async function runPrecompactHandoff(opts: {
     typeof guard.taskId === "string" && guard.taskId.trim().length > 0
       ? guard.taskId.trim()
       : undefined;
-  const fromRole =
-    typeof guard.role === "string" && guard.role.trim().length > 0
-      ? guard.role.trim()
-      : "interactive";
+  // SECURITY (handoffConsumerWiring P1 security gate, HIGH-2): the guard file is
+  // attacker-writable (within many subagents' default write scope) and `role`
+  // flows into HandoffController as both fromRole and toRole. buildContinuationPrompt
+  // treats toRole as a TRUSTED identity field and embeds it unsanitized. Constrain
+  // it to a strict, injection-proof token (no newlines/markers/spaces) or fall back
+  // to "interactive". This restores the runtime-set-identity invariant.
+  const fromRole = normalizeRole(guard.role);
 
   if (runId === undefined || taskId === undefined) {
     return { committed: false, invocationId };

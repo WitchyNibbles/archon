@@ -42,10 +42,17 @@ if (context.activeTaskId) {
       const invocationId = `inv_interactive_${randomUUID()}`;
       const guardPath = path.join(context.repoRoot, ".archon", "work", "context-guard.json");
       mkdirSync(path.dirname(guardPath), { recursive: true });
+      // SECURITY (P1 security gate, HIGH-1): ARCHON_ROLE is untrusted (any
+      // subagent/MCP with env access can set it) and `role` flows into the
+      // TRUSTED identity section of successor continuation prompts. Constrain it
+      // to a strict injection-proof token; anything else → "interactive".
+      // (runPrecompactHandoff re-validates via normalizeRole — this is
+      // defense-in-depth at the write boundary.)
+      const rawRole = typeof process.env.ARCHON_ROLE === "string" ? process.env.ARCHON_ROLE.trim() : "";
+      const role = /^[a-z][a-z0-9_-]{0,39}$/.test(rawRole) ? rawRole : "interactive";
       writeFileSync(guardPath, JSON.stringify({
         invocationId, runId, taskId: context.activeTaskId,
-        role: (typeof process.env.ARCHON_ROLE === "string" && process.env.ARCHON_ROLE.trim().length > 0)
-          ? process.env.ARCHON_ROLE.trim() : "interactive",
+        role,
         surface: "interactive", state: "registered",
         registeredAt: new Date().toISOString()
       }), "utf-8");
