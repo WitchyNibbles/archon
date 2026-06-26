@@ -124,7 +124,7 @@ function makeHandoffStore(opts: {
   hasCommittedHandoff?: boolean;
 }): HandoffStoreLike {
   return {
-    async createHandoff(data: Parameters<HandoffStoreLike["createHandoff"]>[0]): Promise<HandoffRecord> {
+    async createHandoff(_data: Parameters<HandoffStoreLike["createHandoff"]>[0]): Promise<HandoffRecord> {
       return handoffRecord();
     },
     async getLatestUnconsumedHandoff(_runId: string, _taskId: string): Promise<HandoffRecord | undefined> {

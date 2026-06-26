@@ -479,10 +479,11 @@ export async function runDaemonCodexTurn(
         // Phase 4 (ahrP4InteractiveWatcher): claim the respawn lease for "daemon"
         // BEFORE resetting, so the interactive watcher reads owner=daemon and no-ops.
         // If the lease store is absent, skip gracefully (degraded mode).
-        // If the claim fails (interactive already owns this run's lease), we still
-        // proceed — the P2 reset is the authoritative daemon reset path and takes
-        // priority. The lease is advisory mutual-exclusion for the interactive
-        // surface; it does not gate the daemon's own reset.
+        // If the claim FAILS (another supervisor — e.g. the interactive watcher —
+        // already owns this run's lease), the daemon must NOT reset: it returns a
+        // no-op so the owning supervisor drives the respawn (BLOCKING-3 fix below).
+        // This prevents a split-brain double relaunch for the same run. The lease
+        // is the single source of truth for who owns the respawn this turn.
         if (deps.leaseStore !== undefined) {
           const leaseClaim = await claimRespawnLease(
             input.activeRunId,
