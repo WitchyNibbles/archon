@@ -490,18 +490,21 @@ export async function runDaemonCodexTurn(
             deps.leaseStore
           );
           if (!leaseClaim.granted) {
-            // Log for observability but do not block the daemon reset.
+            // Lease is held by another supervisor (e.g. interactive watcher).
+            // The daemon must NOT reset — return no-op so the owning supervisor
+            // drives the respawn. (BLOCKING-3 fix: early return, not log+proceed.)
             process.stderr.write(
               JSON.stringify({
                 tag: "archon-context-monitor",
-                event: "respawn_lease_contended",
+                event: "respawn_lease_denied",
                 invocationId: deps.invocationId,
                 runId: input.activeRunId,
                 taskId: input.activeTaskId,
                 currentOwner: leaseClaim.currentOwner,
-                note: "daemon proceeding with reset; lease already claimed by another supervisor"
+                note: "daemon lease denied; skipping reset — owning supervisor will respawn"
               }) + "\n"
             );
+            return undefined;
           }
         }
 

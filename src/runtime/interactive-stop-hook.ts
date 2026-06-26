@@ -98,8 +98,10 @@ export interface InteractiveStopHookDeps {
   /**
    * Write the resume-request atomically (temp+rename) and return the
    * relative path. Defaults to writeResumeRequestAtomically when absent.
+   *
+   * BLOCKING-4: `promptContent` is the actual text to write to the prompt file.
    */
-  writeResumeRequest?(cwd: string, request: ResumeRequest): Promise<string>;
+  writeResumeRequest?(cwd: string, request: ResumeRequest, promptContent: string): Promise<string>;
   /** Claim the respawn lease for this runId. */
   claimLease(runId: string, owner: "interactive"): Promise<ClaimResult>;
 }
@@ -206,22 +208,29 @@ const CONTINUATION_PROMPT_FILENAME = "continuation-context.txt";
  * temp-file + rename (INFRA-C3). The rename is atomic on POSIX systems,
  * preventing a watcher from reading a partially-written file.
  *
+ * BLOCKING-4 fix: accepts `promptContent` (the actual text to write to the
+ * prompt file) rather than inferring it from `request.promptPath` (which is a
+ * path string, not content). Previously this function wrote the path string as
+ * the file content, silently producing a no-op prompt.
+ *
  * I/O contract:
- *   Input:  cwd, request
+ *   Input:  cwd, request, promptContent (string — the continuation bundle text)
  *   Output: relative path to the written resume-request JSON
  *   Side effects: writes two files under .archon/work/daemon/
  */
 export async function writeResumeRequestAtomically(
   cwd: string,
-  request: ResumeRequest
+  request: ResumeRequest,
+  promptContent: string
 ): Promise<string> {
   const daemonDir = path.join(cwd, ".archon", "work", "daemon");
   await mkdir(daemonDir, { recursive: true });
 
-  // Write the prompt content (the continuation bundle) first, atomically.
+  // Write the prompt CONTENT (the continuation bundle) first, atomically.
+  // This is the text the fresh claude session will receive as its prompt.
   const promptFullPath = path.join(cwd, request.promptPath);
   const promptTmp = `${promptFullPath}.tmp.${Date.now()}`;
-  await writeFile(promptTmp, request.promptPath, "utf8");
+  await writeFile(promptTmp, promptContent, "utf8");
   await rename(promptTmp, promptFullPath);
 
   // Write the resume-request JSON last (watcher polls for this file).
@@ -339,20 +348,20 @@ export async function handleInteractiveStop(
   };
 
   // Write atomically (INFRA-C3). Use injected writer when provided (tests),
-  // else write prompt + request via atomic temp+rename in production.
+  // else write prompt + request via writeResumeRequestAtomically.
+  //
+  // BLOCKING-4 fix: pass `promptContent` (the built continuation text) to the
+  // writer. Previously the production path wrote the prompt separately and then
+  // called writeResumeRequestAtomically which overwrote it with the path string.
+  // Now there is exactly ONE write of the prompt file, carrying the correct text.
+  const promptContent = `${continuationPrompt.trim()}\n`;
   let resumeRequestPath: string;
   if (deps.writeResumeRequest !== undefined) {
     // Test/injection path: delegate entirely to the provided writer.
-    resumeRequestPath = await deps.writeResumeRequest(deps.cwd, request);
+    resumeRequestPath = await deps.writeResumeRequest(deps.cwd, request, promptContent);
   } else {
-    // Production path: write prompt content then request atomically.
-    const daemonDir = path.join(deps.cwd, ".archon", "work", "daemon");
-    await mkdir(daemonDir, { recursive: true });
-    const promptFullPath = path.join(deps.cwd, DEFAULT_PROMPT_PATH);
-    const promptTmp = `${promptFullPath}.tmp.${Date.now()}`;
-    await writeFile(promptTmp, `${continuationPrompt.trim()}\n`, "utf8");
-    await rename(promptTmp, promptFullPath);
-    resumeRequestPath = await writeResumeRequestAtomically(deps.cwd, request);
+    // Production path: writeResumeRequestAtomically writes both files atomically.
+    resumeRequestPath = await writeResumeRequestAtomically(deps.cwd, request, promptContent);
   }
 
   return {

@@ -174,10 +174,16 @@ describe("scripts/archon-interactive-supervisor.sh", () => {
     const callLines = callLog.trim().split("\n").filter(Boolean);
     assert.equal(callLines.length, 1, `expected 1 claude call, got ${callLines.length}: ${callLog}`);
 
-    // The call must not contain --resume (fresh_run only)
+    // The call must not contain --resume (fresh_run only).
     assert.ok(
       !callLines[0]!.includes("--resume"),
       `claude call must not use --resume: ${callLines[0]}`
+    );
+
+    // Non-blocking 7: the call must include -- to prevent prompt "--" being parsed as flags.
+    assert.ok(
+      callLines[0]!.includes(" -- "),
+      `claude call must include -- separator (non-blocking 7): ${callLines[0]}`
     );
   });
 
@@ -207,13 +213,15 @@ describe("scripts/archon-interactive-supervisor.sh", () => {
       "utf8"
     );
 
-    // Write a pre-existing daemon lease file to simulate daemon owning the run
-    const leaseFile = path.join(tmpDir, ".archon", "work", "daemon", "respawn-lease.json");
+    // Write a pre-existing daemon lease in the UNIFIED file-lock path
+    // (matches makeFileLockLeaseStore path: respawn-lease-<sanitizedRunId>.lock).
+    // BLOCKING-2: both Node and bash now contend on this same file.
+    const leaseFile = path.join(tmpDir, ".archon", "work", "daemon", "respawn-lease-run-daemon-owns.lock");
     await writeFile(leaseFile, JSON.stringify({
       runId: "run-daemon-owns",
       owner: "daemon",
       claimedAt: new Date().toISOString()
-    }), "utf8");
+    }) + "\n", "utf8");
 
     const claudeCallLog = path.join(tmpDir, "claude-calls.log");
     const stubClaude = path.join(tmpDir, "claude");
@@ -238,5 +246,114 @@ describe("scripts/archon-interactive-supervisor.sh", () => {
     // Claude must NOT have been called
     const claudeWasCalled = await fileExists(claudeCallLog);
     assert.equal(claudeWasCalled, false, "claude must not be called when daemon owns the lease");
+  });
+
+  // -----------------------------------------------------------------------
+  // TOCTOU test (BLOCKING-5): two concurrent supervisors race one request
+  // → exactly one consumes it (the other exits cleanly with 0 calls).
+  // -----------------------------------------------------------------------
+
+  it("TOCTOU: exactly 1 of 2 concurrent supervisors consumes the resume-request (BLOCKING-5)", async () => {
+    const promptPath = ".archon/work/daemon/continuation-context.txt";
+    await writeFile(
+      path.join(tmpDir, ".archon", "work", "daemon", "continuation-context.txt"),
+      "toctou test prompt",
+      "utf8"
+    );
+    const request = {
+      schemaVersion: 1,
+      mode: "fresh_run",
+      runId: "run-toctou-test",
+      taskId: "task-toctou-test",
+      promptPath,
+      createdAt: new Date().toISOString()
+    };
+    await writeFile(
+      path.join(tmpDir, ".archon", "work", "daemon", "interactive-resume-request.json"),
+      JSON.stringify(request),
+      "utf8"
+    );
+
+    const claudeCallLog = path.join(tmpDir, "claude-calls-toctou.log");
+    const stubClaude = path.join(tmpDir, "claude-toctou");
+    await writeFile(
+      stubClaude,
+      `#!/bin/bash\necho "called" >> ${claudeCallLog}\nexit 0\n`,
+      { mode: 0o755 }
+    );
+
+    const env = {
+      ARCHON_CWD: tmpDir,
+      ARCHON_CLAUDE_BIN: stubClaude,
+      ARCHON_SUPERVISOR_MAX_RESPAWNS: "1",
+      ARCHON_RESUME_REQUEST_MAX_AGE_SECONDS: "300"
+    };
+
+    // Run both supervisors concurrently (race condition).
+    const [r1, r2] = await Promise.all([
+      runScript([], env, 10_000),
+      runScript([], env, 10_000)
+    ]);
+
+    // Both must exit (not hang).
+    assert.ok(r1.exitCode !== null, `supervisor 1 must exit: ${r1.stderr}`);
+    assert.ok(r2.exitCode !== null, `supervisor 2 must exit: ${r2.stderr}`);
+
+    // Exactly 1 claude call across both supervisors.
+    let callLog = "";
+    try { callLog = await readFile(claudeCallLog, "utf8"); } catch { callLog = ""; }
+    const callLines = callLog.trim().split("\n").filter(Boolean);
+    assert.equal(
+      callLines.length,
+      1,
+      `exactly 1 claude call expected across concurrent supervisors, got ${callLines.length}: ${callLog}`
+    );
+  });
+
+  // -----------------------------------------------------------------------
+  // Python injection test (BLOCKING-1): malicious createdAt value must not
+  // execute any code — the iso_age_seconds helper passes the value via
+  // sys.argv[1], not string-interpolated into -c "...".
+  // -----------------------------------------------------------------------
+
+  it("Python injection: malicious createdAt value causes no side effects (BLOCKING-1)", async () => {
+    const injectionMarker = path.join(tmpDir, "pwn-marker.txt");
+    // Craft a createdAt that would execute code if interpolated into python3 -c "...${created_at}...".
+    // With the ARGV-based fix, this is parsed as a literal ISO string (and will produce an
+    // age parse failure → returns 999999 → request is "stale" → archived, not executed).
+    const maliciousCreatedAt = `'); import os; os.system("touch ${injectionMarker}"); x='`;
+
+    const request = {
+      schemaVersion: 1,
+      mode: "fresh_run",
+      runId: "run-inject-test",
+      taskId: "task-inject-test",
+      promptPath: ".archon/work/daemon/continuation-context.txt",
+      createdAt: maliciousCreatedAt
+    };
+    await writeFile(
+      path.join(tmpDir, ".archon", "work", "daemon", "continuation-context.txt"),
+      "prompt",
+      "utf8"
+    );
+    await writeFile(
+      path.join(tmpDir, ".archon", "work", "daemon", "interactive-resume-request.json"),
+      JSON.stringify(request),
+      "utf8"
+    );
+
+    const stubClaude = path.join(tmpDir, "claude-inject");
+    await writeFile(stubClaude, `#!/bin/bash\nexit 0\n`, { mode: 0o755 });
+
+    await runScript([], {
+      ARCHON_CWD: tmpDir,
+      ARCHON_CLAUDE_BIN: stubClaude,
+      ARCHON_SUPERVISOR_MAX_RESPAWNS: "1",
+      ARCHON_RESUME_REQUEST_MAX_AGE_SECONDS: "300"
+    }, 5000);
+
+    // The injection marker must NOT exist — no code execution occurred.
+    const injected = await fileExists(injectionMarker);
+    assert.equal(injected, false, "Python injection via createdAt must be prevented (BLOCKING-1)");
   });
 });
