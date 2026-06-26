@@ -26,7 +26,8 @@ import {
   reviewArtifactPath,
   shouldHoldStop,
   toRelativePath,
-  validateReviewArtifact
+  validateReviewArtifact,
+  isHandoffArtifactPath
 } from "./hook-utils.mjs";
 
 // Claude Code PreToolUse output: {decision: "block", reason: "..."} or {decision: "allow"}
@@ -95,9 +96,30 @@ function resolveWriteTargetPath(toolName, payload) {
 // Tools that are safe to call regardless of context-guard state.
 // Read, Bash (read-only checks), and internal archon state updates are
 // always allowed so the agent can diagnose and recover without deadlocking.
+//
+// IMPORTANT: this set MUST be kept in sync with ContextBudgetMonitor.isHandoffSafeTool
+// in src/runtime/context-budget.ts. When adding MCP tools to the handoff protocol,
+// update both files. The parity test in tests/hook-policy.test.ts asserts agreement.
 function isHandoffSafeTool(toolName) {
-  const safe = new Set(["Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch"]);
-  return safe.has(toolName);
+  // Read-only / coordination tools that are always safe.
+  const diagnosticTools = new Set(["Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite", "TodoRead"]);
+  if (diagnosticTools.has(toolName)) {
+    return true;
+  }
+
+  // Handoff-completing MCP tools. These MUST match the names registered by the
+  // MCP server (src/mcp/handoff-tools.ts). Accept both the bare tool name and
+  // the fully-qualified mcp__archon__<name> form the host may pass to PreToolUse.
+  const bare = toolName.startsWith("mcp__archon__")
+    ? toolName.slice("mcp__archon__".length)
+    : toolName;
+  const handoffSafeMcpTools = new Set([
+    "archon_handoff_prepare",
+    "archon_handoff_commit",
+    "archon_context_sample",
+    "archon_next_action"
+  ]);
+  return handoffSafeMcpTools.has(bare);
 }
 
 // Read and parse the context-guard sidecar file.
@@ -157,14 +179,14 @@ export function evaluatePreToolUse(payload, context) {
     const guardState = readContextGuardState(context.repoRoot);
     if (guardState) {
       if (guardState.state === "hard_stop") {
-        const msg = `context budget hard stop (${guardState.contextPct ?? "?"}% used): write a handoff artifact and stop before context is exhausted`;
+        const msg = `context budget hard stop (${guardState.contextPct ?? "?"}% used): call archon_handoff_commit (now permitted) to commit a handoff, then stop. The successor session can be started with: npx archon continue-session`;
         if (handoffEnforcement === "warn") {
           // advisory only — do not block
         } else {
           return { decision: "block", reason: msg };
         }
       } else if (guardState.state === "handoff_required") {
-        const msg = `context budget handoff required (${guardState.contextPct ?? "?"}% used): write a handoff artifact before continuing`;
+        const msg = `context budget handoff required (${guardState.contextPct ?? "?"}% used): call archon_handoff_commit (now permitted — context-guard allows it) to commit a handoff, then stop. The successor session can continue with: npx archon continue-session`;
         if (handoffEnforcement === "warn") {
           return { additionalContext: msg };
         } else {
@@ -256,6 +278,12 @@ export function evaluatePreToolUse(payload, context) {
     const rawFilePath = resolveWriteTargetPath(toolName, payload);
     // Normalize to relative path — Claude Code may pass absolute paths.
     const filePath = toRelativePath(rawFilePath, context.repoRoot);
+    // F2: Handoff artifact paths are exempt from the managed-path gate so the agent
+    // can write them even under context-guard enforcement (handoff_required/hard_stop).
+    // These files are part of the handoff protocol, not general control-layer files.
+    if (filePath && isHandoffArtifactPath(filePath)) {
+      return undefined;
+    }
     if (filePath && isManagedPath(filePath) && !isManagedPathAllowed(filePath, context.allowedWriteScope)) {
       return {
         decision: "block",

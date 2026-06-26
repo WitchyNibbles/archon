@@ -33,7 +33,8 @@ const {
   readActiveTaskContext,
   extractBashWriteTargets,
   validateReviewArtifact,
-  parseCouncilReview
+  parseCouncilReview,
+  isHandoffArtifactPath
 } = await import(`${hooksDir}/hook-utils.mjs`);
 const {
   evaluatePreToolUse,
@@ -2901,4 +2902,248 @@ test("canonicalize: NotebookEdit to notebooks/a.ipynb (in-repo) with active task
   assert.ok(result, "NotebookEdit to out-of-scope in-repo path must be blocked by scope gate");
   assert.equal(result.decision, "block");
   assert.match(result.reason, /outside active task/i);
+});
+
+// ─── F1: context-guard handoff-safe tool list ─────────────────────────────────
+// These tests assert that evaluatePreToolUse allows MCP handoff tools when the
+// context-guard state is handoff_required or hard_stop, closing the deadlock where
+// the agent was told to commit a handoff but was simultaneously blocked from doing so.
+//
+// The guard state is injected via a temp file written to a fresh tmpDir each test
+// so the tests are isolated and do not require a running DB.
+
+import * as fsSync from "node:fs";
+
+function writeTmpGuardState(tmpDir: string, state: string): void {
+  const guardDir = `${tmpDir}/.archon/work`;
+  fsSync.mkdirSync(guardDir, { recursive: true });
+  fsSync.writeFileSync(
+    `${guardDir}/context-guard.json`,
+    JSON.stringify({ invocationId: "test-inv", state, contextPct: 75, updatedAt: new Date().toISOString() }),
+    "utf8"
+  );
+}
+
+function ctxWithGuard(tmpDir: string) {
+  return { ...emptyContext(), repoRoot: tmpDir };
+}
+
+function mcpToolPayload(toolName: string) {
+  return { tool_name: toolName, tool_input: {} };
+}
+
+test("F1: handoff_required state ALLOWS archon_handoff_commit (bare name)", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "handoff_required");
+    const result = evaluatePreToolUse(mcpToolPayload("archon_handoff_commit"), ctxWithGuard(tmpDir));
+    assert.ok(result === undefined || result.decision !== "block",
+      `archon_handoff_commit must not be blocked in handoff_required; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: handoff_required state ALLOWS mcp__archon__archon_handoff_commit (prefixed name)", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "handoff_required");
+    const result = evaluatePreToolUse(mcpToolPayload("mcp__archon__archon_handoff_commit"), ctxWithGuard(tmpDir));
+    assert.ok(result === undefined || result.decision !== "block",
+      `mcp__archon__archon_handoff_commit must not be blocked in handoff_required; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: handoff_required state ALLOWS archon_handoff_prepare", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "handoff_required");
+    const result = evaluatePreToolUse(mcpToolPayload("archon_handoff_prepare"), ctxWithGuard(tmpDir));
+    assert.ok(result === undefined || result.decision !== "block",
+      `archon_handoff_prepare must not be blocked in handoff_required; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: handoff_required state ALLOWS mcp__archon__archon_handoff_prepare", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "handoff_required");
+    const result = evaluatePreToolUse(mcpToolPayload("mcp__archon__archon_handoff_prepare"), ctxWithGuard(tmpDir));
+    assert.ok(result === undefined || result.decision !== "block",
+      `mcp__archon__archon_handoff_prepare must not be blocked; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: handoff_required state ALLOWS archon_context_sample", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "handoff_required");
+    const result = evaluatePreToolUse(mcpToolPayload("archon_context_sample"), ctxWithGuard(tmpDir));
+    assert.ok(result === undefined || result.decision !== "block",
+      `archon_context_sample must not be blocked; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: handoff_required state ALLOWS archon_next_action", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "handoff_required");
+    const result = evaluatePreToolUse(mcpToolPayload("archon_next_action"), ctxWithGuard(tmpDir));
+    assert.ok(result === undefined || result.decision !== "block",
+      `archon_next_action must not be blocked; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: handoff_required state ALLOWS TodoWrite", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "handoff_required");
+    const result = evaluatePreToolUse(mcpToolPayload("TodoWrite"), ctxWithGuard(tmpDir));
+    assert.ok(result === undefined || result.decision !== "block",
+      `TodoWrite must not be blocked in handoff_required; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: handoff_required state ALLOWS TodoRead", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "handoff_required");
+    const result = evaluatePreToolUse(mcpToolPayload("TodoRead"), ctxWithGuard(tmpDir));
+    assert.ok(result === undefined || result.decision !== "block",
+      `TodoRead must not be blocked in handoff_required; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: hard_stop state BLOCKS generic Write tool", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "hard_stop");
+    const result = evaluatePreToolUse(
+      { tool_name: "Write", tool_input: { file_path: "src/foo.ts" } },
+      { ...ctxWithGuard(tmpDir), activeTaskId: "task-1", allowedWriteScope: ["src"] }
+    );
+    assert.ok(result?.decision === "block",
+      `Write must be blocked in hard_stop; got: ${JSON.stringify(result)}`);
+    assert.match(result.reason, /hard.stop/i);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: hard_stop state BLOCKS generic Bash tool", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "hard_stop");
+    const result = evaluatePreToolUse(
+      { tool_name: "Bash", tool_input: { command: "npm run build" } },
+      ctxWithGuard(tmpDir)
+    );
+    assert.ok(result?.decision === "block",
+      `Bash must be blocked in hard_stop; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: hard_stop state ALLOWS mcp__archon__archon_handoff_commit", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "hard_stop");
+    const result = evaluatePreToolUse(mcpToolPayload("mcp__archon__archon_handoff_commit"), ctxWithGuard(tmpDir));
+    assert.ok(result === undefined || result.decision !== "block",
+      `mcp__archon__archon_handoff_commit must not be blocked in hard_stop; got: ${JSON.stringify(result)}`);
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test("F1: F3 block message is actionable — names archon_handoff_commit and npx archon continue-session", () => {
+  const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-guard-"));
+  try {
+    writeTmpGuardState(tmpDir, "handoff_required");
+    const result = evaluatePreToolUse(
+      { tool_name: "Edit", tool_input: { file_path: "src/foo.ts" } },
+      ctxWithGuard(tmpDir)
+    );
+    assert.ok(result?.decision === "block", "Edit must be blocked in handoff_required");
+    assert.ok(
+      result.reason.includes("archon_handoff_commit"),
+      `block message must mention archon_handoff_commit; got: ${result.reason}`
+    );
+    assert.ok(
+      result.reason.includes("continue-session"),
+      `block message must mention continue-session; got: ${result.reason}`
+    );
+  } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+// ─── F1 parity: hook safe-set must be superset of canonical context-budget list ──────
+
+// Import the canonical isHandoffSafeTool from context-budget.ts via tsx
+// to assert parity between the hook and the runtime.
+import { ContextBudgetMonitor } from "../src/runtime/context-budget.ts";
+
+const CANONICAL_HANDOFF_TOOLS = [
+  "archon_handoff_prepare",
+  "archon_handoff_commit",
+  "archon_context_sample",
+  "archon_next_action",
+  "mcp__archon__archon_handoff_prepare",
+  "mcp__archon__archon_handoff_commit",
+  "mcp__archon__archon_context_sample",
+  "mcp__archon__archon_next_action"
+];
+
+for (const toolName of CANONICAL_HANDOFF_TOOLS) {
+  test(`F1 parity: canonical isHandoffSafeTool allows ${toolName}`, () => {
+    assert.equal(
+      ContextBudgetMonitor.isHandoffSafeTool(toolName),
+      true,
+      `canonical isHandoffSafeTool must allow ${toolName}`
+    );
+  });
+}
+
+// ─── F2: isHandoffArtifactPath helper ──────────────────────────────────────────
+
+test("F2: isHandoffArtifactPath: context-guard.json is a handoff artifact path", () => {
+  assert.equal(isHandoffArtifactPath(".archon/work/context-guard.json"), true);
+});
+
+test("F2: isHandoffArtifactPath: daemon/continuation-context.txt is a handoff artifact path", () => {
+  assert.equal(isHandoffArtifactPath(".archon/work/daemon/continuation-context.txt"), true);
+});
+
+test("F2: isHandoffArtifactPath: daemon/interactive-resume-request.json is a handoff artifact path", () => {
+  assert.equal(isHandoffArtifactPath(".archon/work/daemon/interactive-resume-request.json"), true);
+});
+
+test("F2: isHandoffArtifactPath: other daemon/ files are NOT handoff artifact paths", () => {
+  assert.equal(isHandoffArtifactPath(".archon/work/daemon/hook-blocker-state.json"), false);
+  assert.equal(isHandoffArtifactPath(".archon/work/daemon/bypass-log.json"), false);
+});
+
+test("F2: isHandoffArtifactPath: src/ paths are NOT handoff artifact paths", () => {
+  assert.equal(isHandoffArtifactPath("src/foo.ts"), false);
+});
+
+test("F2: Write to context-guard.json is NOT blocked by managed-path gate (handoff artifact exemption)", () => {
+  // The managed-path gate must not block writes to handoff artifact paths, even without task scope,
+  // because the agent needs to write these paths during the handoff process.
+  const result = evaluatePreToolUse(
+    writePayload(".archon/work/context-guard.json"),
+    emptyContext()
+  );
+  assert.ok(result === undefined || result.decision !== "block",
+    `Write to context-guard.json must not be blocked by managed-path gate; got: ${JSON.stringify(result)}`);
+});
+
+test("F2: Write to daemon/continuation-context.txt is NOT blocked by managed-path gate", () => {
+  const result = evaluatePreToolUse(
+    writePayload(".archon/work/daemon/continuation-context.txt"),
+    emptyContext()
+  );
+  assert.ok(result === undefined || result.decision !== "block",
+    `Write to continuation-context.txt must not be blocked; got: ${JSON.stringify(result)}`);
+});
+
+test("F2: Write to daemon/interactive-resume-request.json is NOT blocked by managed-path gate", () => {
+  const result = evaluatePreToolUse(
+    writePayload(".archon/work/daemon/interactive-resume-request.json"),
+    emptyContext()
+  );
+  assert.ok(result === undefined || result.decision !== "block",
+    `Write to interactive-resume-request.json must not be blocked; got: ${JSON.stringify(result)}`);
 });

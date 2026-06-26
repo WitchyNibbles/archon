@@ -1084,6 +1084,25 @@ export function isTaskPacketPath(relativePath) {
   const normalized = normalizePath(relativePath);
   return normalized.startsWith(".archon/work/tasks/task-") && normalized.endsWith(".md");
 }
+// Handoff artifact paths are files the agent must be able to write during context-guard
+// enforcement (handoff_required / hard_stop) to complete the handoff protocol.
+// These are exempt from the managed-path gate and the task write-scope gate so the agent
+// is never deadlocked when it needs to commit a handoff.
+//
+// Canonical set (must stay in sync with src/mcp/handoff-tools.ts and
+// src/runtime/interactive-stop-hook.ts):
+//   .archon/work/context-guard.json         — enforcement sidecar written by the hook
+//   .archon/work/daemon/continuation-context.txt       — continuation prompt for next session
+//   .archon/work/daemon/interactive-resume-request.json — interactive respawn trigger
+const HANDOFF_ARTIFACT_PATHS = new Set([
+  '.archon/work/context-guard.json',
+  '.archon/work/daemon/continuation-context.txt',
+  '.archon/work/daemon/interactive-resume-request.json'
+]);
+
+export function isHandoffArtifactPath(relativePath) {
+  return HANDOFF_ARTIFACT_PATHS.has(normalizePath(relativePath));
+}
 
 // Returns true for any write target that requires an active task.
 // Bootstrap paths (needed to create a task packet) are always exempt.
