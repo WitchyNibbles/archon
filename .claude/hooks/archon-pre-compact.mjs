@@ -1,32 +1,33 @@
-// PreCompact hook — Safety parachute for context handoff.
+// PreCompact hook — interactive parachute (handoffConsumerWiring rev 2, P1).
 //
-// Claude Code fires this hook just before native compaction triggers.
-// If an agent invocation is active and no handoff has been committed,
-// we write a minimal precompact_fallback handoff packet so the
-// successor agent has some continuation context.
+// Claude Code fires this hook just before native compaction. For an
+// interactively-registered archon session (context-guard.json written by
+// archon-session-start.mjs), we ensure a real invocation row exists and commit
+// a schema-valid precompact_fallback handoff so continuity survives the
+// compaction. The successor (same, compacted session) can re-read the handoff.
 //
-// Design: TDD §14.4
-//   - Reads active invocation from .archon/work/context-guard.json
-//   - If no handoff exists, prepares + commits a precompact_fallback handoff
-//   - Archives transcript path if present in the guard payload
-//   - Best-effort: never throws — compaction must not be blocked
+// All DB work is delegated to runPrecompactHandoff (interactive-parachute.ts),
+// which drives the REAL HandoffController (schema validation + commit).
+// Best-effort: never throws, never blocks compaction.
+//
+// Replaces a prior implementation that was dead four ways: it imported a
+// non-existent `src/db.ts`, imported `PostgresStore` (the class is
+// `AgentRuntimeStore`), built a packet that failed `HandoffPacketV1Schema`, and
+// bailed in `getInvocationById` on the synthetic interactive invocationId.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..", "..");
+const guardPath = path.join(repoRoot, ".archon", "work", "context-guard.json");
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function readContextGuard() {
+// Cheap pre-check: only open a DB connection when there is a registered
+// interactive invocation that has not already committed a handoff.
+function readGuard() {
   try {
-    const guardPath = path.join(repoRoot, ".archon", "work", "context-guard.json");
-    const raw = readFileSync(guardPath, "utf8");
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(readFileSync(guardPath, "utf8"));
     if (
       parsed &&
       typeof parsed === "object" &&
@@ -36,128 +37,74 @@ function readContextGuard() {
     ) {
       return parsed;
     }
-    return undefined;
   } catch {
-    return undefined;
+    // absent / unreadable — no registered interactive session
   }
+  return undefined;
 }
-
-function writeContextGuard(invocationId, newState) {
-  try {
-    const guardPath = path.join(repoRoot, ".archon", "work", "context-guard.json");
-    writeFileSync(
-      guardPath,
-      JSON.stringify({ invocationId, state: newState, updatedAt: new Date().toISOString() }),
-      "utf-8"
-    );
-  } catch {
-    // best-effort
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 async function main() {
-  const guard = readContextGuard();
-  if (!guard) {
-    // No active managed invocation — nothing to do.
-    return;
-  }
+  const guard = readGuard();
+  if (!guard) return; // no registered interactive session
+  if (guard.state === "handoff_written") return; // already handed off (idempotent)
 
-  const invocationId = String(guard.invocationId);
-  const existingState = typeof guard.state === "string" ? guard.state : "normal";
-
-  // If the agent already committed a handoff, nothing to add.
-  if (existingState === "handoff_written") {
-    return;
-  }
-
-  // Dynamically import the store so this hook only loads it when needed.
-  // The import path is relative to the repo root.
-  let store;
-  let client;
   try {
-    const { withClient } = await import(path.join(repoRoot, "src", "db.ts"));
-    const { PostgresStore } = await import(path.join(repoRoot, "src", "store", "agent-runtime-store.ts"));
+    const { withClient } = await import(path.join(repoRoot, "src", "admin", "db.ts"));
+    const { AgentRuntimeStore } = await import(
+      path.join(repoRoot, "src", "store", "agent-runtime-store.ts")
+    );
+    const { runPrecompactHandoff } = await import(
+      path.join(repoRoot, "src", "runtime", "interactive-parachute.ts")
+    );
 
-    await withClient(async (dbClient) => {
-      client = dbClient;
-      store = new PostgresStore(dbClient);
+    await withClient(async (client) => {
+      const agentStore = new AgentRuntimeStore(client);
 
-      const alreadyCommitted = await store.hasCommittedHandoff(invocationId);
-      if (alreadyCommitted) {
-        return;
-      }
-
-      // Look up the invocation to get runId, taskId, role.
-      const invocation = await store.getInvocationById(invocationId);
-      if (!invocation) {
-        return;
-      }
-
-      const runId = invocation.runId;
-      const taskId = invocation.taskId;
-      const fromRole = invocation.role;
-
-      // Prepare the handoff
-      const { HandoffController } = await import(path.join(repoRoot, "src", "runtime", "handoff-controller.ts"));
-      const controller = new HandoffController(store);
-
-      const prepareResult = await controller.prepare({
-        invocationId,
-        runId,
-        taskId,
-        fromRole,
-        toRole: fromRole, // continuation will be picked up by same role
-        reason: "precompact_fallback",
-        contextUsedPct: typeof guard.contextPct === "number" ? guard.contextPct : undefined
-      });
-
-      // Commit a minimal synthetic packet
-      const { HandoffPacketV1Schema } = await import(path.join(repoRoot, "src", "domain", "handoff-schemas.ts"));
-      const syntheticPacket = {
-        handoffId: prepareResult.template.handoffId,
-        invocationId,
-        runId,
-        taskId,
-        fromRole,
-        toRole: fromRole,
-        reason: "precompact_fallback",
-        status: "precompact_fallback",
-        summary: "Precompact fallback handoff: context compaction triggered before agent committed a handoff. " +
-          "Successor must re-read task context from .archon/ACTIVE and task packet.",
-        nextSteps: ["Re-read .archon/ACTIVE and the task packet.", "Resume from the last known good state."],
-        artifacts: [],
-        metadata: {
-          triggeredBy: "precompact_hook",
-          guardState: existingState,
-          transcriptPath: typeof guard.transcriptPath === "string" ? guard.transcriptPath : undefined
+      // AgentRuntimeStore already implements HandoffStoreLike; the composite
+      // adds upsertInteractiveInvocation (create-on-demand, idempotent) so the
+      // synthetic interactive invocationId is backed by a real row before the
+      // handoff commits. Defaults mirror AgentRuntimeStore.createInvocation.
+      const store = {
+        createHandoff: (d) => agentStore.createHandoff(d),
+        getLatestUnconsumedHandoff: (r, t) => agentStore.getLatestUnconsumedHandoff(r, t),
+        markHandoffConsumed: (h, t) => agentStore.markHandoffConsumed(h, t),
+        hasCommittedHandoff: (i) => agentStore.hasCommittedHandoff(i),
+        updateAgentInvocationStatus: (i, s, m) => agentStore.updateAgentInvocationStatus(i, s, m),
+        upsertInteractiveInvocation: async (data) => {
+          try {
+            await agentStore.createAgentInvocation({
+              id: data.id,
+              runId: data.runId,
+              taskId: data.taskId,
+              role: data.role,
+              agentKind: "specialist_owner",
+              model: "sonnet",
+              effort: "high",
+              status: "running",
+              contextPolicyId: "default",
+              startedAt: data.startedAt
+            });
+          } catch (err) {
+            // Idempotent: a duplicate id on repeated compaction is expected. A
+            // genuine failure surfaces downstream when the commit cannot find
+            // the invocation (caught by the outer try).
+            process.stderr.write(
+              `[archon-pre-compact] upsertInteractiveInvocation: ${String(err)}\n`
+            );
+          }
         }
       };
 
-      const parsed = HandoffPacketV1Schema.safeParse(syntheticPacket);
-      if (!parsed.success) {
-        // Cannot produce a valid packet — log and bail
+      const result = await runPrecompactHandoff({ store, contextGuardPath: guardPath });
+      if (result.committed) {
         process.stderr.write(
-          `[archon-pre-compact] packet validation failed: ${parsed.error.message}\n`
+          `[archon-pre-compact] precompact_fallback handoff committed for ${result.invocationId}\n`
         );
-        return;
       }
-
-      await controller.commit({ invocationId, rawPacket: syntheticPacket });
-
-      // Update context-guard to reflect handoff_written
-      writeContextGuard(invocationId, "handoff_written");
-
-      process.stderr.write(
-        `[archon-pre-compact] precompact_fallback handoff committed for invocation ${invocationId}\n`
-      );
     });
   } catch (err) {
-    // Best-effort: log but never block compaction
-    process.stderr.write(`[archon-pre-compact] error during fallback handoff: ${String(err)}\n`);
+    // Best-effort: log but never block compaction.
+    process.stderr.write(`[archon-pre-compact] error during parachute handoff: ${String(err)}\n`);
   }
 }
 
