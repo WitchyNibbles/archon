@@ -199,20 +199,17 @@ npm install
 
 ---
 
-### 2.3. Configure .env
+### 2.3. Configure .env (MANDATORY)
 
-The installer copies `.env.archon.example` to the consumer. Create `.env` by either:
+The installer copies `.env.archon.example` to the consumer. You MUST manually copy this to `.env` and configure required variables before bootstrap. The consumer's `scripts/archon-setup.sh` auto-copy looks for `.env.example` (a source-repo name) and does not fire in a consumer (which has `.env.archon.example`).
 
-**Option A: Let setup-archon.sh handle it (automatic)**
-The bootstrap step (Part 4) runs `bash scripts/archon-setup.sh` which automatically copies `.env.archon.example` → `.env` if `.env` does not exist.
-
-**Option B: Manual copy (if you want to configure before bootstrap)**
+**Command:**
 ```bash
 cd /path/to/consumer
 cp .env.archon.example .env
 ```
 
-Edit `.env` and set these required values:
+**Edit `.env` and set these required values:**
 
 ```bash
 ARCHON_CORE_DATABASE_URL="postgresql://archon:CHOOSE_A_PASSWORD@127.0.0.1:5432/archon"
@@ -232,7 +229,7 @@ Replace:
 
 **Success signal:** File exists with all ARCHON_* variables set to non-empty values.
 
-**Failure action:** If any variable is missing or set to placeholder, bootstrap will error. Fix and retry.
+**Failure action:** If any variable is missing or set to placeholder, bootstrap (Part 3) will error at the postgres password guard with "ARCHON_POSTGRES_PASSWORD must be set to a non-default local password". Fix and retry.
 
 ---
 
@@ -614,7 +611,7 @@ At this point, the consumer repo has a healthy archon install with an active tas
 | "everything-claude-code:*" skills not found in Claude Code | Plugin not installed. | Install the everything-claude-code plugin. Restart Claude Code. Retry. |
 | "role does not exist" during migrations | Postgres role/database not created. | Postgres container not fully initialized. Re-run `npm run archon:setup:local` (Part 3.1). Wait 30 seconds. Retry migrations. |
 | `npm run archon:*` script not found | Consumer package.json does not have archon scripts merged. | Re-run installer (Part 2.1). Then re-run `npm install` (Part 2.2). |
-| `setup-archon.sh` not found | Installer did not copy scripts. | Re-run installer (Part 2.1). |
+| `scripts/archon-setup.sh` not found | Installer did not copy scripts. | Re-run installer (Part 2.1). |
 
 ---
 
