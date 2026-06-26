@@ -339,12 +339,20 @@ _check_lease_file() {
   lease_run_id="$(printf '%s' "${parsed}" | cut -d'|' -f2)"
   claimed_at="$(printf '%s' "${parsed}" | cut -d'|' -f3)"
 
+  # INFRA-C1 / SEC-HIGH (BLOCKING-3): validate owner is a known enum value
+  # BEFORE using it in any comparison.  A crafted owner value containing '|'
+  # could shift field positions; an unexpected value should never be trusted.
+  if [ "${owner}" != "daemon" ] && [ "${owner}" != "interactive" ]; then
+    log_error "_check_lease_file: unrecognised owner field '${owner}' in ${lease_file}; treating lock as corrupt — watcher may proceed"
+    return 0
+  fi
+
   # Different run — not our concern.
   if [ "${lease_run_id}" != "${target_run_id}" ]; then
     return 0
   fi
 
-  # Check staleness — BLOCKING-1 fix: claimed_at passed via ARGV.
+  # Check staleness — claimed_at passed via ARGV (iso_age_seconds).
   if [ -n "${claimed_at}" ]; then
     local age_seconds
     age_seconds="$(iso_age_seconds "${claimed_at}")"
@@ -364,8 +372,10 @@ _check_lease_file() {
 
 # Claim watcher lease via atomic noclobber create (bash O_CREAT|O_EXCL).
 # Uses the same unified lock path that Node reads.
-# BLOCKING-2 fix: both Node (O_CREAT|O_EXCL via open "wx") and bash (set -C
-# noclobber) contend on the SAME per-runId lock file path.
+# INFRA-C1 / SEC-HIGH: use bash noclobber (set -C) which maps to O_CREAT|O_EXCL.
+# mv-based rename is NOT exclusive (overwrites existing files).  noclobber fails
+# with EEXIST when the lock file already exists — exactly one concurrent caller wins.
+# Returns 0 on success, 1 if the lock is already held (daemon or another watcher).
 claim_watcher_lease() {
   local target_run_id="$1"
   local safe_run_id
@@ -375,12 +385,27 @@ claim_watcher_lease() {
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local content
-  content="$(printf '{"runId":"%s","owner":"interactive","claimedAt":"%s"}\n' "${target_run_id}" "${ts}")"
+  content="$(printf '{"runId":"%s","owner":"interactive","claimedAt":"%s"}' "${target_run_id}" "${ts}")"
 
-  # Atomic create via tmp + mv (POSIX-atomic rename).
-  local tmp="${lock_path}.tmp.$$"
-  printf '%s\n' "${content}" > "${tmp}"
-  mv "${tmp}" "${lock_path}"
+  mkdir -p "${DAEMON_DIR}"
+
+  # O_CREAT|O_EXCL via bash noclobber: exactly one concurrent caller succeeds.
+  # On EEXIST the subshell writes to stderr which is suppressed; we return 1.
+  if ( set -C; printf '%s\n' "${content}" > "${lock_path}" ) 2>/dev/null; then
+    return 0
+  fi
+
+  # Lock already exists — may be daemon or a concurrent watcher.
+  # Re-read the current owner and log; caller decides how to proceed.
+  local cur_owner=""
+  if [ -f "${lock_path}" ]; then
+    local parsed
+    if parsed="$(parse_lock "${lock_path}" 2>/dev/null)"; then
+      cur_owner="$(printf '%s' "${parsed}" | cut -d'|' -f1)"
+    fi
+  fi
+  log_info "claim_watcher_lease: lock already held (owner=${cur_owner:-unknown}); no-op"
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -436,7 +461,13 @@ while true; do
   fi
 
   # Claim watcher lease (before spawning).
-  claim_watcher_lease "${run_id}"
+  # claim_watcher_lease returns 1 when the lock is already held (daemon or concurrent
+  # watcher won the race).  In that case do not relaunch — archive and exit cleanly.
+  if ! claim_watcher_lease "${run_id}"; then
+    archive_request "${local_request}"
+    log_info "could not claim watcher lease for run ${run_id}; another process holds it — exiting"
+    exit 0
+  fi
 
   # The local_request is already consumed (mv'd away from the shared path).
   # Remove it now to prevent reuse on restart.

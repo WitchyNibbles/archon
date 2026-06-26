@@ -51,6 +51,7 @@ import type { HandoffStoreLike } from "./runtime/handoff-controller.ts";
 import { ContinuationContextBuilder } from "./runtime/continuation-context.ts";
 import { recoverOrphanedInvocations } from "./runtime/crash-recovery.ts";
 import { ContextBudgetMonitor, resolveArchonContextPolicy } from "./runtime/context-budget.ts";
+import { makeFileLockLeaseStore } from "./runtime/respawn-lease.ts";
 // Daemon split (by concern) — leaf module. Import for daemon-internal use, then
 // re-export the same bindings to preserve the public surface for existing callers.
 import {
@@ -935,6 +936,13 @@ export async function executeDaemonCommandFromArgs(
   const runCodexTurn = options.runCodexTurn ?? runCodexTurnViaCli;
   const now = options.now ?? (() => new Date());
 
+  // Phase 4 (ahrP4InteractiveWatcher): create the cross-process lease store
+  // once per daemon run so the in-process mutex chain is shared across cycles.
+  // lockDir matches .archon/work/daemon — the same path the bash watcher uses.
+  const daemonRunLeaseStore = makeFileLockLeaseStore({
+    lockDir: path.join(cwd, ".archon", "work", "daemon")
+  });
+
   // Phase 1 (ahrP1Sampling): construct a ContextBudgetMonitor once for the
   // daemon run so all cycles share a single in-memory state-cache. When no
   // agentLoopStore is provided (e.g. in tests that don't inject one), the
@@ -1128,7 +1136,11 @@ export async function executeDaemonCommandFromArgs(
           // Phase 2 (ahrP2ResetOnHandoff): wire the reset deps.
           handoffController,
           role: cycleRole,
-          startNextInvocation
+          startNextInvocation,
+          // Phase 4 (ahrP4InteractiveWatcher): wire cross-process lease guard so the
+          // daemon can deny respawn to a concurrent interactive watcher.
+          // daemonRunLeaseStore is created once above to share the per-runId mutex chain.
+          leaseStore: daemonRunLeaseStore
         });
       // Loop-monolith decomposition (6g): the operator-required continuation
       // handler now lives in ./daemon/operator-continuation.ts. This thin

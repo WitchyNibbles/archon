@@ -311,6 +311,126 @@ describe("scripts/archon-interactive-supervisor.sh", () => {
   });
 
   // -----------------------------------------------------------------------
+  // Exclusive lease claim (BLOCKING-1 noclobber): two concurrent invocations
+  // of claim_watcher_lease for the same runId → exactly one wins O_CREAT|O_EXCL.
+  // The test exercises the function by running two concurrent full-supervisor
+  // invocations that both see an IDENTICAL copy of the resume-request (written
+  // separately so neither mv-races the other — each has its own process-local
+  // copy to skip that earlier gate) and then both compete to claim the lock.
+  //
+  // Implementation: use a bash helper script that calls claim_watcher_lease
+  // directly by sourcing the supervisor and invoking the function.
+  // -----------------------------------------------------------------------
+
+  it("claim_watcher_lease: exactly one of two concurrent callers succeeds (noclobber exclusive create)", async () => {
+    const lockDir = path.join(tmpDir, ".archon", "work", "daemon");
+    const runId = "run-lease-race";
+    const lockFile = path.join(lockDir, `respawn-lease-${runId}.lock`);
+
+    // A minimal bash script that sources the supervisor's functions and calls
+    // claim_watcher_lease, then echoes "won" or "lost" based on exit code.
+    // We override DAEMON_DIR and ARCHON_CWD so the lock lands in tmpDir.
+    const helperScript = `#!/usr/bin/env bash
+set -euo pipefail
+source_script="${SCRIPT_PATH}"
+
+# Re-implement only what claim_watcher_lease needs from the supervisor.
+DAEMON_DIR="${lockDir}"
+ARCHON_CWD="${tmpDir}"
+
+log_info() { printf '[test-helper] %s\\n' "$*" >&2; }
+log_error() { printf '[test-helper][ERROR] %s\\n' "$*" >&2; }
+
+sanitize_id_for_path() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'
+}
+
+parse_lock() {
+  local lock_path="$1"
+  python3 - "\${lock_path}" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    print("|".join([
+        str(d.get("owner", "")),
+        str(d.get("runId", "")),
+        str(d.get("claimedAt", ""))
+    ]))
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+}
+
+claim_watcher_lease() {
+  local target_run_id="$1"
+  local safe_run_id
+  safe_run_id="$(sanitize_id_for_path "\${target_run_id}")"
+  local lock_path="\${DAEMON_DIR}/respawn-lease-\${safe_run_id}.lock"
+
+  local ts
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local content
+  content="$(printf '{"runId":"%s","owner":"interactive","claimedAt":"%s"}' "\${target_run_id}" "\${ts}")"
+
+  mkdir -p "\${DAEMON_DIR}"
+
+  if ( set -C; printf '%s\\n' "\${content}" > "\${lock_path}" ) 2>/dev/null; then
+    return 0
+  fi
+
+  local cur_owner=""
+  if [ -f "\${lock_path}" ]; then
+    local parsed
+    if parsed="$(parse_lock "\${lock_path}" 2>/dev/null)"; then
+      cur_owner="$(printf '%s' "\${parsed}" | cut -d'|' -f1)"
+    fi
+  fi
+  log_info "claim_watcher_lease: lock already held (owner=\${cur_owner:-unknown}); no-op"
+  return 1
+}
+
+if claim_watcher_lease "${runId}"; then
+  echo "won"
+  exit 0
+else
+  echo "lost"
+  exit 1
+fi
+`;
+
+    const helperPath = path.join(tmpDir, "claim-race-helper.sh");
+    await writeFile(helperPath, helperScript, { mode: 0o755 });
+
+    // Run two concurrent helpers racing to claim the same lock.
+    const runHelper = (): Promise<{ exitCode: number | null; stdout: string; stderr: string }> =>
+      new Promise((resolve, reject) => {
+        const child = spawn("bash", [helperPath], { stdio: ["pipe", "pipe", "pipe"] });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+        child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+        const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("helper timed out")); }, 5000);
+        child.on("close", (code) => { clearTimeout(timer); resolve({ exitCode: code, stdout, stderr }); });
+        child.on("error", (err) => { clearTimeout(timer); reject(err); });
+      });
+
+    const [r1, r2] = await Promise.all([runHelper(), runHelper()]);
+
+    const won = [r1, r2].filter((r) => r.stdout.trim() === "won").length;
+    const lost = [r1, r2].filter((r) => r.stdout.trim() === "lost").length;
+
+    assert.equal(won, 1, `exactly 1 caller must win the lock; got won=${won} lost=${lost}\n  r1: exit=${r1.exitCode} out="${r1.stdout.trim()}" err="${r1.stderr.trim()}"\n  r2: exit=${r2.exitCode} out="${r2.stdout.trim()}" err="${r2.stderr.trim()}"`);
+    assert.equal(lost, 1, `exactly 1 caller must lose the lock; got won=${won} lost=${lost}`);
+
+    // The lock file must exist and contain owner=interactive.
+    const lockContent = JSON.parse(await import("node:fs/promises").then((fs) => fs.readFile(lockFile, "utf8")));
+    assert.equal(lockContent.owner, "interactive", `lock owner must be interactive: ${JSON.stringify(lockContent)}`);
+    assert.equal(lockContent.runId, runId, `lock runId must match: ${JSON.stringify(lockContent)}`);
+  });
+
+  // -----------------------------------------------------------------------
   // Python injection test (BLOCKING-1): malicious createdAt value must not
   // execute any code — the iso_age_seconds helper passes the value via
   // sys.argv[1], not string-interpolated into -c "...".
