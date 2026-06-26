@@ -250,7 +250,7 @@ function makeHarness(opts: {
     setSessionId: (next) => { session = next; },
     claudeBin: "claude",
     cwd: opts.cwd,
-    env: {},
+    env: process.env,
     now: () => new Date("2026-06-25T00:00:00.000Z"),
     staleAfterHours: 24,
     runCodexTurn: async (input) => {
@@ -317,9 +317,10 @@ function makeStubMonitor(returnState: "normal" | "warning" | "handoff_required" 
 // A. Reset decision
 // ---------------------------------------------------------------------------
 
-test("P2 A1: observe mode does NOT reset session even when monitor returns handoff_required", async () => {
+test("P2 A1: observe kill switch (ARCHON_CONTEXT_MONITOR=observe) does NOT reset session even when monitor returns handoff_required", async () => {
   const prevEnv = process.env.ARCHON_CONTEXT_MONITOR;
-  delete process.env.ARCHON_CONTEXT_MONITOR;
+  // Explicitly set the observe kill switch — after P3, unset = enforce-default.
+  process.env.ARCHON_CONTEXT_MONITOR = "observe";
 
   try {
     const dir = await mkdtemp(path.join(tmpdir(), "archon-p2-"));
@@ -864,12 +865,13 @@ test("P2 E1: enforce mode + recordSample DB failure → process.stderr.write wit
 });
 
 // ---------------------------------------------------------------------------
-// A6. observe + hard_stop → NO reset (ARCH-C1: gate is env-based, not state)
+// A6. observe kill switch + hard_stop → NO reset (ARCH-C1: gate is env-based, not state)
 // ---------------------------------------------------------------------------
 
-test("P2 A6: observe mode + hard_stop does NOT reset session (ARCH-C1)", async () => {
+test("P2 A6: observe kill switch (ARCHON_CONTEXT_MONITOR=observe) + hard_stop does NOT reset session (ARCH-C1)", async () => {
   const prevEnv = process.env.ARCHON_CONTEXT_MONITOR;
-  delete process.env.ARCHON_CONTEXT_MONITOR;
+  // Explicitly set the observe kill switch — after P3, unset = enforce-default.
+  process.env.ARCHON_CONTEXT_MONITOR = "observe";
 
   try {
     const dir = await mkdtemp(path.join(tmpdir(), "archon-p2-"));
@@ -883,7 +885,7 @@ test("P2 A6: observe mode + hard_stop does NOT reset session (ARCH-C1)", async (
 
     const result = await runDaemonCodexTurn(turnInput(), harness.deps);
 
-    // ARCH-C1: observe mode must NEVER reset, even for hard_stop — because
+    // ARCH-C1: observe kill switch must NEVER reset, even for hard_stop — because
     // context-budget.ts does NOT downgrade hard_stop, so without the env gate
     // it would incorrectly reset.
     assert.equal(result, undefined, "observe+hard_stop: loop should continue");

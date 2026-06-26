@@ -233,7 +233,7 @@ function makeHarness(opts: {
     setSessionId: (next) => { session = next; },
     claudeBin: "claude",
     cwd: opts.cwd,
-    env: {},
+    env: process.env,
     now: () => new Date("2026-06-25T00:00:00.000Z"),
     staleAfterHours: 24,
     runCodexTurn: async (input) => {
@@ -549,9 +549,10 @@ test("P3 C1: respawnCount resets to 0 when active task changes", async () => {
 // D. Observe-mode skip: counter never incremented
 // ---------------------------------------------------------------------------
 
-test("P3 D1: observe mode never increments respawnCount (no reset path)", async () => {
+test("P3 D1: observe kill switch (ARCHON_CONTEXT_MONITOR=observe) never increments respawnCount (no reset path)", async () => {
   const prevEnv = process.env.ARCHON_CONTEXT_MONITOR;
-  delete process.env.ARCHON_CONTEXT_MONITOR;
+  // Explicitly set the observe kill switch — after P3, unset = enforce-default.
+  process.env.ARCHON_CONTEXT_MONITOR = "observe";
 
   try {
     const dir = await mkdtemp(path.join(tmpdir(), "archon-p3-"));

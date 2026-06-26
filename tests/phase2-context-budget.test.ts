@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   ContextBudgetMonitor,
   defaultArchonContextPolicy,
+  resolveDaemonContextMonitorMode,
   type ContextBudgetStoreLike,
   type ContextThresholdEvent
 } from "../src/runtime/context-budget.ts";
@@ -500,5 +501,64 @@ describe("StubStore.hasCommittedHandoff", () => {
     const store = new StubStore();
     store.addHandoff("inv-1");
     assert.equal(await store.hasCommittedHandoff("inv-2"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveDaemonContextMonitorMode — P3 enforce-default unit tests
+// ---------------------------------------------------------------------------
+
+describe("resolveDaemonContextMonitorMode", () => {
+  it("unset → enforce (enforce-default)", () => {
+    const env: NodeJS.ProcessEnv = {};
+    assert.equal(resolveDaemonContextMonitorMode(env), "enforce");
+  });
+
+  it("empty string → enforce", () => {
+    const env: NodeJS.ProcessEnv = { ARCHON_CONTEXT_MONITOR: "" };
+    assert.equal(resolveDaemonContextMonitorMode(env), "enforce");
+  });
+
+  it("\"enforce\" → enforce", () => {
+    const env: NodeJS.ProcessEnv = { ARCHON_CONTEXT_MONITOR: "enforce" };
+    assert.equal(resolveDaemonContextMonitorMode(env), "enforce");
+  });
+
+  it("\"observe\" → observe (kill switch)", () => {
+    const env: NodeJS.ProcessEnv = { ARCHON_CONTEXT_MONITOR: "observe" };
+    assert.equal(resolveDaemonContextMonitorMode(env), "observe");
+  });
+
+  it("garbage value → enforce", () => {
+    const env: NodeJS.ProcessEnv = { ARCHON_CONTEXT_MONITOR: "garbage" };
+    assert.equal(resolveDaemonContextMonitorMode(env), "enforce");
+  });
+
+  it("case-sensitive: \"Observe\" → enforce (not kill switch)", () => {
+    const env: NodeJS.ProcessEnv = { ARCHON_CONTEXT_MONITOR: "Observe" };
+    assert.equal(resolveDaemonContextMonitorMode(env), "enforce");
+  });
+
+  it("case-sensitive: \"OBSERVE\" → enforce (not kill switch)", () => {
+    const env: NodeJS.ProcessEnv = { ARCHON_CONTEXT_MONITOR: "OBSERVE" };
+    assert.equal(resolveDaemonContextMonitorMode(env), "enforce");
+  });
+
+  it("defaults to process.env when no env arg provided", () => {
+    const saved = process.env.ARCHON_CONTEXT_MONITOR;
+    try {
+      process.env.ARCHON_CONTEXT_MONITOR = "observe";
+      assert.equal(resolveDaemonContextMonitorMode(), "observe");
+      process.env.ARCHON_CONTEXT_MONITOR = "enforce";
+      assert.equal(resolveDaemonContextMonitorMode(), "enforce");
+      delete process.env.ARCHON_CONTEXT_MONITOR;
+      assert.equal(resolveDaemonContextMonitorMode(), "enforce");
+    } finally {
+      if (saved !== undefined) {
+        process.env.ARCHON_CONTEXT_MONITOR = saved;
+      } else {
+        delete process.env.ARCHON_CONTEXT_MONITOR;
+      }
+    }
   });
 });

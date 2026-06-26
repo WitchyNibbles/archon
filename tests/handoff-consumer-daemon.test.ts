@@ -26,9 +26,15 @@
 //        saveProjectRuntimeState never called with justHandedOff=true,
 //        markHandoffConsumed never called.
 //
-//   S4 — ARCHON_CONTEXT_MONITOR unset (observe mode) → no reset, safe continue
+//   S4 — ARCHON_CONTEXT_MONITOR=observe (kill switch) → no reset, safe continue
 //        Asserts: status=max_cycles_reached, no handoff_reset record,
-//        saveProjectRuntimeState never called with justHandedOff=true.
+//        saveProjectRuntimeState never called with justHandedOff=true,
+//        saveProjectRuntimeState IS called at least once (non-reset write).
+//
+//   S5 — ARCHON_CONTEXT_MONITOR unset (enforce-default, P3) → reset triggered
+//        Asserts: status=max_cycles_reached, one handoff_reset record,
+//        saveProjectRuntimeState called with justHandedOff=true,
+//        markHandoffConsumed called at least once.
 //
 // CI gate: this file sits at tests/ (top-level glob) so it is always
 // picked up by `npx c8 node --experimental-strip-types --test tests/*.test.ts`.
@@ -768,10 +774,10 @@ describe("handoffConsumerWiring — daemon consumer entrypoint (P2)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // S4 — ARCHON_CONTEXT_MONITOR unset (observe mode) → no reset, safe continue
+  // S4 — ARCHON_CONTEXT_MONITOR=observe (kill switch) → no reset, safe continue
   //
   // Setup:
-  //   - ARCHON_CONTEXT_MONITOR is unset (not "enforce")
+  //   - ARCHON_CONTEXT_MONITOR=observe (explicit kill switch)
   //   - runCodexTurn returns high usage (72.5%)
   //   - The isEnforceMode=false gate skips the entire reset-path block
   //   - Non-reset path: sample is fire-and-forget, saveProjectRuntimeState
@@ -780,17 +786,104 @@ describe("handoffConsumerWiring — daemon consumer entrypoint (P2)", () => {
   // Expected:
   //   - result.status = "max_cycles_reached"
   //   - No handoff_reset cycle record
+  //   - saveProjectRuntimeState IS called at least once (non-reset write)
   //   - saveProjectRuntimeState never called with justHandedOff=true
   //   - markHandoffConsumed never called
   // -------------------------------------------------------------------------
 
-  it("S4: observe mode (ARCHON_CONTEXT_MONITOR unset) → no reset, daemon continues safely", async () => {
+  it("S4: observe kill switch (ARCHON_CONTEXT_MONITOR=observe) → no reset, daemon continues safely", async () => {
     const testDir = await makeTestDir();
     const store = new InMemoryRuntimeStore();
     const savedStates: ProjectRuntimeStateRecord[] = [];
     const opts = makeOptions(testDir, store, { savedStates });
 
-    // Unset ARCHON_CONTEXT_MONITOR to ensure observe mode.
+    // Set explicit observe kill switch.
+    const savedContextMonitor = process.env.ARCHON_CONTEXT_MONITOR;
+    process.env.ARCHON_CONTEXT_MONITOR = "observe";
+
+    let result;
+    try {
+      ({ result } = await executeDaemonCommandFromArgs(
+        [
+          "--workspace-slug", WS_SLUG,
+          "--project-slug", PROJ_SLUG,
+          "--max-cycles", "1"
+        ],
+        { ...opts, cwd: testDir }
+      ));
+    } finally {
+      if (savedContextMonitor !== undefined) {
+        process.env.ARCHON_CONTEXT_MONITOR = savedContextMonitor;
+      } else {
+        delete process.env.ARCHON_CONTEXT_MONITOR;
+      }
+    }
+
+    // 1. Daemon exits normally (reset path never entered in observe mode).
+    assert.equal(
+      result.status,
+      "max_cycles_reached",
+      `S4: expected max_cycles_reached, got ${result.status}`
+    );
+
+    // 2. No handoff_reset cycle record.
+    const resetCycles = result.cycles.filter((c) => c.action === "handoff_reset");
+    assert.equal(
+      resetCycles.length,
+      0,
+      `S4: expected 0 handoff_reset cycle records, got ${resetCycles.length}`
+    );
+
+    // 3. saveProjectRuntimeState IS called at least once on the non-reset path.
+    assert.ok(
+      savedStates.length >= 1,
+      "S4: saveProjectRuntimeState must be called at least once on the observe (non-reset) path"
+    );
+
+    // 4. saveProjectRuntimeState never called with justHandedOff=true.
+    const resetWrite = savedStates.find((s) => {
+      const daemonMeta = (s.metadata as Record<string, unknown>)?.archonDaemon as Record<string, unknown> | undefined;
+      return daemonMeta?.justHandedOff === true;
+    });
+    assert.equal(
+      resetWrite,
+      undefined,
+      "S4: saveProjectRuntimeState must NOT be called with justHandedOff=true in observe mode"
+    );
+
+    // 5. markHandoffConsumed never called (observe mode does not reset).
+    assert.equal(
+      store.markHandoffConsumedCalls.length,
+      0,
+      `S4: markHandoffConsumed must not be called in observe mode, called ${store.markHandoffConsumedCalls.length} times`
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // S5 — ARCHON_CONTEXT_MONITOR unset (enforce-default, P3) → reset triggered
+  //
+  // Setup:
+  //   - ARCHON_CONTEXT_MONITOR is UNSET (daemon enforce-default kicks in)
+  //   - runCodexTurn returns high usage (72.5%) → handoff_required
+  //   - No pre-existing handoff → crash-recovery synthesizes one
+  //   - Budget not exhausted (default=8, no stored count)
+  //   - Lease not pre-claimed → daemon claims it
+  //   - --max-cycles 1 → loop exits after reset with max_cycles_reached
+  //
+  // Expected:
+  //   - result.status = "max_cycles_reached"
+  //   - One cycle record with action="handoff_reset"
+  //   - saveProjectRuntimeState called with metadata.archonDaemon.justHandedOff=true
+  //   - markHandoffConsumed called exactly once
+  // -------------------------------------------------------------------------
+
+  it("S5: enforce-default (ARCHON_CONTEXT_MONITOR unset) + handoff_required → exactly one reset", async () => {
+    const testDir = await makeTestDir();
+    const store = new InMemoryRuntimeStore();
+    const savedStates: ProjectRuntimeStateRecord[] = [];
+    const opts = makeOptions(testDir, store, { savedStates });
+
+    // Unset ARCHON_CONTEXT_MONITOR — enforce-default (P3) takes over.
     const savedContextMonitor = process.env.ARCHON_CONTEXT_MONITOR;
     delete process.env.ARCHON_CONTEXT_MONITOR;
 
@@ -810,37 +903,36 @@ describe("handoffConsumerWiring — daemon consumer entrypoint (P2)", () => {
       }
     }
 
-    // 1. Daemon exits normally (reset path never entered in observe mode).
+    // 1. Daemon exits after reset (reset + max_cycles_reached).
     assert.equal(
       result.status,
       "max_cycles_reached",
-      `S4: expected max_cycles_reached, got ${result.status}`
+      `S5: expected max_cycles_reached after reset, got ${result.status}`
     );
 
-    // 2. No handoff_reset cycle record.
+    // 2. Exactly one handoff_reset cycle record.
     const resetCycles = result.cycles.filter((c) => c.action === "handoff_reset");
     assert.equal(
       resetCycles.length,
-      0,
-      `S4: expected 0 handoff_reset cycle records, got ${resetCycles.length}`
+      1,
+      `S5: expected 1 handoff_reset cycle record (enforce-default), got ${resetCycles.length}`
     );
 
-    // 3. saveProjectRuntimeState never called with justHandedOff=true.
+    // 3. saveProjectRuntimeState called with justHandedOff=true (atomic reset write).
     const resetWrite = savedStates.find((s) => {
       const daemonMeta = (s.metadata as Record<string, unknown>)?.archonDaemon as Record<string, unknown> | undefined;
       return daemonMeta?.justHandedOff === true;
     });
-    assert.equal(
+    assert.notEqual(
       resetWrite,
       undefined,
-      "S4: saveProjectRuntimeState must NOT be called with justHandedOff=true in observe mode"
+      "S5: saveProjectRuntimeState must be called with justHandedOff=true on enforce-default reset"
     );
 
-    // 4. markHandoffConsumed never called (observe mode does not reset).
-    assert.equal(
-      store.markHandoffConsumedCalls.length,
-      0,
-      `S4: markHandoffConsumed must not be called in observe mode, called ${store.markHandoffConsumedCalls.length} times`
+    // 4. markHandoffConsumed called at least once (handoff linked to next invocation).
+    assert.ok(
+      store.markHandoffConsumedCalls.length >= 1,
+      `S5: markHandoffConsumed must be called on enforce-default reset, called ${store.markHandoffConsumedCalls.length} times`
     );
   });
 });

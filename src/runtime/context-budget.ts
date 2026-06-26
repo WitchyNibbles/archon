@@ -359,3 +359,20 @@ export function resolveArchonContextPolicy(): Readonly<ContextPolicy> {
     hardStopPct: readPct("ARCHON_CONTEXT_HARD_STOP_PCT", defaultArchonContextPolicy.hardStopPct)
   };
 }
+
+// ---------------------------------------------------------------------------
+// resolveDaemonContextMonitorMode — P3 enforce-default resolver
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the daemon context-monitor mode from the environment.
+ *
+ * Daemon enforce-default (P3 / C4): the daemon enforces context handoff by
+ * default. ARCHON_CONTEXT_MONITOR=observe is the explicit operator kill switch.
+ * Any other value, including unset, resolves to enforce.
+ *
+ * Accepts an explicit env parameter for testability (defaults to process.env).
+ */
+export function resolveDaemonContextMonitorMode(env: NodeJS.ProcessEnv = process.env): "enforce" | "observe" {
+  return env.ARCHON_CONTEXT_MONITOR === "observe" ? "observe" : "enforce";
+}
