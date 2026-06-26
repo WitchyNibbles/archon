@@ -196,13 +196,11 @@ describe("ahrP5 controller authority boundary", () => {
     // Confirm AgenticLoopController is NOT assignable to this field by verifying
     // the monitor instance does NOT have controller-specific methods.
     assert.strictEqual(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (monitorField as Record<string, unknown>)["startInvocation"],
       undefined,
       "DaemonCodexTurnDeps.monitor must NOT expose AgenticLoopController.startInvocation"
     );
     assert.strictEqual(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (monitorField as Record<string, unknown>)["onContextSample"],
       undefined,
       "DaemonCodexTurnDeps.monitor must NOT expose AgenticLoopController.onContextSample"

@@ -52,10 +52,10 @@ import {
   runPrecompactHandoff,
   normalizeRole,
   type InteractiveHandoffStoreLike
-} from "../../src/runtime/interactive-parachute.ts";
-import { HandoffController } from "../../src/runtime/handoff-controller.ts";
-import type { HandoffRecord } from "../../src/store/agent-runtime-store.ts";
-import type { AgentInvocation } from "../../src/domain/types.ts";
+} from "../src/runtime/interactive-parachute.ts";
+import { HandoffController } from "../src/runtime/handoff-controller.ts";
+import type { HandoffRecord } from "../src/store/agent-runtime-store.ts";
+import type { AgentInvocation } from "../src/domain/types.ts";
 
 // ---------------------------------------------------------------------------
 // Store double — implements InteractiveHandoffStoreLike with in-memory storage
@@ -177,12 +177,6 @@ class HandoffStoreDouble implements InteractiveHandoffStoreLike {
     this.statusUpdates.push({ id, status, metadata });
   }
 
-  reset(): void {
-    this.handoffs.length = 0;
-    this.statusUpdates.length = 0;
-    this.invocations.clear();
-    this.consumed.clear();
-  }
 }
 
 // ---------------------------------------------------------------------------
