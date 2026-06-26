@@ -1083,6 +1083,12 @@ export async function executeDaemonCommandFromArgs(
       // Phase 1 (ahrP1Sampling): capture invocationId when the directive is
       // dispatch_owner, so the codex-turn runner can record context samples.
       // Best-effort: startInvocation failure must not block the loop turn.
+      //
+      // ahrP5ControllerCleanup: ONLY startInvocation is intentionally used here.
+      // AgenticLoopController is NOT the reset/respawn decision authority —
+      // ContextBudgetMonitor (passed as DaemonCodexTurnDeps.monitor) is the
+      // production sampling signal, and HandoffController + respawn-lease own
+      // the reset path (P2/P3/P4).  onContextSample is NOT called by the daemon.
       let cycleInvocationId: string | undefined;
       let cycleRole: string | undefined;
       if (
