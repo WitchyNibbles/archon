@@ -145,7 +145,6 @@ export async function continueSessionCommand(args: readonly string[]): Promise<v
       }
 
       const continuationPrompt = controller.buildContinuationPrompt(handoff);
-      const invocation = buildClaudeInvocation(continuationPrompt);
 
       if (exec) {
         process.stdout.write(`Spawning continuation session for task ${taskId}...\n`);
@@ -157,6 +156,7 @@ export async function continueSessionCommand(args: readonly string[]): Promise<v
           process.exitCode = result.status ?? 1;
         }
       } else {
+        const invocation = buildClaudeInvocation(continuationPrompt);
         process.stdout.write([
           `# Continuation session for task ${taskId} (handoff ${handoff.id})`,
           "# Run the following command in a new terminal to start the successor session:",

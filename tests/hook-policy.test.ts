@@ -3069,13 +3069,25 @@ test("F1: F3 block message is actionable — names archon_handoff_commit and npx
   } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
 });
 
-// ─── F1 parity: hook safe-set must be superset of canonical context-budget list ──────
+// ─── F1 parity: MCP handoff tools must be safe in BOTH hook and canonical ──────
+//
+// The hook's isHandoffSafeTool and the canonical ContextBudgetMonitor.isHandoffSafeTool
+// serve related but distinct purposes and their diagnostic-tool sets intentionally differ:
+//
+//   - Hook: excludes Bash from the safe-set. Over the context threshold the hook blocks
+//     Bash tool calls to prevent runaway work. Bash is NOT in the hook's safe-set by design.
+//   - Canonical (context-budget.ts): includes Bash in diagnosticTools so that the agent
+//     runtime itself can run diagnostic commands when approaching the budget limit.
+//
+// Invariant: the MCP handoff-completing tools (bare name + mcp__archon__ prefix) MUST be
+// allowed by both the hook and the canonical. Bash intentionally excluded from this parity
+// assertion.
 
 // Import the canonical isHandoffSafeTool from context-budget.ts via tsx
-// to assert parity between the hook and the runtime.
+// to assert parity on the MCP-handoff subset between hook and runtime.
 import { ContextBudgetMonitor } from "../src/runtime/context-budget.ts";
 
-const CANONICAL_HANDOFF_TOOLS = [
+const MCP_HANDOFF_TOOLS = [
   "archon_handoff_prepare",
   "archon_handoff_commit",
   "archon_context_sample",
@@ -3086,13 +3098,30 @@ const CANONICAL_HANDOFF_TOOLS = [
   "mcp__archon__archon_next_action"
 ];
 
-for (const toolName of CANONICAL_HANDOFF_TOOLS) {
+// Canonical side: each MCP handoff tool must be allowed by ContextBudgetMonitor.
+for (const toolName of MCP_HANDOFF_TOOLS) {
   test(`F1 parity: canonical isHandoffSafeTool allows ${toolName}`, () => {
     assert.equal(
       ContextBudgetMonitor.isHandoffSafeTool(toolName),
       true,
       `canonical isHandoffSafeTool must allow ${toolName}`
     );
+  });
+}
+
+// Hook side: each MCP handoff tool must not be blocked by the hook in handoff_required
+// state. Bash is intentionally excluded — the hook is stricter than the canonical for Bash.
+for (const toolName of MCP_HANDOFF_TOOLS) {
+  test(`F1 parity: hook allows ${toolName} in handoff_required state`, () => {
+    const tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "archon-parity-"));
+    try {
+      writeTmpGuardState(tmpDir, "handoff_required");
+      const result = evaluatePreToolUse(mcpToolPayload(toolName), ctxWithGuard(tmpDir));
+      assert.ok(
+        result === undefined || result.decision !== "block",
+        `hook must allow ${toolName} in handoff_required; got: ${JSON.stringify(result)}`
+      );
+    } finally { fsSync.rmSync(tmpDir, { recursive: true, force: true }); }
   });
 }
 

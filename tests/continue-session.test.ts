@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import fs from "node:fs";
 import { parseActiveFile, buildClaudeInvocation } from "../src/admin/continue-session.ts";
 
 // ─── parseActiveFile ─────────────────────────────────────────────────────────
@@ -57,14 +59,35 @@ test("buildClaudeInvocation: handles multiline prompt", () => {
   assert.ok(invocation.includes("Line 2"), "must include prompt content");
 });
 
-test("buildClaudeInvocation: no uncommitted handoff produces clear message (pure)", () => {
-  // This tests that a missing handoff produces a clear message — not a claude invocation.
-  // The verb handles this case by printing a message and setting exitCode. Here we verify
-  // the pure helper is only called when a handoff is present.
-  const invocation = buildClauseInvocationForEmptyPrompt();
-  assert.ok(invocation.startsWith("claude --print '"), "empty prompt still produces valid invocation");
-});
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
-function buildClauseInvocationForEmptyPrompt() {
-  return buildClaudeInvocation("(no handoff summary)");
-}
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test("continueSessionCommand: no active task → prints clear message and exits 1", () => {
+  // Exercise the no-handoff branch of continueSessionCommand. When no .archon/ACTIVE
+  // exists and no --task-id flag is provided, the command must print a clear "nothing to
+  // continue" message and exit with code 1, without touching the DB.
+  // Run in a fresh temp dir so there is no .archon/ACTIVE to pick up.
+  const tmpDir = fs.mkdtempSync(os.tmpdir() + "/archon-cs-test-");
+  try {
+    const result = spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", path.join(repoRoot, "src/admin.ts"), "continue-session"],
+      { cwd: tmpDir, encoding: "utf8", timeout: 10_000 }
+    );
+    const output = (result.stdout ?? "") + (result.stderr ?? "");
+    assert.ok(
+      output.includes("no active task"),
+      `expected "no active task" in output; got: ${output}`
+    );
+    assert.ok(
+      output.includes("archon_handoff_commit"),
+      `expected "archon_handoff_commit" in output; got: ${output}`
+    );
+    assert.equal(result.status, 1, "exit code must be 1 when no task is found");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
