@@ -36,6 +36,7 @@ import { PostgresStore } from "./store/postgres-store.ts";
 import { initTaskCommand } from "./admin/init-task.ts";
 import { recordCouncilCommand } from "./admin/record-council.ts";
 import { pruneOrphansCommand } from "./admin/prune-orphans.ts";
+import { continueSessionCommand } from "./admin/continue-session.ts";
 import { forgeCommand } from "./admin/forge.ts";
 import { secretCommand } from "./admin/secret.ts";
 import { advanceActiveTaskCommand, checkpointCommand, coverageCommand, gapsCommand, githubDispatchCommand, opsCommand, repairTaskQueueCommand, reportCommand, resumeCommand, statusCommand, syncRuntimeExportsCommand } from "./workflow.ts";
@@ -280,6 +281,11 @@ async function main() {
         repoRoot
       });
     });
+    return;
+  }
+
+  if (command === "continue-session") {
+    await continueSessionCommand(args);
     return;
   }
 
