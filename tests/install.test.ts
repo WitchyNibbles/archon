@@ -1034,6 +1034,48 @@ test("installDevgodIntoProject opt-in Grafana setup adds MCP config, env guidanc
   }
 });
 
+// P4 (handoffConsumerWiring): prove the daemon surface is actually shippable to a
+// consumer — the entrypoint script is wired AND the operator-facing safety knobs
+// (enforce default, observe kill switch, respawn budget cap) reach the consumer's
+// .env.archon.example.  This is the C5 "consumer-install fixture asserts artifacts
+// land + wiring valid" gate that the daemon handoff path previously lacked.
+test("installDevgodIntoProject ships daemon wiring: archon:daemon script + .env.archon.example operator knobs (P4)", async () => {
+  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-install-daemon-wiring-"));
+  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+  try {
+    await writeFile(path.join(targetRoot, "package.json"), '{ "name": "fixture", "private": true }\n');
+
+    await installDevgodIntoProject({ sourceRoot, targetRoot });
+
+    // 1. The consumer daemon entrypoint is wired as a first-class npm script.
+    const packageJson = JSON.parse(await readFile(path.join(targetRoot, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    assert.equal(
+      packageJson.scripts["archon:daemon"],
+      "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts daemon --format text",
+      "consumer install must wire the archon:daemon entrypoint"
+    );
+
+    // 2. The shipped .env.archon.example documents the daemon enforce-default,
+    //    the observe kill switch, and the respawn budget cap — so an operator can
+    //    actually run, disable, and bound daemon auto-respawn (P3/P4, C4-C5).
+    const envExample = await readFile(path.join(targetRoot, ".env.archon.example"), "utf8");
+    assert.match(envExample, /ARCHON_CONTEXT_MONITOR/, "kill-switch env var must be documented");
+    assert.match(envExample, /enforce/i, "enforce default must be documented");
+    assert.match(envExample, /kill switch/i, "observe kill switch must be documented");
+    assert.match(
+      envExample,
+      /ARCHON_MAX_RESPAWNS_PER_TASK/,
+      "respawn budget cap must be documented for operators"
+    );
+    assert.match(envExample, /\[1, 50\]/, "respawn budget bounds must be documented");
+  } finally {
+    await rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
 test("installDevgodIntoProject auto-detects configured Grafana env and adds MCP wiring", async () => {
   const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-install-grafana-detected-"));
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
