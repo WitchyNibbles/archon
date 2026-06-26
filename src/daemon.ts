@@ -51,7 +51,7 @@ import type { HandoffStoreLike } from "./runtime/handoff-controller.ts";
 import { ContinuationContextBuilder } from "./runtime/continuation-context.ts";
 import { recoverOrphanedInvocations } from "./runtime/crash-recovery.ts";
 import { ContextBudgetMonitor, resolveArchonContextPolicy } from "./runtime/context-budget.ts";
-import { makeFileLockLeaseStore } from "./runtime/respawn-lease.ts";
+import { makeFileLockLeaseStore, releaseRespawnLease } from "./runtime/respawn-lease.ts";
 // Daemon split (by concern) — leaf module. Import for daemon-internal use, then
 // re-export the same bindings to preserve the public surface for existing callers.
 import {
@@ -942,6 +942,11 @@ export async function executeDaemonCommandFromArgs(
   const daemonRunLeaseStore = makeFileLockLeaseStore({
     lockDir: path.join(cwd, ".archon", "work", "daemon")
   });
+  // Mutable ref so the withDaemonLock callback can signal which runId it
+  // claimed (updated after the null-check guard inside the cycle loop).
+  // Released via .finally() below on both clean exit and error exit.
+  // Owner-checked: no-op if daemon never claimed (no P2 reset this session).
+  const respawnLeaseRef: { runId: string | undefined } = { runId: undefined };
 
   // Phase 1 (ahrP1Sampling): construct a ContextBudgetMonitor once for the
   // daemon run so all cycles share a single in-memory state-cache. When no
@@ -1051,6 +1056,11 @@ export async function executeDaemonCommandFromArgs(
           nextActions: []
         });
       }
+
+      // Phase 4 (ahrP4InteractiveWatcher): track which runId the daemon is
+      // actively driving so the respawn lease can be released on shutdown.
+      // Updated each cycle; the finally on withDaemonLock releases only on stop.
+      respawnLeaseRef.runId = activeRunId;
 
       const loop = await executeLoopCommandFromArgs(
         [
@@ -1302,6 +1312,15 @@ export async function executeDaemonCommandFromArgs(
       sessionId: latestSessionId ?? null,
       cycles
     };
+  }).finally(async () => {
+    // Phase 4 (ahrP4InteractiveWatcher): release the per-run respawn lease when
+    // the daemon stops driving the run (clean exit or error — TTL covers crashes).
+    // Owner-checked in releaseRespawnLease: no-op if the daemon never claimed
+    // (no P2 reset occurred this session) or if "interactive" currently holds
+    // the lease. Eliminates the unnecessary 300s watcher-blocking window.
+    if (respawnLeaseRef.runId !== undefined) {
+      await releaseRespawnLease(respawnLeaseRef.runId, "daemon", daemonRunLeaseStore);
+    }
   });
 
   return {

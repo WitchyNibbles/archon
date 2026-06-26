@@ -11,7 +11,7 @@
 // functional on the object constructed from the production code path.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -32,7 +32,7 @@ import type { RunCodexTurnInput, RunCodexTurnResult } from "../src/daemon/turn-p
 import { HandoffController } from "../src/runtime/handoff-controller.ts";
 import type { HandoffStoreLike } from "../src/runtime/handoff-controller.ts";
 import type { HandoffRecord } from "../src/store/agent-runtime-store.ts";
-import { makeInMemoryLeaseStore, makeFileLockLeaseStore, claimRespawnLease } from "../src/runtime/respawn-lease.ts";
+import { makeInMemoryLeaseStore, makeFileLockLeaseStore, claimRespawnLease, releaseRespawnLease } from "../src/runtime/respawn-lease.ts";
 
 // ---------------------------------------------------------------------------
 // Minimal fixtures
@@ -433,4 +433,81 @@ test("P4 BLOCKING-2: makeFileLockLeaseStore is a functional LeaseStore (producti
   // After release, interactive can claim.
   const granted = await leaseStore.tryAcquire("run-prod-wire", "interactive");
   assert.equal(granted.granted, true, "interactive must win after daemon releases the file-lock lease");
+});
+
+// ---------------------------------------------------------------------------
+// MEDIUM security fix: daemon releases respawn lease on shutdown
+// ---------------------------------------------------------------------------
+//
+// Contract:
+//   (a) After daemon claims and shutdown finally runs, the lock file is gone.
+//   (b) The shutdown finally does NOT release a lock owned by "interactive".
+//
+// These tests exercise the releaseRespawnLease owner-check that prevents the
+// daemon from silently stealing back a lock it never held.
+
+test("P4 SEC-MEDIUM: daemon claim + shutdown release removes the lock file", async () => {
+  const lockDir = await mkdtemp(path.join(tmpdir(), "archon-p4-sec-med-a-"));
+  const leaseStore = makeFileLockLeaseStore({ lockDir });
+
+  // Daemon claims the lease (simulating a P2 reset within the session).
+  const claim = await claimRespawnLease("run-med-1", "daemon", leaseStore);
+  assert.equal(claim.granted, true, "daemon must win the initial claim");
+
+  // Verify the lock file actually exists on disk.
+  const lockFile = path.join(lockDir, "respawn-lease-run-med-1.lock");
+  await assert.doesNotReject(
+    () => access(lockFile),
+    "lock file must exist after daemon claims the lease"
+  );
+
+  // Simulate the daemon shutdown finally: release the lease.
+  await releaseRespawnLease("run-med-1", "daemon", leaseStore);
+
+  // Lock file must be gone after release.
+  await assert.rejects(
+    () => access(lockFile),
+    "lock file must NOT exist after daemon releases the lease (shutdown finally)"
+  );
+
+  // Interactive can now claim without waiting for TTL.
+  const interactiveClaim = await claimRespawnLease("run-med-1", "interactive", leaseStore);
+  assert.equal(
+    interactiveClaim.granted,
+    true,
+    "interactive must win immediately after daemon releases — not after 300s TTL"
+  );
+});
+
+test("P4 SEC-MEDIUM: shutdown finally does NOT release a lock owned by interactive", async () => {
+  const lockDir = await mkdtemp(path.join(tmpdir(), "archon-p4-sec-med-b-"));
+  const leaseStore = makeFileLockLeaseStore({ lockDir });
+
+  // Interactive claims the lease (e.g. interactive watcher took over).
+  const interactiveClaim = await claimRespawnLease("run-med-2", "interactive", leaseStore);
+  assert.equal(interactiveClaim.granted, true, "interactive must win the initial claim");
+
+  const lockFile = path.join(lockDir, "respawn-lease-run-med-2.lock");
+  await assert.doesNotReject(
+    () => access(lockFile),
+    "lock file must exist after interactive claims the lease"
+  );
+
+  // Daemon shutdown finally fires (daemon never claimed this runId's lease).
+  // Owner-checked: must NOT remove the lock owned by "interactive".
+  await releaseRespawnLease("run-med-2", "daemon", leaseStore);
+
+  // Lock file must still be present — daemon never owned it.
+  await assert.doesNotReject(
+    () => access(lockFile),
+    "lock file must still exist after daemon's shutdown finally fires — interactive owns it"
+  );
+
+  // The current owner is still "interactive".
+  const owner = await leaseStore.readOwner("run-med-2");
+  assert.equal(
+    owner,
+    "interactive",
+    "owner must remain 'interactive' after daemon's owner-checked release no-ops"
+  );
 });
