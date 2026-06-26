@@ -100,8 +100,13 @@ archive_request() {
   local bname
   bname="$(basename "${req_path}")"
   local dst="${ARCHIVE_DIR}/${ts}-${bname}"
-  # Copy then remove original (preserve on copy failure)
-  cp "${req_path}" "${dst}" && rm -f "${req_path}" || true
+  # Copy then remove original (preserve the original if the copy fails).
+  # Use an explicit if rather than `cp && rm || true` (SC2015: A && B || C is
+  # not if-then-else — C can run even when A succeeds); under `set -e` the if
+  # condition failing does not abort, so a failed copy leaves the original intact.
+  if cp "${req_path}" "${dst}"; then
+    rm -f "${req_path}" || true
+  fi
   log_info "archived to ${dst}"
 }
 

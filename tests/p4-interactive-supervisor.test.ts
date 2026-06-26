@@ -97,12 +97,17 @@ describe("scripts/archon-interactive-supervisor.sh", () => {
     }));
 
     // First check shellcheck separately.
-    const scResult = await new Promise<{ exitCode: number | null; stderr: string }>((resolve) => {
-      const sc = spawn("shellcheck", [SCRIPT_PATH], { stdio: ["ignore", "ignore", "pipe"] });
-      let stderr = "";
-      sc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-      sc.on("close", (code) => resolve({ exitCode: code, stderr }));
-      sc.on("error", () => resolve({ exitCode: null, stderr: "shellcheck not found" }));
+    // shellcheck writes its findings to STDOUT (not stderr); capture both so the
+    // assertion message actually shows what failed. Capturing only stderr (the
+    // previous behaviour) produced an empty "shellcheck found issues:" message in
+    // CI, making a real finding (e.g. SC2015) undiagnosable from the logs.
+    const scResult = await new Promise<{ exitCode: number | null; output: string }>((resolve) => {
+      const sc = spawn("shellcheck", [SCRIPT_PATH], { stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      sc.stdout.on("data", (d: Buffer) => { output += d.toString(); });
+      sc.stderr.on("data", (d: Buffer) => { output += d.toString(); });
+      sc.on("close", (code) => resolve({ exitCode: code, output }));
+      sc.on("error", () => resolve({ exitCode: null, output: "shellcheck not found" }));
     });
 
     if (scResult.exitCode === null) {
@@ -113,7 +118,7 @@ describe("scripts/archon-interactive-supervisor.sh", () => {
     assert.equal(
       scResult.exitCode,
       0,
-      `shellcheck found issues:\n${scResult.stderr}`
+      `shellcheck found issues:\n${scResult.output}`
     );
     void result; // suppress unused var lint
   });
