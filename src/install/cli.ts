@@ -1,5 +1,5 @@
 import { cp, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
@@ -739,18 +739,17 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
     });
   }
 
-  const hookMjsFiles = [
-    "archon-session-start.mjs",
-    "archon-prompt-submit.mjs",
-    "archon-pre-tool.mjs",
-    "archon-post-tool.mjs",
-    "archon-stop.mjs",
-    "hook-policy.mjs",
-    "hook-utils.mjs"
-  ];
+  // Dynamically enumerate all *.mjs files in source .claude/hooks/ so the manifest
+  // never drifts from the directory. withFileTypes guards against a directory whose
+  // name ends in .mjs being included. Sort for a stable, deterministic manifest order.
+  const hooksSourceDir = path.join(sourceRoot, ".claude/hooks");
+  const hookMjsFiles = readdirSync(hooksSourceDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith(".mjs"))
+    .map((e) => e.name)
+    .sort();
   for (const hookFile of hookMjsFiles) {
     manifest.push({
-      source: path.join(sourceRoot, ".claude/hooks", hookFile),
+      source: path.join(hooksSourceDir, hookFile),
       target: `.claude/hooks/${hookFile}`,
       overwriteManaged: true
     });
@@ -2457,3 +2456,9 @@ if (isEntrypoint) {
 export const installDevgodIntoProject = installArchonIntoProject;
 export const upgradeDevgodInProject = upgradeArchonInProject;
 export const verifyDevgodInstall = verifyArchonInstall;
+
+/**
+ * Exposed for testing: returns the list of files the installer will copy into a
+ * consumer repo. Tests use this to verify manifest-settings.json parity.
+ */
+export const buildInstallManifest = buildManifest;
