@@ -6,9 +6,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT"
 
-if [[ ! -f .env && -f .env.example ]]; then
-  cp .env.example .env
-  echo "created .env from .env.example"
+if [[ ! -f .env ]]; then
+  if [[ -f .env.archon.example ]]; then
+    cp .env.archon.example .env
+    echo "created .env from .env.archon.example"
+  elif [[ -f .env.example ]]; then
+    cp .env.example .env
+    echo "created .env from .env.example"
+  fi
 fi
 
 is_safe_env_key() {

@@ -201,7 +201,7 @@ npm install
 
 ### 2.3. Configure .env (MANDATORY)
 
-The installer copies `.env.archon.example` to the consumer. You MUST manually copy this to `.env` and configure required variables before bootstrap. The consumer's `scripts/archon-setup.sh` auto-copy looks for `.env.example` (a source-repo name) and does not fire in a consumer (which has `.env.archon.example`).
+The installer copies `.env.archon.example` to the consumer. You MUST configure required variables in `.env` before bootstrap. The consumer's `scripts/archon-setup.sh` now auto-creates `.env` from `.env.archon.example` when `.env` does not already exist, so running `bash scripts/archon-setup.sh` (or the bootstrap path) will handle the copy automatically. Explicitly copying it yourself first is still the recommended deterministic action (belt-and-suspenders), but it is no longer the only way to get `.env`.
 
 **Command:**
 ```bash
