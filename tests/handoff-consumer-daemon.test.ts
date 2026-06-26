@@ -92,6 +92,15 @@ const HIGH_USAGE = {
   cacheCreationTokens: 0
 };
 
+// 60,000 / 200,000 = 30% — below the warning threshold (60%): no state crossing,
+// so a turn returning LOW_USAGE never triggers a reset on its own.
+const LOW_USAGE = {
+  inputTokens: 60000,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0
+};
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -934,5 +943,235 @@ describe("handoffConsumerWiring — daemon consumer entrypoint (P2)", () => {
       store.markHandoffConsumedCalls.length >= 1,
       `S5: markHandoffConsumed must be called on enforce-default reset, called ${store.markHandoffConsumedCalls.length} times`
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // T1 — multi-cycle continuation (production respawn-continuity proof):
+  //      with --max-cycles 2, cycle 1 crosses the threshold and resets; cycle 2
+  //      reads the state cycle 1 saved (justHandedOff=true) and, being below the
+  //      threshold, continues WITHOUT a second reset. Needs a STATEFUL runtime-
+  //      state holder so cycle 2 sees cycle 1's write.
+  // -------------------------------------------------------------------------
+
+  it("T1: --max-cycles 2 → cycle 1 resets, cycle 2 continues without a second reset", async () => {
+    const testDir = await makeTestDir();
+    const store = new InMemoryRuntimeStore();
+    const savedStates: ProjectRuntimeStateRecord[] = [];
+
+    let currentState = makeRuntimeState();
+    let turnCalls = 0;
+    const base = makeOptions(testDir, store, { savedStates });
+    const opts: Omit<ExecuteDaemonCommandOptions, "cwd" | "env"> = {
+      ...base,
+      // Stateful: each save becomes what the next cycle reads.
+      getProjectRuntimeState: async (_id: string) => currentState,
+      saveProjectRuntimeState: async (state: ProjectRuntimeStateRecord) => {
+        savedStates.push(state);
+        currentState = state;
+      },
+      // Cycle 1 crosses the threshold (HIGH → reset); cycle 2 is below it (LOW →
+      // a normal continuation turn, no second reset).
+      runCodexTurn: async (_input) => {
+        turnCalls += 1;
+        return {
+          sessionId: turnCalls === 1 ? "sess-1" : undefined,
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+          usage: turnCalls === 1 ? HIGH_USAGE : LOW_USAGE
+        } as RunCodexTurnResult;
+      }
+    };
+
+    const savedContextMonitor = process.env.ARCHON_CONTEXT_MONITOR;
+    process.env.ARCHON_CONTEXT_MONITOR = "enforce";
+    let result;
+    try {
+      ({ result } = await executeDaemonCommandFromArgs(
+        ["--workspace-slug", WS_SLUG, "--project-slug", PROJ_SLUG, "--max-cycles", "2"],
+        { ...opts, cwd: testDir }
+      ));
+    } finally {
+      if (savedContextMonitor === undefined) delete process.env.ARCHON_CONTEXT_MONITOR;
+      else process.env.ARCHON_CONTEXT_MONITOR = savedContextMonitor;
+    }
+
+    // Two cycles ran (one codex turn per cycle).
+    assert.equal(turnCalls, 2, `T1: expected 2 codex turns across 2 cycles, got ${turnCalls}`);
+
+    // Exactly ONE reset across both cycles — cycle 2 must not re-reset even though
+    // the state it reads carries justHandedOff=true from cycle 1.
+    const resetCycles = result.cycles.filter((c) => c.action === "handoff_reset");
+    assert.equal(resetCycles.length, 1, `T1: expected exactly 1 reset across 2 cycles, got ${resetCycles.length}`);
+
+    // The continuation handoff is consumed exactly once (linked to the single respawn).
+    assert.equal(
+      store.markHandoffConsumedCalls.length,
+      1,
+      `T1: markHandoffConsumed must fire exactly once across 2 cycles, got ${store.markHandoffConsumedCalls.length}`
+    );
+
+    // Exactly one justHandedOff=true write — no double reset from cycle 2.
+    const justHandedOffWrites = savedStates.filter((s) => {
+      const m = (s.metadata as Record<string, unknown>)?.archonDaemon as Record<string, unknown> | undefined;
+      return m?.justHandedOff === true;
+    });
+    assert.equal(
+      justHandedOffWrites.length,
+      1,
+      `T1: exactly one justHandedOff=true write expected (no double reset), got ${justHandedOffWrites.length}`
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // T2 — committed-handoff reset trigger (the stateRequiresReset=false path):
+  //      usage is BELOW the threshold, but the invocation already has a committed
+  //      handoff → the daemon still resets via the committed-handoff signal
+  //      (codex-turn consults hasCommittedHandoff only when the state did not cross).
+  // -------------------------------------------------------------------------
+
+  it("T2: sub-threshold usage + pre-committed handoff → reset via the committed signal", async () => {
+    const testDir = await makeTestDir();
+
+    // Well-formed committed handoff (summary >= 10 chars + non-empty nextActions)
+    // so the packet-quality check passes and the daemon does NOT fall to crash-recovery.
+    const committed: HandoffRecord = {
+      id: "ho_committed_T2",
+      runId: RUN_ID,
+      taskId: TASK_ID,
+      fromInvocationId: "inv-001",
+      toInvocationId: undefined,
+      fromRole: "specialist_owner",
+      toRole: "specialist_owner",
+      reason: "precompact_fallback",
+      status: "needs_followup",
+      contextUsedPct: 55,
+      packet: {
+        summary: "Agent committed a handoff before the monitor threshold fired.",
+        nextActions: ["Resume from the committed handoff packet."]
+      },
+      authorityLabel: "runtime_authoritative",
+      createdAt: new Date().toISOString(),
+      consumedAt: undefined
+    };
+
+    // Reports a committed handoff for the invocation until it is consumed.
+    class CommittedHandoffStore extends InMemoryRuntimeStore {
+      override async hasCommittedHandoff(_invocationId: string): Promise<boolean> {
+        return this.markHandoffConsumedCalls.length === 0;
+      }
+      override async getLatestUnconsumedHandoff(
+        _runId: string,
+        _taskId: string
+      ): Promise<HandoffRecord | undefined> {
+        return this.markHandoffConsumedCalls.length === 0 ? { ...committed } : undefined;
+      }
+    }
+
+    const store = new CommittedHandoffStore();
+    const savedStates: ProjectRuntimeStateRecord[] = [];
+    const opts = makeOptions(testDir, store, {
+      savedStates,
+      // Sub-threshold → no state crossing; the reset must come from the committed signal.
+      runCodexTurn: async (_input) => ({
+        sessionId: "sess-1", stdout: "", stderr: "", exitCode: 0, usage: LOW_USAGE
+      } as RunCodexTurnResult)
+    });
+
+    const savedContextMonitor = process.env.ARCHON_CONTEXT_MONITOR;
+    process.env.ARCHON_CONTEXT_MONITOR = "enforce";
+    let result;
+    try {
+      ({ result } = await executeDaemonCommandFromArgs(
+        ["--workspace-slug", WS_SLUG, "--project-slug", PROJ_SLUG, "--max-cycles", "1"],
+        { ...opts, cwd: testDir }
+      ));
+    } finally {
+      if (savedContextMonitor === undefined) delete process.env.ARCHON_CONTEXT_MONITOR;
+      else process.env.ARCHON_CONTEXT_MONITOR = savedContextMonitor;
+    }
+
+    // The reset fired from the committed-handoff signal despite sub-threshold usage.
+    const resetCycles = result.cycles.filter((c) => c.action === "handoff_reset");
+    assert.equal(resetCycles.length, 1, `T2: expected 1 reset via the committed-handoff signal, got ${resetCycles.length}`);
+    const resetWrite = savedStates.find((s) => {
+      const m = (s.metadata as Record<string, unknown>)?.archonDaemon as Record<string, unknown> | undefined;
+      return m?.justHandedOff === true;
+    });
+    assert.notEqual(resetWrite, undefined, "T2: justHandedOff=true write expected on the committed-handoff reset");
+    assert.equal(
+      store.markHandoffConsumedCalls.length,
+      1,
+      `T2: the committed handoff must be consumed exactly once, got ${store.markHandoffConsumedCalls.length}`
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // T3 — C4 observability: assert the structured stderr signals directly.
+  //      enforce_reset (enforce + reset) and observe_kill_switch_suppressed_reset
+  //      (observe + would-be reset) are emitted as tagged JSON lines.
+  // -------------------------------------------------------------------------
+
+  it("T3: emits enforce_reset (enforce) and observe_kill_switch_suppressed_reset (observe) signals", async () => {
+    const captured: string[] = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    function findEvent(event: string): Record<string, unknown> | undefined {
+      for (const chunk of captured) {
+        for (const line of chunk.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("{")) continue;
+          try {
+            const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+            if (parsed.tag === "archon-context-monitor" && parsed.event === event) return parsed;
+          } catch {
+            // not a JSON line — ignore
+          }
+        }
+      }
+      return undefined;
+    }
+
+    const savedContextMonitor = process.env.ARCHON_CONTEXT_MONITOR;
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      captured.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      // (a) enforce + HIGH_USAGE → enforce_reset.
+      process.env.ARCHON_CONTEXT_MONITOR = "enforce";
+      {
+        const testDir = await makeTestDir();
+        const store = new InMemoryRuntimeStore();
+        const opts = makeOptions(testDir, store, {});
+        await executeDaemonCommandFromArgs(
+          ["--workspace-slug", WS_SLUG, "--project-slug", PROJ_SLUG, "--max-cycles", "1"],
+          { ...opts, cwd: testDir }
+        );
+      }
+      // (b) observe + HIGH_USAGE → observe_kill_switch_suppressed_reset.
+      process.env.ARCHON_CONTEXT_MONITOR = "observe";
+      {
+        const testDir = await makeTestDir();
+        const store = new InMemoryRuntimeStore();
+        const opts = makeOptions(testDir, store, {});
+        await executeDaemonCommandFromArgs(
+          ["--workspace-slug", WS_SLUG, "--project-slug", PROJ_SLUG, "--max-cycles", "1"],
+          { ...opts, cwd: testDir }
+        );
+      }
+    } finally {
+      process.stderr.write = realWrite as typeof process.stderr.write;
+      if (savedContextMonitor === undefined) delete process.env.ARCHON_CONTEXT_MONITOR;
+      else process.env.ARCHON_CONTEXT_MONITOR = savedContextMonitor;
+    }
+
+    const enforceEvt = findEvent("enforce_reset");
+    assert.notEqual(enforceEvt, undefined, "T3: an enforce_reset signal must be emitted in enforce mode");
+    assert.equal(enforceEvt?.taskId, TASK_ID, "T3: enforce_reset carries the taskId");
+    assert.equal(typeof enforceEvt?.respawnCount, "number", "T3: enforce_reset carries respawnCount");
+
+    const observeEvt = findEvent("observe_kill_switch_suppressed_reset");
+    assert.notEqual(observeEvt, undefined, "T3: an observe_kill_switch_suppressed_reset signal must be emitted in observe mode");
+    assert.equal(observeEvt?.taskId, TASK_ID, "T3: the suppression signal carries the taskId");
   });
 });
