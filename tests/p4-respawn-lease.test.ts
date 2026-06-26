@@ -379,15 +379,38 @@ process.stdout.write(JSON.stringify(result) + "\\n");
 
     function runClaimant(ownerName: string): Promise<string> {
       return new Promise((resolve, reject) => {
+        // Strip coverage instrumentation from the child env. Under the coverage
+        // gate (c8 sets NODE_V8_COVERAGE/NODE_OPTIONS on the parent, inherited by
+        // children) each `--experimental-strip-types` cold start is slow enough to
+        // blow a tight timeout — the source of this test's flakiness. The children
+        // only exercise the cross-process O_EXCL lock; they need no coverage.
+        const childEnv = { ...process.env };
+        delete childEnv.NODE_V8_COVERAGE;
+        delete childEnv.NODE_OPTIONS;
         const child = spawn(
           process.execPath,
           ["--experimental-strip-types", claimantScript, ownerName],
-          { stdio: ["ignore", "pipe", "pipe"] }
+          { stdio: ["ignore", "pipe", "pipe"], env: childEnv }
         );
         let out = "";
+        let err = "";
         child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
-        const timer = setTimeout(() => { child.kill(); reject(new Error("timeout")); }, 5000);
-        child.on("close", () => { clearTimeout(timer); resolve(out.trim()); });
+        child.stderr.on("data", (d: Buffer) => { err += d.toString(); });
+        // Generous bound: two Node cold starts under CI load can take several
+        // seconds each. The atomic claim itself is instant — this only guards a
+        // genuinely hung child. stderr is surfaced so a real failure is diagnosable.
+        const timer = setTimeout(() => {
+          child.kill();
+          reject(new Error(`claimant ${ownerName} timed out; stderr=${err.trim()}`));
+        }, 30000);
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          if (code !== 0) {
+            reject(new Error(`claimant ${ownerName} exited ${String(code)}; stderr=${err.trim()}`));
+            return;
+          }
+          resolve(out.trim());
+        });
         child.on("error", reject);
       });
     }
