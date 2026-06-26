@@ -27,15 +27,19 @@ function extractHookMjsReferences(settings: unknown): string[] {
 
   const s = settings as Record<string, unknown>;
 
+  const hookRefPattern = /\.claude\/hooks\/(\S+\.mjs)/g;
+
+  function extractFromCommand(cmd: string): void {
+    for (const match of cmd.matchAll(hookRefPattern)) {
+      results.push(`.claude/hooks/${match[1]}`);
+    }
+  }
+
   // statusLine.command
   if (s["statusLine"] && typeof s["statusLine"] === "object") {
     const statusLine = s["statusLine"] as Record<string, unknown>;
     if (typeof statusLine["command"] === "string") {
-      const cmd = statusLine["command"];
-      const match = cmd.match(/\.claude\/hooks\/(\S+\.mjs)/);
-      if (match) {
-        results.push(`.claude/hooks/${match[1]}`);
-      }
+      extractFromCommand(statusLine["command"]);
     }
   }
 
@@ -52,10 +56,7 @@ function extractHookMjsReferences(settings: unknown): string[] {
           if (!hookEntry || typeof hookEntry !== "object") continue;
           const h = hookEntry as Record<string, unknown>;
           if (typeof h["command"] === "string") {
-            const match = h["command"].match(/\.claude\/hooks\/(\S+\.mjs)/);
-            if (match) {
-              results.push(`.claude/hooks/${match[1]}`);
-            }
+            extractFromCommand(h["command"]);
           }
         }
       }

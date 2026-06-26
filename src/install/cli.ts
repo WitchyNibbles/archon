@@ -740,10 +740,12 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
   }
 
   // Dynamically enumerate all *.mjs files in source .claude/hooks/ so the manifest
-  // never drifts from the directory. Sort for a stable, deterministic manifest order.
+  // never drifts from the directory. withFileTypes guards against a directory whose
+  // name ends in .mjs being included. Sort for a stable, deterministic manifest order.
   const hooksSourceDir = path.join(sourceRoot, ".claude/hooks");
-  const hookMjsFiles = readdirSync(hooksSourceDir)
-    .filter((f) => f.endsWith(".mjs"))
+  const hookMjsFiles = readdirSync(hooksSourceDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith(".mjs"))
+    .map((e) => e.name)
     .sort();
   for (const hookFile of hookMjsFiles) {
     manifest.push({
