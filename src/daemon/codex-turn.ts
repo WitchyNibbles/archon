@@ -48,6 +48,9 @@ import type { ContextBudgetState } from "../runtime/context-budget.ts";
 import { computeUsedPct, resolveModelContextTokens } from "../runtime/context-usage.ts";
 import type { HandoffController } from "../runtime/handoff-controller.ts";
 import { resolveRespawnBudget } from "../runtime/respawn-budget.ts";
+// Phase 4 (ahrP4InteractiveWatcher): respawn lease for mutual exclusion.
+import type { LeaseStore } from "../runtime/respawn-lease.ts";
+import { claimRespawnLease } from "../runtime/respawn-lease.ts";
 
 /**
  * Input to the loop's blockedResult builder. Single source of truth shared by
@@ -159,6 +162,17 @@ export interface DaemonCodexTurnDeps {
     taskId: string,
     role: string
   ) => Promise<string>;
+
+  // ---------------------------------------------------------------------------
+  // Phase 4 (ahrP4InteractiveWatcher) — respawn lease.
+  // Optional: when absent, lease claim is skipped (graceful degradation).
+  // The daemon claims the lease before resetting so the interactive watcher
+  // reads "daemon" as owner and no-ops (prevents double-spawn).
+  // ---------------------------------------------------------------------------
+
+  /** Lease store for the per-run respawn mutual-exclusion claim.
+   * When absent, lease logic is skipped (graceful degradation). */
+  leaseStore?: LeaseStore | undefined;
 }
 
 /**
@@ -461,6 +475,38 @@ export async function runDaemonCodexTurn(
         // Budget allows this respawn. nextRespawnCount will be written atomically
         // with justHandedOff=true in the ARCH-C3 write below (P3 requirement).
         const nextRespawnCount = effectiveRespawnCount + 1;
+
+        // Phase 4 (ahrP4InteractiveWatcher): claim the respawn lease for "daemon"
+        // BEFORE resetting, so the interactive watcher reads owner=daemon and no-ops.
+        // If the lease store is absent, skip gracefully (degraded mode).
+        // If the claim fails (interactive already owns this run's lease), we still
+        // proceed — the P2 reset is the authoritative daemon reset path and takes
+        // priority. The lease is advisory mutual-exclusion for the interactive
+        // surface; it does not gate the daemon's own reset.
+        if (deps.leaseStore !== undefined) {
+          const leaseClaim = await claimRespawnLease(
+            input.activeRunId,
+            "daemon",
+            deps.leaseStore
+          );
+          if (!leaseClaim.granted) {
+            // Lease is held by another supervisor (e.g. interactive watcher).
+            // The daemon must NOT reset — return no-op so the owning supervisor
+            // drives the respawn. (BLOCKING-3 fix: early return, not log+proceed.)
+            process.stderr.write(
+              JSON.stringify({
+                tag: "archon-context-monitor",
+                event: "respawn_lease_denied",
+                invocationId: deps.invocationId,
+                runId: input.activeRunId,
+                taskId: input.activeTaskId,
+                currentOwner: leaseClaim.currentOwner,
+                note: "daemon lease denied; skipping reset — owning supervisor will respawn"
+              }) + "\n"
+            );
+            return undefined;
+          }
+        }
 
         // Build continuation bundle — handoff content is sanitized in buildContinuationPrompt.
         // Pass the authoritative task-record allowedWriteScope so the trusted
