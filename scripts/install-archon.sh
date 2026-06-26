@@ -6,9 +6,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT"
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: bash scripts/install-archon.sh /path/to/project" >&2
+if [[ $# -lt 1 ]]; then
+  echo "usage: bash scripts/install-archon.sh /path/to/project [--with-grafana] [--with-obsidian]" >&2
   exit 1
 fi
 
-node --experimental-strip-types src/install/cli.ts --target "$1"
+node --experimental-strip-types src/install/cli.ts init --apply --target "$1" "${@:2}"

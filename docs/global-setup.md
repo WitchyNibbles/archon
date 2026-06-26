@@ -2,6 +2,8 @@
 
 This guide covers installing archon into a consuming repository. The archon repo itself is a development dependency; consuming projects receive the overlay files (agents, skills, hooks, scripts, templates) via the installer.
 
+**For agents:** See [`docs/agent-install-runbook.md`](agent-install-runbook.md) for a deterministic, idempotent runbook that agents can follow end-to-end without human intervention.
+
 ## Prerequisites
 
 - Node.js ≥ 22
