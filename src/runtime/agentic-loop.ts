@@ -1,5 +1,35 @@
 // Agentic Loop Controller — Phase 6 of the Archon Agentic Loop Runtime.
 //
+// AUTHORITY STATUS (ahrP5ControllerCleanup — ADR §3.C / §5 D4 — Gap C):
+// =======================================================================
+// AgenticLoopController is NOT the production respawn/reset decision authority.
+// The daemon loop is the sole respawn/reset authority, composed of:
+//   - ContextBudgetMonitor.recordSample  (P1: context sampling signal)
+//   - runDaemonCodexTurn                 (P2: reset-on-handoff execution)
+//   - HandoffController                  (P2/P3: handoff record lifecycle)
+//   - respawn-lease                      (P4: cross-process mutual exclusion)
+//
+// This class is a HELPER used by the daemon for two narrow purposes:
+//   LIVE in production:
+//     startInvocation — create invocation row and enforce maxCycles safety stop.
+//
+//   HELPER-ONLY (no production caller on the reset path):
+//     onContextSample  — wraps ContextBudgetMonitor; the daemon uses the monitor
+//                        directly as DaemonCodexTurnDeps.monitor instead.
+//     getLoopStatus    — status snapshot; useful for tooling, tests, future UIs.
+//     selectNextTask   — task queue query; useful for custom loop drivers.
+//     onTaskComplete   — invocation status update; usable in standalone loops.
+//
+// REVERSIBLE RE-PROMOTION (no schema change required — ADR §3.C):
+//   To re-promote AgenticLoopController to the reset authority:
+//   1. Add it to DaemonCodexTurnDeps (alongside or replacing `monitor`).
+//   2. Replace direct monitor.recordSample calls in codex-turn.ts with
+//      controller.onContextSample(invocationId, usedPct).
+//   3. Remove the standalone ContextBudgetMonitor construction in daemon.ts.
+//   4. Optionally wire onContextSample into an SDK-native event loop.
+//   No DB schema change is needed: AgenticLoopStoreLike already extends
+//   ContextBudgetStoreLike, so the same store satisfies both.
+//
 // A state machine coordinator for the agent lifecycle.  This class does NOT
 // invoke Claude; callers and tests drive it by feeding events.  It coordinates
 // context budget monitoring, handoff state, and cycle safety stops.
@@ -115,6 +145,9 @@ export interface AgenticLoopStoreLike extends ContextBudgetStoreLike {
 
 // ---------------------------------------------------------------------------
 // AgenticLoopController
+//
+// HELPER — not the production respawn/reset authority.  See file header for
+// the full authority-boundary contract and reversible re-promotion path.
 // ---------------------------------------------------------------------------
 
 export class AgenticLoopController {
@@ -164,6 +197,10 @@ export class AgenticLoopController {
 
   // ---------------------------------------------------------------------------
   // startInvocation — create and register an invocation with "running" status
+  //
+  // LIVE in production: the daemon calls this on every dispatch_owner cycle to
+  // record an invocation row and enforce the maxCycles safety stop.  This is the
+  // ONLY AgenticLoopController method the daemon relies on.
   // ---------------------------------------------------------------------------
 
   /**
@@ -204,6 +241,11 @@ export class AgenticLoopController {
 
   // ---------------------------------------------------------------------------
   // onContextSample — evaluate context usage and return LoopAction
+  //
+  // HELPER-ONLY: not called on the production daemon reset path.
+  // The daemon constructs ContextBudgetMonitor directly and calls
+  // monitor.recordSample() from DaemonCodexTurnDeps — bypassing this wrapper.
+  // This method is available for standalone loop drivers, tests, and tooling.
   // ---------------------------------------------------------------------------
 
   /**
