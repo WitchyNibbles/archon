@@ -301,8 +301,57 @@ Manual continuation path:
 
 ---
 
-## 8. What ships (reference) <!-- was §6 before handoffConsumeOnStart -->
+## 8. Enabling autonomous execution (`archon autonomous-enable`)
 
+The daemon's turn dispatch is gated on `autonomousExecution.enabled` in the runtime state. By
+default this flag is `false`, so the daemon returns `blocked: no executable next step` on every
+turn. Use `archon autonomous-enable` to flip it on.
+
+### Prerequisites
+
+- Review-identity adapter is live (`archon verify-review-identity` returns `liveTrustReady: true`).
+- A run is active (`archon status --run-id latest`).
+- `archon daemon` will be (or is) running under a supervisor (Part 3).
+
+### Enable
+
+```sh
+npx archon autonomous-enable --run-id latest
+# or with explicit profile and starting phase:
+npx archon autonomous-enable --run-id <run-id> --profile standard_delivery --phase discovery
+```
+
+Prints the resulting state as JSON (or `--format text`). Then start (or restart) the daemon:
+
+```sh
+npx archon daemon --run-id <run-id>
+```
+
+### Disable
+
+```sh
+npx archon autonomous-enable --disable --run-id <run-id>
+```
+
+This flips `enabled=false` without clearing coverage items, gaps, checkpoints, or any other
+accumulated analysis state. The daemon will fall back to `blocked` directives until you re-enable.
+
+### Safety rails (all active by default)
+
+| Rail | Env var | Default |
+|------|---------|---------|
+| Respawn budget per task | `ARCHON_MAX_RESPAWNS_PER_TASK` | 8 (valid range 1–50) |
+| Context monitor mode | `ARCHON_CONTEXT_MONITOR` | `enforce` |
+| Cross-process file-lock lease | — | Automatic, prevents concurrent daemon runs |
+
+Out-of-range `ARCHON_MAX_RESPAWNS_PER_TASK` values resolve to the default `8` (not clamped).
+
+---
+
+## 9. What ships (reference) <!-- was §8 -->
+
+- `archon autonomous-enable` — operator command to enable/disable the daemon's autonomous execution
+  loop for a run (`src/admin/autonomous-enable.ts`). See §8 above.
 - `archon:daemon` npm script — the wired consumer entrypoint (`src/admin/archon.ts daemon`).
 - The interactive parachute hooks — `.claude/hooks/archon-session-start.mjs` (registration) and
   `.claude/hooks/archon-pre-compact.mjs` (handoff commit).
