@@ -134,24 +134,22 @@ export function GateSwimlane({ taskQueue, reviewGates }: GateSwimlaneProps) {
   });
 
   return (
-    <section className="swimlane-area" aria-label="Review gate swimlanes">
-      <div
-        className="swimlane-grid"
-        role="list"
-        aria-label="Swimlane columns"
-        /*
-         * tabIndex="0" makes this scrollable region keyboard-accessible
-         * (WCAG 2.1 SC 2.1.1, axe rule: scrollable-region-focusable).
-         * At narrow viewports the 3-column grid overflows and requires scrolling.
-         */
-        tabIndex={0}
-      >
-        {columns.map(({ role, cards, isBottleneck }) => (
-          <div key={role} role="listitem">
-            <SwimlaneColumn role={role} cards={cards} isBottleneck={isBottleneck} />
-          </div>
-        ))}
-      </div>
-    </section>
+    <div
+      className="swimlane-grid"
+      role="list"
+      aria-label="Swimlane columns"
+      /*
+       * tabIndex="0" makes this scrollable region keyboard-accessible
+       * (WCAG 2.1 SC 2.1.1, axe rule: scrollable-region-focusable).
+       * At narrow viewports the 3-column grid overflows and requires scrolling.
+       */
+      tabIndex={0}
+    >
+      {columns.map(({ role, cards, isBottleneck }) => (
+        <div key={role} role="listitem">
+          <SwimlaneColumn role={role} cards={cards} isBottleneck={isBottleneck} />
+        </div>
+      ))}
+    </div>
   );
 }

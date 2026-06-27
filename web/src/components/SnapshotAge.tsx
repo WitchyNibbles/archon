@@ -22,6 +22,15 @@
  *   - Contrast: --text-secondary (#A0A0A0) on --surface-base (#0A0A0A) = 7.6:1 (AAA)
  */
 
+import { snapshotAgeColor } from "../utils/snapshotAge.ts";
+
+/** Returns the age in minutes of a UTC ISO timestamp, clamped to ≥ 0. */
+function ageMinutes(isoString: string): number {
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return 0;
+  return Math.max(0, (Date.now() - d.getTime()) / 60_000);
+}
+
 /** Format a UTC ISO string as a relative age string, e.g. "3m", "2h", "1d". */
 function formatRelativeAge(isoString: string): string {
   const d = new Date(isoString);
@@ -67,9 +76,15 @@ export function SnapshotAge({ generatedAt }: SnapshotAgeProps) {
     ? "Snapshot generated just now"
     : `Snapshot generated ${relativeAge} ago`;
 
+  // C11: stale color escalation via inline style override
+  // (overrides the .snapshot-age CSS class default --text-secondary color)
+  const ageMinutesValue = ageMinutes(generatedAt);
+  const staleColor = snapshotAgeColor(ageMinutesValue);
+
   return (
     <span
       className="snapshot-age"
+      style={{ color: staleColor }}
       aria-label={accessibleLabel}
       data-testid="snapshot-age"
     >

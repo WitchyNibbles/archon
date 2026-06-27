@@ -15,16 +15,48 @@ import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { readFileSync } from "node:fs";
 
+/* ─── fixture intercept ─────────────────────────────────────────────────────
+ *
+ * Force every test to use the committed snapshot.json fixture rather than
+ * snapshot.live.json when that file happens to be present in the build output
+ * (it is gitignored but exists in the developer's local web/public/ directory,
+ * which means `vite build` copies it to dist/ and vite preview serves it).
+ *
+ * The app's fetch strategy prefers /snapshot.live.json over /snapshot.json.
+ * If the live file is present, tests would hit real run data instead of the
+ * committed fixture and fail on content assertions. We intercept all requests
+ * to /snapshot.live.json and return HTTP 404 so the app always falls through
+ * to the committed sample fixture.
+ *
+ * This is a local-dev hygiene guard only; in CI the live file is never present.
+ */
+test.beforeEach(async ({ page }) => {
+  await page.route("**/snapshot.live.json", async (route) => {
+    await route.fulfill({ status: 404, body: "Not Found" });
+  });
+});
+
 /* ─── helpers ──────────────────────────────────────────────────────────────── */
 
-/** Wait for the dashboard to fully load (spinner gone, h1 visible). */
+/**
+ * Wait for the dashboard to fully load.
+ *
+ * The loading state is now a full-shell skeleton (aria-busy="true",
+ * aria-label="Loading dashboard") rather than a spinner. We wait for
+ * the skeleton to be replaced by the real dashboard:
+ *   - aria-busy container disappears (busy=false when data is rendered)
+ *   - h1 with actual run title is visible
+ *
+ * Note: the old "Loading dashboard" aria-label existed on the spinner;
+ * the skeleton also uses aria-label="Loading dashboard" but the distinction
+ * is that aria-busy=true is removed when the real dashboard renders.
+ */
 async function waitForDashboard(page: Page): Promise<void> {
-  // Spinner is aria-labelled "Loading dashboard"
-  // Wait until the loading panel is gone
-  await expect(page.getByLabel("Loading dashboard")).not.toBeVisible({
+  // Wait until the aria-busy skeleton shell is gone (replaced by real content)
+  await expect(page.locator("[aria-busy='true']")).not.toBeAttached({
     timeout: 15_000,
   });
-  // h1 must be present
+  // h1 must be present in the real dashboard
   await expect(page.locator("h1")).toBeVisible({ timeout: 5_000 });
 }
 
@@ -49,11 +81,10 @@ test.describe("Happy path", () => {
       page.locator("header.run-header").getByLabel("Status: review_blocked")
     ).toBeVisible();
 
-    // Authority badge: RUNTIME (runtime_authoritative)
-    // Use aria-label to target the badge element precisely (avoids strict mode
-    // violation when "RUNTIME" also appears in blocker reason text)
+    // Authority badge: ADVISORY (derived_only — C8 honesty fix)
+    // The committed sample now uses authorityLabel: "derived_only"
     await expect(
-      page.getByLabel("Authority: runtime authoritative")
+      page.getByLabel("Authority: derived only (advisory)")
     ).toBeVisible();
 
     // Blocker strip: the two blockers from the snapshot should render
@@ -67,8 +98,14 @@ test.describe("Happy path", () => {
       page.getByText("approved but final approval record absent", { exact: false })
     ).toBeVisible();
 
-    // Swimlane grid with three columns
-    await expect(page.getByLabel("Review gate swimlanes")).toBeVisible();
+    // Tasks tab is the default — task list view must be visible
+    await expect(page.locator("#tabpanel-tasks")).toBeVisible();
+
+    // Switch to Gates tab to check swimlane
+    await page.getByRole("tab", { name: "Gates" }).click();
+    // Use attribute selector: getByLabel only works on form elements;
+    // role="tabpanel" is found by locator('[aria-label="..."]') directly.
+    await expect(page.locator("[aria-label='Review gate swimlanes']")).toBeVisible();
     await expect(page.locator("[aria-label='reviewer lane']")).toBeVisible();
     await expect(page.locator("[aria-label='security_reviewer lane']")).toBeVisible();
     await expect(page.locator("[aria-label='qa_engineer lane']")).toBeVisible();
@@ -109,22 +146,22 @@ test.describe("Gate state rendering", () => {
     await page.goto("/");
     await waitForDashboard(page);
 
+    // Navigate to the Gates tab (swimlane is demoted there in S1)
+    await page.getByRole("tab", { name: "Gates" }).click();
+
     /*
      * Snapshot facts:
-     *   forgePhase0Skeleton has:
+     *   sample-task-alpha has:
      *     - reviewer gate: pending → appears in reviewer lane
      *     - security_reviewer gate: blocked → appears in security_reviewer lane
      *     - qa_engineer gate: passed (actor: "qa_engineer") → appears in qa_engineer lane
-     *   dashboardContract has:
+     *   sample-task-beta has:
      *     - reviewer gate: pending
      *     - security_reviewer gate: pending
      *     - qa_engineer gate: pending
-     *
-     * constraintsManifest (approved) and hookOutsideRepoCanonicalize (done)
-     * have no reviewGates — they do not appear in any swimlane column.
      */
 
-    // reviewer lane: forgePhase0Skeleton + dashboardContract
+    // reviewer lane: sample-task-alpha + sample-task-beta
     const reviewerLane = page.locator("[aria-label='reviewer lane']");
     await expect(
       reviewerLane.getByText("Forge Phase-0 Swimlane Monitor Dashboard", {
@@ -132,7 +169,7 @@ test.describe("Gate state rendering", () => {
       })
     ).toBeVisible();
 
-    // security_reviewer lane: forgePhase0Skeleton (blocked) + dashboardContract (pending)
+    // security_reviewer lane: sample-task-alpha (blocked) + sample-task-beta (pending)
     const secLane = page.locator("[aria-label='security_reviewer lane']");
     await expect(
       secLane.getByText("Forge Phase-0 Swimlane Monitor Dashboard", {
@@ -140,7 +177,7 @@ test.describe("Gate state rendering", () => {
       })
     ).toBeVisible();
 
-    // qa_engineer lane: forgePhase0Skeleton (passed) + dashboardContract (pending)
+    // qa_engineer lane: sample-task-alpha (passed) + sample-task-beta (pending)
     const qaLane = page.locator("[aria-label='qa_engineer lane']");
     await expect(
       qaLane.getByText("Forge Phase-0 Swimlane Monitor Dashboard", {
@@ -150,7 +187,6 @@ test.describe("Gate state rendering", () => {
 
     // The task card in qa_engineer column for sample-task-alpha should have
     // the passed badge (task-card__passed-badge) — actor is "qa_engineer"
-    // Article aria-label: "Task sample-task-alpha: ..., gate state: passed"
     const passedCard = qaLane.locator("article[aria-label*='gate state: passed']");
     await expect(passedCard).toBeVisible();
 
@@ -165,6 +201,9 @@ test.describe("Gate state rendering", () => {
   }) => {
     await page.goto("/");
     await waitForDashboard(page);
+
+    // Navigate to the Gates tab first
+    await page.getByRole("tab", { name: "Gates" }).click();
 
     // security_reviewer column has a "blocked" gate → isBottleneck = true
     // The bottleneck dot has role="img" aria-label="Bottleneck lane"
@@ -189,14 +228,14 @@ test.describe("Gate state rendering", () => {
     await expect(page.getByLabel("Run status: BLOCKED")).toBeVisible();
   });
 
-  test("run header shows RUNTIME authority badge", async ({ page }) => {
+  test("run header shows ADVISORY authority badge (C8: derived_only)", async ({ page }) => {
     await page.goto("/");
     await waitForDashboard(page);
 
-    // AuthorityBadge for "runtime_authoritative" renders "RUNTIME" text
-    // Scoped via aria-label to avoid strict mode violation
+    // AuthorityBadge for "derived_only" renders "ADVISORY" text
+    // C8: the committed sample fixture now uses derived_only (honest badge)
     await expect(
-      page.getByLabel("Authority: runtime authoritative")
+      page.getByLabel("Authority: derived only (advisory)")
     ).toBeVisible();
 
     // Last updated timestamp should be visible (formatted as YYYY-MM-DD HH:MMZ)
@@ -226,8 +265,8 @@ test.describe("Responsive layout", () => {
       page.locator("header.run-header").getByLabel("Status: review_blocked")
     ).toBeVisible();
 
-    // Swimlane section visible (may require scrolling on mobile)
-    await expect(page.getByLabel("Review gate swimlanes")).toBeVisible();
+    // Task list (default Tasks tab) must be visible without needing to navigate
+    await expect(page.locator("#tabpanel-tasks")).toBeVisible();
 
     // Blocker strip visible (HERO content — highest priority)
     // Use getByRole("region") to avoid strict mode: the section's aria-label
@@ -241,19 +280,49 @@ test.describe("Responsive layout", () => {
   });
 
   test("no console errors on load", async ({ page }) => {
-    const consoleErrors: string[] = [];
+    /*
+     * Track both:
+     *  - jsErrors: JS-sourced console errors (React crashes, validation errors, etc.)
+     *  - networkFailures: failed requests (must only be the expected snapshot.live.json 404)
+     *
+     * We separate these because `msg.text()` for a network 404 is the generic
+     * "Failed to load resource: the server responded with a status of 404 (Not Found)"
+     * without a URL — the URL is only available via page.on("response") or
+     * page.on("requestfailed"). We use the response event to know WHICH URL 404d.
+     */
+    const jsErrors: string[] = [];
+    const unexpectedFailedUrls: string[] = [];
+
     page.on("console", (msg) => {
       if (msg.type() === "error") {
-        consoleErrors.push(msg.text());
+        const text = msg.text();
+        // Skip the browser-generated network error message — we check failed
+        // URLs separately via the "response" event below.
+        if (text.startsWith("Failed to load resource:")) return;
+        jsErrors.push(text);
+      }
+    });
+
+    page.on("response", (response) => {
+      if (response.status() >= 400) {
+        const url = response.url();
+        // Only the mocked snapshot.live.json 404 is expected.
+        if (!url.includes("snapshot.live.json")) {
+          unexpectedFailedUrls.push(`${response.status()} ${url}`);
+        }
       }
     });
 
     await page.goto("/");
     await waitForDashboard(page);
 
-    // Zero console errors expected — catches React rendering crashes,
-    // snapshot validation failures, or unhandled promise rejections
-    expect(consoleErrors).toHaveLength(0);
+    // Zero unexpected JS errors (React crashes, validation failures, rejections)
+    expect(jsErrors, `Unexpected JS console errors:\n${jsErrors.join("\n")}`).toHaveLength(0);
+    // Zero unexpected HTTP failures (only snapshot.live.json 404 is expected)
+    expect(
+      unexpectedFailedUrls,
+      `Unexpected HTTP failures:\n${unexpectedFailedUrls.join("\n")}`
+    ).toHaveLength(0);
   });
 });
 
@@ -387,9 +456,9 @@ test.describe("P1-S2b viewer done-bar (C5)", () => {
     await page.goto("/");
     await waitForDashboard(page);
 
-    // Authority badge: has aria-label "Authority: runtime authoritative"
-    // and renders as a .badge-pill element (indigo pill).
-    const authorityBadge = page.getByLabel("Authority: runtime authoritative");
+    // Authority badge: has aria-label for the current authority level.
+    // Sample uses derived_only (C8 fix) → "Authority: derived only (advisory)"
+    const authorityBadge = page.getByLabel("Authority: derived only (advisory)");
     await expect(authorityBadge).toBeVisible();
 
     // Data timestamp: aria-label "Last updated: ..."
@@ -417,9 +486,9 @@ test.describe("P1-S2b viewer done-bar (C5)", () => {
     expect(authorityAriaLabel).not.toBe(timestampAriaLabel);
 
     // The snapshot-age element must NOT carry the word "RUNTIME" or "ADVISORY"
-    // (those belong to the authority badge only).
+    // (those words belong to the authority badge label only; see C8 / AuthorityBadge).
     const ageText = await snapshotAge.textContent();
-    expect(ageText).not.toMatch(/RUNTIME|ADVISORY/i);
+    expect(ageText).not.toMatch(/\bRUNTIME\b|\bADVISORY\b/i);
 
     // The snapshot-age must contain "snapshot" prefix (semantic differentiator)
     expect(ageText).toMatch(/snapshot/i);
@@ -797,8 +866,9 @@ test.describe("forgeDashboardBlockerClarity — sealed badge", () => {
     await expect(sealedBadge).toHaveText("Sealed");
 
     // Authority badge must still be present alongside the sealed badge
+    // Sample now uses derived_only (C8 fix), so the badge shows ADVISORY
     await expect(
-      page.getByLabel("Authority: runtime authoritative")
+      page.getByLabel("Authority: derived only (advisory)")
     ).toBeVisible();
   });
 
