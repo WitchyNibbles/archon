@@ -1439,11 +1439,12 @@ body {
 }
 
 /* ─────────────────────────────────────────────
-   TASK ROW — dashQuality S1
-   Flat row (NOT a card). ~36px standard / 48px max.
-   2px left border encodes status color.
-   Hard rule: do NOT add border-radius, box-shadow,
-   or card-style padding here.
+   TASK ROW — dashQuality S1 (split in S3a)
+   The flat visual row is .task-row__line (NOT a card):
+   ~36px standard / 48px max, 2px left border encodes
+   status color. Hard rule applies to .task-row__line:
+   do NOT add border-radius, box-shadow, or card-style
+   padding to the row. .task-row is only the wrapper.
    ───────────────────────────────────────────── */
 
 /*
@@ -1493,7 +1494,7 @@ body {
   outline-offset: -2px;
 }
 
-/* Drill-down chevron — small, muted, rotates implicitly via the ▸/▾ glyph swap. */
+/* Drill-down chevron — small, muted; direction changes via the ▸/▾ glyph swap. */
 .task-row__chevron {
   font-size: 9px;
   color: var(--text-secondary);

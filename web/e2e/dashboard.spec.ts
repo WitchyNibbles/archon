@@ -668,20 +668,16 @@ test.describe("dashQuality S2 — bounded poll (C3)", () => {
  * drills down to reveal WHY it is stuck (blocker reason + next actions).
  */
 test.describe("dashQuality S3a — Blocked filter", () => {
-  // The Blocked filter lives in the sidebar, which is display:none at ≤900px
-  // (existing desktop-first design — the whole nav is desktop-only). The three
-  // filter tests skip on the mobile project; the drill-down (in the main panel) is
-  // covered on both viewports.
-  // Sidebar is display:none below 900px (it returns at >=900px), so the filter is
-  // unreachable on the 390px mobile project. The desktop project is 1440px.
-  const skipOnMobile = ({ viewport }: { viewport: { width: number } | null }) =>
-    (viewport?.width ?? 0) < 900;
+  // The Blocked filter lives in the sidebar. Pre-S4 the sidebar was display:none
+  // ≤900px, so these three filter tests skipped on the mobile project. dashQuality
+  // S4 reflowed the sidebar into a horizontal top strip at narrow widths (the old
+  // breakpoint silently removed the ONLY access to the filter on mobile), so the
+  // filter is now reachable on the 390px project too — these tests run on BOTH
+  // viewports. Playwright auto-scrolls the strip to bring the filter into view.
 
   test("Blocked filter narrows the task list to only blocked tasks and back", async ({
     page,
-    viewport,
   }) => {
-    test.skip(skipOnMobile({ viewport }), "Blocked filter is in the desktop-only sidebar");
     await page.goto("/");
     await waitForDashboard(page);
 
@@ -713,9 +709,7 @@ test.describe("dashQuality S3a — Blocked filter", () => {
 
   test("Blocked filter empty state is honest when nothing is blocked", async ({
     page,
-    viewport,
   }) => {
-    test.skip(skipOnMobile({ viewport }), "Blocked filter is in the desktop-only sidebar");
     const sample = readCommittedSample();
     // All tasks done/approved; no blockers.
     const noneBlocked = {
@@ -770,7 +764,9 @@ test.describe("dashQuality S3a — Blocked filter", () => {
     // Now aria-controls points at the live detail region.
     const controls = await alphaRow.getAttribute("aria-controls");
     expect(controls).toBeTruthy();
-    await expect(page.locator(`#${controls}`)).toBeVisible();
+    // Use [id="…"] not #… — React useId emits ids containing ":" (e.g. ":r1:"),
+    // which is an invalid CSS id selector; the attribute selector is robust.
+    await expect(page.locator(`[id="${controls}"]`)).toBeVisible();
 
     // Collapse → detail region removed again.
     await alphaRow.click();
@@ -802,9 +798,7 @@ test.describe("dashQuality S3a — Blocked filter", () => {
 
   test("S3a: axe 0 critical/serious with filter active and a row expanded", async ({
     page,
-    viewport,
   }) => {
-    test.skip(skipOnMobile({ viewport }), "Blocked filter is in the desktop-only sidebar");
     await page.goto("/");
     await waitForDashboard(page);
 
