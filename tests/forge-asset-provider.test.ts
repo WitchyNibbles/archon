@@ -503,6 +503,121 @@ describe("CodexBuiltinImagegenProvider — output validation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 11b. Real-CLI behavior — codex writes into the -C workspace, NOT generated_images
+//
+// Regression for the forgeCodexHarvestFix finding: real codex (≥0.141, exec mode)
+// saves the $imagegen output into the -C working directory at the instructed
+// filename (= absOutputPath), and writes NOTHING to ~/.codex/generated_images/.
+// The runner's generated_images harvest therefore returns ok:false ("no image
+// found") even though codex succeeded. The provider must detect the workspace
+// file and still report "generated".
+// ---------------------------------------------------------------------------
+
+describe("CodexBuiltinImagegenProvider — workspace output (real codex behavior)", () => {
+  const VALID_PNG = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG magic
+    ...Array<number>(256).fill(0x00),
+  ]);
+
+  it("returns generated when codex saved directly to outputPath (runner reports no generated_images hit)", async () => {
+    const outputPath = "codex-direct/empty-state.png";
+    const destPath = path.join(tmpRepo, outputPath);
+
+    const runner: CodexImagegenRunner = {
+      async run(_argv, _timeout, _root, _startedAt) {
+        // Simulate codex saving to the -C workspace at the instructed filename.
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, VALID_PNG);
+        const future = new Date(Date.now() + 5000);
+        fs.utimesSync(destPath, future, future); // guarantee mtime >= runStartedAt
+        // Real runner harvests generated_images (empty) and reports failure.
+        return { ok: false, reason: "codex exited 0 but no image found in .../generated_images" };
+      },
+    };
+
+    const request = makeRequest({ provider: "codex_builtin_imagegen", outputPath });
+    const result = await new CodexBuiltinImagegenProvider().generate(request, makeDeps({ codexRunner: runner }));
+
+    assert.equal(result.status, "generated");
+    assert.equal(result.outputAbsPath, destPath);
+    assert.ok(fs.existsSync(destPath), "the image codex wrote must remain at the output path");
+    assert.deepEqual(fs.readFileSync(destPath), VALID_PNG, "the file must not be corrupted");
+  });
+
+  it("copies a differently-named workspace image to outputPath", async () => {
+    const outputPath = "codex-rename/empty-state.png";
+    const destPath = path.join(tmpRepo, outputPath);
+    const workspace = path.dirname(destPath);
+    const codexNamed = path.join(workspace, "imagegen-output.png"); // codex chose its own name
+
+    const runner: CodexImagegenRunner = {
+      async run(_argv, _timeout, _root, _startedAt) {
+        fs.mkdirSync(workspace, { recursive: true });
+        fs.writeFileSync(codexNamed, VALID_PNG);
+        const future = new Date(Date.now() + 5000);
+        fs.utimesSync(codexNamed, future, future);
+        return { ok: false, reason: "no image found in generated_images" };
+      },
+    };
+
+    const request = makeRequest({ provider: "codex_builtin_imagegen", outputPath });
+    const result = await new CodexBuiltinImagegenProvider().generate(request, makeDeps({ codexRunner: runner }));
+
+    assert.equal(result.status, "generated");
+    assert.equal(result.outputAbsPath, destPath);
+    assert.ok(fs.existsSync(destPath), "the workspace image must be copied to the canonical output path");
+    assert.deepEqual(fs.readFileSync(destPath), VALID_PNG, "copied bytes must match the workspace image");
+  });
+
+  it("on TIMEOUT returns needs_regeneration even if a (partial) image sits in the workspace", async () => {
+    // Regression for the reviewer HIGH: a timed-out codex run is SIGKILLed and may
+    // leave a partial file in the workspace. That partial file can have non-zero
+    // size + a valid extension — it must NEVER be reported as "generated".
+    const outputPath = "codex-timeout/empty-state.png";
+    const destPath = path.join(tmpRepo, outputPath);
+    let killWasCalled = false;
+
+    const runner: CodexImagegenRunner = {
+      async run(_argv, _timeout, _root, _startedAt) {
+        // Simulate a partial write before the kill.
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, VALID_PNG); // looks valid (size>0, .png) but is "partial"
+        const future = new Date(Date.now() + 5000);
+        fs.utimesSync(destPath, future, future);
+        return {
+          ok: false,
+          reason: "codex $imagegen timed out",
+          timedOut: true,
+          killCalled: () => { killWasCalled = true; },
+        };
+      },
+    };
+
+    const request = makeRequest({ provider: "codex_builtin_imagegen", outputPath });
+    const result = await new CodexBuiltinImagegenProvider().generate(request, makeDeps({ codexRunner: runner }));
+
+    assert.equal(result.status, "needs_regeneration", "a timed-out run must not be reported as generated");
+    assert.equal(killWasCalled, true, "the process group must still be killed on timeout");
+  });
+
+  it("ignores a STALE workspace file (mtime before run start) and falls through to failure", async () => {
+    const outputPath = "codex-stale/empty-state.png";
+    const destPath = path.join(tmpRepo, outputPath);
+    // Pre-existing stale output from a prior run (old mtime).
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.writeFileSync(destPath, VALID_PNG);
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(destPath, past, past);
+
+    const request = makeRequest({ provider: "codex_builtin_imagegen", outputPath });
+    // Runner writes nothing and reports failure (codex genuinely failed).
+    const result = await new CodexBuiltinImagegenProvider().generate(request, makeDeps({ codexRunner: fakeRunnerMissing() }));
+
+    assert.equal(result.status, "needs_regeneration");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 12. Source path outside codex output root → rejected before copy
 // ---------------------------------------------------------------------------
 
@@ -524,7 +639,9 @@ describe("CodexBuiltinImagegenProvider — source image path guard", () => {
 
     const request = makeRequest({
       provider: "codex_builtin_imagegen",
-      outputPath: "codex-result/guarded.png",
+      // Unique workspace dir: the post-fix workspace-first scan would otherwise
+      // pick up an artifact left by another test that shares this parent dir.
+      outputPath: "codex-guarded/guarded.png",
     });
 
     const deps = makeDeps({ codexRunner: runner });
@@ -538,7 +655,7 @@ describe("CodexBuiltinImagegenProvider — source image path guard", () => {
       `Expected rejection message; got: ${result.message}`,
     );
 
-    const destPath = path.join(tmpRepo, "codex-result", "guarded.png");
+    const destPath = path.join(tmpRepo, "codex-guarded", "guarded.png");
     assert.equal(
       fs.existsSync(destPath),
       false,

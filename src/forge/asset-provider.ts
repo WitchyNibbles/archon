@@ -200,36 +200,83 @@ export class ManualUploadProvider implements AssetProvider {
 const DEFAULT_CODEX_TIMEOUT_MS = 120_000;
 
 /**
- * After codex exits 0, find the newest image written under
- * `<codexOutputRoot>/generated_images/` with mtime >= runStartedAt.
+ * True when `filePath` exists as a regular file with mtime >= `since`.
+ * Used to detect that codex wrote the asset to the exact instructed destination
+ * during this run (vs a stale file left by a prior run).
  */
-export function harvestCodexImage(codexOutputRoot: string, runStartedAt: number): string | undefined {
-  const generatedImagesDir = path.join(codexOutputRoot, "generated_images");
-  if (!fs.existsSync(generatedImagesDir)) return undefined;
+function freshFileAt(filePath: string, since: number): boolean {
+  try {
+    const stat = fs.statSync(filePath);
+    return stat.isFile() && stat.mtimeMs >= since;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Find the newest image file (by mtime) under `dir` (walks up to 4 levels,
+ * depth 0–3) with mtime >= `since`. Returns undefined when `dir` is absent or
+ * has no qualifying image. Shared by the workspace harvest (where real codex
+ * writes) and the legacy generated_images harvest. Symlinked entries are skipped
+ * (Dirent.isFile() is false for symlinks), so they cannot redirect the harvest.
+ */
+export function findNewestImageInDir(dir: string, since: number): string | undefined {
+  if (!fs.existsSync(dir)) return undefined;
 
   let best: { mtimeMs: number; filePath: string } | undefined;
 
-  function walk(dir: string, depth: number): void {
+  function walk(d: string, depth: number): void {
     if (depth > 3) return;
     let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
+      const fullPath = path.join(d, entry.name);
       if (entry.isDirectory()) { walk(fullPath, depth + 1); continue; }
       if (!entry.isFile()) continue;
       const ext = path.extname(entry.name).toLowerCase();
       if (!VALID_IMAGE_EXTENSIONS.has(ext)) continue;
       let stat: fs.Stats;
       try { stat = fs.statSync(fullPath); } catch { continue; }
-      if (stat.mtimeMs < runStartedAt) continue;
+      if (stat.mtimeMs < since) continue;
       if (best === undefined || stat.mtimeMs > best.mtimeMs) {
         best = { mtimeMs: stat.mtimeMs, filePath: fullPath };
       }
     }
   }
 
-  walk(generatedImagesDir, 0);
+  walk(dir, 0);
   return best?.filePath;
+}
+
+/**
+ * After codex exits 0, find the newest image written under
+ * `<codexOutputRoot>/generated_images/` with mtime >= runStartedAt.
+ *
+ * NOTE: real codex (≥0.141, `exec` mode) does NOT write here — it saves the
+ * `$imagegen` output into the `-C` working directory at the instructed filename.
+ * This generated_images harvest is kept as a fallback for other codex
+ * configurations/versions; the provider checks the workspace first.
+ */
+export function harvestCodexImage(codexOutputRoot: string, runStartedAt: number): string | undefined {
+  return findNewestImageInDir(path.join(codexOutputRoot, "generated_images"), runStartedAt);
+}
+
+/**
+ * Validate an image file that is already at a repo-bounded path (the workspace
+ * harvest: no allowed-root check needed because resolveWithinRepo already bounded
+ * it). Returns an error message string, or undefined when the file is valid.
+ */
+function validateRepoBoundImage(imagePath: string): string | undefined {
+  let stat: fs.Stats;
+  try { stat = fs.statSync(imagePath); }
+  catch { return `expected image "${imagePath}" does not exist on disk.`; }
+  if (stat.size === 0) return `codex produced an empty file at "${imagePath}" (0 bytes).`;
+  const ext = path.extname(imagePath).toLowerCase();
+  if (!VALID_IMAGE_EXTENSIONS.has(ext)) {
+    return `codex output "${imagePath}" has unrecognised extension "${ext}". ` +
+      `Expected one of: ${[...VALID_IMAGE_EXTENSIONS].join(", ")}.`;
+  }
+  return undefined;
 }
 
 /**
@@ -337,10 +384,49 @@ export class CodexBuiltinImagegenProvider implements AssetProvider {
 
     const runResult = await runner.run(argv, timeoutMs, codexOutputRoot, runStartedAt);
 
-    if (!runResult.ok && runResult.timedOut && runResult.killCalled !== undefined) {
-      runResult.killCalled();
+    // Timeout is TERMINAL. codex was SIGKILLed mid-run and may have left a
+    // partial file in the workspace — a truncated image can still have a non-zero
+    // size and a valid extension. Return before the workspace scan so a partial
+    // write can never be reported as "generated" (preserves the pre-fix contract
+    // that a timed-out run always yields needs_regeneration).
+    if (!runResult.ok && runResult.timedOut) {
+      if (runResult.killCalled !== undefined) runResult.killCalled();
+      return { id: request.id, provider: "codex_builtin_imagegen", status: "needs_regeneration",
+        message: `codex runner failed: ${runResult.reason}` };
     }
 
+    // PRIMARY (real-CLI behavior): codex (≥0.141, exec mode) writes the $imagegen
+    // output into the -C workspace at the instructed filename — i.e. directly into
+    // the repo at (or beside) absOutputPath — NOT to ~/.codex/generated_images/.
+    // So look in the workspace first. Any hit here is already repo-bounded (the
+    // workspace is dirname(absOutputPath), which resolveWithinRepo guarded), so no
+    // allowed-root check is required, and no copy is needed when it is already at
+    // the destination. This is checked even when the runner reports a non-timeout
+    // failure, because the runner's generated_images harvest returns ok:false
+    // ("no image found") in exactly this case despite codex having succeeded.
+    //
+    // Prefer the EXACT instructed destination (codex saved as <basename>) over a
+    // directory scan: this avoids a concurrent-generate mtime race when two calls
+    // share a parent dir, and only falls back to the newest workspace image when
+    // codex chose a different filename.
+    const workspaceHit = freshFileAt(absOutputPath, runStartedAt)
+      ? absOutputPath
+      : findNewestImageInDir(workspace, runStartedAt);
+    if (workspaceHit !== undefined) {
+      const invalid = validateRepoBoundImage(workspaceHit);
+      if (invalid !== undefined) {
+        return { id: request.id, provider: "codex_builtin_imagegen", status: "needs_regeneration",
+          message: invalid };
+      }
+      if (path.resolve(workspaceHit) !== path.resolve(absOutputPath)) {
+        fs.mkdirSync(path.dirname(absOutputPath), { recursive: true });
+        fs.copyFileSync(workspaceHit, absOutputPath);
+      }
+      return { id: request.id, provider: "codex_builtin_imagegen", status: "generated",
+        outputAbsPath: absOutputPath };
+    }
+
+    // FALLBACK: codex wrote to its own generated_images root (older/other configs).
     if (!runResult.ok) {
       return { id: request.id, provider: "codex_builtin_imagegen", status: "needs_regeneration",
         message: `codex runner failed: ${runResult.reason}` };
