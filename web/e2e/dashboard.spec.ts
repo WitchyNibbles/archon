@@ -495,6 +495,129 @@ test.describe("P1-S2b viewer done-bar (C5)", () => {
   });
 });
 
+/* ─── dashQuality S2 — feed status (bounded poll, C3/C4) ─────────────────────── */
+
+/**
+ * S2 falsifiable gate.
+ *
+ * The dashboard now polls the snapshot on a bounded interval. In the healthy
+ * (live) state a DISTINCT auto-refresh indicator (FeedStatus, data-testid="feed-status")
+ * is shown — separate from SnapshotAge (view age), PulseDot (run state), and the
+ * authority badge. This proves the feed-health signal exists and is its own element;
+ * the stale-transition / last-good-preservation logic is exhaustively unit-tested in
+ * tests/dash-snapshot-feed.test.ts (no 10s interval wait needed in e2e).
+ */
+test.describe("dashQuality S2 — feed status", () => {
+  test("live feed shows a distinct auto-refresh indicator", async ({ page }) => {
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const feed = page.getByTestId("feed-status");
+    await expect(feed).toBeVisible();
+    await expect(feed).toHaveAttribute("data-phase", "live");
+    await expect(feed).toContainText("auto");
+
+    // Accessible name must convey auto-refresh state, not rely on the dot/color alone.
+    const ariaLabel = await feed.getAttribute("aria-label");
+    expect(ariaLabel).toMatch(/auto-refresh/i);
+  });
+
+  test("feed status is distinct from snapshot-age and authority badge", async ({ page }) => {
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const feed = page.getByTestId("feed-status");
+    const age = page.getByTestId("snapshot-age");
+    await expect(feed).toBeVisible();
+    await expect(age).toBeVisible();
+
+    const feedLabel = await feed.getAttribute("aria-label");
+    const ageLabel = await age.getAttribute("aria-label");
+    expect(feedLabel).not.toBe(ageLabel);
+
+    // The feed indicator must not borrow authority vocabulary (those words are the
+    // authority badge's alone — see C8 / AuthorityBadge).
+    const feedText = await feed.textContent();
+    expect(feedText).not.toMatch(/\bRUNTIME\b|\bADVISORY\b/i);
+  });
+});
+
+/* ─── dashQuality S2 — bounded poll pause/resume (C3) ────────────────────────── */
+
+/**
+ * Falsifiable C3 coverage for the poll loop's tab-visibility behavior, driven by
+ * Playwright's fake clock so the 10s base interval is exercised instantly and
+ * deterministically (no real-time waits, no flake).
+ *
+ * Each poll fetches /snapshot.live.json (→ 404 via beforeEach) then falls back to
+ * /snapshot.json. We intercept /snapshot.json to COUNT polls, then assert:
+ *   - a poll fires on the base interval (loop is alive),
+ *   - NO poll fires while the tab is hidden (C3 pause),
+ *   - a poll fires immediately on resume (C3 resume refetch),
+ *   - no WebSocket/EventSource is ever opened (C3 "browser reads static JSON only").
+ */
+test.describe("dashQuality S2 — bounded poll (C3)", () => {
+  test("polls on interval, pauses while hidden, refetches on resume — no websocket", async ({
+    page,
+  }) => {
+    const sample = readCommittedSample();
+
+    let fallbackHits = 0;
+    await page.route("**/snapshot.json", async (route) => {
+      fallbackHits += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(sample),
+      });
+    });
+
+    // C3: the browser must read static JSON only — no streaming transport.
+    let websocketOpened = false;
+    page.on("websocket", () => {
+      websocketOpened = true;
+    });
+
+    // Fake clock must be installed before navigation so app timers are controllable.
+    await page.clock.install();
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // Initial load performed at least one fetch.
+    expect(fallbackHits).toBeGreaterThanOrEqual(1);
+    const afterLoad = fallbackHits;
+
+    // Advance one base interval → exactly one more poll fires (loop is alive).
+    await page.clock.fastForward(10_000);
+    await expect.poll(() => fallbackHits).toBeGreaterThan(afterLoad);
+    // Let the poll's continuation (dispatch + reschedule) settle.
+    await page.waitForTimeout(150);
+    const afterOneTick = fallbackHits;
+
+    // Hide the tab → loop pauses.
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.waitForTimeout(150); // let any in-flight poll settle + clearTimer apply
+
+    // Advancing far past several intervals while hidden must NOT fire a poll.
+    await page.clock.fastForward(60_000);
+    await page.waitForTimeout(200);
+    expect(fallbackHits).toBe(afterOneTick);
+
+    // Show the tab → immediate refetch (does not wait for the next interval).
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await expect.poll(() => fallbackHits).toBeGreaterThan(afterOneTick);
+
+    // No streaming transport was ever opened.
+    expect(websocketOpened).toBe(false);
+  });
+});
+
 /* ─── 4. Accessibility (axe) ─────────────────────────────────────────────────── */
 
 test.describe("Accessibility (axe-core)", () => {

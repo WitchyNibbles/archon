@@ -202,6 +202,10 @@ body {
   .state-panel__spinner {
     animation: none;
   }
+
+  .feed-status--stale .feed-status__dot {
+    animation: none;
+  }
 }
 
 /* ── Semantic helper: mono forces Geist Mono ── */
@@ -434,6 +438,53 @@ body {
 .snapshot-age__value {
   /* Keep the <time> element inline with surrounding text */
   display: inline;
+}
+
+/*
+ * Feed status — dashQuality S2 (council C4).
+ *
+ * Auto-refresh health, DISTINCT from .snapshot-age (view age) and .pulse-dot
+ * (run state). Small mono text + a leading dot. Two phases:
+ *   --live  → subtle "auto": success-green dot, muted label. Steady, unobtrusive.
+ *   --stale → "reconnecting…": amber dot + amber label, gently pulsing, so a failing
+ *             poll is unmistakable and the on-screen data is never read as fresh.
+ * Color is supplementary — the text label carries the meaning (WCAG 1.4.1).
+ */
+.feed-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.feed-status__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.feed-status--live {
+  /* text-secondary: AAA (7.6:1) at 10px on the base surface */
+  color: var(--text-secondary);
+}
+
+.feed-status--live .feed-status__dot {
+  background-color: var(--status-success);
+}
+
+.feed-status--stale {
+  /* status-warning-text #FCD34D: AAA (9.5:1) — readable, alerting, not alarmist */
+  color: var(--status-warning-text);
+}
+
+.feed-status--stale .feed-status__dot {
+  background-color: var(--status-warning-text);
+  animation: status-pulse 1.8s ease-in-out infinite;
 }
 
 /* Status badge: dot + text */
