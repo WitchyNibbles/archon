@@ -634,6 +634,8 @@ test.describe("dashQuality S3a — Blocked filter", () => {
   // (existing desktop-first design — the whole nav is desktop-only). The three
   // filter tests skip on the mobile project; the drill-down (in the main panel) is
   // covered on both viewports.
+  // Sidebar is display:none below 900px (it returns at >=900px), so the filter is
+  // unreachable on the 390px mobile project. The desktop project is 1440px.
   const skipOnMobile = ({ viewport }: { viewport: { width: number } | null }) =>
     (viewport?.width ?? 0) < 900;
 
@@ -711,12 +713,15 @@ test.describe("dashQuality S3a — Blocked filter", () => {
     await expect(alphaRow).toHaveAttribute("aria-expanded", "false");
 
     // Scope assertions to the row's detail region — the same reason text also appears
-    // in the hero BlockerStrip, so a page-wide text query would be ambiguous.
+    // in the hero BlockerStrip, so a page-wide text query would be ambiguous. The region
+    // is rendered only when expanded (so aria-controls never dangles, and the reason is
+    // not duplicated into collapsed rows).
     const alphaDetail = page.locator(
       "[aria-label='Blockers for task sample-task-alpha']"
     );
-    // Detail region is not rendered until expanded.
     await expect(alphaDetail).toHaveCount(0);
+    // aria-controls is absent while collapsed (no live target to reference).
+    await expect(alphaRow).not.toHaveAttribute("aria-controls", /.+/);
 
     // Expand → the detail region appears with reason + next action.
     await alphaRow.click();
@@ -724,9 +729,35 @@ test.describe("dashQuality S3a — Blocked filter", () => {
     await expect(alphaDetail).toBeVisible();
     await expect(alphaDetail).toContainText("No ReviewRecord found for role security_reviewer");
     await expect(alphaDetail).toContainText("Invoke security_reviewer agent on sample-task-alpha");
+    // Now aria-controls points at the live detail region.
+    const controls = await alphaRow.getAttribute("aria-controls");
+    expect(controls).toBeTruthy();
+    await expect(page.locator(`#${controls}`)).toBeVisible();
 
     // Collapse → detail region removed again.
     await alphaRow.click();
+    await expect(alphaRow).toHaveAttribute("aria-expanded", "false");
+    await expect(alphaDetail).toHaveCount(0);
+  });
+
+  test("drill-down is keyboard-operable (focus + Enter/Space toggles)", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const alphaRow = page.getByRole("button", { name: /Task sample-task-alpha/ });
+    const alphaDetail = page.locator("[aria-label='Blockers for task sample-task-alpha']");
+
+    // Focus the row button directly and drive it with the keyboard only.
+    await alphaRow.focus();
+    await expect(alphaRow).toBeFocused();
+
+    await page.keyboard.press("Enter");
+    await expect(alphaRow).toHaveAttribute("aria-expanded", "true");
+    await expect(alphaDetail).toBeVisible();
+
+    await page.keyboard.press("Space");
     await expect(alphaRow).toHaveAttribute("aria-expanded", "false");
     await expect(alphaDetail).toHaveCount(0);
   });

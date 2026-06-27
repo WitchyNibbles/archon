@@ -162,24 +162,31 @@ export function TaskRow({ task, gates, blockers }: TaskRowProps) {
     </>
   );
 
-  // No attributable blockers → the original static, non-expandable row.
+  // No attributable blockers → static, non-expandable row.
+  // The listitem itself carries the accessible name + focus (aria-label on role=listitem
+  // is valid; on a plain role=generic div it is prohibited — ARIA 1.2).
   if (!hasDetail) {
     return (
-      <div className="task-row" role="listitem">
-        <div
-          className="task-row__line"
-          style={{ borderLeftColor: borderColor }}
-          aria-label={`Task ${task.taskId}: ${task.title}, status: ${task.status}`}
-          tabIndex={0}
-        >
-          {rowContent}
-        </div>
+      <div
+        className="task-row task-row__line"
+        role="listitem"
+        style={{ borderLeftColor: borderColor }}
+        aria-label={`Task ${task.taskId}: ${task.title}, status: ${task.status}`}
+        tabIndex={0}
+      >
+        {rowContent}
       </div>
     );
   }
 
   // S3a drill-down: a native <button> toggles an inline detail region naming WHY the
   // task is stuck (blocker reasons + next actions). Native button = free keyboard support.
+  //
+  // The detail region is rendered only when expanded, and `aria-controls` is set ONLY
+  // then — so the IDREF always resolves to a live element (a dangling aria-controls
+  // breaks AT jump-to-controlled navigation — ARIA 1.2). When collapsed, aria-expanded
+  // alone conveys state. Rendering on-demand also avoids duplicating the blocker reason
+  // text (it already appears in the hero BlockerStrip) into every collapsed row.
   const blockerCount = blockers.length;
   return (
     <div className="task-row" role="listitem">
@@ -188,7 +195,7 @@ export function TaskRow({ task, gates, blockers }: TaskRowProps) {
         className="task-row__line task-row__line--expandable"
         style={{ borderLeftColor: borderColor }}
         aria-expanded={expanded}
-        aria-controls={detailId}
+        aria-controls={expanded ? detailId : undefined}
         aria-label={`Task ${task.taskId}: ${task.title}, status: ${task.status}, ${blockerCount} ${blockerCount === 1 ? "blocker" : "blockers"}. ${expanded ? "Collapse" : "Expand"} blocker detail.`}
         onClick={() => setExpanded((v) => !v)}
       >
