@@ -348,7 +348,138 @@ Out-of-range `ARCHON_MAX_RESPAWNS_PER_TASK` values resolve to the default `8` (n
 
 ---
 
-## 9. What ships (reference) <!-- was §8 -->
+## 9. Sweeping historical orphan tasks (`archon sweep-orphans`)
+
+> Added in `archonClosureLoop` W4. Covers the ~30 prior-session runs/tasks stuck
+> `in_progress` whose work merged but have no sealed twin and cannot be pruned by
+> `prune-orphans` (which requires ≥3 reviews + approval on a twin row).
+
+### When to use
+
+Run `archon sweep-orphans` (dry-run first, always) when you see historical tasks that
+remain `in_progress` even though their initiative has long since shipped. These are
+identifiable by:
+
+- `run.created_at` much older than your normal cycle time (default cutoff: 14 days).
+- Zero reviews and zero approvals recorded for the (run_id, task_key) pair.
+- No active lock row for the task.
+- The run is not the currently active run (never touches live work).
+
+The command is **reversible** (mark-done only, never delete) and **operator-gated**
+(dry-run by default, `--confirm` required to apply).
+
+### Step 1 — dry-run (always do this first)
+
+```bash
+npx archon sweep-orphans
+# or with a custom cutoff:
+npx archon sweep-orphans --older-than 30
+```
+
+Output example:
+
+```
+sweep-orphans: DRY-RUN (--older-than 14d, cutoff=2026-06-13)
+  active_run_id: d112e7ac-3c2d-409c-94d2-f918eb0a4abc
+  candidate tasks (3):
+    task_key="daemonExtractFoo"     run_id="aa1b..." status="in_progress" run_age=22d
+    task_key="daemonExtractBar"     run_id="bb2c..." status="in_progress" run_age=25d
+    task_key="forgePhase0Skeleton"  run_id="cc3d..." status="ready"       run_age=18d
+  runs that would be marked done (2):
+    run_id="aa1b..."
+    run_id="bb2c..."
+  (dry-run — pass --confirm to mutate)
+```
+
+### Step 2 — review the candidate list
+
+Cross-check each `run_id` / `task_key` pair against your known-merged initiatives:
+
+1. Look up the run in the DB: `SELECT title, created_at FROM runs WHERE id = '<run_id>';`
+2. Confirm the run title corresponds to a completed initiative (not in-flight work).
+3. Verify no in-flight lock: `SELECT * FROM locks WHERE run_id = '<run_id>' AND status = 'active';`
+4. The active run shown in the output must NOT appear in the candidate list.
+
+If you are uncertain about specific run_ids, use `--allow-list` to restrict the sweep
+to only the run_ids you have verified:
+
+```bash
+npx archon sweep-orphans --allow-list "aa1b...,bb2c..."
+```
+
+### Step 3 — confirm (apply the sweep)
+
+Once satisfied with the candidate list:
+
+```bash
+npx archon sweep-orphans --confirm
+# or with restricted scope:
+npx archon sweep-orphans --confirm --allow-list "aa1b...,bb2c..."
+```
+
+`--confirm` will:
+1. Write a `sweep-backups/sweep-<ISO>.json` backup under `ARCHON_DATA_ROOT` (or cwd).
+2. In a single transaction: `UPDATE tasks SET status = 'done'` for all candidates, then
+   `UPDATE runs SET status = 'done'` for runs where every task is now done.
+3. Print confirmation counts and the backup path.
+
+The command refuses if the backup cannot be written (disk full, path outside boundaries,
+etc.) — mutations never happen if the backup step fails.
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--confirm` | off | Apply mutations (dry-run without this) |
+| `--older-than <days>` | `14` | Only target runs older than N days (positive integer) |
+| `--allow-list <id,...>` | off | Restrict to these run_ids (intersected with safety predicate) |
+| `--backup <path>` | auto under dataRoot | Override backup file path (absolute, .json, within dataRoot or repoRoot) |
+
+### Rollback runbook
+
+The backup JSON written before any mutation contains everything needed to restore:
+
+```json
+{
+  "generatedAt": "2026-06-27T...",
+  "command": "sweep-orphans",
+  "olderThanDays": 14,
+  "cutoffDate": "2026-06-13T...",
+  "activeRunId": "d112e7ac-...",
+  "candidateTasks": [
+    { "id": "<uuid>", "run_id": "<uuid>", "task_key": "daemonExtractFoo", "status": "in_progress", ... }
+  ],
+  "affectedRuns": [
+    { "id": "<uuid>", "title": "...", "status": "in_progress", "created_at": "..." }
+  ],
+  "sweptRunIds": ["<uuid>", ...]
+}
+```
+
+**Restore task status from backup:**
+
+```sql
+-- For each entry in candidateTasks, restore the original status:
+UPDATE tasks
+SET status = '<original-status-from-backup>', updated_at = now()
+WHERE id = '<uuid-from-backup>';
+```
+
+**Restore run status from backup:**
+
+```sql
+-- For each entry in affectedRuns whose id is in sweptRunIds:
+UPDATE runs
+SET status = '<original-status-from-backup>', updated_at = now()
+WHERE id = '<uuid-from-backup>';
+```
+
+The backup file path is printed in the command output (`backup written to: ...`). Keep
+it until you are satisfied the sweep was correct.
+
+---
+
+## 10. What ships (reference)
 
 - `archon autonomous-enable` — operator command to enable/disable the daemon's autonomous execution
   loop for a run (`src/admin/autonomous-enable.ts`). See §8 above.
