@@ -15,6 +15,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { runAntiGenericChecker } from "../src/forge/anti-generic-checker.ts";
 import type { RenderedElement, RenderedSnapshot } from "../src/forge/anti-generic-checker.ts";
@@ -148,5 +150,116 @@ describe("AG-018 — empty-state icon pattern (hard_fail)", () => {
       0,
       "the 2-child constraint must not false-positive on a real icon+label+action header"
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AG-018 single-illustration allow-marker (council forgeEmptyStateIllustration)
+// ---------------------------------------------------------------------------
+
+describe("AG-018 — data-ag018-allow marker exemption (council C1/C2)", () => {
+  /** Run with a set of QA-passed asset ids supplied to the checker. */
+  function runWith(elements: RenderedElement[], qaPassedAssetIds: string[]) {
+    const snapshot: RenderedSnapshot = { url: "http://localhost:5173/", elements };
+    return runAntiGenericChecker(snapshot, { qaPassedAssetIds: new Set(qaPassedAssetIds) });
+  }
+
+  const ASSET = "dashboard-empty-state";
+
+  function emptyStateWithMarker(markerOn: "container" | "icon"): RenderedElement[] {
+    return [
+      el({
+        selector: "div.empty",
+        tag: "div",
+        childCount: 2,
+        ...(markerOn === "container" ? { ag018Allow: ASSET } : {}),
+      }),
+      el({
+        selector: "div.empty > img",
+        tag: "img",
+        role: "presentation",
+        parentSelector: "div.empty",
+        ...(markerOn === "icon" ? { ag018Allow: ASSET } : {}),
+      }),
+      el({ selector: "div.empty > p", tag: "p", textLength: 18, parentSelector: "div.empty" }),
+    ];
+  }
+
+  it("marker on the container + QA-passed asset + singleton → EXEMPT (no AG-018)", () => {
+    const report = runWith(emptyStateWithMarker("container"), [ASSET]);
+    assert.equal(report.violations.filter((v) => v.agId === "AG-018").length, 0,
+      "a QA-passed, singleton, council-marked illustration must be exempt");
+  });
+
+  it("marker on the icon child also exempts", () => {
+    const report = runWith(emptyStateWithMarker("icon"), [ASSET]);
+    assert.equal(report.violations.filter((v) => v.agId === "AG-018").length, 0);
+  });
+
+  it("marker present but asset id NOT QA-passed → still hard_fails (fail closed)", () => {
+    const report = runWith(emptyStateWithMarker("container"), [/* empty: asset not passed */]);
+    const ag018 = report.violations.filter((v) => v.agId === "AG-018");
+    assert.equal(ag018.length, 1, "an unverifiable marker must not exempt");
+    assert.equal(ag018[0]?.severity, "hard_fail");
+  });
+
+  it("no qaPassedAssetIds supplied (default) → marker is not honored", () => {
+    const snapshot: RenderedSnapshot = { url: "http://localhost:5173/", elements: emptyStateWithMarker("container") };
+    const report = runAntiGenericChecker(snapshot); // no opts → fail closed
+    const ag018 = report.violations.filter((v) => v.agId === "AG-018");
+    assert.equal(ag018.length, 1);
+    assert.equal(ag018[0]?.severity, "hard_fail", "fail-closed must remain a hard_fail, not be demoted");
+    assert.ok(report.blocking);
+  });
+
+  it("two markers anywhere → hard_fail singleton violation (cannot self-replicate)", () => {
+    const elements: RenderedElement[] = [
+      ...emptyStateWithMarker("container"),
+      el({ selector: "div.empty2", tag: "div", childCount: 2, ag018Allow: ASSET }),
+      el({ selector: "div.empty2 > img", tag: "img", role: "presentation", parentSelector: "div.empty2" }),
+      el({ selector: "div.empty2 > p", tag: "p", textLength: 18, parentSelector: "div.empty2" }),
+    ];
+    const report = runWith(elements, [ASSET]);
+    const ag018 = report.violations.filter((v) => v.agId === "AG-018");
+    assert.ok(ag018.some((v) => v.measured?.includes("markers")),
+      "two markers must produce a singleton AG-018 hard_fail");
+    assert.ok(report.blocking, "the singleton violation must block");
+  });
+
+  it("an UNMARKED icon+text empty state still hard_fails even when a QA-passed set exists", () => {
+    const report = runWith(
+      [
+        el({ selector: "div.empty", tag: "div", childCount: 2 }),
+        el({ selector: "div.empty > img", tag: "img", role: "presentation", parentSelector: "div.empty" }),
+        el({ selector: "div.empty > p", tag: "p", textLength: 18, parentSelector: "div.empty" }),
+      ],
+      [ASSET],
+    );
+    const ag018 = report.violations.filter((v) => v.agId === "AG-018");
+    assert.equal(ag018.length, 1,
+      "the exemption requires the explicit marker — a bare illustration still fails");
+    assert.equal(ag018[0]?.severity, "hard_fail",
+      "the base regression twin must falsify a severity demotion, not just count");
+    assert.ok(report.blocking, "an unmarked illustration must still block");
+  });
+
+  it("end-to-end: the committed manifest marks dashboard-empty-state QA-passed, which exempts the marked snapshot", () => {
+    // Read the REAL committed asset manifest (the C1 manifest→checker contract).
+    const manifestUrl = new URL("../web/src/assets/asset-manifest.json", import.meta.url);
+    const manifest = JSON.parse(readFileSync(fileURLToPath(manifestUrl), "utf8")) as {
+      assets: Array<{ id: string; qaStatus: string }>;
+    };
+    const entry = manifest.assets.find((a) => a.id === ASSET);
+    assert.ok(entry, `manifest must contain the ${ASSET} asset`);
+    assert.equal(entry?.qaStatus, "pass", "the dashboard empty-state asset must be QA-passed");
+
+    // Feed the manifest's QA-passed ids to the checker exactly as the runtime does.
+    const qaPassedAssetIds = new Set(
+      manifest.assets.filter((a) => a.qaStatus === "pass").map((a) => a.id)
+    );
+    const snapshot: RenderedSnapshot = { url: "http://localhost:5173/", elements: emptyStateWithMarker("container") };
+    const report = runAntiGenericChecker(snapshot, { qaPassedAssetIds });
+    assert.equal(report.violations.filter((v) => v.agId === "AG-018").length, 0,
+      "the manifest-passed, marked illustration must be exempt end-to-end");
   });
 });

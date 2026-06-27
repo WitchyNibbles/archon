@@ -140,6 +140,14 @@ export interface ForgeCriticDeps {
    * the file is read. When omitted, no bounds check is performed.
    */
   repoRoot?: string | undefined;
+  /**
+   * Asset ids whose deterministic asset-QA status is `passed` (from the asset
+   * manifest). Threaded into the checker so a council-approved AG-018
+   * `data-ag018-allow` marker is honored when running `forge critic` against a
+   * snapshot that contains the exempted illustration. Omitted/empty → AG-018
+   * fails closed (no exemption), preserving the prior behavior.
+   */
+  qaPassedAssetIds?: ReadonlySet<string> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,8 +515,9 @@ export async function executeCriticVerb(
     throw new Error(`forge critic: "${snapshotPath}" failed schema validation.\n${detail}`);
   }
 
-  // Run the checker — pure and synchronous.
-  const report = deps.runChecker(snapshot);
+  // Run the checker — pure and synchronous. Thread the QA-passed asset ids so a
+  // council-approved AG-018 allow-marker is honored (fail closed when absent).
+  const report = deps.runChecker(snapshot, { qaPassedAssetIds: deps.qaPassedAssetIds });
 
   // Output: JSON to stdout, human summary to stderr.
   deps.writeStdout(JSON.stringify(report, null, 2) + "\n");
@@ -520,6 +529,27 @@ export async function executeCriticVerb(
   );
 
   return { report, blocking: report.blocking, exitCode: report.blocking ? 1 : 0 };
+}
+
+/**
+ * Best-effort load of QA-passed asset ids from the committed asset manifest
+ * (`web/src/assets/asset-manifest.json`). Returns an empty set when the manifest
+ * is absent or unreadable, so AG-018 fails closed. This lets `forge critic`
+ * honor the council-approved empty-state illustration's `data-ag018-allow`
+ * marker when run against a dashboard snapshot.
+ */
+async function loadQaPassedAssetIds(repoRoot: string): Promise<ReadonlySet<string>> {
+  const manifestPath = resolve(repoRoot, "web", "src", "assets", "asset-manifest.json");
+  try {
+    const raw = await readFile(manifestPath, "utf8");
+    const parsed = JSON.parse(raw) as { assets?: Array<{ id?: unknown; qaStatus?: unknown }> };
+    const ids = (parsed.assets ?? [])
+      .filter((a) => a.qaStatus === "pass" && typeof a.id === "string")
+      .map((a) => a.id as string);
+    return new Set(ids);
+  } catch {
+    return new Set();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -665,11 +695,16 @@ export async function forgeCommand(
     // fixture path) would be rejected by the real REPO_ROOT guard.
     const repoRootForCritic: { repoRoot?: string } =
       deps?.critic === undefined ? { repoRoot: REPO_ROOT } : {};
+    // Real runs load QA-passed asset ids from the committed manifest so the
+    // AG-018 illustration exemption is honored; tests inject their own deps.
+    const qaPassedAssetIds =
+      deps?.critic === undefined ? await loadQaPassedAssetIds(REPO_ROOT) : undefined;
     const criticDeps: ForgeCriticDeps = {
       readFile: (path) => readFile(path, "utf8"),
       runChecker: runAntiGenericChecker,
       writeStdout: (data) => process.stdout.write(data),
       writeStderr: (data) => process.stderr.write(data),
+      qaPassedAssetIds,
       ...repoRootForCritic,
       ...deps?.critic
     };

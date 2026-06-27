@@ -33,6 +33,9 @@ import type {
 import { TaskRow } from "./TaskRow.tsx";
 import { BUCKETS, bucketTasks, type BucketId } from "../utils/taskBuckets.ts";
 import { blockersForTask } from "../utils/taskDetail.ts";
+// Council forgeEmptyStateIllustration: the one approved on-brand empty-state asset
+// (Codex-generated, QA-passed). Vite resolves this PNG import to a hashed URL.
+import emptyStateIllustration from "../assets/dashboard-empty-state.png";
 
 interface TaskListViewProps {
   taskQueue: TaskQueueEntryViewModel[] | readonly TaskQueueEntryViewModel[];
@@ -94,20 +97,41 @@ function BucketHeader({ label, count, headerColor, bucketId }: BucketHeaderProps
 }
 
 // ── Empty state ───────────────────────────────────────────────────────────────
-// AG-018: no SVG illustration. Plain mono text only.
+//
+// AG-018 normally forbids an illustration-above-label empty state (text-only).
+// Council `forgeEmptyStateIllustration` (approved_with_conditions) permits ONE
+// on-brand minimal illustration here, exempted via the explicit `data-ag018-allow`
+// marker bound to the QA-passed manifest asset `dashboard-empty-state`. The marker
+// is a SINGLETON (any further empty-state illustration needs a new council packet).
+// The illustration is DECORATIVE (alt="" + aria-hidden); the mono text label stays
+// as the sole accessible name. It appears only on the primary "no tasks" state —
+// the filtered "no blocked tasks" view stays text-only (and unmarked).
 
 function EmptyTaskList({ filterActive }: { filterActive: boolean }) {
   /*
    * Plain <p> has implicit role="paragraph" which allows aria-label.
-   * The outer <div> has role="generic" — aria-label is prohibited on generic.
-   * Move the accessible name to the <p> element directly.
-   *
    * S3a: the copy is honest about WHY the list is empty — an active Blocked filter
    * with nothing blocked is good news ("no blocked tasks"), not "no tasks recorded".
+   *
+   * Structure (primary state): the container has exactly [img, p] — the AG-018
+   * pattern is genuinely present, and the container carries data-ag018-allow so the
+   * checker exempts THIS specific QA-passed asset rather than the pattern being hidden.
    */
   const label = filterActive ? "no blocked tasks" : "no tasks recorded yet";
   return (
-    <div className="task-list-empty">
+    <div
+      className="task-list-empty"
+      data-ag018-allow={filterActive ? undefined : "dashboard-empty-state"}
+    >
+      {!filterActive && (
+        <img
+          className="task-list-empty__art"
+          src={emptyStateIllustration}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+        />
+      )}
       <p className="task-list-empty__label mono">{label}</p>
     </div>
   );

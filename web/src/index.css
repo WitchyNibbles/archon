@@ -1426,9 +1426,40 @@ body {
 
 .task-list-empty {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--space-8) var(--space-6);
+  /* C5: 16px gap between the illustration and the text label */
+  gap: var(--space-4);
+  padding: var(--space-12) var(--space-6);
+}
+
+/*
+ * Council forgeEmptyStateIllustration C5: the one approved empty-state illustration.
+ * Subordinate "structure hint", not art — dimmed via CSS opacity (NOT baked into the
+ * PNG) and column-bound so it never spans the viewport or competes with real content.
+ * Decorative (aria-hidden in the markup); no motion.
+ */
+.task-list-empty__art {
+  display: block;
+  width: 100%;
+  /* The generated asset has generous internal canvas padding, so the visible
+     "rows" are small relative to the square — render larger so it reads as a
+     deliberate structure hint, not a smudge. Still column-bound (C5). */
+  max-width: 360px;
+  height: auto;
+  /* Council C5 specified ~0.6, but the asset's strokes landed at --border-default
+     weight (fainter than assumed) — 0.6 erased it. 0.85 keeps it clearly a
+     structure hint while staying subordinate to real content. (Honors C5 intent.) */
+  opacity: 0.85;
+  /* keep it crisp on the dark surface; no shadow/border (AG-004) */
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* No animation on the illustration (council C5) — declared explicitly so a future
+     edit doesn't add motion to a decorative empty-state asset. */
+  .task-list-empty__art { transition: none; }
 }
 
 .task-list-empty__label {

@@ -478,10 +478,10 @@ export const CONSTRAINTS_MANIFEST: ConstraintsManifest = {
     },
     {
       id: "AG-018",
-      rule: "No icon-above-text empty-state decoration",
-      description: "An SVG or icon element placed directly above a short paragraph as the sole empty-state content is a generic consumer UI pattern. Empty states in developer dashboards must use plain text only — no decorative illustration or icon.",
+      rule: "No icon-above-text empty-state decoration (except one council-approved marked asset)",
+      description: "An SVG or icon element placed directly above a short paragraph as the sole empty-state content is a generic consumer UI pattern. Empty states in developer dashboards must use plain text only — no decorative illustration or icon. SINGLE EXCEPTION (council forgeEmptyStateIllustration): an element carrying a `data-ag018-allow=<assetId>` marker is exempt ONLY when the asset id resolves to a QA-passed manifest asset and it is the sole such marker repo-wide (two or more hard_fail). The exempted illustration must still pass every other AG rule and keep its text label.",
       severity: "hard_fail",
-      forbiddenExample: "An empty task list showing a large SVG illustration above 'No tasks yet' text"
+      forbiddenExample: "An empty task list showing a large SVG illustration above 'No tasks yet' text WITHOUT a council-approved data-ag018-allow marker bound to a QA-passed asset"
     }
   ],
 

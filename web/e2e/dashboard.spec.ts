@@ -731,6 +731,14 @@ test.describe("dashQuality S3a — Blocked filter", () => {
 
     // Honest empty copy — "no blocked tasks", NOT "no tasks recorded yet".
     await expect(page.locator("#tabpanel-tasks")).toContainText("no blocked tasks");
+
+    // The FILTERED empty state stays text-only: NO illustration and NO AG-018
+    // allow-marker (the marked illustration is for the primary empty state only,
+    // keeping the marker a singleton).
+    await expect(page.locator("#tabpanel-tasks img.task-list-empty__art")).toHaveCount(0);
+    await expect(page.locator("#tabpanel-tasks .task-list-empty")).not.toHaveAttribute(
+      "data-ag018-allow", /.+/
+    );
   });
 
   test("blocked task row drills down to its blocker reason and next actions", async ({
@@ -946,6 +954,65 @@ async function serveSnapshot(page: Parameters<typeof test>[1]["page"], payload: 
     route.fulfill({ status: 200, contentType: "application/json", body })
   );
 }
+
+/* ─── Empty-state illustration (council forgeEmptyStateIllustration) ─────────── */
+
+test.describe("Empty-state illustration (AG-018 marked exception)", () => {
+  const emptySnapshot = {
+    header: {
+      runId: "empty-run-001", title: "forge-web-dashboard", status: "ready",
+      authorityLabel: "derived_only", updatedAt: "2026-06-27T12:00:00Z", sealed: false,
+    },
+    blockers: [], taskQueue: [], reviewGates: [],
+    pulse: { pulseState: "idle", activeLockCount: 0, lockedTaskIds: [] },
+    generatedAt: "2026-06-27T12:00:00Z",
+  };
+
+  test("renders the decorative illustration + text label with correct semantics", async ({ page }) => {
+    await serveSnapshot(page, emptySnapshot);
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // The text label remains the sole accessible name for the empty state.
+    await expect(page.getByText("no tasks recorded yet")).toBeVisible();
+
+    // The empty-state container carries the council allow-marker (AG-018 exemption).
+    await expect(page.locator(".task-list-empty")).toHaveAttribute(
+      "data-ag018-allow", "dashboard-empty-state"
+    );
+
+    // The illustration itself is present and decorative.
+    const art = page.locator("img.task-list-empty__art");
+    await expect(art).toBeVisible();
+    await expect(art).toHaveAttribute("alt", "");
+    await expect(art).toHaveAttribute("aria-hidden", "true");
+
+    // Decorative image must not be exposed to the a11y tree as an image role
+    // (scoped to the empty state so the assertion is about THIS image).
+    await expect(page.locator(".task-list-empty").getByRole("img")).toHaveCount(0);
+  });
+
+  test("empty state with the illustration has zero axe critical/serious violations", async ({ page }) => {
+    await serveSnapshot(page, emptySnapshot);
+    await page.goto("/");
+    await waitForDashboard(page);
+    await expect(page.locator("img.task-list-empty__art")).toBeVisible();
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    const criticalOrSerious = results.violations.filter(
+      (v) => v.impact === "critical" || v.impact === "serious"
+    );
+    if (criticalOrSerious.length > 0) {
+      const formatted = criticalOrSerious
+        .map((v) => `[${v.impact?.toUpperCase()}] ${v.id}: ${v.description}\n` +
+          v.nodes.slice(0, 3).map((n) => `  - ${n.html.substring(0, 120)}`).join("\n"))
+        .join("\n\n");
+      throw new Error(`axe (empty-state illustration) found ${criticalOrSerious.length} violation(s):\n\n${formatted}`);
+    }
+  });
+});
 
 test.describe("forgeDashboardBlockerClarity — advisory section", () => {
   test("real blockers appear in the HERO panel (Active Blockers), not advisory", async ({ page }) => {
