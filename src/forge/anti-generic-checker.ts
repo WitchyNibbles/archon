@@ -687,6 +687,124 @@ const UNCHECKED_RULES: ReadonlyArray<{ id: string; reason: string }> = [
 // is not handled here. AG-013 is in CHECKED_RULE_IDS because a real check runs.
 
 // ---------------------------------------------------------------------------
+// S1 density assertions (AG-016, AG-017, AG-018) — added dashQuality S1
+// ---------------------------------------------------------------------------
+
+/**
+ * AG-016 — Pill-tab navigation detection (hard_fail).
+ *
+ * Checks: any element with role="tab" that has borderRadiusPx > 2 (the
+ * --radius-sm cap for tab elements). Pill-shaped tabs are a consumer/marketing
+ * UI pattern; developer dashboards must use underline-only active indicators.
+ *
+ * Cap: 2px (--radius-sm). Anything above this on a role=tab element is a pill.
+ */
+function checkAG016(elements: readonly RenderedElement[]): Violation[] {
+  const TAB_RADIUS_CAP_PX = 2; // --radius-sm: tab element cap
+  const violations: Violation[] = [];
+  for (const el of elements) {
+    if (el.role !== "tab") continue;
+    const r = el.computed.borderRadiusPx;
+    if (r !== undefined && r > TAB_RADIUS_CAP_PX) {
+      violations.push({
+        agId: "AG-016",
+        severity: "hard_fail",
+        selector: el.selector,
+        measured: `borderRadius=${r}px on role="tab"`,
+        cap: `≤${TAB_RADIUS_CAP_PX}px (--radius-sm; underline-only active state required, no pill tabs)`,
+        message: `AG-016: Pill-tab pattern detected — role="tab" element "${cap(el.selector)}" has border-radius ${r}px, exceeding the ${TAB_RADIUS_CAP_PX}px cap. Tab navigation must use underline-only active state (2px --accent border-bottom).`
+      });
+    }
+  }
+  return violations;
+}
+
+/**
+ * AG-017 — Task-row height-density assertion (warning).
+ *
+ * Checks: any element with role="row" or role="listitem" that has
+ * heightPx > 48. At standard density, task/queue list rows must be ≤48px.
+ * Taller rows signal consumer-UI padding rather than information density.
+ *
+ * Severity is "warning" (not hard_fail) because a slightly taller row could
+ * be intentional at a non-standard density level; the checker flags it for
+ * human review rather than blocking automatically.
+ *
+ * Requires heightPx in ComputedStyleSubset — elements without heightPx are
+ * silently skipped (cannot assert what we cannot measure).
+ */
+function checkAG017(elements: readonly RenderedElement[]): Violation[] {
+  const ROW_HEIGHT_CAP_PX = 48;
+  const violations: Violation[] = [];
+  for (const el of elements) {
+    if (el.role !== "row" && el.role !== "listitem") continue;
+    const h = el.computed.heightPx;
+    if (h !== undefined && h > ROW_HEIGHT_CAP_PX) {
+      violations.push({
+        agId: "AG-017",
+        severity: "warning",
+        selector: el.selector,
+        measured: `heightPx=${h}px on role="${el.role}"`,
+        cap: `≤${ROW_HEIGHT_CAP_PX}px (standard density cap for task/list rows)`,
+        message: `AG-017: Task row exceeds density cap — <${el.tag}> "${cap(el.selector)}" has height ${h}px > ${ROW_HEIGHT_CAP_PX}px. Dense list rows must be ≤48px at standard density.`
+      });
+    }
+  }
+  return violations;
+}
+
+/**
+ * AG-018 — Empty-state icon pattern detection (hard_fail).
+ *
+ * Checks: any container element with EXACTLY 2 direct children where:
+ *   (a) one child is an SVG/icon-like element (tag=svg|img, role=img|presentation)
+ *   (b) one child is a short paragraph (tag=p|span, textLength ≤ 80 chars)
+ *
+ * This matches the canonical "illustration above label" empty-state pattern
+ * (e.g. large SVG above "No tasks yet") that belongs on consumer UIs, not
+ * developer dashboards. Developer empty states must use plain monospace text.
+ *
+ * Why exactly-2 children: looser matching (≤3 children) risks false-positives
+ * on real icon+label pairs in header rows. The 2-child constraint is the
+ * tightest falsifiable assertion that covers the forbidden pattern.
+ */
+function checkAG018(elements: readonly RenderedElement[]): Violation[] {
+  const violations: Violation[] = [];
+  for (const el of elements) {
+    const children = directChildren(elements, el.selector);
+    // Must have exactly 2 direct children — no more, no less
+    if (children.length !== 2) continue;
+
+    const hasIconChild = children.some(
+      (c) =>
+        c.tag === "svg" ||
+        c.tag === "img" ||
+        c.role === "img" ||
+        c.role === "presentation"
+    );
+    if (!hasIconChild) continue;
+
+    const hasShortParagraph = children.some(
+      (c) =>
+        (c.tag === "p" || c.tag === "span") &&
+        c.textLength > 0 &&
+        c.textLength <= 80
+    );
+    if (!hasShortParagraph) continue;
+
+    violations.push({
+      agId: "AG-018",
+      severity: "hard_fail",
+      selector: el.selector,
+      measured: `2 children: icon + short-paragraph (textLength=${el.textLength})`,
+      cap: "0 — icon-above-text empty states are generic consumer UI patterns; use plain mono text only",
+      message: `AG-018: Empty-state icon pattern on <${el.tag}> "${cap(el.selector)}": SVG/icon directly above a short paragraph is the sole content. Use plain monospace text ("no tasks recorded yet") instead of decorative illustration.`
+    });
+  }
+  return violations;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -718,7 +836,10 @@ export function runAntiGenericChecker(snapshot: RenderedSnapshot): AntiGenericRe
     ...checkAG011(elements),
     ...checkAG012(elements),
     ...checkAG013(elements),
-    ...checkAG014(elements)
+    ...checkAG014(elements),
+    ...checkAG016(elements),
+    ...checkAG017(elements),
+    ...checkAG018(elements)
   ];
   return {
     violations,
@@ -752,5 +873,8 @@ export const CHECKED_RULE_IDS: ReadonlyArray<string> = [
   "AG-011",
   "AG-012",
   "AG-013",
-  "AG-014"
+  "AG-014",
+  "AG-016",
+  "AG-017",
+  "AG-018"
 ];

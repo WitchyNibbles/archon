@@ -117,7 +117,13 @@ export const ComputedStyleSubsetSchema = z.object({
    * Raw value of `font-family` CSS property.
    * Used by: AG-007 (no default system font stack).
    */
-  fontFamily: z.string().max(MAX_CSS_VALUE_LEN).optional()
+  fontFamily: z.string().max(MAX_CSS_VALUE_LEN).optional(),
+
+  /**
+   * Height of the element in pixels.
+   * Used by: AG-017 (task-row height-density assertion).
+   */
+  heightPx: z.number().nonnegative().optional()
 });
 
 export type ComputedStyleSubset = z.infer<typeof ComputedStyleSubsetSchema>;

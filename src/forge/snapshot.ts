@@ -498,7 +498,7 @@ export function buildSampleSnapshot(): DashboardViewModel {
       runId: "sample-run-001",
       title: "forge-web-dashboard",
       status: "review_blocked",
-      authorityLabel: "runtime_authoritative",
+      authorityLabel: "derived_only",
       updatedAt: "2026-06-23T14:32:11Z",
       sealed: false,
     },

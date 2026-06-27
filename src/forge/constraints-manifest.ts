@@ -461,6 +461,27 @@ export const CONSTRAINTS_MANIFEST: ConstraintsManifest = {
       description: "A blocked run or task must be the most visually prominent element on screen. Subtle badges or low-contrast indicators for blocked state are a hard-fail. Blockers are the operator's primary action surface.",
       severity: "hard_fail",
       forbiddenExample: "Displaying a blocked task with only a small grey badge in a long list"
+    },
+    {
+      id: "AG-016",
+      rule: "No pill-tab navigation patterns",
+      description: "Tab-like navigation elements (role=tab) with border-radius greater than 2px (the --radius-sm cap for tabs) are forbidden. Tab bars must use underline-only active indicators. Pill-style tabs are a marketing/consumer UI pattern that does not belong in developer dashboards.",
+      severity: "hard_fail",
+      forbiddenExample: "A <button role='tab'> with border-radius:8px that looks like a pill button"
+    },
+    {
+      id: "AG-017",
+      rule: "Task-row density minimum (list rows must be compact)",
+      description: "List rows in a task or queue view must be at most 48px high at standard density. Rows taller than 48px signal padding-for-comfort (a consumer UI anti-pattern) rather than information density appropriate for a developer dashboard.",
+      severity: "warning",
+      forbiddenExample: "A task row with 32px vertical padding that measures 80px tall at standard density"
+    },
+    {
+      id: "AG-018",
+      rule: "No icon-above-text empty-state decoration",
+      description: "An SVG or icon element placed directly above a short paragraph as the sole empty-state content is a generic consumer UI pattern. Empty states in developer dashboards must use plain text only — no decorative illustration or icon.",
+      severity: "hard_fail",
+      forbiddenExample: "An empty task list showing a large SVG illustration above 'No tasks yet' text"
     }
   ],
 
