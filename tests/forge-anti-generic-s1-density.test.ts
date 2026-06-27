@@ -18,7 +18,6 @@ import assert from "node:assert/strict";
 
 import { runAntiGenericChecker } from "../src/forge/anti-generic-checker.ts";
 import type { RenderedElement, RenderedSnapshot } from "../src/forge/anti-generic-checker.ts";
-import { CONSTRAINTS_MANIFEST } from "../src/forge/constraints-manifest.ts";
 
 function el(
   overrides: Partial<RenderedElement> & { selector: string; tag: string }
@@ -28,7 +27,8 @@ function el(
 
 function run(elements: RenderedElement[]) {
   const snapshot: RenderedSnapshot = { url: "http://localhost:5173/", elements };
-  return runAntiGenericChecker(snapshot, CONSTRAINTS_MANIFEST);
+  // runAntiGenericChecker loads CONSTRAINTS_MANIFEST from module scope — single arg.
+  return runAntiGenericChecker(snapshot);
 }
 
 // ---------------------------------------------------------------------------

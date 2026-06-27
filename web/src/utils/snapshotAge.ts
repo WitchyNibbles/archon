@@ -15,7 +15,9 @@
  * how many minutes old the snapshot is.
  */
 export function snapshotAgeColor(ageMinutes: number): string {
-  if (ageMinutes >= 60) return "var(--status-error-text)";
-  if (ageMinutes >= 5)  return "var(--status-warning-text)";
+  // Top threshold is exclusive per the spec above: 5–60 min inclusive is warning;
+  // strictly > 60 min is error. So exactly 60 min stays warning.
+  if (ageMinutes > 60) return "var(--status-error-text)";
+  if (ageMinutes >= 5) return "var(--status-warning-text)";
   return "var(--text-secondary)";
 }

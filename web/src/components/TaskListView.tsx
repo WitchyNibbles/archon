@@ -28,9 +28,9 @@
 import type {
   ReviewGateViewModel,
   TaskQueueEntryViewModel,
-  TaskStatus,
 } from "../types/dashboard.ts";
 import { TaskRow } from "./TaskRow.tsx";
+import { BUCKETS, bucketTasks, type BucketId } from "../utils/taskBuckets.ts";
 
 interface TaskListViewProps {
   taskQueue: TaskQueueEntryViewModel[];
@@ -41,68 +41,8 @@ interface TaskListViewProps {
   labelledBy: string;
 }
 
-// ── Bucket definitions ────────────────────────────────────────────────────────
-
-type BucketId = "blocked" | "in_progress" | "ready" | "done";
-
-interface BucketConfig {
-  id: BucketId;
-  label: string;
-  /** Color token for the section header text (status-text variant for AA on dark). */
-  headerColor: string;
-  statuses: ReadonlyArray<TaskStatus>;
-}
-
-const BUCKETS: readonly BucketConfig[] = [
-  {
-    id: "blocked",
-    label: "Blocked",
-    headerColor: "var(--status-error-text)",
-    statuses: ["blocked", "review_blocked"],
-  },
-  {
-    id: "in_progress",
-    label: "In Progress",
-    headerColor: "var(--status-running-text)",
-    statuses: ["in_progress"],
-  },
-  {
-    id: "ready",
-    label: "Ready / Queued",
-    headerColor: "var(--status-pending-text)",
-    statuses: ["ready"],
-  },
-  {
-    id: "done",
-    label: "Done",
-    headerColor: "var(--status-muted-text)",
-    statuses: ["approved", "done"],
-  },
-] as const;
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Group tasks into buckets in BLOCKED → IN PROGRESS → READY/QUEUED → DONE order. */
-function bucketTasks(
-  taskQueue: TaskQueueEntryViewModel[]
-): Map<BucketId, TaskQueueEntryViewModel[]> {
-  const result = new Map<BucketId, TaskQueueEntryViewModel[]>(
-    BUCKETS.map((b) => [b.id, []])
-  );
-
-  for (const task of taskQueue) {
-    for (const bucket of BUCKETS) {
-      if ((bucket.statuses as ReadonlyArray<string>).includes(task.status)) {
-        result.get(bucket.id)!.push(task);
-        break; // each task goes into exactly one bucket
-      }
-    }
-    // Tasks with unrecognized status are silently omitted
-    // (schema validation upstream ensures only valid statuses reach here)
-  }
-
-  return result;
-}
+// BUCKETS + bucketTasks are extracted to ../utils/taskBuckets.ts (pure, unit-tested).
 
 /** Look up all review gates for a given taskId. */
 function gatesForTask(
