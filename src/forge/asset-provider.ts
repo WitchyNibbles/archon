@@ -376,6 +376,12 @@ export class CodexBuiltinImagegenProvider implements AssetProvider {
     const outputFilename = path.basename(absOutputPath);
     const imagegenInstruction = `$imagegen ${request.prompt}. Save as ${outputFilename}.`;
 
+    // codex `exec -C <workspace>` fails immediately ("No such file or directory",
+    // exit 1) if the working directory does not exist. The output dir is often a
+    // not-yet-created location (e.g. web/public/generated/), so create it before
+    // spawning codex — otherwise generation fails before it starts.
+    fs.mkdirSync(workspace, { recursive: true });
+
     const argv: readonly string[] = [
       "codex", "exec", "--ephemeral",
       "--dangerously-bypass-approvals-and-sandbox",

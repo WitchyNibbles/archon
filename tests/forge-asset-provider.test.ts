@@ -615,6 +615,32 @@ describe("CodexBuiltinImagegenProvider — workspace output (real codex behavior
 
     assert.equal(result.status, "needs_regeneration");
   });
+
+  it("creates the -C workspace directory before invoking codex", async () => {
+    // Regression: real codex `exec -C <dir>` exits 1 immediately if <dir> is
+    // absent. The output dir is frequently a not-yet-created path (e.g.
+    // web/public/generated/), so the provider must create it before spawning.
+    const outputPath = "codex-mkdir/deep/nested/empty-state.png";
+    let workspaceExistedAtRun = false;
+
+    const runner: CodexImagegenRunner = {
+      async run(argv, _timeout, _root, _startedAt) {
+        const ci = argv.indexOf("-C");
+        const ws = ci >= 0 ? argv[ci + 1] : undefined;
+        workspaceExistedAtRun = ws !== undefined && fs.existsSync(ws);
+        return { ok: false, reason: "result irrelevant to this assertion" };
+      },
+    };
+
+    const request = makeRequest({ provider: "codex_builtin_imagegen", outputPath });
+    await new CodexBuiltinImagegenProvider().generate(request, makeDeps({ codexRunner: runner }));
+
+    assert.equal(workspaceExistedAtRun, true, "the -C workspace dir must exist when codex is invoked");
+    assert.ok(
+      fs.existsSync(path.join(tmpRepo, "codex-mkdir", "deep", "nested")),
+      "the nested workspace path must have been created",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
