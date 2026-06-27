@@ -332,6 +332,53 @@ body {
   min-width: 0;
 }
 
+/*
+ * Blocked filter (S3a) — the only interactive view today. It is a native <button>,
+ * so reset the UA chrome and align it to the other sidebar items. Full row width,
+ * pointer cursor, and an active (pressed) state using the same accent treatment as
+ * the active run item so "this filter is on" reads at a glance.
+ */
+.sidebar__item--filter {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  appearance: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.sidebar__item--filter-active {
+  background-color: var(--accent-subtle);
+  color: var(--accent-bright);
+}
+
+.sidebar__item--filter-active:hover {
+  background-color: var(--accent-subtle);
+  color: var(--accent-bright);
+}
+
+/* Count badge — neutral by default; alert tint when one or more tasks are blocked. */
+.sidebar__item-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 18px;
+  padding: 0 var(--space-1);
+  text-align: center;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-elevated);
+  color: var(--text-secondary);
+}
+
+.sidebar__item-badge--alert {
+  /* status-error-text #F87171 ≈ 4.6:1 on the subtle error fill — AA */
+  background-color: rgba(239, 68, 68, 0.16);
+  color: var(--status-error-text);
+}
+
 /* ─────────────────────────────────────────────
    MAIN area
    ───────────────────────────────────────────── */
@@ -1281,10 +1328,20 @@ body {
    or card-style padding here.
    ───────────────────────────────────────────── */
 
+/*
+ * .task-row is the list ITEM wrapper (S3a): it holds the compact .task-row__line
+ * plus, when expanded, the drill-down detail. The dense visual row lives on
+ * .task-row__line so the compact row stays ≤48px even when detail is revealed below.
+ */
 .task-row {
+  display: block;
+}
+
+.task-row__line {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  width: 100%;
   min-height: 36px;
   max-height: 48px;
   padding: 0 var(--space-6);
@@ -1295,17 +1352,99 @@ body {
   border-radius: var(--radius-none);
   cursor: default;
   transition: background-color var(--duration-state) var(--ease-enter);
-  /* Ensure row never expands beyond 48px */
+  /* Ensure the compact row never expands beyond 48px */
   overflow: hidden;
 }
 
-.task-row:hover {
+/* When the row is a <button> (S3a drill-down), strip native button chrome. */
+.task-row__line--expandable {
+  /* inherit the surrounding type rather than the UA button font */
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+}
+
+.task-row__line:hover {
   background-color: var(--surface-elevated);
 }
 
-.task-row:focus-visible {
+.task-row__line:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* Drill-down chevron — small, muted, rotates implicitly via the ▸/▾ glyph swap. */
+.task-row__chevron {
+  font-size: 9px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  width: 10px;
+  text-align: center;
+}
+
+/*
+ * Drill-down detail (S3a) — why the task is stuck. Indented under the row, on the
+ * elevated surface, with a left rule continuing the status border's vertical line.
+ */
+.task-row__detail {
+  background-color: var(--surface-elevated);
+  border-bottom: 1px solid var(--border-default);
+  padding: var(--space-3) var(--space-6) var(--space-3) var(--space-8);
+}
+
+.task-row__blockers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.task-row__blocker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.task-row__blocker-kind {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--status-error-text);
+}
+
+.task-row__blocker-reason {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.task-row__next-actions {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-row__next-action {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  padding-left: var(--space-3);
+  position: relative;
+}
+
+/* "→" lead-in marks each next action as an actionable step. */
+.task-row__next-action::before {
+  content: "→";
+  position: absolute;
+  left: 0;
+  color: var(--text-tertiary, var(--text-secondary));
 }
 
 .task-row__dot {

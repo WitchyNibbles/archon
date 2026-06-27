@@ -25,6 +25,7 @@ import {
   consecutiveErrorsOf,
 } from "./utils/snapshotFeed.ts";
 import { nextPollDelayMs } from "./utils/pollSchedule.ts";
+import { filterTasks, countBlocked, type TaskFilter } from "./utils/taskFilter.ts";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { RunHeader } from "./components/RunHeader.tsx";
 import { BlockerStrip } from "./components/BlockerStrip.tsx";
@@ -109,13 +110,33 @@ interface DashboardProps {
   /** Feed health — "stale" renders a distinct reconnecting indicator (C4). */
   feedPhase: "live" | "stale";
   feedErrors: number;
+  /** In-run Blocked filter state + toggle (S3a). */
+  taskFilter: TaskFilter;
+  onToggleBlocked: () => void;
 }
 
-function Dashboard({ data, activeTab, onTabChange, feedPhase, feedErrors }: DashboardProps) {
+function Dashboard({
+  data,
+  activeTab,
+  onTabChange,
+  feedPhase,
+  feedErrors,
+  taskFilter,
+  onToggleBlocked,
+}: DashboardProps) {
+  const blockedCount = countBlocked(data.taskQueue);
+  // S3a: the Tasks list honors the in-run Blocked filter. Gates tab is unaffected.
+  const visibleTasks = filterTasks(data.taskQueue, taskFilter);
+
   return (
     <div className="app-layout">
-      {/* Sidebar: archon mark, run list, views */}
-      <Sidebar currentRun={data.header} />
+      {/* Sidebar: archon mark, run list, views (Blocked = real in-run filter, S3a) */}
+      <Sidebar
+        currentRun={data.header}
+        blockedFilterActive={taskFilter === "blocked"}
+        blockedCount={blockedCount}
+        onToggleBlocked={onToggleBlocked}
+      />
 
       {/* Main content area */}
       <main className="main">
@@ -134,11 +155,13 @@ function Dashboard({ data, activeTab, onTabChange, feedPhase, feedErrors }: Dash
         {/* HERO: blocker strip — always rendered, dominant when blockers exist */}
         <BlockerStrip blockers={data.blockers} />
 
-        {/* Tasks tab panel: flat status-grouped task list — renders ALL tasks */}
+        {/* Tasks tab panel: flat status-grouped task list — honors the Blocked filter (S3a) */}
         {activeTab === "tasks" && (
           <TaskListView
-            taskQueue={data.taskQueue}
+            taskQueue={visibleTasks}
             reviewGates={data.reviewGates}
+            blockers={data.blockers}
+            filterActive={taskFilter === "blocked"}
             tabPanelId="tabpanel-tasks"
             labelledBy="tab-tasks"
           />
@@ -169,6 +192,8 @@ function Dashboard({ data, activeTab, onTabChange, feedPhase, feedErrors }: Dash
 export default function App() {
   const [feed, dispatch] = useReducer(snapshotFeedReducer, initialSnapshotFeedState);
   const [activeTab, setActiveTab] = useState<DashboardTab>("tasks");
+  // S3a: in-run Blocked filter — local UI state (no routing in this slice).
+  const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
 
   // Authoritative backoff counter for the poll loop. It is NOT derived from `feed` on
   // render: after dispatch() React batches the state update, so reading it post-dispatch
@@ -265,6 +290,10 @@ export default function App() {
       onTabChange={setActiveTab}
       feedPhase={feed.phase}
       feedErrors={consecutiveErrorsOf(feed)}
+      taskFilter={taskFilter}
+      onToggleBlocked={() =>
+        setTaskFilter((f) => (f === "blocked" ? "all" : "blocked"))
+      }
     />
   );
 }

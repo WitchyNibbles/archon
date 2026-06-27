@@ -19,6 +19,12 @@ import type { RunHeaderViewModel } from "../types/dashboard.ts";
 
 interface SidebarProps {
   currentRun: RunHeaderViewModel;
+  /** Whether the in-run Blocked filter is currently active (S3a). */
+  blockedFilterActive: boolean;
+  /** Number of blocked tasks in the current run (badge on the Blocked filter). */
+  blockedCount: number;
+  /** Toggle the in-run Blocked filter (S3a). */
+  onToggleBlocked: () => void;
 }
 
 const RUN_STATUS_DOT_COLOR: Record<string, string> = {
@@ -33,7 +39,12 @@ const RUN_STATUS_DOT_COLOR: Record<string, string> = {
   intake: "var(--status-pending)",
 };
 
-export function Sidebar({ currentRun }: SidebarProps) {
+export function Sidebar({
+  currentRun,
+  blockedFilterActive,
+  blockedCount,
+  onToggleBlocked,
+}: SidebarProps) {
   const activeDotColor =
     RUN_STATUS_DOT_COLOR[currentRun.status] ?? "var(--status-muted)";
 
@@ -84,18 +95,39 @@ export function Sidebar({ currentRun }: SidebarProps) {
           className="sidebar__item"
           role="button"
           aria-disabled="true"
-          aria-label="All runs (not available in Phase 0)"
+          aria-label="All runs (cross-run view not available yet)"
         >
           All runs
         </div>
-        <div
-          className="sidebar__item"
-          role="button"
-          aria-disabled="true"
-          aria-label="Blocked runs (not available in Phase 0)"
+        {/*
+         * Blocked: a REAL in-run filter (S3a). Native <button> for free keyboard
+         * support; aria-pressed reflects the toggle state. The count badge gives an
+         * at-a-glance "how many are stuck" signal and is part of the accessible name.
+         */}
+        <button
+          type="button"
+          className={
+            blockedFilterActive
+              ? "sidebar__item sidebar__item--filter sidebar__item--filter-active"
+              : "sidebar__item sidebar__item--filter"
+          }
+          aria-pressed={blockedFilterActive}
+          aria-label={`Filter to blocked tasks (${blockedCount} blocked)${blockedFilterActive ? ", active" : ""}`}
+          onClick={onToggleBlocked}
+          data-testid="blocked-filter"
         >
-          Blocked
-        </div>
+          <span className="sidebar__item-label">Blocked</span>
+          <span
+            className={
+              blockedCount > 0
+                ? "sidebar__item-badge sidebar__item-badge--alert mono"
+                : "sidebar__item-badge mono"
+            }
+            aria-hidden="true"
+          >
+            {blockedCount}
+          </span>
+        </button>
       </nav>
     </aside>
   );
