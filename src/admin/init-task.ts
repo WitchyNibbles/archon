@@ -209,7 +209,13 @@ function parseFlag(args: readonly string[], flag: string): string | undefined {
 export interface InitTaskCommandOptions {
   store: Pick<
     ArchonStore,
-    "ensureProjectContext" | "createRun" | "replaceTasks" | "getProjectRuntimeState" | "saveProjectRuntimeState"
+    | "ensureProjectContext"
+    | "createRun"
+    | "replaceTasks"
+    | "getProjectRuntimeState"
+    | "saveProjectRuntimeState"
+    | "getTask"
+    | "updateTask"
   >;
   workspaceSlug: string;
   workspaceName: string;
@@ -234,9 +240,45 @@ export interface InitTaskCommandResult {
   packetPath?: string | undefined;
 }
 
+// Write the on-disk fallback packet markdown, guarded against path traversal.
+// Returns the absolute path of the written file, or undefined when
+// writePacketMarkdown is false.
+async function maybeWritePacketMarkdown(
+  repoPath: string,
+  packet: TaskPacketInput,
+  taskClass: TaskClass,
+  enabled: boolean | undefined
+): Promise<string | undefined> {
+  if (enabled === false) {
+    return undefined;
+  }
+  const tasksDir = path.resolve(repoPath, ".archon", "work", "tasks");
+  const packetPath = path.resolve(tasksDir, `task-${packet.taskId}.md`);
+  // Defence in depth: the id is already slug-validated in buildInitiativeRecords,
+  // but never write outside the tasks directory even if that invariant changes.
+  if (
+    packetPath !== path.join(tasksDir, `task-${packet.taskId}.md`) ||
+    !packetPath.startsWith(`${tasksDir}${path.sep}`)
+  ) {
+    throw new Error(
+      `init-task: refusing to write packet outside the tasks directory (${packetPath})`
+    );
+  }
+  await mkdir(path.dirname(packetPath), { recursive: true });
+  await writeFile(packetPath, renderTaskPacketMarkdown(packet, taskClass), "utf8");
+  return packetPath;
+}
+
 // Impure command — performs the runtime writes. The markdown packet is written
 // from Node (outside the PreToolUse boundary) so the on-disk fallback agrees with
 // the authoritative runtime record.
+//
+// Idempotency contract: if a task with the same task_key (--id) already exists
+// for this project with status = in_progress, the call REUSES the existing run
+// and task instead of creating a new run. This prevents run fragmentation when
+// the manager invokes init-task repeatedly for the same logical task.
+// Idempotency key: (project, task_key, in_progress).
+// Concurrent worktrees with DIFFERENT task ids are completely unaffected.
 export async function executeInitTaskCommand(options: InitTaskCommandOptions): Promise<InitTaskCommandResult> {
   const now = options.now ?? new Date().toISOString();
   const { workspace, project } = await options.store.ensureProjectContext({
@@ -248,6 +290,63 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
   });
 
   const existing = await options.store.getProjectRuntimeState(project.id);
+
+  // --- Idempotency check: (project, task_key, in_progress) ---
+  // If the project already has an active run, look up whether a task with this
+  // task_key is in_progress in that run. If so, reuse the run and task instead
+  // of fragmenting runs by creating a new one unconditionally.
+  if (existing?.activeRunId !== undefined) {
+    const existingTask = await options.store.getTask(existing.activeRunId, options.id);
+    if (existingTask?.status === "in_progress") {
+      // Validate the incoming options (scope security checks, id format, etc.)
+      // by running buildInitiativeRecords with the existing run/task ids to
+      // obtain a sanitized scope. Discard the synthetic run/task — we only
+      // carry the sanitized scope back to the existing record.
+      const { task: template, taskClass } = buildInitiativeRecords({
+        id: options.id,
+        title: options.title,
+        ownerRole: options.ownerRole,
+        goal: options.goal,
+        allowedWriteScope: options.allowedWriteScope,
+        workspaceId: workspace.id,
+        projectId: project.id,
+        runId: existingTask.runId,
+        taskUuid: existingTask.id,
+        now,
+        class: options.class,
+        allowManagedScope: options.allowManagedScope
+      });
+
+      // Re-apply (possibly updated) scope to the existing task record immutably.
+      const reusedTask: TaskRecord = {
+        ...existingTask,
+        packet: {
+          ...existingTask.packet,
+          allowedWriteScope: template.packet.allowedWriteScope
+        },
+        updatedAt: now
+      };
+      await options.store.updateTask(reusedTask);
+
+      // Do NOT call saveProjectRuntimeState here — the pointer already reflects
+      // this run/task and must not be clobbered by the reuse path.
+      const packetPath = await maybeWritePacketMarkdown(
+        options.repoPath,
+        reusedTask.packet,
+        taskClass,
+        options.writePacketMarkdown
+      );
+
+      return {
+        runId: reusedTask.runId,
+        taskId: reusedTask.packet.taskId,
+        allowedWriteScope: [...reusedTask.packet.allowedWriteScope],
+        packetPath
+      };
+    }
+  }
+
+  // --- Fresh cycle: task_key not in_progress; create a new run ---
   const { run, task, queue, taskClass } = buildInitiativeRecords({
     id: options.id,
     title: options.title,
@@ -278,19 +377,12 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
     updatedAt: now
   });
 
-  let packetPath: string | undefined;
-  if (options.writePacketMarkdown !== false) {
-    const tasksDir = path.resolve(options.repoPath, ".archon", "work", "tasks");
-    packetPath = path.resolve(tasksDir, `task-${task.packet.taskId}.md`);
-    // Defence in depth: the id is already slug-validated in buildInitiativeRecords,
-    // but never write outside the tasks directory even if that invariant changes.
-    if (packetPath !== path.join(tasksDir, `task-${task.packet.taskId}.md`) ||
-        !packetPath.startsWith(`${tasksDir}${path.sep}`)) {
-      throw new Error(`init-task: refusing to write packet outside the tasks directory (${packetPath})`);
-    }
-    await mkdir(path.dirname(packetPath), { recursive: true });
-    await writeFile(packetPath, renderTaskPacketMarkdown(task.packet, taskClass), "utf8");
-  }
+  const packetPath = await maybeWritePacketMarkdown(
+    options.repoPath,
+    task.packet,
+    taskClass,
+    options.writePacketMarkdown
+  );
 
   return {
     runId: run.id,
