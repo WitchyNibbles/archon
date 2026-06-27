@@ -1,35 +1,36 @@
 /**
- * App — Archon Forge Run Status Dashboard (dashQuality S1).
+ * App — Archon Forge Run Status Dashboard.
  *
- * Changes from Phase 0:
- *   - Loading: full-shell skeleton (sidebar + header stay, shimmer rows in
- *     content area). NOT a centered full-page spinner (council condition C12).
- *   - Tab bar: Tasks (default) / Gates below RunHeader, above BlockerStrip.
- *     Underline-only active state, roving tabindex keyboard nav (C10).
- *   - Tasks tab (default): flat status-grouped TaskListView — renders ALL
- *     taskQueue entries. The void is gone.
- *   - Gates tab: GateSwimlane demoted here; kept, not deleted (C14).
- *   - Error state: unchanged — ErrorPanel still shows on initial load failure.
+ * dashQuality S1: dense flat status-grouped task list (the void is gone); Tabs Tasks/Gates.
+ * dashQuality S2 (council C3/C4): the one-shot mount fetch is replaced by a BOUNDED POLL.
+ *   - C3: bounded interval poll (no SSE/websocket — the browser reads static JSON only);
+ *     chained setTimeout using nextPollDelayMs (steady base, exponential backoff + hard cap
+ *     on consecutive errors); the loop PAUSES when the tab is hidden (visibilitychange) and
+ *     refetches immediately on resume.
+ *   - C4: poll failures are non-destructive — once we have rendered a good snapshot, a failed
+ *     poll keeps the last-good render on screen and surfaces a DISTINCT "reconnecting…" feed
+ *     state (FeedStatus). The full ErrorPanel only ever shows on an initial-load failure (no
+ *     data yet). Staleness stays honest via SnapshotAge (driven by generatedAt) — never
+ *     stale-as-fresh.
  *
  * The tab state is local UI state only; no URL routing in this slice.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { fetchDashboardSnapshot } from "./data/snapshot.ts";
 import type { DashboardViewModel } from "./types/dashboard.ts";
+import {
+  snapshotFeedReducer,
+  initialSnapshotFeedState,
+  consecutiveErrorsOf,
+} from "./utils/snapshotFeed.ts";
+import { nextPollDelayMs } from "./utils/pollSchedule.ts";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { RunHeader } from "./components/RunHeader.tsx";
 import { BlockerStrip } from "./components/BlockerStrip.tsx";
 import { GateSwimlane } from "./components/GateSwimlane.tsx";
 import { TabBar, type DashboardTab } from "./components/TabBar.tsx";
 import { TaskListView } from "./components/TaskListView.tsx";
-
-// ── Load-state machine ────────────────────────────────────────────────────────
-
-type LoadState =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "success"; data: DashboardViewModel };
 
 // ── Error panel ───────────────────────────────────────────────────────────────
 
@@ -99,15 +100,18 @@ function DashboardSkeleton() {
   );
 }
 
-// ── Dashboard (success state) ─────────────────────────────────────────────────
+// ── Dashboard (success / stale state) ─────────────────────────────────────────
 
 interface DashboardProps {
   data: DashboardViewModel;
   activeTab: DashboardTab;
   onTabChange: (tab: DashboardTab) => void;
+  /** Feed health — "stale" renders a distinct reconnecting indicator (C4). */
+  feedPhase: "live" | "stale";
+  feedErrors: number;
 }
 
-function Dashboard({ data, activeTab, onTabChange }: DashboardProps) {
+function Dashboard({ data, activeTab, onTabChange, feedPhase, feedErrors }: DashboardProps) {
   return (
     <div className="app-layout">
       {/* Sidebar: archon mark, run list, views */}
@@ -115,11 +119,13 @@ function Dashboard({ data, activeTab, onTabChange }: DashboardProps) {
 
       {/* Main content area */}
       <main className="main">
-        {/* Topbar: run title, runId, status, authority badge, pulse, snapshot age */}
+        {/* Topbar: run title, runId, status, authority badge, pulse, snapshot age, feed status */}
         <RunHeader
           header={data.header}
           pulse={data.pulse}
           generatedAt={data.generatedAt}
+          feedPhase={feedPhase}
+          feedErrors={feedErrors}
         />
 
         {/* Tab bar: Tasks (default) / Gates — underline-only active state (C10) */}
@@ -161,44 +167,104 @@ function Dashboard({ data, activeTab, onTabChange }: DashboardProps) {
 // ── Root ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [feed, dispatch] = useReducer(snapshotFeedReducer, initialSnapshotFeedState);
   const [activeTab, setActiveTab] = useState<DashboardTab>("tasks");
+
+  // Authoritative backoff counter for the poll loop. It is NOT derived from `feed` on
+  // render: after dispatch() React batches the state update, so reading it post-dispatch
+  // would be a render behind (e.g. on recovery the loop would back off as if still
+  // failing). The counter is therefore advanced synchronously from each poll's OUTCOME
+  // (0 on success, +1 on failure) so nextPollDelayMs always sees the true current count.
+  const errorsRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    let inflight = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-    fetchDashboardSnapshot()
-      .then((data) => {
-        if (!cancelled) {
-          setState({ status: "success", data });
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          const message =
-            err instanceof Error ? err.message : "Unknown error loading snapshot";
-          setState({ status: "error", message });
-        }
-      });
+    function clearTimer() {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    }
+
+    async function poll() {
+      if (inflight) return; // C3: at most one poll in flight (no concurrent fetches)
+      inflight = true;
+      let nextErrors = errorsRef.current;
+      try {
+        const data = await fetchDashboardSnapshot();
+        if (cancelled) return;
+        nextErrors = 0;
+        dispatch({ type: "poll_succeeded", data, at: Date.now() });
+      } catch (err: unknown) {
+        if (cancelled) return;
+        nextErrors = errorsRef.current + 1;
+        const message =
+          err instanceof Error ? err.message : "Unknown error loading snapshot";
+        dispatch({ type: "poll_failed", message });
+      } finally {
+        inflight = false;
+      }
+      if (cancelled) return;
+      errorsRef.current = nextErrors;
+      // C3: schedule the next poll with the freshly-computed backoff. Skip while hidden —
+      // the visibilitychange handler resumes the loop on return.
+      schedule(nextErrors);
+    }
+
+    function schedule(errors: number) {
+      clearTimer();
+      if (typeof document !== "undefined" && document.hidden) {
+        return; // paused; visibilitychange will resume
+      }
+      timer = setTimeout(poll, nextPollDelayMs(errors));
+    }
+
+    function handleVisibility() {
+      if (typeof document === "undefined") return;
+      if (document.hidden) {
+        clearTimer(); // C3: pause polling on a hidden tab
+      } else {
+        // Resume with an immediate refresh so a returning operator sees current state.
+        void poll();
+      }
+    }
+
+    // Initial load.
+    void poll();
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibility);
+    }
 
     return () => {
       cancelled = true;
+      clearTimer();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibility);
+      }
     };
   }, []);
 
-  if (state.status === "loading") {
+  if (feed.phase === "loading") {
     return <DashboardSkeleton />;
   }
 
-  if (state.status === "error") {
-    return <ErrorPanel message={state.message} />;
+  // C4: full ErrorPanel only when there is NO data at all (initial load failed).
+  if (feed.phase === "error") {
+    return <ErrorPanel message={feed.message} />;
   }
 
+  // live | stale — both render the dashboard with last-good data; stale adds the
+  // distinct reconnecting indicator (never wipes a good dashboard, never fake-fresh).
   return (
     <Dashboard
-      data={state.data}
+      data={feed.data}
       activeTab={activeTab}
       onTabChange={setActiveTab}
+      feedPhase={feed.phase}
+      feedErrors={consecutiveErrorsOf(feed)}
     />
   );
 }

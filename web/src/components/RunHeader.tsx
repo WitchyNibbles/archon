@@ -17,6 +17,7 @@ import type { RunHeaderViewModel } from "../types/dashboard.ts";
 import { AuthorityBadge } from "./AuthorityBadge.tsx";
 import { PulseDot } from "./PulseDot.tsx";
 import { SnapshotAge } from "./SnapshotAge.tsx";
+import { FeedStatus } from "./FeedStatus.tsx";
 import type { RunPulseViewModel } from "../types/dashboard.ts";
 
 interface RunHeaderProps {
@@ -24,6 +25,10 @@ interface RunHeaderProps {
   pulse: RunPulseViewModel;
   /** ISO timestamp when the snapshot file was generated (P1-S2b, C5). */
   generatedAt: string;
+  /** Auto-refresh health — "stale" shows a distinct reconnecting indicator (S2, C4). */
+  feedPhase: "live" | "stale";
+  /** Consecutive failed polls, surfaced for operator diagnosis (S2, C4). */
+  feedErrors: number;
 }
 
 /*
@@ -60,7 +65,7 @@ function formatTimestamp(iso: string): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}Z`;
 }
 
-export function RunHeader({ header, pulse, generatedAt }: RunHeaderProps) {
+export function RunHeader({ header, pulse, generatedAt, feedPhase, feedErrors }: RunHeaderProps) {
   const statusColor = STATUS_COLOR[header.status] ?? "var(--status-muted)";
 
   /*
@@ -107,6 +112,13 @@ export function RunHeader({ header, pulse, generatedAt }: RunHeaderProps) {
         <AuthorityBadge authorityLabel={header.authorityLabel} />
       </div>
       <div className="run-header__right">
+        {/*
+         * FeedStatus: is auto-refresh currently succeeding? DISTINCT from PulseDot
+         * (run state), SnapshotAge (view age), and updatedAt (DB write time). When
+         * the poll loop is failing this shows "reconnecting…" so the on-screen data
+         * is never mistaken for a fresh poll (C4).
+         */}
+        <FeedStatus phase={feedPhase} consecutiveErrors={feedErrors} />
         <PulseDot
           pulseState={pulse.pulseState}
           activeLockCount={pulse.activeLockCount}
