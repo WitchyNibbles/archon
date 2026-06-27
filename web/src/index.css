@@ -452,6 +452,100 @@ body {
   white-space: nowrap;
 }
 
+/* ─────────────────────────────────────────────
+   RUN SUMMARY — dashQuality S4
+   Progress strip under the header: segmented status
+   meter + count row + gate tally. The void-killer.
+   ───────────────────────────────────────────── */
+
+.run-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-3) var(--space-6);
+  background-color: var(--surface-raised);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+/* Segmented proportional meter — flat status fills (AG-001 no gradient). */
+.run-summary__meter {
+  display: flex;
+  align-items: stretch;
+  width: 160px;
+  height: 6px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background-color: var(--surface-elevated);
+  flex-shrink: 0;
+  /* hairline gaps between segments via gap + bg showing through */
+  gap: 2px;
+}
+
+.run-summary__meter-seg {
+  height: 100%;
+  min-width: 4px;
+  border-radius: 1px;
+}
+
+.run-summary__meter-empty {
+  flex: 1;
+  background-color: var(--surface-elevated);
+}
+
+.run-summary__counts {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.run-summary__total {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.run-summary__count {
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.run-summary__count-num {
+  font-weight: 600;
+  /* color set inline per segment (AA -text variant, or muted when zero) */
+}
+
+.run-summary__count-label {
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+
+/* Gate pass tally — pushed to the right edge of the strip. */
+.run-summary__gates {
+  margin-left: auto;
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.run-summary__gates-label {
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.run-summary__gates-num {
+  font-weight: 600;
+  /* color set inline (error-text when a gate is blocked, else secondary) */
+}
+
 /*
  * Snapshot age indicator — P1-S2b (C5).
  *
@@ -1304,6 +1398,30 @@ body {
   color: var(--text-secondary);
 }
 
+/*
+ * Bucket hierarchy (S4) — BLOCKED dominates, DONE recedes (AG-015: blocker state
+ * visually dominant). The blocked section header carries a subtle error fill so
+ * the urgent group is heavier than the rest; the done section dims its rows so
+ * completed work stays present but quiet.
+ */
+.task-list-section[data-bucket="blocked"] .task-list-section__header {
+  background-color: rgba(239, 68, 68, 0.1);
+  border-bottom-color: var(--blocker-pill-border-error);
+}
+
+.task-list-section[data-bucket="done"] .task-row__line {
+  background-color: var(--surface-base);
+}
+
+.task-list-section[data-bucket="done"] .task-row__line:hover {
+  background-color: var(--surface-raised);
+}
+
+.task-list-section[data-bucket="done"] .task-row__title {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
 /* ── Empty task list — no SVG (AG-018 forbids icon-above-text) ── */
 
 .task-list-empty {
@@ -1597,19 +1715,165 @@ body {
  */
 
 /* ─────────────────────────────────────────────
+   RUN FOOTER — dashQuality S4
+   Persistent status bar at the bottom of main:
+   gate legend (decodes REV/SEC/QA) + lock echo +
+   authority. Brackets the task-list void.
+   ───────────────────────────────────────────── */
+
+.run-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  height: 32px;
+  padding: 0 var(--space-6);
+  background-color: var(--surface-raised);
+  border-top: 1px solid var(--border-default);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.run-footer__legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.run-footer__legend-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  /* text-secondary (7.6:1) not text-muted — visible label must meet WCAG AA. */
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.run-footer__legend-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.run-footer__legend-abbrev {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+}
+
+.run-footer__legend-role {
+  color: var(--text-secondary);
+}
+
+/* Vertical divider between the role legend and the state-color key. */
+.run-footer__legend-sep {
+  width: 1px;
+  height: 12px;
+  background-color: var(--border-default);
+  flex-shrink: 0;
+}
+
+.run-footer__state-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.run-footer__state-swatch {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.run-footer__state-label {
+  color: var(--text-secondary);
+}
+
+.run-footer__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.run-footer__locks {
+  color: var(--text-secondary);
+}
+
+.run-footer__authority {
+  /* text-secondary (7.6:1) not text-muted — visible text must meet WCAG AA. */
+  color: var(--text-secondary);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border-default);
+}
+
+/* ─────────────────────────────────────────────
    RESPONSIVE — tablet + mobile
    Swimlanes reflow/stack on narrow viewports.
    No horizontal overflow.
    ───────────────────────────────────────────── */
 
-/* Tablet: collapse sidebar; swimlanes stay 3 cols */
+/*
+ * Tablet/mobile (S4 fix): the sidebar previously `display:none`d here, which
+ * silently removed the ONLY access to the Blocked filter + run list on narrow
+ * viewports. Instead, reflow the sidebar into a horizontal top strip so its
+ * controls stay reachable. The layout becomes a single column (header rows +
+ * top nav strip + content + footer).
+ */
 @media (max-width: 900px) {
   .app-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
   }
 
   .sidebar {
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: none;
+    border-bottom: 1px solid var(--border-default);
+    padding: 0 var(--space-2);
+    gap: var(--space-2);
+  }
+
+  .sidebar__logo {
+    height: 40px;
+    border-bottom: none;
+    border-right: 1px solid var(--border-default);
+    padding-right: var(--space-3);
+  }
+
+  .sidebar__section {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-1) 0;
+    flex-shrink: 0;
+  }
+
+  /* The "Runs"/"Views" group labels are noise in a horizontal strip. */
+  .sidebar__section-label {
     display: none;
+  }
+
+  .sidebar__item {
+    padding: var(--space-1) var(--space-2);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Active run label can shrink but must not push the filter off-screen. */
+  .sidebar__item--active .sidebar__item-label {
+    max-width: 38vw;
   }
 }
 
@@ -1644,5 +1908,44 @@ body {
   .run-header__right {
     width: 100%;
     justify-content: flex-end;
+  }
+
+  /* Run summary wraps its meter above the counts on narrow screens. */
+  .run-summary {
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .run-summary__meter {
+    width: 100%;
+  }
+
+  .run-summary__counts {
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
+  }
+
+  /*
+   * Task rows (S4 fix): the gate pills + owner role previously stole width from
+   * the title, truncating it to "Constraints …". On mobile the title takes
+   * priority — drop the owner role (still in the row's aria-label) and let the
+   * gates wrap under, so the title is readable.
+   */
+  .task-row__owner {
+    display: none;
+  }
+
+  .task-row__line {
+    padding: var(--space-2) var(--space-4);
+  }
+
+  /* Footer legend scrolls horizontally rather than overflowing the viewport. */
+  .run-footer {
+    padding: 0 var(--space-4);
+  }
+
+  .run-footer__legend {
+    overflow-x: auto;
   }
 }

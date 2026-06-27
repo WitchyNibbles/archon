@@ -28,6 +28,8 @@ import { nextPollDelayMs } from "./utils/pollSchedule.ts";
 import { filterTasks, countBlocked, type TaskFilter } from "./utils/taskFilter.ts";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { RunHeader } from "./components/RunHeader.tsx";
+import { RunSummary } from "./components/RunSummary.tsx";
+import { RunFooter } from "./components/RunFooter.tsx";
 import { BlockerStrip } from "./components/BlockerStrip.tsx";
 import { GateSwimlane } from "./components/GateSwimlane.tsx";
 import { TabBar, type DashboardTab } from "./components/TabBar.tsx";
@@ -149,6 +151,10 @@ function Dashboard({
           feedErrors={feedErrors}
         />
 
+        {/* Run-level progress strip (S4): segmented status meter + counts + gate
+            tally. The primary void-killer — adds "how far along is this run" signal. */}
+        <RunSummary taskQueue={data.taskQueue} reviewGates={data.reviewGates} />
+
         {/* Tab bar: Tasks (default) / Gates — underline-only active state (C10) */}
         <TabBar activeTab={activeTab} onTabChange={onTabChange} />
 
@@ -182,6 +188,11 @@ function Dashboard({
             />
           </div>
         )}
+
+        {/* Persistent run status bar (S4): gate legend (decodes REV/SEC/QA chips)
+            + lock echo + authority honesty. Brackets the task-list tail so a
+            sparse run no longer reads as a dead void. */}
+        <RunFooter pulse={data.pulse} authorityLabel={data.header.authorityLabel} />
       </main>
     </div>
   );

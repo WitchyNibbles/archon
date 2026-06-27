@@ -160,6 +160,7 @@ export function TaskListView({
             <div
               key={bucket.id}
               className="task-list-section"
+              data-bucket={bucket.id}
               role="group"
               aria-labelledby={headerId}
             >

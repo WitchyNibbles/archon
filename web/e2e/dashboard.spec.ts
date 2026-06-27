@@ -137,6 +137,44 @@ test.describe("Happy path", () => {
   });
 });
 
+/* ─── 1b. Run-level signal layer (dashQuality S4) ───────────────────────────── */
+
+test.describe("Run summary + footer (S4 void-fix)", () => {
+  test("run summary strip reports the run rollup", async ({ page }) => {
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    /*
+     * The RunSummary region carries the run rollup in its accessible name.
+     * Fixture: 4 tasks, 2 blocked, 0 in flight, 0 ready, 2 done; gates 1/6 passed,
+     * 1 blocked. Match on the stable leading phrase so count copy tweaks don't
+     * make this brittle.
+     */
+    const summary = page.locator("[aria-label^='Run progress:']");
+    await expect(summary).toBeVisible();
+    await expect(summary).toHaveAttribute(
+      "aria-label",
+      /4 tasks, 2 blocked.*2 done.*1 of 6 passed/
+    );
+
+    // Visible count copy is rendered (decorative, aria-hidden — assert text only).
+    await expect(summary.getByText("4 tasks", { exact: false })).toBeVisible();
+  });
+
+  test("run footer renders the gate legend and authority", async ({ page }) => {
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const footer = page.locator("footer.run-footer");
+    await expect(footer).toBeVisible();
+    // Gate legend decodes the REV/SEC/QA row chips.
+    await expect(footer.getByText("reviewer", { exact: false })).toBeVisible();
+    await expect(footer.getByText("security", { exact: false })).toBeVisible();
+    // Authority honesty reminder (derived_only) is echoed in the footer.
+    await expect(footer.getByText("derived_only", { exact: false })).toBeVisible();
+  });
+});
+
 /* ─── 2. Done-bar / gate state assertions ───────────────────────────────────── */
 
 test.describe("Gate state rendering", () => {
