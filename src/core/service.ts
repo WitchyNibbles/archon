@@ -750,6 +750,23 @@ export class ArchonCoreService {
     return nextState;
   }
 
+  /**
+   * Disable autonomous execution for a run without clearing any accumulated
+   * analysis state (coverage items, gaps, checkpoints, etc.). The daemon will
+   * return a `blocked` directive until `configureAutonomousExecution` is called
+   * again to re-enable.
+   */
+  async disableAutonomousExecution(runId: string): Promise<AutonomousExecutionState> {
+    const run = await this.requireRun(runId);
+    return this.saveAutonomousExecutionState(run, (current, now) => {
+      const base = current ?? createAutonomousExecutionState({ now });
+      return {
+        ...base,
+        enabled: false
+      };
+    });
+  }
+
   async upsertCoverageItems(runId: string, items: CoverageItemRecord[]): Promise<AutonomousExecutionState> {
     const run = await this.requireRun(runId);
     const errors = items.flatMap((item) => validateCoverageItemRecord(item));

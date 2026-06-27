@@ -40,7 +40,8 @@ const adminCommands = new Set([
   "export-docs",
   "/export-docs",
   "github-dispatch",
-  "mcp"
+  "mcp",
+  "autonomous-enable"
 ]);
 
 const installCommands = new Set([
@@ -81,6 +82,7 @@ function printUsage(): void {
       "  status | coverage | gaps | checkpoint | resume | workflow-proof | seed-workflow-proof | advance-active-task | reconcile-runtime-state | sync-runtime-exports | daemon | supervisor | supervisor-history | ops | loop | recover | report | plan-context | export-docs | github-dispatch",
       "  migrate | health | doctor [--repair] | bootstrap-project | verify-setup | verify-live-migrations",
       "  verify-review-identity | record-review | index-repo-markdown | refresh-retrieval | refresh-repo-context | repair-task-queue | run-embedding-jobs",
+      "  autonomous-enable [--run-id <id>] [--profile <p>] [--phase <p>] [--disable]",
       "  mcp",
       "",
       "Install commands:",

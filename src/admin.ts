@@ -45,6 +45,7 @@ import { indexRepoMarkdownCommand, planContextCommand, refreshRetrievalCommand, 
 import { recordReviewCommand, saveApprovalCommand, saveReviewCommand, seedWorkflowProofCommand, verifyReviewIdentityCommand, workflowProofCommand } from "./review.ts";
 import { exportDocsCommand } from "./export.ts";
 import { daemonCommand, loopCommand, supervisorCommand, supervisorHistoryCommand } from "./daemon.ts";
+import { autonomousEnableCommand } from "./admin/autonomous-enable.ts";
 export * from "./workflow.ts";
 export * from "./runtime.ts";
 export * from "./memory.ts";
@@ -190,6 +191,11 @@ async function main() {
 
   if (command === "daemon") {
     await daemonCommand(args);
+    return;
+  }
+
+  if (command === "autonomous-enable") {
+    await autonomousEnableCommand(args);
     return;
   }
 
