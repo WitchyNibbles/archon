@@ -768,21 +768,42 @@ function checkAG017(elements: readonly RenderedElement[]): Violation[] {
  * on real icon+label pairs in header rows. The 2-child constraint is the
  * tightest falsifiable assertion that covers the forbidden pattern.
  */
-function checkAG018(elements: readonly RenderedElement[]): Violation[] {
+function checkAG018(
+  elements: readonly RenderedElement[],
+  qaPassedAssetIds: ReadonlySet<string>
+): Violation[] {
   const violations: Violation[] = [];
+
+  // Council forgeEmptyStateIllustration, C2 (singleton): the marker is an
+  // explicit, auditable, ONE-of exemption. Count every data-ag018-allow marker
+  // in the snapshot; two or more hard_fail repo-wide so the exception cannot
+  // self-replicate. The marker is read from el.ag018Allow (the data attribute).
+  const markerEls = elements.filter((e) => e.ag018Allow !== undefined && e.ag018Allow.length > 0);
+  const singletonOk = markerEls.length === 1;
+  if (markerEls.length >= 2) {
+    violations.push({
+      agId: "AG-018",
+      severity: "hard_fail",
+      selector: markerEls[1]?.selector,
+      measured: `${markerEls.length} data-ag018-allow markers`,
+      cap: "1 — the empty-state illustration exemption is a singleton (council C2)",
+      message: `AG-018: ${markerEls.length} data-ag018-allow markers found — the on-brand empty-state illustration is a SINGLE-instance exception. Remove all but one (any further illustration needs a new council packet).`
+    });
+  }
+
   for (const el of elements) {
     const children = directChildren(elements, el.selector);
     // Must have exactly 2 direct children — no more, no less
     if (children.length !== 2) continue;
 
-    const hasIconChild = children.some(
+    const iconChild = children.find(
       (c) =>
         c.tag === "svg" ||
         c.tag === "img" ||
         c.role === "img" ||
         c.role === "presentation"
     );
-    if (!hasIconChild) continue;
+    if (iconChild === undefined) continue;
 
     const hasShortParagraph = children.some(
       (c) =>
@@ -792,13 +813,25 @@ function checkAG018(elements: readonly RenderedElement[]): Violation[] {
     );
     if (!hasShortParagraph) continue;
 
+    // C1 exemption (fail closed): the container OR its icon child may carry the
+    // allow-marker. It is honored ONLY when its asset id resolves to a QA-passed
+    // manifest asset AND it is the sole marker in the snapshot. Any other case
+    // (no marker, unknown/QA-failed asset id, or a non-singleton) → AG-018 fires.
+    const markerAssetId = el.ag018Allow ?? iconChild.ag018Allow;
+    const exempt =
+      markerAssetId !== undefined &&
+      markerAssetId.length > 0 &&
+      singletonOk &&
+      qaPassedAssetIds.has(markerAssetId);
+    if (exempt) continue;
+
     violations.push({
       agId: "AG-018",
       severity: "hard_fail",
       selector: el.selector,
       measured: `2 children: icon + short-paragraph (textLength=${el.textLength})`,
-      cap: "0 — icon-above-text empty states are generic consumer UI patterns; use plain mono text only",
-      message: `AG-018: Empty-state icon pattern on <${el.tag}> "${cap(el.selector)}": SVG/icon directly above a short paragraph is the sole content. Use plain monospace text ("no tasks recorded yet") instead of decorative illustration.`
+      cap: "0 — icon-above-text empty states are generic consumer UI patterns; use plain mono text only (or a council-approved data-ag018-allow marker bound to a QA-passed asset)",
+      message: `AG-018: Empty-state icon pattern on <${el.tag}> "${cap(el.selector)}": SVG/icon directly above a short paragraph is the sole content. Use plain monospace text ("no tasks recorded yet"), or a council-approved data-ag018-allow marker referencing a QA-passed manifest asset.`
     });
   }
   return violations;
@@ -822,8 +855,25 @@ function checkAG018(elements: readonly RenderedElement[]): Violation[] {
  *
  * This function is pure and synchronous — safe to call from any context.
  */
-export function runAntiGenericChecker(snapshot: RenderedSnapshot): AntiGenericReport {
+/**
+ * Options for runAntiGenericChecker.
+ *
+ * qaPassedAssetIds — the set of asset ids whose deterministic asset-QA status is
+ * `passed` (from the asset manifest). Used ONLY by AG-018 to verify a
+ * `data-ag018-allow` marker references a QA-passed asset (council
+ * `forgeEmptyStateIllustration` C1). Omitted/empty → no marker is honored
+ * (AG-018 fails closed), so existing callers are unaffected.
+ */
+export interface AntiGenericCheckOptions {
+  readonly qaPassedAssetIds?: ReadonlySet<string> | undefined;
+}
+
+export function runAntiGenericChecker(
+  snapshot: RenderedSnapshot,
+  opts: AntiGenericCheckOptions = {}
+): AntiGenericReport {
   const { elements } = snapshot;
+  const qaPassedAssetIds = opts.qaPassedAssetIds ?? new Set<string>();
   const violations: Violation[] = [
     ...checkAG001(elements),
     ...checkAG003(elements),
@@ -839,7 +889,7 @@ export function runAntiGenericChecker(snapshot: RenderedSnapshot): AntiGenericRe
     ...checkAG014(elements),
     ...checkAG016(elements),
     ...checkAG017(elements),
-    ...checkAG018(elements)
+    ...checkAG018(elements, qaPassedAssetIds)
   ];
   return {
     violations,

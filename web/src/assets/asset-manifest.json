@@ -1,0 +1,24 @@
+{
+  "$comment": "Forge asset manifest for the dashboard web app. Council forgeEmptyStateIllustration (approved_with_conditions) — this is the SINGLE approved empty-state illustration; its id is referenced by the data-ag018-allow marker in TaskListView. Any further empty-state illustration requires a new council packet (C7).",
+  "assets": [
+    {
+      "id": "dashboard-empty-state",
+      "provider": "codex_builtin_imagegen",
+      "type": "empty_state",
+      "path": "web/src/assets/dashboard-empty-state.png",
+      "promptHash": "64dba87d5a884c82",
+      "originalRequestPath": ".archon/work/council-forgeEmptyStateIllustration.md",
+      "alt": "",
+      "usedIn": ["web/src/components/TaskListView.tsx (empty state, decorative)"],
+      "approved": true,
+      "generatedBy": "codex:$imagegen",
+      "qaStatus": "pass",
+      "notes": [
+        "Council forgeEmptyStateIllustration approved_with_conditions; candidate tight-2 (tight ≤6px corners per C4).",
+        "Deterministic runAssetQA pass (QA-001/002/003/007); content vetted by the design+a11y council seats.",
+        "Decorative: rendered with alt=\"\" + aria-hidden; the mono text label remains the sole accessible name.",
+        "assetSha256_16=c3fadfc396058a69"
+      ]
+    }
+  ]
+}

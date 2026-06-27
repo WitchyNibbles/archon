@@ -32,6 +32,9 @@ const MAX_CSS_VALUE_LEN = 512;
 /** Maximum number of elements in a single snapshot (prevents memory exhaustion). */
 const MAX_ELEMENTS = 10_000;
 
+/** Maximum length for an AG-018 allow-marker asset id (slug-style; generous). */
+const MAX_ASSET_ID_LEN = 64;
+
 // ---------------------------------------------------------------------------
 // RenderedSnapshot — input contract
 //
@@ -201,7 +204,20 @@ export const RenderedElementSchema = z.object({
    * "body"    = the root body element (AG-006 canvas check).
    * undefined = generic element.
    */
-  semanticHint: z.enum(["overlay", "body"]).optional()
+  semanticHint: z.enum(["overlay", "body"]).optional(),
+
+  /**
+   * AG-018 single-illustration allow-marker — the `data-ag018-allow` attribute
+   * value, which MUST be an asset id (council `forgeEmptyStateIllustration`, C1).
+   *
+   * An empty-state container carrying this marker (or whose icon child does) is
+   * exempt from the AG-018 icon-above-text hard_fail ONLY when (a) the asset id
+   * resolves to a QA-passed manifest asset supplied to the checker, and (b) it is
+   * the SOLE such marker in the snapshot (C2 singleton — two or more hard_fail).
+   * Absent / unverifiable marker → AG-018 fires as normal (fail closed). The
+   * Playwright extractor reads this from the element's `data-ag018-allow` attr.
+   */
+  ag018Allow: z.string().max(MAX_ASSET_ID_LEN).optional()
 });
 
 export type RenderedElement = z.infer<typeof RenderedElementSchema>;
