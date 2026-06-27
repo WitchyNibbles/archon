@@ -26,15 +26,21 @@
  */
 
 import type {
+  BlockerViewModel,
   ReviewGateViewModel,
   TaskQueueEntryViewModel,
 } from "../types/dashboard.ts";
 import { TaskRow } from "./TaskRow.tsx";
 import { BUCKETS, bucketTasks, type BucketId } from "../utils/taskBuckets.ts";
+import { blockersForTask } from "../utils/taskDetail.ts";
 
 interface TaskListViewProps {
-  taskQueue: TaskQueueEntryViewModel[];
+  taskQueue: TaskQueueEntryViewModel[] | readonly TaskQueueEntryViewModel[];
   reviewGates: ReviewGateViewModel[];
+  /** Run-level blockers, used for per-task drill-down detail (S3a). */
+  blockers: BlockerViewModel[];
+  /** Whether the in-run Blocked filter is active — drives the empty-state copy (S3a). */
+  filterActive: boolean;
   /** Tab panel id — wired to the corresponding tab button's aria-controls. */
   tabPanelId: string;
   /** The id of the tab button that controls this panel (for aria-labelledby). */
@@ -90,15 +96,19 @@ function BucketHeader({ label, count, headerColor, bucketId }: BucketHeaderProps
 // ── Empty state ───────────────────────────────────────────────────────────────
 // AG-018: no SVG illustration. Plain mono text only.
 
-function EmptyTaskList() {
+function EmptyTaskList({ filterActive }: { filterActive: boolean }) {
   /*
    * Plain <p> has implicit role="paragraph" which allows aria-label.
    * The outer <div> has role="generic" — aria-label is prohibited on generic.
    * Move the accessible name to the <p> element directly.
+   *
+   * S3a: the copy is honest about WHY the list is empty — an active Blocked filter
+   * with nothing blocked is good news ("no blocked tasks"), not "no tasks recorded".
    */
+  const label = filterActive ? "no blocked tasks" : "no tasks recorded yet";
   return (
     <div className="task-list-empty">
-      <p className="task-list-empty__label mono">no tasks recorded yet</p>
+      <p className="task-list-empty__label mono">{label}</p>
     </div>
   );
 }
@@ -108,6 +118,8 @@ function EmptyTaskList() {
 export function TaskListView({
   taskQueue,
   reviewGates,
+  blockers,
+  filterActive,
   tabPanelId,
   labelledBy,
 }: TaskListViewProps) {
@@ -134,7 +146,7 @@ export function TaskListView({
       className="task-list-view"
     >
       {!hasAnyTask ? (
-        <EmptyTaskList />
+        <EmptyTaskList filterActive={filterActive} />
       ) : (
         nonEmptyBuckets.map((bucket) => {
           const tasks = buckets.get(bucket.id) ?? [];
@@ -167,6 +179,7 @@ export function TaskListView({
                     key={task.taskId}
                     task={task}
                     gates={gatesForTask(task.taskId, reviewGates)}
+                    blockers={blockersForTask(task.taskId, blockers)}
                   />
                 ))}
               </div>

@@ -618,6 +618,150 @@ test.describe("dashQuality S2 — bounded poll (C3)", () => {
   });
 });
 
+/* ─── dashQuality S3a — in-run Blocked filter + drill-down ───────────────────── */
+
+/**
+ * Falsifiable S3a gate against the committed sample (snapshot.json):
+ *   tasks: alpha (review_blocked), beta (review_blocked), gamma (approved), delta (done)
+ *   blockers: alpha → review_missing, beta → approval_missing
+ *
+ * Asserts the inert sidebar is now real: the Blocked filter narrows the Tasks list
+ * to only blocked tasks (and back), with an honest count; and a blocked task row
+ * drills down to reveal WHY it is stuck (blocker reason + next actions).
+ */
+test.describe("dashQuality S3a — Blocked filter", () => {
+  // The Blocked filter lives in the sidebar, which is display:none at ≤900px
+  // (existing desktop-first design — the whole nav is desktop-only). The three
+  // filter tests skip on the mobile project; the drill-down (in the main panel) is
+  // covered on both viewports.
+  const skipOnMobile = ({ viewport }: { viewport: { width: number } | null }) =>
+    (viewport?.width ?? 0) < 900;
+
+  test("Blocked filter narrows the task list to only blocked tasks and back", async ({
+    page,
+    viewport,
+  }) => {
+    test.skip(skipOnMobile({ viewport }), "Blocked filter is in the desktop-only sidebar");
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const tasksPanel = page.locator("#tabpanel-tasks");
+    // Unfiltered: a non-blocked task (gamma, approved) is present.
+    await expect(tasksPanel.getByText("sample-task-gamma", { exact: false })).toBeVisible();
+
+    const filter = page.getByTestId("blocked-filter");
+    await expect(filter).toBeVisible();
+    // Badge reflects the 2 blocked tasks; accessible name carries the count.
+    await expect(filter).toHaveAttribute("aria-label", /2 blocked/);
+    await expect(filter).toHaveAttribute("aria-pressed", "false");
+
+    // Activate the filter.
+    await filter.click();
+    await expect(filter).toHaveAttribute("aria-pressed", "true");
+
+    // Only blocked tasks remain; the approved/done tasks are gone.
+    await expect(tasksPanel.getByText("sample-task-alpha", { exact: false })).toBeVisible();
+    await expect(tasksPanel.getByText("sample-task-beta", { exact: false })).toBeVisible();
+    await expect(tasksPanel.getByText("sample-task-gamma", { exact: false })).toHaveCount(0);
+    await expect(tasksPanel.getByText("sample-task-delta", { exact: false })).toHaveCount(0);
+
+    // Toggle off → the full list returns.
+    await filter.click();
+    await expect(filter).toHaveAttribute("aria-pressed", "false");
+    await expect(tasksPanel.getByText("sample-task-gamma", { exact: false })).toBeVisible();
+  });
+
+  test("Blocked filter empty state is honest when nothing is blocked", async ({
+    page,
+    viewport,
+  }) => {
+    test.skip(skipOnMobile({ viewport }), "Blocked filter is in the desktop-only sidebar");
+    const sample = readCommittedSample();
+    // All tasks done/approved; no blockers.
+    const noneBlocked = {
+      ...sample,
+      header: { ...(sample.header as Record<string, unknown>), status: "done", sealed: true },
+      taskQueue: (sample.taskQueue as Record<string, unknown>[]).map((t) => ({
+        ...t,
+        status: "done",
+      })),
+      blockers: [],
+    };
+    await serveSnapshot(page, noneBlocked);
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    const filter = page.getByTestId("blocked-filter");
+    await expect(filter).toHaveAttribute("aria-label", /0 blocked/);
+    await filter.click();
+
+    // Honest empty copy — "no blocked tasks", NOT "no tasks recorded yet".
+    await expect(page.locator("#tabpanel-tasks")).toContainText("no blocked tasks");
+  });
+
+  test("blocked task row drills down to its blocker reason and next actions", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    // The alpha row is a button (expandable) because it has an attributable blocker.
+    const alphaRow = page.getByRole("button", { name: /Task sample-task-alpha/ });
+    await expect(alphaRow).toBeVisible();
+    await expect(alphaRow).toHaveAttribute("aria-expanded", "false");
+
+    // Scope assertions to the row's detail region — the same reason text also appears
+    // in the hero BlockerStrip, so a page-wide text query would be ambiguous.
+    const alphaDetail = page.locator(
+      "[aria-label='Blockers for task sample-task-alpha']"
+    );
+    // Detail region is not rendered until expanded.
+    await expect(alphaDetail).toHaveCount(0);
+
+    // Expand → the detail region appears with reason + next action.
+    await alphaRow.click();
+    await expect(alphaRow).toHaveAttribute("aria-expanded", "true");
+    await expect(alphaDetail).toBeVisible();
+    await expect(alphaDetail).toContainText("No ReviewRecord found for role security_reviewer");
+    await expect(alphaDetail).toContainText("Invoke security_reviewer agent on sample-task-alpha");
+
+    // Collapse → detail region removed again.
+    await alphaRow.click();
+    await expect(alphaRow).toHaveAttribute("aria-expanded", "false");
+    await expect(alphaDetail).toHaveCount(0);
+  });
+
+  test("S3a: axe 0 critical/serious with filter active and a row expanded", async ({
+    page,
+    viewport,
+  }) => {
+    test.skip(skipOnMobile({ viewport }), "Blocked filter is in the desktop-only sidebar");
+    await page.goto("/");
+    await waitForDashboard(page);
+
+    await page.getByTestId("blocked-filter").click();
+    await page.getByRole("button", { name: /Task sample-task-alpha/ }).click();
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    const criticalOrSerious = results.violations.filter(
+      (v) => v.impact === "critical" || v.impact === "serious"
+    );
+    if (criticalOrSerious.length > 0) {
+      const formatted = criticalOrSerious
+        .map(
+          (v) =>
+            `[${v.impact?.toUpperCase()}] ${v.id}: ${v.description}\n` +
+            v.nodes.slice(0, 3).map((n) => `  - ${n.html.substring(0, 120)}`).join("\n")
+        )
+        .join("\n\n");
+      throw new Error(`axe (S3a) found ${criticalOrSerious.length} violation(s):\n\n${formatted}`);
+    }
+    expect(criticalOrSerious).toHaveLength(0);
+  });
+});
+
 /* ─── 4. Accessibility (axe) ─────────────────────────────────────────────────── */
 
 test.describe("Accessibility (axe-core)", () => {

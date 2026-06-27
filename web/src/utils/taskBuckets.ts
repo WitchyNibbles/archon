@@ -57,7 +57,7 @@ export const BUCKETS: readonly BucketConfig[] = [
  * a defensive drop, not a routing path the contract can normally produce).
  */
 export function bucketTasks(
-  taskQueue: TaskQueueEntryViewModel[]
+  taskQueue: readonly TaskQueueEntryViewModel[]
 ): Map<BucketId, TaskQueueEntryViewModel[]> {
   const result = new Map<BucketId, TaskQueueEntryViewModel[]>(
     BUCKETS.map((b) => [b.id, []])

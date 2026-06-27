@@ -32,7 +32,9 @@
  *   token palette (--status-*-text variants at ≥4.5:1 on --surface-raised).
  */
 
+import { useId, useState } from "react";
 import type {
+  BlockerViewModel,
   ReviewGateViewModel,
   ReviewState,
   TaskQueueEntryViewModel,
@@ -42,6 +44,8 @@ interface TaskRowProps {
   task: TaskQueueEntryViewModel;
   /** All review gates for this task (may be empty). */
   gates: ReviewGateViewModel[];
+  /** Blockers attributable to this task — when present the row drills down (S3a). */
+  blockers: readonly BlockerViewModel[];
 }
 
 // ── Status → left-border + dot color map ─────────────────────────────────────
@@ -108,19 +112,18 @@ function GateMiniPill({ gate }: { gate: ReviewGateViewModel }) {
 
 // ── TaskRow ───────────────────────────────────────────────────────────────────
 
-export function TaskRow({ task, gates }: TaskRowProps) {
+export function TaskRow({ task, gates, blockers }: TaskRowProps) {
   const borderColor = STATUS_BORDER_COLOR[task.status] ?? "var(--border-default)";
   const dotColor    = STATUS_DOT_COLOR[task.status]    ?? "var(--status-muted)";
   const isRunning   = task.status === "in_progress";
 
-  return (
-    <div
-      className="task-row"
-      role="listitem"
-      style={{ borderLeftColor: borderColor }}
-      aria-label={`Task ${task.taskId}: ${task.title}, status: ${task.status}`}
-      tabIndex={0}
-    >
+  const hasDetail = blockers.length > 0;
+  const [expanded, setExpanded] = useState(false);
+  const detailId = useId();
+
+  // Shared row content (identical whether the row is a static div or an expand button).
+  const rowContent = (
+    <>
       {/* Status dot */}
       <span
         className={isRunning ? "task-row__dot pulse-running" : "task-row__dot"}
@@ -149,6 +152,75 @@ export function TaskRow({ task, gates }: TaskRowProps) {
       <span className="task-row__owner mono" aria-label={`Owner: ${task.ownerRole}`}>
         {task.ownerRole}
       </span>
+
+      {/* Drill-down chevron — only when there is detail to reveal (S3a) */}
+      {hasDetail && (
+        <span className="task-row__chevron" aria-hidden="true">
+          {expanded ? "▾" : "▸"}
+        </span>
+      )}
+    </>
+  );
+
+  // No attributable blockers → the original static, non-expandable row.
+  if (!hasDetail) {
+    return (
+      <div className="task-row" role="listitem">
+        <div
+          className="task-row__line"
+          style={{ borderLeftColor: borderColor }}
+          aria-label={`Task ${task.taskId}: ${task.title}, status: ${task.status}`}
+          tabIndex={0}
+        >
+          {rowContent}
+        </div>
+      </div>
+    );
+  }
+
+  // S3a drill-down: a native <button> toggles an inline detail region naming WHY the
+  // task is stuck (blocker reasons + next actions). Native button = free keyboard support.
+  const blockerCount = blockers.length;
+  return (
+    <div className="task-row" role="listitem">
+      <button
+        type="button"
+        className="task-row__line task-row__line--expandable"
+        style={{ borderLeftColor: borderColor }}
+        aria-expanded={expanded}
+        aria-controls={detailId}
+        aria-label={`Task ${task.taskId}: ${task.title}, status: ${task.status}, ${blockerCount} ${blockerCount === 1 ? "blocker" : "blockers"}. ${expanded ? "Collapse" : "Expand"} blocker detail.`}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        {rowContent}
+      </button>
+
+      {expanded && (
+        <div
+          id={detailId}
+          className="task-row__detail"
+          role="group"
+          aria-label={`Blockers for task ${task.taskId}`}
+        >
+          <ul className="task-row__blockers">
+            {blockers.map((b) => (
+              <li key={b.id} className="task-row__blocker">
+                <span className="task-row__blocker-kind mono">{b.kind}</span>
+                <span className="task-row__blocker-reason">{b.reason}</span>
+                {b.nextActions.length > 0 && (
+                  <ul className="task-row__next-actions">
+                    {b.nextActions.map((action, i) => (
+                      <li key={i} className="task-row__next-action mono">
+                        {action}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
