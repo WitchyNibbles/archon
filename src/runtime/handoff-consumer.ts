@@ -8,10 +8,15 @@
 // additionalContext.
 //
 // Security contracts:
-//   C1: role read from context-guard.json (attacker-writable) is always
-//       normalized via normalizeRole before any use.
-//   C3: runId and taskId are validated against ^[A-Za-z0-9_-]+$ (via
-//       isValidLeaseId) before any DB query.
+//   C1: the role field in context-guard.json is attacker-writable but is NOT
+//       used in the consume path — it is not passed to any DB call or prompt.
+//       Role normalization (normalizeRole) is applied in HandoffController
+//       where role is actually consumed (recoverCrashedInvocation,
+//       buildContinuationPrompt).
+//   C3: runId, taskId, and invocationId are all validated against
+//       ^[A-Za-z0-9_-]+$ (via isValidLeaseId) before any DB query.
+//       invocationId is also attacker-writable and receives the same
+//       charset gate.
 //
 // A3 (lease coherence): if a daemon lease (owner="daemon") is held for the
 // run, skip — the daemon owns this consume cycle. We only READ the lease, never
@@ -22,7 +27,6 @@
 
 import { readFileSync } from "node:fs";
 import { HandoffController, type HandoffStoreLike } from "./handoff-controller.ts";
-import { normalizeRole } from "./normalize-role.ts";
 import { isValidLeaseId } from "./respawn-lease.ts";
 import type { LeaseStore } from "./respawn-lease.ts";
 
@@ -56,13 +60,12 @@ export type ConsumeInteractiveHandoffResult =
  * is called by archon-session-start.mjs to retrieve and inject that handoff
  * as additionalContext for the new session.
  *
- * Security (C1): the role field read from context-guard.json is attacker-writable
- * and is normalized via normalizeRole before any use. The guard's invocationId is
- * used as the toInvocationId in markHandoffConsumed (identifies the consuming
- * session).
+ * Security (C1): the role field in context-guard.json is attacker-writable but is
+ * not used in this consume path. Role normalization is applied in HandoffController
+ * where role is actually consumed.
  *
- * Security (C3): runId and taskId are validated against ^[A-Za-z0-9_-]+$ via
- * isValidLeaseId before any DB query.
+ * Security (C3): runId, taskId, and the guard's invocationId are all validated
+ * against ^[A-Za-z0-9_-]+$ via isValidLeaseId before any DB query.
  *
  * A3 (lease coherence): if leaseStore is provided and owner === "daemon" for
  * the given runId, returns { consumed: false, skipped: "daemon_lease_held" }.
@@ -105,15 +108,16 @@ export async function consumeInteractiveHandoff(opts: {
     }
     const guard = parsed as Record<string, unknown>;
 
-    // C1: normalize role from attacker-writable guard (defense-in-depth).
-    // The role is not passed to any DB call in this consume path, but normalizing
-    // here ensures it cannot be used for injection if future callers access it.
-    normalizeRole(guard.role);
-
     const invId =
       typeof guard.invocationId === "string" ? guard.invocationId.trim() : "";
     if (!invId) {
       return { consumed: false, skipped: "no_handoff" };
+    }
+    // C3: validate invocationId against the safe-charset pattern before any DB
+    // call. The guard is attacker-writable; an unsanitized invocationId could
+    // carry path-traversal or newline payloads into markHandoffConsumed.
+    if (!isValidLeaseId(invId)) {
+      return { consumed: false, skipped: "invalid_ids" };
     }
     toInvocationId = invId;
   } catch {
