@@ -197,7 +197,111 @@ pm2 save                     # persist across reboots
 
 ---
 
-## 6. What ships (reference)
+## 6. Consume-on-next-start (interactive handoff loop — A1)
+
+> Added in `handoffConsumeOnStart`. Closes the interactive handoff consume loop:
+> the write side (PreCompact hook) was already wired; this section documents the
+> new read side that fires at SessionStart.
+
+### How it works
+
+When a new `claude` session starts while an archon task is active, the
+`archon-session-start.mjs` hook now runs a consume step AFTER the parachute
+registration:
+
+1. Reads `run_id` and `task_id` from `.archon/ACTIVE`.
+2. Reads the new session's `invocationId` from the just-written `context-guard.json`
+   (the parachute registration wrote it above).
+3. Calls `consumeInteractiveHandoff` which:
+   - Validates `runId`/`taskId` (`^[A-Za-z0-9_-]+$`) — C3.
+   - Normalizes the `role` field in the guard — C1.
+   - If a daemon lease (`owner=daemon`) is held for the run, skips — A3.
+   - Queries `getLatestUnconsumedHandoff(runId, taskId)`.
+   - If found: builds a continuation prompt via
+     `HandoffController.buildContinuationPrompt`, calls `markHandoffConsumed`,
+     returns the continuation text.
+4. The hook merges the continuation text with the normal task-context line and
+   writes one `{"additionalContext":"..."}` response to stdout. Claude Code
+   injects it at the start of the new session — the agent sees the full handoff
+   context without any manual step.
+
+### SessionStart stderr diagnostics
+
+```
+[archon-session-start] interactive parachute registered: inv_interactive_<uuid> (task: <id>)
+[archon-session-start] handoff ho_<id> consumed — continuation injected
+```
+
+When no handoff is pending:
+```
+[archon-session-start] consume-on-start: no_handoff
+```
+
+Other `skipped` reasons:
+| Reason | Meaning |
+|--------|---------|
+| `no_handoff` | No unconsumed handoff for this run+task (normal for a fresh start) |
+| `daemon_lease_held` | The daemon supervisor holds the lease; it owns this cycle |
+| `invalid_ids` | `run_id`/`task_id` in `.archon/ACTIVE` failed safe-charset check |
+
+### Idempotency
+
+If the new session starts and the handoff has already been consumed (e.g. the
+hook ran twice), `getLatestUnconsumedHandoff` returns nothing and the result is
+`skipped: no_handoff`. No double-consume occurs.
+
+---
+
+## 7. Manual continuation: `npx archon continue-session` (A2)
+
+> Added in `handoffConsumeOnStart`. The `continue-session` verb is now a
+> registered admin command dispatched by `npx archon continue-session`.
+
+For cases where automatic consume-on-start did not fire (DB offline at session
+start, or you want to manually resume in a separate terminal):
+
+```bash
+npx archon continue-session
+```
+
+This fetches the latest unconsumed handoff for the active task and prints a
+ready-to-run `claude --print '...'` command.
+
+### Options
+
+```
+npx archon continue-session [--run-id <id>] [--task-id <id>] [--exec]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--run-id <id>` | Override run ID (default: read from `.archon/ACTIVE`) |
+| `--task-id <id>` | Override task ID (default: read from `.archon/ACTIVE`) |
+| `--exec` | Spawn `claude` directly instead of printing the invocation |
+
+### Typical workflow
+
+1. The current session's PreCompact hook commits a `precompact_fallback` handoff.
+2. You start a new terminal (or notice the session lost context).
+3. Run `npx archon continue-session` to print the successor invocation.
+4. Run (or copy-paste) the printed `claude --print '...'` command to start the
+   successor session with the continuation prompt injected.
+
+### Fallback when DB is unavailable
+
+If the database is offline, the command prints manual instructions and exits 1:
+
+```
+continue-session: could not connect to the archon runtime DB.
+Manual continuation path:
+  1. Ensure the current session called archon_handoff_commit before stopping.
+  2. Start a new claude session and paste the continuation prompt from:
+       .archon/work/daemon/continuation-context.txt
+```
+
+---
+
+## 8. What ships (reference) <!-- was §6 before handoffConsumeOnStart -->
 
 - `archon:daemon` npm script — the wired consumer entrypoint (`src/admin/archon.ts daemon`).
 - The interactive parachute hooks — `.claude/hooks/archon-session-start.mjs` (registration) and

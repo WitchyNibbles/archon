@@ -22,6 +22,7 @@ const adminCommands = new Set([
   "gaps",
   "checkpoint",
   "resume",
+  "continue-session",
   "workflow-proof",
   "seed-workflow-proof",
   "advance-active-task",

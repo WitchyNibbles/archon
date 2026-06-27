@@ -11,6 +11,7 @@ import { HandoffPacketV1Schema } from "../domain/handoff-schemas.ts";
 import type { HandoffPacketV1 } from "../domain/handoff-schemas.ts";
 import type { HandoffRecord } from "../store/agent-runtime-store.ts";
 import type { AgentInvocation } from "../domain/types.ts";
+import { normalizeRole } from "./normalize-role.ts";
 
 // ---------------------------------------------------------------------------
 // Content field sanitization (SEC-HIGH-1)
@@ -352,12 +353,18 @@ What could break if the next invocation proceeds blindly?
     contextUsedPct?: number | undefined;
     evidenceRefs?: readonly string[] | undefined;
   }): Promise<CommitResult> {
+    // SECURITY (C2 — handoffConsumeOnStart): normalize role before it enters
+    // any DB call or prompt construction. input.role may come from an
+    // attacker-writable source (context-guard.json, ARCHON_ROLE env, or
+    // subagent output); normalizeRole constrains it to a safe token.
+    const safeRole = normalizeRole(input.role);
+
     const prepared = await this.prepare({
       invocationId: input.invocationId,
       runId: input.runId,
       taskId: input.taskId,
-      fromRole: input.role,
-      toRole: input.role,
+      fromRole: safeRole,
+      toRole: safeRole,
       reason: "crash_recovery",
       contextUsedPct: input.contextUsedPct
     });
@@ -373,8 +380,8 @@ What could break if the next invocation proceeds blindly?
       runId: input.runId,
       taskId: input.taskId,
       fromInvocationId: input.invocationId,
-      fromRole: input.role,
-      toRole: input.role,
+      fromRole: safeRole,
+      toRole: safeRole,
       reason: "crash_recovery",
       ...(input.contextUsedPct !== undefined ? { contextUsedPct: input.contextUsedPct } : {}),
       status: "needs_followup",
