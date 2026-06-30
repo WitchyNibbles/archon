@@ -292,9 +292,10 @@ test("init-task idempotency: scope re-application on reuse updates scope without
   store.updateTaskCalls = 0;
   store.saveStateCalls = 0;
 
-  // Second call with expanded scope — task is still in_progress.
+  // Second call with expanded scope — task is still in_progress. --update-scope
+  // is required for the reuse path to overwrite the existing scope (#118 advisory).
   const result2 = await executeInitTaskCommand(
-    baseOpts(store, { id: "scoped-task", allowedWriteScope: ["src/admin", "tests"] })
+    baseOpts(store, { id: "scoped-task", allowedWriteScope: ["src/admin", "tests"], updateScope: true })
   );
 
   // Same run reused.
