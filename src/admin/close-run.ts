@@ -126,7 +126,13 @@ export async function reconcileRunClosure(
 
 export interface CloseAllRunsResult {
   results: { runId: string; sealedRun: boolean; advanced: number }[];
+  /** Runs actually sealed (always 0 in dry-run — sealing requires `confirm`). */
   sealedCount: number;
+  /**
+   * Sum of `plan.closeable.length` across runs. With `confirm` these are tasks
+   * actually advanced to done; in dry-run they are the closeable CANDIDATES that
+   * WOULD be advanced. (sealedCount is the confirm-only mutation counter.)
+   */
   advancedCount: number;
 }
 
