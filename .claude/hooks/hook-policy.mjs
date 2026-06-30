@@ -151,7 +151,7 @@ export function evaluatePermissionRequest(payload, context) {
     return { decision: "deny", reason: "destructive approval request blocked by archon policy" };
   }
 
-  const managedTarget = extractBashReferencedManagedPaths(command).find(
+  const managedTarget = extractBashReferencedManagedPaths(command, context.repoRoot).find(
     (target) => !isManagedPrefixPartiallyAllowed(target, context.allowedWriteScope)
   );
   if (managedTarget && !isReadOnlyBashCommand(command)) {
@@ -231,7 +231,7 @@ export function evaluatePreToolUse(payload, context) {
       return { decision: "block", reason: "destructive shell command blocked by archon policy" };
     }
 
-    const managedTarget = extractBashReferencedManagedPaths(command).find(
+    const managedTarget = extractBashReferencedManagedPaths(command, context.repoRoot).find(
       (target) => !isManagedPrefixPartiallyAllowed(target, context.allowedWriteScope)
     );
     if (managedTarget && !isReadOnlyBashCommand(command)) {

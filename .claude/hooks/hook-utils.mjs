@@ -1796,9 +1796,12 @@ function scanTextForManagedPrefixes(scanned) {
 // stay data sinks and their managed-path mentions remain non-matches.
 function heredocOpenerIsExecutable(openerLine) {
   if (typeof openerLine !== "string") return false;
-  // awk/gawk are intentionally excluded: a bare `awk <<EOF` consumes the heredoc
-  // as DATA records, not as a program (executing it needs `-f -`), so including
-  // them would over-trigger on data heredocs piped to awk.
+  // awk/gawk EXECUTE the heredoc as a program only with `-f -` (read program
+  // from stdin). A bare `awk <<EOF` or `awk '{...}' <<EOF` consumes the heredoc
+  // as DATA records, so it stays a data sink (avoids over-triggering).
+  if (/\b(?:awk|gawk)\b/.test(openerLine) && /-f\s*-(?:\s|$)/.test(openerLine)) {
+    return true;
+  }
   return /\b(?:python|python2|python3|node|nodejs|deno|bun|ruby|perl|php|bash|sh|zsh|ksh|dash|eval|source|xargs|lua|tclsh|julia|Rscript|swift|osascript)\b/.test(
     openerLine
   );
@@ -1822,22 +1825,35 @@ function extractExecutableHeredocBodies(command) {
   // Plain `<<WORD`: bash requires the closing delimiter at column 0. Use a STRICT
   // `\n\3` anchor — a tab-indented `\tWORD` line inside the body is NOT a closer,
   // so an attacker cannot plant a fake closer to truncate the scanned body early.
-  collect(/(^|\n)([^\n]*?)<<['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n\3[ \t]*(?:\n|$)/g);
+  // The closer is a LOOKAHEAD (`(?=\n|$)`) so the trailing newline is NOT consumed
+  // — otherwise a SECOND consecutive heredoc's opener would lose the `\n` its
+  // `(^|\n)` anchor needs, and its body would be silently skipped.
+  collect(/(^|\n)([^\n]*?)<<['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n\3[ \t]*(?=\n|$)/g);
   // `<<-WORD`: bash allows the closing delimiter to be preceded by TABS only.
-  collect(/(^|\n)([^\n]*?)<<-['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n\t*\3[ \t]*(?:\n|$)/g);
+  collect(/(^|\n)([^\n]*?)<<-['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n\t*\3[ \t]*(?=\n|$)/g);
   return bodies;
 }
 
-export function extractBashReferencedManagedPaths(command) {
+export function extractBashReferencedManagedPaths(command, repoRoot) {
   if (typeof command !== "string" || command.trim().length === 0) {
     return [];
   }
+
+  // Normalize ABSOLUTE in-repo paths to repo-relative form before scanning, so a
+  // write to `<repoRoot>/.claude/x` is caught (the `/`-preceded skip in
+  // scanTextForManagedPrefixes would otherwise treat it like an outside-repo
+  // path). Out-of-repo absolutes (e.g. ~/.claude, /etc/...) keep their leading
+  // slash and stay correctly skipped — they are outside archon's jurisdiction.
+  const normalized =
+    typeof repoRoot === "string" && repoRoot.length > 0
+      ? command.split(`${repoRoot.replace(/\/+$/, "")}/`).join("")
+      : command;
 
   // Scan A: strip ALL heredoc bodies, then quoted strings, then scan. This
   // detects managed redirect targets OUTSIDE heredoc bodies (e.g.
   // `cat > .claude/x <<EOF`) while ignoring managed paths that appear only
   // inside grep/sed patterns, quoted arguments, or data heredocs.
-  let scanned = stripHeredocBodies(command);
+  let scanned = stripHeredocBodies(normalized);
   scanned = scanned
     .replace(/'[^']*'/g, "''")
     .replace(/"[^"]*"/g, '""');
@@ -1847,7 +1863,7 @@ export function extractBashReferencedManagedPaths(command) {
   // quote stripping, because the write target is a quoted string argument (e.g.
   // `open('.claude/x','w')`). Data-sink heredoc bodies are excluded by
   // extractExecutableHeredocBodies, preserving the doc/data-mention exemption.
-  for (const body of extractExecutableHeredocBodies(command)) {
+  for (const body of extractExecutableHeredocBodies(normalized)) {
     for (const hit of scanTextForManagedPrefixes(body)) {
       matches.push(hit);
     }
