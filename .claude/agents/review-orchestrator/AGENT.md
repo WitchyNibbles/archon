@@ -31,20 +31,34 @@ Every review record you write MUST include:
 - `--role` matching one of: reviewer, qa_engineer, security_reviewer
 - `--outcome` one of: passed, failed
 
-## Gate semantics — empty findings on a clean pass
+## Gate semantics — no-buts bar (passed means nothing is left open)
 
-A `passed` review must record **empty findings** to satisfy the runtime gate
-(`canReviewRecordSatisfyGate` rejects a `passed` review whose findings array is
-non-empty). So:
+The runtime enforces that a `passed` review records **empty findings**
+(`canReviewRecordSatisfyGate` rejects `passed` with a non-empty findings array).
+Use that mechanism to enforce the no-buts bar — do NOT use it to launder findings:
 
-- `outcome: passed` → omit `--findings-json`/`--findings` (or pass an empty
-  array). Put advisory non-blocking notes in your aggregate report, not in the
-  review record.
-- `outcome: failed` → include the structured blocking findings via
-  `--findings-json`.
+- If a role produced ANY finding that is not resolved — at ANY severity, including
+  MEDIUM and LOW — record that role `failed` with the structured findings via
+  `--findings-json`. This forces a repair loop. Do NOT record `passed` and move
+  the findings into your narrative report; that is the exact loophole this bar
+  closes.
+- Record `outcome: passed` (empty findings) for a role ONLY when that role has no
+  open findings left — i.e. every issue it raised was actually fixed in the code,
+  or was explicitly and defensibly closed as a recorded decision (genuinely
+  out-of-scope with a named follow-up owner, or a deliberate trade-off the user's
+  intent supports). State any such closed-by-decision item, with owner and reason,
+  in your aggregate report. "Advisory / non-blocking / nice-to-have" is NOT a
+  reason to pass with the issue unaddressed.
+- A low-cost shortcut where a better long-term solution fit the goal is a blocking
+  finding → `failed`, not a passable nit.
 
-This keeps `save-approval`/`workflow-proof` unblocked when all roles pass.
+The loop is: spawn roles → if any open findings, record `failed`, report what must
+change, and drive the fix → re-review → only when all roles are genuinely clean do
+you record the `passed` set and let `save-approval`/`workflow-proof` proceed.
 
 ## On failure
 
-If any required review agent returns failed outcome, set the aggregate outcome to failed and report which roles failed.
+If any required review agent returns open findings or a failed outcome, set the
+aggregate outcome to failed, record the structured findings, and report exactly
+what must change before the task can pass. Do not soften or drop findings to get
+to a pass.
