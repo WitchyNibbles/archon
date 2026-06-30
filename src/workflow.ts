@@ -28,6 +28,7 @@ import {
 
 import { dispatchGithubWorkItem } from "./admin/github-dispatch.ts";
 import { buildOperatorDashboardReport, formatOperatorDashboardReport } from "./admin/ops.ts";
+import { buildClosureSignal } from "./core/closure-reconciler.ts";
 import { inspectGraphifyStatus, type GraphifyStatusObservation } from "./admin/graphify.ts";
 import {
   buildOperatorStatusReport,
@@ -815,7 +816,14 @@ export async function executeStatusCommandFromArgs(
     }
   }
 
-  return buildOperatorStatusReport({
+  // W1 visibility: surface tasks that passed gates (approved) but were never
+  // advanced to done — the operator-visible half of the closure wiring. Derived
+  // from the authoritative snapshot; advisory only (run `archon close-run`).
+  const closure = buildClosureSignal(
+    snapshot.tasks.map((task) => ({ status: task.status, taskId: task.packet.taskId }))
+  );
+
+  const baseReport = buildOperatorStatusReport({
     snapshot,
     executionPlan,
     daemonContinuation,
@@ -852,6 +860,8 @@ export async function executeStatusCommandFromArgs(
     agenticState,
     staleAfterDays
   });
+
+  return { ...baseReport, closure };
 }
 
 
