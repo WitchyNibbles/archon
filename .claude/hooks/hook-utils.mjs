@@ -495,9 +495,14 @@ async function readRuntimeAuthorityContext(resolvedRepoRoot) {
       // exists). effective_floor is orchestrator-written, like allowed_write_scope.
       try {
         const floorRow = await client.query(
+          // Security C2 (defense-in-depth): only an ORCHESTRATOR-recorded floor
+          // reduction may lower the Stop-hook review floor — a non-orchestrator
+          // row must never reduce required reviews. Mirrors the reconciler-layer
+          // filter (src/core/closure-reconciler.ts) and the store query.
           `select effective_floor
              from review_floor_reductions
             where run_id = $1 and task_id = $2
+              and source = 'orchestrator'
             order by decided_at desc
             limit 1`,
           [activeRunId, activeTaskId]

@@ -219,6 +219,7 @@ export async function getReviewFloorReductions(
      from review_floor_reductions
      where run_id = $1
        and task_id = $2
+       and source = 'orchestrator'
      order by decided_at asc`,
     [runId, taskId]
   );
