@@ -73,6 +73,8 @@ function makeHarness(opts: {
   /** Controls options.getProjectRuntimeState (used by the completed path). */
   getProjectRuntimeState?: () => Promise<{ activeRunId: string | null; activeTaskId: string | null } | undefined>;
   initialSession?: string;
+  /** W1: injectable closure reconciler invoked on the exhausted-queue path. */
+  reconcileClosure?: (runId: string) => Promise<void>;
 }): Harness {
   const cycles: DaemonCycleRecord[] = [];
   const blockedCalls: DaemonBlockedResultInput[] = [];
@@ -125,7 +127,8 @@ function makeHarness(opts: {
     cycles,
     getSessionId: () => session,
     blockedResult,
-    advanceActiveTask: opts.advanceActiveTask ?? defaultAdvanceActiveTask
+    advanceActiveTask: opts.advanceActiveTask ?? defaultAdvanceActiveTask,
+    reconcileClosure: opts.reconcileClosure
   };
 
   return { input, deps, cycles, blockedCalls, session: () => session };
@@ -396,4 +399,51 @@ test("handleDaemonComplete: completed path with getProjectRuntimeState undefined
   assert.equal(result.activeTaskId, null, "undefined refreshed state → activeTaskId null");
   assert.equal(harness.cycles[0]!.action, "complete");
   assert.equal(harness.blockedCalls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// W1 both-surfaces: reconcileClosure on the exhausted-queue path (daemonCloseOnComplete)
+// ---------------------------------------------------------------------------
+
+const exhaustingAdvance: AdvanceActiveTaskFn = async () => ({
+  format: "json",
+  result: { mode: "applied", taskId: "task-final", nextTaskId: null, proof: {} as never, queue: {} as never, uncommittedInScope: [] }
+});
+
+const advanceWithNext: AdvanceActiveTaskFn = async () => ({
+  format: "json",
+  result: { mode: "applied", taskId: "task-1", nextTaskId: "task-2", proof: {} as never, queue: {} as never, uncommittedInScope: [] }
+});
+
+test("handleDaemonComplete: reconcileClosure IS invoked (with the run id) when the queue is exhausted", async () => {
+  const sealed: string[] = [];
+  const harness = makeHarness({
+    advanceActiveTask: exhaustingAdvance,
+    getProjectRuntimeState: async () => ({ activeRunId: "run-1", activeTaskId: null }),
+    reconcileClosure: async (runId) => { sealed.push(runId); }
+  });
+  const result = await handleDaemonComplete(harness.input, harness.deps);
+  assert.equal(result?.status, "completed");
+  assert.deepEqual(sealed, ["run-1"], "closure runs for the exhausted run");
+});
+
+test("handleDaemonComplete: reconcileClosure is NOT invoked when a next task exists", async () => {
+  const sealed: string[] = [];
+  const harness = makeHarness({
+    advanceActiveTask: advanceWithNext,
+    reconcileClosure: async (runId) => { sealed.push(runId); }
+  });
+  const result = await handleDaemonComplete(harness.input, harness.deps);
+  assert.equal(result, undefined, "loop continues");
+  assert.deepEqual(sealed, [], "closure does not run while tasks remain");
+});
+
+test("handleDaemonComplete: a throwing reconcileClosure does NOT crash the loop (best-effort)", async () => {
+  const harness = makeHarness({
+    advanceActiveTask: exhaustingAdvance,
+    getProjectRuntimeState: async () => ({ activeRunId: "run-1", activeTaskId: null }),
+    reconcileClosure: async () => { throw new Error("seal failed"); }
+  });
+  const result = await handleDaemonComplete(harness.input, harness.deps);
+  assert.equal(result?.status, "completed", "completion is still reported despite a closure failure");
 });
