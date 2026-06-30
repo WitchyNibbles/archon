@@ -37,6 +37,8 @@ import { initTaskCommand } from "./admin/init-task.ts";
 import { recordCouncilCommand } from "./admin/record-council.ts";
 import { pruneOrphansCommand } from "./admin/prune-orphans.ts";
 import { sweepOrphansCommand } from "./admin/sweep-orphans.ts";
+import { reconcileRunClosure } from "./admin/close-run.ts";
+import { ArchonCoreService } from "./core/service.ts";
 import { continueSessionCommand } from "./admin/continue-session.ts";
 import { forgeCommand } from "./admin/forge.ts";
 import { secretCommand } from "./admin/secret.ts";
@@ -325,6 +327,47 @@ async function main() {
         dataRoot,
         repoRoot,
         projectId
+      });
+    });
+    return;
+  }
+
+  if (command === "close-run") {
+    const confirm = args.includes("--confirm");
+    const runIdFlagIdx = args.indexOf("--run-id");
+    const runIdArg = runIdFlagIdx !== -1 ? args[runIdFlagIdx + 1] : undefined;
+    await withClient(async (client) => {
+      const store = new PostgresStore(client as ConstructorParameters<typeof PostgresStore>[0]);
+      const service = new ArchonCoreService(store);
+      const workspaceSlug = process.env.ARCHON_WORKSPACE_SLUG ?? "default";
+      const projectSlug = process.env.ARCHON_PROJECT_SLUG;
+      let runId = runIdArg && runIdArg !== "latest" ? runIdArg : undefined;
+      if (!runId) {
+        const latest = projectSlug ? await store.findLatestRun({ workspaceSlug, projectSlug }) : undefined;
+        runId = latest?.id;
+      }
+      if (!runId) {
+        throw new Error("close-run: could not resolve a run — pass --run-id <id> or set ARCHON_PROJECT_SLUG");
+      }
+      await reconcileRunClosure(runId, confirm, {
+        getStatusSnapshot: (id) => service.getStatus(id),
+        getReviews: (id, taskId) => store.getReviews(id, taskId),
+        getApprovals: (id, taskId) => store.getApprovals(id, taskId),
+        getReviewFloorReductions: (id, taskId) => store.getReviewFloorReductions(id, taskId),
+        updateTask: (taskRecord) => store.updateTask(taskRecord),
+        updateRun: (runRecord) => store.updateRun(runRecord),
+        onRunSealed: async (sealedRunId) => {
+          // Best-effort: clear a dangling active-task pointer when its run is sealed.
+          if (!projectSlug) return;
+          const ctx = await store.getProjectContext({ workspaceSlug, projectSlug });
+          if (!ctx) return;
+          const state = await store.getProjectRuntimeState(ctx.project.id);
+          if (state?.activeRunId === sealedRunId && state.activeTaskId) {
+            await store.saveProjectRuntimeState({ ...state, activeTaskId: undefined, updatedAt: new Date().toISOString() });
+          }
+        },
+        now: () => new Date().toISOString(),
+        writeLine: (line) => { process.stdout.write(`${line}\n`); }
       });
     });
     return;
