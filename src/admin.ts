@@ -36,6 +36,7 @@ import { PostgresStore } from "./store/postgres-store.ts";
 import { initTaskCommand } from "./admin/init-task.ts";
 import { recordCouncilCommand } from "./admin/record-council.ts";
 import { pruneOrphansCommand } from "./admin/prune-orphans.ts";
+import { sweepOrphansCommand } from "./admin/sweep-orphans.ts";
 import { continueSessionCommand } from "./admin/continue-session.ts";
 import { forgeCommand } from "./admin/forge.ts";
 import { secretCommand } from "./admin/secret.ts";
@@ -285,6 +286,45 @@ async function main() {
         writeLine: (line) => { process.stdout.write(`${line}\n`); },
         dataRoot,
         repoRoot
+      });
+    });
+    return;
+  }
+
+  if (command === "sweep-orphans") {
+    await withClient(async (client) => {
+      const { mkdir, writeFile } = await import("node:fs/promises");
+      const dataRoot = process.env.ARCHON_DATA_ROOT ?? process.cwd();
+      const repoRoot = process.cwd();
+      const workspaceSlug = process.env.ARCHON_WORKSPACE_SLUG ?? "default";
+      const projectSlug = process.env.ARCHON_PROJECT_SLUG;
+      const projectId = projectSlug ? `project:${workspaceSlug}:${projectSlug}` : undefined;
+      await sweepOrphansCommand(args, {
+        query: async (text, values) => {
+          const result = await client.query(text, values as unknown[]);
+          return { rows: result.rows as Record<string, unknown>[], rowCount: result.rowCount };
+        },
+        withTransaction: async (work) => {
+          await client.query("begin");
+          try {
+            const value = await work();
+            await client.query("commit");
+            return value;
+          } catch (error) {
+            await client.query("rollback");
+            throw error;
+          }
+        },
+        writeFile: async (filePath, content) => {
+          const nodePath = await import("node:path");
+          await mkdir(nodePath.dirname(filePath), { recursive: true });
+          await writeFile(filePath, content, "utf8");
+        },
+        now: () => new Date().toISOString(),
+        writeLine: (line) => { process.stdout.write(`${line}\n`); },
+        dataRoot,
+        repoRoot,
+        projectId
       });
     });
     return;
