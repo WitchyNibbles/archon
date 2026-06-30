@@ -54,6 +54,31 @@ test("heredoc-bypass: data-sink heredoc to stdout that MENTIONS a managed path i
   assert.deepEqual(extractBashReferencedManagedPaths(cmd), [], "a cat-to-stdout heredoc mention is not a managed write");
 });
 
+// --- <<- indented heredoc (tab-stripped body + tab-indented closing delimiter) ---
+
+test("heredoc-bypass: <<- interpreter heredoc with a tab-indented closing delimiter IS flagged", () => {
+  // The `<<-` form lets the closing delimiter be tab-indented. The guard must
+  // still match it, or the executable body evades both the strip and the scan.
+  const cmd = "python3 - <<-'PYEOF'\n\topen('.claude/hooks/evil.mjs','w').write('x')\n\tPYEOF";
+  assert.ok(extractBashReferencedManagedPaths(cmd).includes(".claude"), "<<- executable heredoc must be scanned");
+});
+
+test("heredoc-bypass: <<- data-sink heredoc that MENTIONS a managed path is NOT flagged", () => {
+  const cmd = "cat > docs/x.md <<-'EOF'\n\tsee .claude/settings.json\n\tEOF";
+  assert.deepEqual(extractBashReferencedManagedPaths(cmd), [], "<<- data-sink mention is not a managed write");
+});
+
+test("heredoc-bypass: additional interpreter tokens (ruby, lua) in a heredoc opener ARE flagged", () => {
+  assert.ok(
+    extractBashReferencedManagedPaths("ruby <<'EOF'\nFile.write('.claude/x','y')\nEOF").includes(".claude"),
+    "ruby heredoc must be scanned"
+  );
+  assert.ok(
+    extractBashReferencedManagedPaths("cat <<EOF | lua\nio.open('CLAUDE.md','w')\nEOF").includes("CLAUDE.md"),
+    "lua-piped heredoc must be scanned"
+  );
+});
+
 // --- Pipe / command-substitution that DATA-captures a heredoc is not executable ---
 
 test("heredoc-bypass: a heredoc captured by command substitution $(cat ...) is NOT flagged", () => {

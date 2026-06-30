@@ -1796,7 +1796,7 @@ function scanTextForManagedPrefixes(scanned) {
 // stay data sinks and their managed-path mentions remain non-matches.
 function heredocOpenerIsExecutable(openerLine) {
   if (typeof openerLine !== "string") return false;
-  return /\b(?:python|python2|python3|node|nodejs|deno|bun|ruby|perl|php|bash|sh|zsh|ksh|dash|eval|source|xargs)\b/.test(
+  return /\b(?:python|python2|python3|node|nodejs|deno|bun|ruby|perl|php|bash|sh|zsh|ksh|dash|eval|source|xargs|lua|tclsh|julia|Rscript|swift|osascript|awk|gawk)\b/.test(
     openerLine
   );
 }
@@ -1807,7 +1807,11 @@ function heredocOpenerIsExecutable(openerLine) {
 function extractExecutableHeredocBodies(command) {
   if (typeof command !== "string") return [];
   const bodies = [];
-  const re = /(^|\n)([^\n]*?)<<-?['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n\3[ \t]*(?:\n|$)/g;
+  // The closing delimiter is anchored with optional leading whitespace
+  // (`\n[ \t]*\3`) so a `<<-WORD` heredoc, whose closing delimiter may be
+  // tab-indented, is still matched — otherwise its executable body would not be
+  // scanned (SEC-HEREDOC-BYPASS residual).
+  const re = /(^|\n)([^\n]*?)<<-?['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n[ \t]*\3[ \t]*(?:\n|$)/g;
   let match;
   while ((match = re.exec(command)) !== null) {
     const openerLine = `${match[2] ?? ""} ${match[4] ?? ""}`;
@@ -1852,8 +1856,12 @@ function stripHeredocBodies(command) {
   // do not trigger write-like detection. Handles <<WORD, <<'WORD', <<"WORD",
   // <<`WORD`, and <<-WORD variants. The opener and structure are kept; only the
   // body lines and closing delimiter are removed.
+  // Closing delimiter anchored with optional leading whitespace (`\n[ \t]*\1`)
+  // so a `<<-WORD` heredoc with a tab-indented closing delimiter is stripped too;
+  // otherwise its body would leak past the strip and (after quote-stripping) hide
+  // a managed-path write from the managed-path scan (SEC-HEREDOC-BYPASS residual).
   return command.replace(
-    /<<-?['"`]?(\w+)['"`]?[^\n]*\n[\s\S]*?\n\1[ \t]*(?:\n|$)/g,
+    /<<-?['"`]?(\w+)['"`]?[^\n]*\n[\s\S]*?\n[ \t]*\1[ \t]*(?:\n|$)/g,
     "<<STRIPPED\n"
   );
 }
