@@ -231,6 +231,11 @@ export interface InitTaskCommandOptions {
   now?: string | undefined;
   writePacketMarkdown?: boolean | undefined;
   allowManagedScope?: boolean | undefined;
+  // Reuse path only: when a task with this --id is already in_progress, overwrite
+  // its allowedWriteScope with the supplied scope. Defaults to false so a repeated
+  // init-task call can never silently widen (or narrow) a live task's write scope
+  // — an explicit opt-in is required to change control-layer reach (#118 advisory).
+  updateScope?: boolean | undefined;
 }
 
 export interface InitTaskCommandResult {
@@ -238,6 +243,28 @@ export interface InitTaskCommandResult {
   taskId: string;
   allowedWriteScope: string[];
   packetPath?: string | undefined;
+  // True only when the reuse path kept the existing scope and ignored a DIFFERING
+  // requested scope because --update-scope was not passed. Operators/CLI use this
+  // to surface "scope preserved; pass --update-scope to change it".
+  scopePreserved: boolean;
+}
+
+// Order-insensitive, duplicate-insensitive equality for write-scope lists (scope
+// is a set, not a sequence — display order and repeats are incidental). Compare
+// Set sizes on BOTH sides: a raw length check would falsely match e.g.
+// ["x","x"] vs ["x","y"] (both length 2), masking a real scope change.
+function sameScopeSet(a: readonly string[], b: readonly string[]): boolean {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size !== setB.size) {
+    return false;
+  }
+  for (const entry of setA) {
+    if (!setB.has(entry)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Write the on-disk fallback packet markdown, guarded against path traversal.
@@ -317,12 +344,24 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
         allowManagedScope: options.allowManagedScope
       });
 
-      // Re-apply (possibly updated) scope to the existing task record immutably.
+      // #118 advisory: preserve the existing scope by default. The sanitized
+      // requested scope (template) is only persisted when the caller explicitly
+      // opts in with --update-scope — otherwise a repeated init-task call could
+      // silently widen a live task's control-layer write reach.
+      const requestedScope = template.packet.allowedWriteScope;
+      const existingScope = existingTask.packet.allowedWriteScope;
+      const scopeDiffers = !sameScopeSet(requestedScope, existingScope);
+      const applyNewScope = options.updateScope === true && scopeDiffers;
+      const scopePreserved = scopeDiffers && options.updateScope !== true;
+      const nextScope = applyNewScope ? requestedScope : existingScope;
+
+      // Re-apply scope (or preserve it) on the existing task record immutably.
+      // updateTask is still called on every reuse to bump updatedAt (liveness).
       const reusedTask: TaskRecord = {
         ...existingTask,
         packet: {
           ...existingTask.packet,
-          allowedWriteScope: template.packet.allowedWriteScope
+          allowedWriteScope: nextScope
         },
         updatedAt: now
       };
@@ -341,7 +380,8 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
         runId: reusedTask.runId,
         taskId: reusedTask.packet.taskId,
         allowedWriteScope: [...reusedTask.packet.allowedWriteScope],
-        packetPath
+        packetPath,
+        scopePreserved
       };
     }
   }
@@ -388,7 +428,8 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
     runId: run.id,
     taskId: task.packet.taskId,
     allowedWriteScope: [...task.packet.allowedWriteScope],
-    packetPath
+    packetPath,
+    scopePreserved: false
   };
 }
 
@@ -459,6 +500,7 @@ export async function initTaskCommand(
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   const allowManagedScope = args.includes("--allow-managed-scope");
+  const updateScope = args.includes("--update-scope");
   const taskClassFlag = parseFlag(args, "class");
 
   const projectSlug = env.ARCHON_PROJECT_SLUG;
@@ -481,9 +523,17 @@ export async function initTaskCommand(
       goal,
       allowedWriteScope,
       class: taskClassFlag,
-      allowManagedScope
+      allowManagedScope,
+      updateScope
     });
   });
+
+  if (result.scopePreserved) {
+    console.warn(
+      "init-task: existing task is in_progress and its write scope was PRESERVED; " +
+        "the requested scope differs but was ignored. Re-run with --update-scope to change it."
+    );
+  }
 
   console.log(JSON.stringify(result, null, 2));
 }
