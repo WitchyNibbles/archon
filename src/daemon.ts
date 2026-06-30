@@ -13,6 +13,7 @@ import process from "node:process";
 
 
 import { withClient } from "./admin/db.ts";
+import { reconcileRunClosure } from "./admin/close-run.ts";
 import { type ContinueAnalysisDirectiveClassification } from "./admin/autonomous-summary.ts";
 
 
@@ -453,6 +454,12 @@ export interface ExecuteDaemonCommandOptions extends ExecuteAdvanceActiveTaskCom
   cwd?: string | undefined;
   env?: EnvShape | undefined;
   getProjectRuntimeState: (projectId: string) => Promise<ProjectRuntimeStateRecord | undefined>;
+  /**
+   * closureLoop W1 (both-surfaces): seal a run when the daemon exhausts its queue
+   * — advance gate-satisfied approved tasks to done and seal the run via the
+   * provenance-checked reconciler. Optional + best-effort (see handleDaemonComplete).
+   */
+  reconcileClosure?: ((runId: string) => Promise<void>) | undefined;
   runCodexTurn?: ((input: RunCodexTurnInput) => Promise<RunCodexTurnResult>) | undefined;
   upsertCoverageGaps?: ((runId: string, gaps: CoverageGapRecord[]) => Promise<unknown>) | undefined;
   checkpointRun?: ((
@@ -1258,7 +1265,8 @@ export async function executeDaemonCommandFromArgs(
             cycles,
             getSessionId: () => latestSessionId,
             blockedResult,
-            advanceActiveTask: executeAdvanceActiveTaskCommandFromArgs
+            advanceActiveTask: executeAdvanceActiveTaskCommandFromArgs,
+            reconcileClosure: options.reconcileClosure
           }
         );
         if (completeResult !== undefined) return completeResult;
@@ -1370,6 +1378,21 @@ export async function daemonCommand(args: readonly string[]) {
         },
         getStatusSnapshot(runId) {
           return service.getStatus(runId);
+        },
+        // W1 both-surfaces: seal a run (advance approved→done, provenance-checked)
+        // when the daemon exhausts its queue. Silent writeLine — the daemon logs
+        // its own cycle records.
+        reconcileClosure: async (runId) => {
+          await reconcileRunClosure(runId, true, {
+            getStatusSnapshot: (id) => service.getStatus(id),
+            getReviews: (id, taskId) => store.getReviews(id, taskId),
+            getApprovals: (id, taskId) => store.getApprovals(id, taskId),
+            getReviewFloorReductions: (id, taskId) => store.getReviewFloorReductions(id, taskId),
+            updateTask: (taskRecord) => store.updateTask(taskRecord),
+            updateRun: (runRecord) => store.updateRun(runRecord),
+            now: () => new Date().toISOString(),
+            writeLine: () => {}
+          });
         },
         getExecutionPlan(runId, staleAfterHours) {
           return service.getExecutionPlan(runId, { staleAfterHours });
@@ -1533,6 +1556,21 @@ export async function supervisorCommand(args: readonly string[]) {
         },
         getStatusSnapshot(runId) {
           return service.getStatus(runId);
+        },
+        // W1 both-surfaces: seal a run (advance approved→done, provenance-checked)
+        // when the daemon exhausts its queue. Silent writeLine — the daemon logs
+        // its own cycle records.
+        reconcileClosure: async (runId) => {
+          await reconcileRunClosure(runId, true, {
+            getStatusSnapshot: (id) => service.getStatus(id),
+            getReviews: (id, taskId) => store.getReviews(id, taskId),
+            getApprovals: (id, taskId) => store.getApprovals(id, taskId),
+            getReviewFloorReductions: (id, taskId) => store.getReviewFloorReductions(id, taskId),
+            updateTask: (taskRecord) => store.updateTask(taskRecord),
+            updateRun: (runRecord) => store.updateRun(runRecord),
+            now: () => new Date().toISOString(),
+            writeLine: () => {}
+          });
         },
         getExecutionPlan(runId, staleAfterHours) {
           return service.getExecutionPlan(runId, { staleAfterHours });

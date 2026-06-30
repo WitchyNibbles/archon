@@ -111,6 +111,14 @@ export interface DaemonCompleteDeps {
   blockedResult: DaemonBlockedResultBuilder;
   /** Injectable advance function — production: executeAdvanceActiveTaskCommandFromArgs. */
   advanceActiveTask: AdvanceActiveTaskFn;
+  /**
+   * closureLoop W1 (both-surfaces): when the queue is exhausted, advance
+   * gate-satisfied approved tasks to done and seal the run (provenance-checked
+   * reconciler). Optional + best-effort — a closure failure must NEVER crash the
+   * daemon loop, so it is wrapped in try/catch. Omitted in unit tests that do not
+   * exercise closure.
+   */
+  reconcileClosure?: ((runId: string) => Promise<void>) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +205,16 @@ export async function handleDaemonComplete(
   });
 
   if (!advanced.result.nextTaskId) {
+    // W1 both-surfaces: the queue is exhausted — seal the run by advancing
+    // gate-satisfied approved tasks to done (provenance-checked). Best-effort:
+    // never let a closure failure crash the autonomy loop.
+    if (deps.reconcileClosure) {
+      try {
+        await deps.reconcileClosure(activeRunId);
+      } catch {
+        // closure is advisory wiring, not a gate — swallow and continue to report completion.
+      }
+    }
     const refreshedState: ProjectRuntimeStateRecord | undefined =
       await options.getProjectRuntimeState(projectId);
     return {
