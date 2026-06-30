@@ -460,9 +460,12 @@ export async function sweepOrphansCommand(args: readonly string[], deps: SweepOr
   const locks = await fetchActiveLocks(deps.query, affectedRunIds);
   const runs = await fetchRunsByIds(deps.query, affectedRunIds);
 
-  // 3. Pure predicate.
+  // 3. Pure predicate. `allTasks` is the full task set of every affected run
+  //    (a superset of the candidate-status `scanned` rows), so run-sealing sees
+  //    every surviving task. We pass it directly — never fall back to `scanned`,
+  //    which would omit terminal survivors and vacuously over-seal runs.
   const { candidates, sealableRunIds } = findSweepableOrphans(
-    allTasks.length > 0 ? allTasks : scanned,
+    allTasks,
     runs,
     reviewCounts,
     approvalCounts,

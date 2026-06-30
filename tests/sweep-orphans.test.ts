@@ -127,6 +127,19 @@ test("findSweepableOrphans: claimed_by is NOT a rail — manager-claimed orphans
   assert.equal(plan([t], { locks }).candidates.length, 0, "active lock still excludes");
 });
 
+test("findSweepableOrphans: allow-list matches by task id (UUID) as well as task_key", () => {
+  // Recent run is heuristic-excluded; allow-listing by the task's UUID overrides it.
+  const t = task({ id: "uuid-1", run_id: RECENT_RUN, task_key: "k1", status: "in_progress" });
+  assert.equal(plan([t]).candidates.length, 0, "excluded under heuristic");
+  assert.equal(plan([t], { allowList: ["uuid-1"] }).candidates.length, 1, "allow-list by id overrides");
+});
+
+test("findSweepableOrphans: a task whose run is missing is excluded under heuristic but allow-list overrides", () => {
+  const t = task({ id: "t1", run_id: "99999999-9999-9999-9999-999999999999", task_key: "k1", status: "in_progress" });
+  assert.equal(plan([t]).candidates.length, 0, "no run row → cannot verify age → excluded");
+  assert.equal(plan([t], { allowList: ["k1"] }).candidates.length, 1, "allow-list overrides missing run");
+});
+
 test("findSweepableOrphans: a run becomes sealable when every task is swept or already terminal", () => {
   const tasks = [
     task({ id: "t1", run_id: OLD_RUN, task_key: "k1", status: "in_progress" }),
@@ -234,8 +247,34 @@ test("sweepOrphansCommand: --confirm writes a backup then marks tasks done and s
   assert.equal(backup.candidateTasks[0].status, "in_progress", "backup captures original status for rollback");
 
   const updates = db.executed.filter((e) => e.text.toLowerCase().startsWith("update"));
-  assert.ok(updates.some((u) => u.text.toLowerCase().includes("tasks")), "marks tasks");
-  assert.ok(updates.some((u) => u.text.toLowerCase().includes("runs")), "seals the run");
+  const taskUpdate = updates.find((u) => u.text.toLowerCase().includes("tasks"));
+  const runUpdate = updates.find((u) => u.text.toLowerCase().includes("runs"));
+  assert.ok(taskUpdate, "marks tasks");
+  assert.ok(runUpdate, "seals the run");
+  // The UPDATE must actually carry the candidate ids — an empty values array
+  // would mean the mutation targeted nothing (a silent no-op).
+  assert.ok((taskUpdate!.values?.length ?? 0) > 0, "tasks UPDATE carries a non-empty values array");
+  assert.ok(Array.isArray(taskUpdate!.values?.[0]) && (taskUpdate!.values![0] as unknown[]).length === 1, "tasks UPDATE targets the one candidate id");
+  assert.ok((runUpdate!.values?.length ?? 0) > 0, "runs UPDATE carries a non-empty values array");
+});
+
+test("sweepOrphansCommand: --backup must be absolute and end with .json", async () => {
+  const mk = () => {
+    const db = emptyDb();
+    db.runs = [{ id: OLD_RUN, status: "in_progress", created_at: OLD_CREATED }];
+    db.tasks = [{ id: "t1", run_id: OLD_RUN, task_key: "k1", status: "in_progress", claimed_by: null }];
+    return db;
+  };
+  await assert.rejects(
+    () => sweepOrphansCommand(["--older-than-days", "1", "--confirm", "--backup", "relative/path.json"], makeDeps(mk(), [], [])),
+    /absolute/i,
+    "rejects a relative backup path"
+  );
+  await assert.rejects(
+    () => sweepOrphansCommand(["--older-than-days", "1", "--confirm", "--backup", "/repo/data/backup.txt"], makeDeps(mk(), [], [])),
+    /\.json/i,
+    "rejects a non-.json backup path"
+  );
 });
 
 test("sweepOrphansCommand: --confirm with no candidates writes nothing", async () => {

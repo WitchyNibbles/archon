@@ -348,6 +348,20 @@ Out-of-range `ARCHON_MAX_RESPAWNS_PER_TASK` values resolve to the default `8` (n
 
 ---
 
+## 9. What ships (reference) <!-- was §8 -->
+
+- `archon autonomous-enable` — operator command to enable/disable the daemon's autonomous execution
+  loop for a run (`src/admin/autonomous-enable.ts`). See §8 above.
+- `archon sweep-orphans` — operator command to mark-close historical twinless orphan tasks/runs
+  (`src/admin/sweep-orphans.ts`). See §10 below.
+- `archon:daemon` npm script — the wired consumer entrypoint (`src/admin/archon.ts daemon`).
+- The interactive parachute hooks — `.claude/hooks/archon-session-start.mjs` (registration) and
+  `.claude/hooks/archon-pre-compact.mjs` (handoff commit).
+- `.env.archon.example` — documents every knob in Part 2.
+- The respawn budget bound `[1, 50]` (reject-to-default on invalid — an out-of-range value resolves
+  to `8`, it is **not** clamped to the nearest bound) and the cross-process file-lock lease — the
+  safety guards that bound a single daemon run.
+
 ## 10. Historical orphan sweep (`archon sweep-orphans`, closureLoop W4)
 
 Over time, manager control-writes and aborted cycles leave runtime tasks (and their runs) stuck in
@@ -366,7 +380,8 @@ instead of deleting them, so the action is fully reversible from the backup.
 - **Hard rails (never overridable, even by `--allow-list`):** the active run is never swept; an
   `approved`/`done`/`blocked` task is never swept; a task with a recorded approval is never swept.
 - **Heuristic rails (overridable by `--allow-list`):** passed reviews, run newer than the age cutoff,
-  an active scope lock, or a currently-claimed task.
+  or an active scope lock. (`claimed_by` is intentionally NOT a rail — manager control-write tasks are
+  permanently `claimed_by="manager"`; the active scope lock is the real in-use signal.)
 
 ### Flags
 
@@ -404,15 +419,3 @@ update runs set status = '<original_status>' where id = '<run uuid>';
 
 (Original statuses are almost always `in_progress`. The `sweptOrphan`/`sweptAt` payload keys are the
 audit marker for swept rows.)
-
-## 9. What ships (reference) <!-- was §8 -->
-
-- `archon autonomous-enable` — operator command to enable/disable the daemon's autonomous execution
-  loop for a run (`src/admin/autonomous-enable.ts`). See §8 above.
-- `archon:daemon` npm script — the wired consumer entrypoint (`src/admin/archon.ts daemon`).
-- The interactive parachute hooks — `.claude/hooks/archon-session-start.mjs` (registration) and
-  `.claude/hooks/archon-pre-compact.mjs` (handoff commit).
-- `.env.archon.example` — documents every knob in Part 2.
-- The respawn budget bound `[1, 50]` (reject-to-default on invalid — an out-of-range value resolves
-  to `8`, it is **not** clamped to the nearest bound) and the cross-process file-lock lease — the
-  safety guards that bound a single daemon run.
