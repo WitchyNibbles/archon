@@ -153,14 +153,47 @@ export async function updateTask(client: SqlClient, task: TaskRecord): Promise<v
       );
     }
   }
+  // Sync ALL mutable packet-derived columns — not just status/claimed_by/payload.
+  // The PreToolUse hook (and other queries) read these COLUMNS directly (notably
+  // allowed_write_scope), so persisting only payload would let the row drift from
+  // the packet and silently no-op a scope/review/etc. update at the column layer.
+  // Immutable columns (id, run_id, task_key, workspace_id, project_id, class,
+  // created_at) are intentionally NOT in the SET clause.
   await client.query(
     `update tasks
-     set status = $2,
-         claimed_by = $3,
-         payload = $4::jsonb,
+     set title = $2,
+         owner_role = $3,
+         status = $4,
+         allowed_write_scope = $5,
+         out_of_scope = $6,
+         acceptance_criteria = $7,
+         verification_steps = $8,
+         required_reviews = $9,
+         security_checks = $10,
+         anti_patterns = $11,
+         rollback_notes = $12,
+         handoff_format = $13,
+         payload = $14::jsonb,
+         claimed_by = $15,
          updated_at = now()
      where id = $1`,
-    [task.id, task.status, task.claimedBy ?? null, JSON.stringify(task.packet)]
+    [
+      task.id,
+      task.packet.title,
+      task.packet.ownerRole,
+      task.status,
+      task.packet.allowedWriteScope,
+      task.packet.outOfScope,
+      task.packet.acceptanceCriteria,
+      task.packet.verificationSteps,
+      task.packet.requiredReviews,
+      task.packet.securityChecks,
+      task.packet.antiPatterns,
+      task.packet.rollbackNotes,
+      task.packet.handoffFormat,
+      JSON.stringify(task.packet),
+      task.claimedBy ?? null
+    ]
   );
 }
 
