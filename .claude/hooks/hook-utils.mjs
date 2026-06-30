@@ -1758,43 +1758,18 @@ export function isVerificationCommand(command) {
   return verificationCommandPatterns.some((pattern) => pattern.test(command));
 }
 
-export function extractBashReferencedManagedPaths(command) {
-  if (typeof command !== "string" || command.trim().length === 0) {
-    return [];
-  }
-
-  // Strip heredoc bodies before scanning so that documentation, scripts, or data
-  // written into a heredoc that merely MENTION a managed path do not trip the
-  // guard. An actual write target (e.g. `cat > .claude/x <<EOF`) keeps the
-  // redirect outside the body, so real managed writes remain detected.
-  let scanned = stripHeredocBodies(command);
-
-  // Strip quoted strings so that a managed-path prefix that appears only inside
-  // a grep/sed pattern or a quoted argument (e.g. grep -rn "\.claude" . or
-  // grep -rn 'CLAUDE.md' .) does not falsely trigger the guard.  Single-quoted
-  // strings are stripped entirely; double-quoted strings have their contents
-  // replaced with a placeholder that cannot match any managed prefix.
-  scanned = scanned
-    .replace(/'[^']*'/g, "''")
-    .replace(/"[^"]*"/g, '""');
-
+// Scan a block of already-prepared text for managed-path prefixes. A prefix
+// matches only when it is NOT a suffix of an absolute path from outside the repo
+// (preceding char "/" is skipped, e.g. ~/.claude/... or /some/path/.claude/...).
+function scanTextForManagedPrefixes(scanned) {
   const matches = [];
   for (const prefix of managedPathPrefixes) {
     const plainPrefix = prefix.replace(/\/$/, "");
-    // Use a word-boundary style check: the prefix must appear as a standalone
-    // token or path component, NOT as a suffix of an absolute path from outside
-    // the repo (e.g. /home/user/.claude/projects/... should not flag .claude/).
-    // A match at position i is an outside-repo absolute-path hit when the
-    // character immediately before the prefix is "/".  Such matches are skipped.
     const candidates = [prefix, plainPrefix];
     let found = false;
     for (const candidate of candidates) {
       let idx = scanned.indexOf(candidate);
       while (idx !== -1) {
-        // Skip when the matched prefix is a suffix of an absolute path outside
-        // the repo root (preceding char is "/").  The intent is to avoid
-        // flagging ~/.claude/... or /some/path/.claude/... appearing in a
-        // command that reads from them (e.g. cp ~/.claude/settings.json /tmp/).
         const preceding = idx > 0 ? scanned[idx - 1] : "";
         if (preceding !== "/") {
           found = true;
@@ -1808,6 +1783,66 @@ export function extractBashReferencedManagedPaths(command) {
       matches.push(plainPrefix);
     }
   }
+  return matches;
+}
+
+// SEC-HEREDOC-BYPASS: decide whether a heredoc body will be EXECUTED rather than
+// treated as data. The real execution vectors all put an INTERPRETER TOKEN on the
+// opener line — directly (`python3 <<EOF`), after a pipe (`cat <<EOF | python3`,
+// whose opener line includes the trailing `| python3`), or inside a command
+// substitution (`eval "$(python3 <<EOF`). Matching the interpreter token alone is
+// therefore both sufficient and precise: a bare pipe or `$(` is NOT treated as
+// executable, so `cat <<EOF | tee f` and `"$(cat <<EOF)"` (data captured, not run)
+// stay data sinks and their managed-path mentions remain non-matches.
+function heredocOpenerIsExecutable(openerLine) {
+  if (typeof openerLine !== "string") return false;
+  return /\b(?:python|python2|python3|node|nodejs|deno|bun|ruby|perl|php|bash|sh|zsh|ksh|dash|eval|source|xargs)\b/.test(
+    openerLine
+  );
+}
+
+// Return the bodies of EXECUTABLE heredocs only. The opener line is reconstructed
+// from the text BEFORE `<<` and the text AFTER the delimiter word on the same
+// line, so a trailing `| python3` (e.g. `cat <<EOF | python3`) is still seen.
+function extractExecutableHeredocBodies(command) {
+  if (typeof command !== "string") return [];
+  const bodies = [];
+  const re = /(^|\n)([^\n]*?)<<-?['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n\3[ \t]*(?:\n|$)/g;
+  let match;
+  while ((match = re.exec(command)) !== null) {
+    const openerLine = `${match[2] ?? ""} ${match[4] ?? ""}`;
+    if (heredocOpenerIsExecutable(openerLine)) {
+      bodies.push(match[5] ?? "");
+    }
+  }
+  return bodies;
+}
+
+export function extractBashReferencedManagedPaths(command) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return [];
+  }
+
+  // Scan A: strip ALL heredoc bodies, then quoted strings, then scan. This
+  // detects managed redirect targets OUTSIDE heredoc bodies (e.g.
+  // `cat > .claude/x <<EOF`) while ignoring managed paths that appear only
+  // inside grep/sed patterns, quoted arguments, or data heredocs.
+  let scanned = stripHeredocBodies(command);
+  scanned = scanned
+    .replace(/'[^']*'/g, "''")
+    .replace(/"[^"]*"/g, '""');
+  const matches = scanTextForManagedPrefixes(scanned);
+
+  // Scan B (SEC-HEREDOC-BYPASS): scan EXECUTABLE heredoc bodies RAW — without
+  // quote stripping, because the write target is a quoted string argument (e.g.
+  // `open('.claude/x','w')`). Data-sink heredoc bodies are excluded by
+  // extractExecutableHeredocBodies, preserving the doc/data-mention exemption.
+  for (const body of extractExecutableHeredocBodies(command)) {
+    for (const hit of scanTextForManagedPrefixes(body)) {
+      matches.push(hit);
+    }
+  }
+
   return [...new Set(matches)];
 }
 
