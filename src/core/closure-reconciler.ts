@@ -165,3 +165,30 @@ export function buildTaskEvidence(
 export function countApprovedNotClosed(tasks: readonly { status: string }[]): number {
   return tasks.filter((task) => task.status === "approved").length;
 }
+
+export interface ClosureSignal {
+  authorityLabel: "derived_only";
+  /** Number of tasks that passed gates (approved) but were never advanced to done. */
+  approvedNotClosed: number;
+  taskIds: string[];
+  note: string;
+}
+
+/**
+ * Build the operator-visible "approved-but-not-closed" closure signal for the
+ * status command (W1 visibility). Pure: derived from task status only.
+ */
+export function buildClosureSignal(
+  tasks: readonly { status: string; taskId: string }[]
+): ClosureSignal {
+  const approved = tasks.filter((task) => task.status === "approved");
+  return {
+    authorityLabel: "derived_only",
+    approvedNotClosed: approved.length,
+    taskIds: approved.map((task) => task.taskId),
+    note:
+      approved.length > 0
+        ? `${approved.length} task(s) passed gates but are not advanced to done — run \`archon close-run\` to seal`
+        : "no approved-but-unclosed tasks"
+  };
+}

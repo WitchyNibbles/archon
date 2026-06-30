@@ -471,3 +471,29 @@ test("reconcileAllRuns: an empty run list is a no-op", async () => {
   assert.equal(result.advancedCount, 0);
   assert.equal(result.sealedCount, 0);
 });
+
+// ---------------------------------------------------------------------------
+// buildClosureSignal — status command visibility (statusApprovedNotClosed)
+// ---------------------------------------------------------------------------
+
+test("buildClosureSignal: counts approved-but-not-closed tasks and lists their ids", async () => {
+  const { buildClosureSignal } = await import("../src/core/closure-reconciler.ts");
+  const signal = buildClosureSignal([
+    { status: "approved", taskId: "a" },
+    { status: "done", taskId: "b" },
+    { status: "in_progress", taskId: "c" },
+    { status: "approved", taskId: "d" }
+  ]);
+  assert.equal(signal.approvedNotClosed, 2);
+  assert.deepEqual(signal.taskIds, ["a", "d"]);
+  assert.equal(signal.authorityLabel, "derived_only");
+  assert.match(signal.note, /close-run/);
+});
+
+test("buildClosureSignal: clean note when nothing is approved-but-unclosed", async () => {
+  const { buildClosureSignal } = await import("../src/core/closure-reconciler.ts");
+  const signal = buildClosureSignal([{ status: "done", taskId: "a" }, { status: "in_progress", taskId: "b" }]);
+  assert.equal(signal.approvedNotClosed, 0);
+  assert.deepEqual(signal.taskIds, []);
+  assert.match(signal.note, /no approved-but-unclosed/);
+});
