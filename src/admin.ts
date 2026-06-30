@@ -37,7 +37,7 @@ import { initTaskCommand } from "./admin/init-task.ts";
 import { recordCouncilCommand } from "./admin/record-council.ts";
 import { pruneOrphansCommand } from "./admin/prune-orphans.ts";
 import { sweepOrphansCommand } from "./admin/sweep-orphans.ts";
-import { reconcileRunClosure } from "./admin/close-run.ts";
+import { reconcileRunClosure, reconcileAllRuns } from "./admin/close-run.ts";
 import { ArchonCoreService } from "./core/service.ts";
 import { continueSessionCommand } from "./admin/continue-session.ts";
 import { forgeCommand } from "./admin/forge.ts";
@@ -334,6 +334,7 @@ async function main() {
 
   if (command === "close-run") {
     const confirm = args.includes("--confirm");
+    const allRuns = args.includes("--all");
     const runIdFlagIdx = args.indexOf("--run-id");
     const runIdArg = runIdFlagIdx !== -1 ? args[runIdFlagIdx + 1] : undefined;
     if (runIdFlagIdx !== -1 && (runIdArg === undefined || runIdArg.startsWith("--"))) {
@@ -344,22 +345,15 @@ async function main() {
       const service = new ArchonCoreService(store);
       const workspaceSlug = process.env.ARCHON_WORKSPACE_SLUG ?? "default";
       const projectSlug = process.env.ARCHON_PROJECT_SLUG;
-      let runId = runIdArg && runIdArg !== "latest" ? runIdArg : undefined;
-      if (!runId) {
-        const latest = projectSlug ? await store.findLatestRun({ workspaceSlug, projectSlug }) : undefined;
-        runId = latest?.id;
-      }
-      if (!runId) {
-        throw new Error("close-run: could not resolve a run — pass --run-id <id> or set ARCHON_PROJECT_SLUG");
-      }
-      await reconcileRunClosure(runId, confirm, {
-        getStatusSnapshot: (id) => service.getStatus(id),
-        getReviews: (id, taskId) => store.getReviews(id, taskId),
-        getApprovals: (id, taskId) => store.getApprovals(id, taskId),
-        getReviewFloorReductions: (id, taskId) => store.getReviewFloorReductions(id, taskId),
-        updateTask: (taskRecord) => store.updateTask(taskRecord),
-        updateRun: (runRecord) => store.updateRun(runRecord),
-        onRunSealed: async (sealedRunId) => {
+      const TERMINAL_RUN_STATUSES = new Set(["done", "memorized"]);
+      const closeRunDeps = {
+        getStatusSnapshot: (id: string) => service.getStatus(id),
+        getReviews: (id: string, taskId: string) => store.getReviews(id, taskId),
+        getApprovals: (id: string, taskId: string) => store.getApprovals(id, taskId),
+        getReviewFloorReductions: (id: string, taskId: string) => store.getReviewFloorReductions(id, taskId),
+        updateTask: (taskRecord: Parameters<typeof store.updateTask>[0]) => store.updateTask(taskRecord),
+        updateRun: (runRecord: Parameters<typeof store.updateRun>[0]) => store.updateRun(runRecord),
+        onRunSealed: async (sealedRunId: string) => {
           // Best-effort: clear a dangling active-task pointer when its run is sealed.
           if (!projectSlug) return;
           const ctx = await store.getProjectContext({ workspaceSlug, projectSlug });
@@ -370,8 +364,30 @@ async function main() {
           }
         },
         now: () => new Date().toISOString(),
-        writeLine: (line) => { process.stdout.write(`${line}\n`); }
-      });
+        writeLine: (line: string) => { process.stdout.write(`${line}\n`); }
+      };
+
+      if (allRuns) {
+        if (!projectSlug) {
+          throw new Error("close-run --all: ARCHON_PROJECT_SLUG is required to enumerate the project's runs");
+        }
+        const runs = await store.findRunsByProjectActivity({ workspaceSlug, projectSlug, timezone: "UTC" });
+        const candidateRunIds = runs
+          .filter((run) => !TERMINAL_RUN_STATUSES.has(run.status))
+          .map((run) => run.id);
+        await reconcileAllRuns(candidateRunIds, confirm, closeRunDeps);
+        return;
+      }
+
+      let runId = runIdArg && runIdArg !== "latest" ? runIdArg : undefined;
+      if (!runId) {
+        const latest = projectSlug ? await store.findLatestRun({ workspaceSlug, projectSlug }) : undefined;
+        runId = latest?.id;
+      }
+      if (!runId) {
+        throw new Error("close-run: could not resolve a run — pass --run-id <id> or set ARCHON_PROJECT_SLUG");
+      }
+      await reconcileRunClosure(runId, confirm, closeRunDeps);
     });
     return;
   }
