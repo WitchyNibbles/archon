@@ -119,6 +119,14 @@ export interface DaemonCompleteDeps {
    * exercise closure.
    */
   reconcileClosure?: ((runId: string) => Promise<void>) | undefined;
+  /**
+   * Best-effort observer for a reconcileClosure failure. Closure is advisory
+   * wiring, not a gate, so its failure must never crash the loop — but it must
+   * not vanish silently either. Production wires this to a stderr warn; tests
+   * assert it fires. Optional: when omitted the failure is still swallowed
+   * (loop survives) but unobserved.
+   */
+  onClosureError?: ((error: unknown, runId: string) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,8 +219,11 @@ export async function handleDaemonComplete(
     if (deps.reconcileClosure) {
       try {
         await deps.reconcileClosure(activeRunId);
-      } catch {
-        // closure is advisory wiring, not a gate — swallow and continue to report completion.
+      } catch (error) {
+        // Closure is advisory wiring, not a gate — never crash the loop. But
+        // surface the failure (don't silently swallow): hand it to the observer
+        // so the daemon can warn. Completion is still reported below.
+        deps.onClosureError?.(error, activeRunId);
       }
     }
     const refreshedState: ProjectRuntimeStateRecord | undefined =

@@ -75,6 +75,8 @@ function makeHarness(opts: {
   initialSession?: string;
   /** W1: injectable closure reconciler invoked on the exhausted-queue path. */
   reconcileClosure?: (runId: string) => Promise<void>;
+  /** Observer for a reconcileClosure failure (must fire instead of silent swallow). */
+  onClosureError?: (error: unknown, runId: string) => void;
 }): Harness {
   const cycles: DaemonCycleRecord[] = [];
   const blockedCalls: DaemonBlockedResultInput[] = [];
@@ -128,7 +130,8 @@ function makeHarness(opts: {
     getSessionId: () => session,
     blockedResult,
     advanceActiveTask: opts.advanceActiveTask ?? defaultAdvanceActiveTask,
-    reconcileClosure: opts.reconcileClosure
+    reconcileClosure: opts.reconcileClosure,
+    onClosureError: opts.onClosureError
   };
 
   return { input, deps, cycles, blockedCalls, session: () => session };
@@ -446,4 +449,37 @@ test("handleDaemonComplete: a throwing reconcileClosure does NOT crash the loop 
   });
   const result = await handleDaemonComplete(harness.input, harness.deps);
   assert.equal(result?.status, "completed", "completion is still reported despite a closure failure");
+});
+
+test("handleDaemonComplete: a throwing reconcileClosure is SURFACED via onClosureError (not silently swallowed)", async () => {
+  const observed: { error: unknown; runId: string }[] = [];
+  const failure = new Error("seal failed");
+  const harness = makeHarness({
+    advanceActiveTask: exhaustingAdvance,
+    getProjectRuntimeState: async () => ({ activeRunId: "run-1", activeTaskId: null }),
+    reconcileClosure: async () => { throw failure; },
+    onClosureError: (error, runId) => observed.push({ error, runId })
+  });
+
+  const result = await handleDaemonComplete(harness.input, harness.deps);
+
+  assert.equal(result?.status, "completed", "completion is still reported");
+  assert.equal(observed.length, 1, "onClosureError must fire exactly once on a closure failure");
+  assert.equal(observed[0]!.error, failure, "the original error is handed to the observer");
+  assert.equal(observed[0]!.runId, "run-1", "the failing run id is handed to the observer");
+});
+
+test("handleDaemonComplete: onClosureError is NOT called when closure succeeds", async () => {
+  const observed: unknown[] = [];
+  const harness = makeHarness({
+    advanceActiveTask: exhaustingAdvance,
+    getProjectRuntimeState: async () => ({ activeRunId: "run-1", activeTaskId: null }),
+    reconcileClosure: async () => { /* succeeds */ },
+    onClosureError: (error) => observed.push(error)
+  });
+
+  const result = await handleDaemonComplete(harness.input, harness.deps);
+
+  assert.equal(result?.status, "completed");
+  assert.equal(observed.length, 0, "onClosureError must not fire when closure succeeds");
 });

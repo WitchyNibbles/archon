@@ -1266,7 +1266,12 @@ export async function executeDaemonCommandFromArgs(
             getSessionId: () => latestSessionId,
             blockedResult,
             advanceActiveTask: executeAdvanceActiveTaskCommandFromArgs,
-            reconcileClosure: options.reconcileClosure
+            reconcileClosure: options.reconcileClosure,
+            onClosureError: (error, runId) => {
+              process.stderr.write(
+                `[archon-loop] closure reconcile failed for run ${runId} (completion still reported): ${String(error)}\n`
+              );
+            }
           }
         );
         if (completeResult !== undefined) return completeResult;
