@@ -7,7 +7,7 @@ import {
   countApprovedNotClosed,
   type ClosureTaskEvidence
 } from "../src/core/closure-reconciler.ts";
-import { reconcileRunClosure, type CloseRunDeps } from "../src/admin/close-run.ts";
+import { reconcileRunClosure, reconcileAllRuns, type CloseRunDeps } from "../src/admin/close-run.ts";
 import type {
   TaskRecord,
   RunRecord,
@@ -363,4 +363,56 @@ test("reconcileRunClosure: --confirm does NOT advance or seal a provenance-block
   assert.equal(calls.updatedTasks.length, 0, "blocked task must not be advanced");
   assert.equal(calls.updatedRuns.length, 0, "run must not be sealed");
   assert.ok(log.some((l) => l.includes("BLOCKED")));
+});
+
+// ---------------------------------------------------------------------------
+// reconcileAllRuns (batch, closeRunBatch)
+// ---------------------------------------------------------------------------
+
+test("reconcileAllRuns: --confirm seals every all-terminal run and skips runs with non-terminal tasks", async () => {
+  // runA: all done → seals. runB: an in_progress task → not sealed.
+  const snapshots: Record<string, RunStatusSnapshot> = {
+    runA: makeSnapshot([task("a1", "done")]),
+    runB: makeSnapshot([task("b1", "in_progress")])
+  };
+  snapshots.runA!.run.id = "runA";
+  snapshots.runB!.run.id = "runB";
+  const calls = { updatedTasks: [] as TaskRecord[], updatedRuns: [] as RunRecord[], sealed: [] as string[] };
+  const log: string[] = [];
+  const deps: CloseRunDeps = {
+    getStatusSnapshot: async (id) => snapshots[id]!,
+    getReviews: async () => [],
+    getApprovals: async () => [],
+    getReviewFloorReductions: async () => [],
+    updateTask: async (t) => { calls.updatedTasks.push(t); },
+    updateRun: async (r) => { calls.updatedRuns.push(r); },
+    onRunSealed: async (id) => { calls.sealed.push(id); },
+    now: () => "2026-06-30T12:00:00.000Z",
+    writeLine: (l) => log.push(l)
+  };
+
+  const result = await reconcileAllRuns(["runA", "runB"], true, deps);
+  assert.equal(result.sealedCount, 1, "only the all-terminal run seals");
+  assert.deepEqual(calls.updatedRuns.map((r) => r.id), ["runA"]);
+  assert.deepEqual(calls.sealed, ["runA"]);
+});
+
+test("reconcileAllRuns: dry-run mutates nothing and reports seal-ready count", async () => {
+  const snapshots: Record<string, RunStatusSnapshot> = { runA: makeSnapshot([task("a1", "done")]) };
+  snapshots.runA!.run.id = "runA";
+  const calls = { updatedTasks: [] as TaskRecord[], updatedRuns: [] as RunRecord[], sealed: [] as string[] };
+  const log: string[] = [];
+  const deps: CloseRunDeps = {
+    getStatusSnapshot: async (id) => snapshots[id]!,
+    getReviews: async () => [], getApprovals: async () => [], getReviewFloorReductions: async () => [],
+    updateTask: async (t) => { calls.updatedTasks.push(t); },
+    updateRun: async (r) => { calls.updatedRuns.push(r); },
+    onRunSealed: async (id) => { calls.sealed.push(id); },
+    now: () => "2026-06-30T12:00:00.000Z",
+    writeLine: (l) => log.push(l)
+  };
+  const result = await reconcileAllRuns(["runA"], false, deps);
+  assert.equal(result.sealedCount, 0);
+  assert.equal(calls.updatedRuns.length, 0);
+  assert.ok(log.some((l) => l.includes("seal-ready")));
 });

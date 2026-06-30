@@ -123,3 +123,40 @@ export async function reconcileRunClosure(
   }
   return { plan, applied: true, sealedRun };
 }
+
+export interface CloseAllRunsResult {
+  results: { runId: string; sealedRun: boolean; advanced: number }[];
+  sealedCount: number;
+  advancedCount: number;
+}
+
+/**
+ * Batch closure: reconcile every supplied run id (the caller resolves these to
+ * the project's non-terminal runs). Dry-run/confirm semantics are per-run via
+ * `reconcileRunClosure`; this is a thin, deterministic loop over them.
+ */
+export async function reconcileAllRuns(
+  runIds: readonly string[],
+  confirm: boolean,
+  deps: CloseRunDeps
+): Promise<CloseAllRunsResult> {
+  const results: CloseAllRunsResult["results"] = [];
+  let sealedCount = 0;
+  let wouldSealCount = 0;
+  let advancedCount = 0;
+  deps.writeLine(`close-run --all: ${confirm ? "CONFIRM" : "DRY-RUN"} over ${runIds.length} non-terminal run(s)`);
+  for (const runId of runIds) {
+    const result = await reconcileRunClosure(runId, confirm, deps);
+    const advanced = result.plan.closeable.length;
+    results.push({ runId, sealedRun: result.sealedRun, advanced });
+    if (result.sealedRun) sealedCount += 1;
+    if (result.plan.sealRun) wouldSealCount += 1;
+    advancedCount += advanced;
+  }
+  deps.writeLine(
+    confirm
+      ? `close-run --all: sealed ${sealedCount}/${runIds.length} run(s); advanced ${advancedCount} task(s).`
+      : `close-run --all: ${wouldSealCount}/${runIds.length} run(s) seal-ready; ${advancedCount} task(s) closeable.`
+  );
+  return { results, sealedCount, advancedCount };
+}
