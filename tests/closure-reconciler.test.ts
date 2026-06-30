@@ -169,6 +169,45 @@ test("buildTaskEvidence: counts only orchestrator passed reviews and orchestrato
   assert.equal(e.orchestratorApprovals, 1, "only the orchestrator approval counts");
 });
 
+test("buildTaskEvidence: falls back to the full required trio when no reduction exists", () => {
+  const e = buildTaskEvidence(task("t1", "approved"), [], [], []);
+  assert.deepEqual(e.requiredFloor.sort(), ["qa_engineer", "reviewer", "security_reviewer"]);
+});
+
+test("buildTaskEvidence: IGNORES a non-orchestrator floor reduction (C2 — trust source)", () => {
+  const selfReduction: ReviewFloorReductionRecord = {
+    id: "fr-evil",
+    runId: "run-1",
+    taskId: "t1",
+    derivedClass: "docs_only",
+    droppedRoles: ["qa_engineer", "security_reviewer"],
+    effectiveFloor: ["reviewer"],
+    writeScopeSnapshot: [],
+    basis: "docs_only",
+    source: "self", // NOT orchestrator → must be ignored
+    decidedAt: "2026-06-30T00:00:00.000Z"
+  };
+  const e = buildTaskEvidence(task("t1", "approved"), [], [], [selfReduction]);
+  assert.deepEqual(e.requiredFloor.sort(), ["qa_engineer", "reviewer", "security_reviewer"], "a self-sourced reduction must not lower the floor");
+});
+
+test("buildTaskEvidence: skips an empty-effectiveFloor reduction (guard) and falls back to the trio", () => {
+  const emptyReduction: ReviewFloorReductionRecord = {
+    id: "fr-empty",
+    runId: "run-1",
+    taskId: "t1",
+    derivedClass: "docs_only",
+    droppedRoles: [],
+    effectiveFloor: [], // empty → must be skipped, not used as a zero-review floor
+    writeScopeSnapshot: [],
+    basis: "docs_only",
+    source: "orchestrator",
+    decidedAt: "2026-06-30T00:00:00.000Z"
+  };
+  const e = buildTaskEvidence(task("t1", "approved"), [], [], [emptyReduction]);
+  assert.deepEqual(e.requiredFloor.sort(), ["qa_engineer", "reviewer", "security_reviewer"]);
+});
+
 test("buildTaskEvidence: honors an orchestrator review-floor reduction", () => {
   const reduction: ReviewFloorReductionRecord = {
     id: "fr-1",
@@ -273,6 +312,40 @@ test("reconcileRunClosure: --confirm advances closeable tasks and seals a fully-
   assert.equal(calls.updatedRuns.length, 1);
   assert.equal(calls.updatedRuns[0]!.status, "done");
   assert.deepEqual(calls.sealed, ["run-1"]);
+});
+
+test("reconcileRunClosure: --confirm advances closeable tasks but does NOT seal when a non-terminal task remains", async () => {
+  const snap = makeSnapshot([task("t1", "approved"), task("t2", "in_progress")]);
+  const log: string[] = [];
+  const calls = { updatedTasks: [] as TaskRecord[], updatedRuns: [] as RunRecord[], sealed: [] as string[] };
+  // t1 has full provenance; t2 is in_progress.
+  const records = {
+    reviews: {
+      t1: [
+        review("reviewer", "orchestrator", "passed"),
+        review("qa_engineer", "orchestrator", "passed"),
+        review("security_reviewer", "orchestrator", "passed")
+      ]
+    },
+    approvals: { t1: [approval("orchestrator", "approved")] }
+  };
+  const result = await reconcileRunClosure("run-1", true, makeDeps(snap, records, log, calls));
+
+  assert.equal(result.applied, true);
+  assert.equal(result.sealedRun, false, "a remaining non-terminal task must keep the run open");
+  assert.deepEqual(calls.updatedTasks.map((t) => t.packet.taskId), ["t1"], "the closeable task is still advanced");
+  assert.equal(calls.updatedRuns.length, 0);
+});
+
+test("reconcileRunClosure: --confirm seals a run whose tasks are ALL already done", async () => {
+  const snap = makeSnapshot([task("t1", "done"), task("t2", "done")]);
+  const log: string[] = [];
+  const calls = { updatedTasks: [] as TaskRecord[], updatedRuns: [] as RunRecord[], sealed: [] as string[] };
+  const result = await reconcileRunClosure("run-1", true, makeDeps(snap, {}, log, calls));
+
+  assert.equal(calls.updatedTasks.length, 0, "no task advance needed");
+  assert.equal(result.sealedRun, true, "an all-done run (still in_progress) must be sealed");
+  assert.equal(calls.updatedRuns[0]!.status, "done");
 });
 
 test("reconcileRunClosure: --confirm does NOT advance or seal a provenance-blocked approved task", async () => {

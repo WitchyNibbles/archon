@@ -102,7 +102,10 @@ export async function reconcileRunClosure(
   }
 
   let sealedRun = false;
-  if (plan.sealRun) {
+  // Idempotent: only seal a run that is not already terminal — re-running
+  // close-run on a fully-closed run must not re-write the run or re-fire the
+  // sealed hook.
+  if (plan.sealRun && snapshot.run.status !== "done") {
     await deps.updateRun({ ...snapshot.run, status: "done", updatedAt: deps.now() });
     sealedRun = true;
     if (deps.onRunSealed) {
@@ -111,6 +114,12 @@ export async function reconcileRunClosure(
   }
 
   deps.writeLine(`  advanced ${plan.closeable.length} task(s) to done.`);
-  deps.writeLine(`  ${sealedRun ? "sealed the run (status → done)." : "run left open (non-terminal or blocked tasks remain)."}`);
+  if (sealedRun) {
+    deps.writeLine("  sealed the run (status → done).");
+  } else if (plan.sealRun) {
+    deps.writeLine("  run already sealed.");
+  } else {
+    deps.writeLine("  run left open (non-terminal or blocked tasks remain).");
+  }
   return { plan, applied: true, sealedRun };
 }

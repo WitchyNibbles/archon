@@ -126,8 +126,15 @@ export function buildTaskEvidence(
   approvals: readonly ApprovalRecord[],
   floorReductions: readonly ReviewFloorReductionRecord[]
 ): ClosureTaskEvidence {
+  // Security C2: a review-floor reduction lowers the required gate floor, so it
+  // is only trusted when ORCHESTRATOR-recorded — the same source discipline
+  // applied to reviews/approvals below. A non-orchestrator reduction is ignored,
+  // falling back to the full required trio.
   const reduction = floorReductions.find(
-    (entry) => entry.taskId === task.packet.taskId && entry.effectiveFloor.length > 0
+    (entry) =>
+      entry.taskId === task.packet.taskId &&
+      entry.source === "orchestrator" &&
+      entry.effectiveFloor.length > 0
   );
   const requiredFloor = reduction
     ? reduction.effectiveFloor

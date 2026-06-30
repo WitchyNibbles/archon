@@ -336,6 +336,9 @@ async function main() {
     const confirm = args.includes("--confirm");
     const runIdFlagIdx = args.indexOf("--run-id");
     const runIdArg = runIdFlagIdx !== -1 ? args[runIdFlagIdx + 1] : undefined;
+    if (runIdFlagIdx !== -1 && (runIdArg === undefined || runIdArg.startsWith("--"))) {
+      throw new Error("close-run: --run-id requires a value (a run id or 'latest')");
+    }
     await withClient(async (client) => {
       const store = new PostgresStore(client as ConstructorParameters<typeof PostgresStore>[0]);
       const service = new ArchonCoreService(store);
