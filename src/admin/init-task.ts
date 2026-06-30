@@ -249,14 +249,22 @@ export interface InitTaskCommandResult {
   scopePreserved: boolean;
 }
 
-// Order-insensitive equality for write-scope lists (scope is a set, not a
-// sequence — display order is incidental).
+// Order-insensitive, duplicate-insensitive equality for write-scope lists (scope
+// is a set, not a sequence — display order and repeats are incidental). Compare
+// Set sizes on BOTH sides: a raw length check would falsely match e.g.
+// ["x","x"] vs ["x","y"] (both length 2), masking a real scope change.
 function sameScopeSet(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size !== setB.size) {
     return false;
   }
-  const setB = new Set(b);
-  return a.every((entry) => setB.has(entry));
+  for (const entry of setA) {
+    if (!setB.has(entry)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Write the on-disk fallback packet markdown, guarded against path traversal.
