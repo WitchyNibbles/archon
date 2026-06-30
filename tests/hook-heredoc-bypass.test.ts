@@ -112,3 +112,32 @@ test("heredoc-bypass: data-sink heredoc writing a non-managed file is not flagge
   const cmd = "cat > /tmp/out.txt <<'EOF'\njust data\nEOF";
   assert.deepEqual(extractBashReferencedManagedPaths(cmd), []);
 });
+
+// ---------------------------------------------------------------------------
+// heredocGuardResiduals — sequential heredocs, absolute in-repo paths, awk -f -
+// ---------------------------------------------------------------------------
+
+test("heredoc-residual: a SECOND consecutive executable heredoc body is also scanned", () => {
+  const cmd = "python3 <<EOF\nprint('one')\nEOF\nnode <<EOF2\nrequire('fs').writeFileSync('.claude/x','y')\nEOF2";
+  assert.ok(extractBashReferencedManagedPaths(cmd).includes(".claude"), "the managed write in the 2nd heredoc must be detected");
+});
+
+test("heredoc-residual: an ABSOLUTE in-repo path inside an exec body IS flagged (repoRoot-aware)", () => {
+  const cmd = "python3 - <<'EOF'\nopen('/repo/root/.claude/hooks/x.mjs','w').write('e')\nEOF";
+  assert.ok(extractBashReferencedManagedPaths(cmd, "/repo/root").includes(".claude"), "an absolute in-repo managed write must be detected");
+});
+
+test("heredoc-residual: an absolute OUT-of-repo path inside an exec body is NOT flagged", () => {
+  const cmd = "python3 - <<'EOF'\nopen('/home/other/.claude/settings.json','w')\nEOF";
+  assert.deepEqual(extractBashReferencedManagedPaths(cmd, "/repo/root"), [], "a write to a managed path outside the repo is outside archon's jurisdiction");
+});
+
+test("heredoc-residual: awk -f - executes the heredoc as a program → flagged", () => {
+  const cmd = "awk -f - <<'EOF'\nBEGIN{ print \"x\" > \".claude/evil\" }\nEOF";
+  assert.ok(extractBashReferencedManagedPaths(cmd).includes(".claude"), "awk -f - runs the heredoc as code and must be scanned");
+});
+
+test("heredoc-residual: bare awk with an inline program consumes the heredoc as DATA → not flagged", () => {
+  const cmd = "awk '{ print }' <<EOF\n.claude/agents listing\nEOF";
+  assert.deepEqual(extractBashReferencedManagedPaths(cmd), [], "a data heredoc piped into bare awk is not a managed write");
+});
