@@ -352,6 +352,8 @@ Out-of-range `ARCHON_MAX_RESPAWNS_PER_TASK` values resolve to the default `8` (n
 
 - `archon autonomous-enable` — operator command to enable/disable the daemon's autonomous execution
   loop for a run (`src/admin/autonomous-enable.ts`). See §8 above.
+- `archon sweep-orphans` — operator command to mark-close historical twinless orphan tasks/runs
+  (`src/admin/sweep-orphans.ts`). See §10 below.
 - `archon:daemon` npm script — the wired consumer entrypoint (`src/admin/archon.ts daemon`).
 - The interactive parachute hooks — `.claude/hooks/archon-session-start.mjs` (registration) and
   `.claude/hooks/archon-pre-compact.mjs` (handoff commit).
@@ -359,3 +361,61 @@ Out-of-range `ARCHON_MAX_RESPAWNS_PER_TASK` values resolve to the default `8` (n
 - The respawn budget bound `[1, 50]` (reject-to-default on invalid — an out-of-range value resolves
   to `8`, it is **not** clamped to the nearest bound) and the cross-process file-lock lease — the
   safety guards that bound a single daemon run.
+
+## 10. Historical orphan sweep (`archon sweep-orphans`, closureLoop W4)
+
+Over time, manager control-writes and aborted cycles leave runtime tasks (and their runs) stuck in
+`in_progress`/`ready` even though their work merged long ago. These orphans are *twinless* —
+`prune-orphans` deletes only duplicates that have a sealed twin, so it excludes them by design.
+`sweep-orphans` MARKS such orphans **closed** (`status → done` + a `sweptOrphan` payload stamp)
+instead of deleting them, so the action is fully reversible from the backup.
+
+### Safety model
+
+- **Dry-run by default.** No mutation happens without `--confirm`.
+- **Backup-first.** `--confirm` writes a pre-mutation JSON backup (original statuses captured) and
+  refuses if the backup path is not inside `dataRoot`/`repoRoot`.
+- **Mandatory operator review.** Always inspect the dry-run candidate list and cross-check it against
+  the known-merged initiatives before `--confirm`. The predicate is a heuristic, not a guarantee.
+- **Hard rails (never overridable, even by `--allow-list`):** the active run is never swept; an
+  `approved`/`done`/`blocked` task is never swept; a task with a recorded approval is never swept.
+- **Heuristic rails (overridable by `--allow-list`):** passed reviews, run newer than the age cutoff,
+  or an active scope lock. (`claimed_by` is intentionally NOT a rail — manager control-write tasks are
+  permanently `claimed_by="manager"`; the active scope lock is the real in-use signal.)
+
+### Flags
+
+```bash
+# 1) Review the candidate list (read-only). Default age cutoff is 14 days.
+npx archon sweep-orphans                       # or: npx tsx ./src/admin.ts sweep-orphans
+npx archon sweep-orphans --older-than-days 2   # widen the window for recent orphans
+
+# 2) After reviewing, mutate:
+npx archon sweep-orphans --older-than-days 2 --confirm
+# narrow to specific task_keys past the heuristic (still subject to the hard rails):
+npx archon sweep-orphans --allow-list taskA,taskB --confirm
+```
+
+- `--older-than-days <N>` run-age cutoff for the heuristic (default `14`).
+- `--allow-list <a,b,c>` task_keys/ids allowed past the heuristic rails.
+- `--max-scan <N>` cap on the initial task scan (default `1000`); the command refuses to proceed past
+  the cap rather than silently truncating. Narrow the field (run `prune-orphans` first) or raise it
+  deliberately.
+- `--backup <abs.json>` override the backup path (must be absolute, end in `.json`, inside
+  `dataRoot`/`repoRoot`). Default: `<dataRoot>/sweep-backups/orphans-<ISO>.json`.
+
+### Rollback
+
+The backup JSON records each swept task's and sealed run's **original status**. To reverse a sweep,
+restore those statuses from the backup file (`candidateTasks[].status`, `affectedRuns[].status`):
+
+```sql
+-- For each entry in backup.candidateTasks:
+update tasks set status = '<original_status>', payload = payload - 'sweptOrphan' - 'sweptAt'
+  where id = '<task uuid>';
+-- For each entry in backup.affectedRuns (runs that were sealed):
+update runs set status = '<original_status>' where id = '<run uuid>';
+```
+
+(Original statuses are almost always `in_progress`. The `sweptOrphan`/`sweptAt` payload keys are the
+audit marker for swept rows.)
