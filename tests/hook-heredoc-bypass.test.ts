@@ -63,6 +63,14 @@ test("heredoc-bypass: <<- interpreter heredoc with a tab-indented closing delimi
   assert.ok(extractBashReferencedManagedPaths(cmd).includes(".claude"), "<<- executable heredoc must be scanned");
 });
 
+test("heredoc-bypass: plain << heredoc with a fake tab-indented closer line still scans the FULL body", () => {
+  // A plain `<<EOF` closer must be at column 0. A tab-indented `\tEOF` line inside
+  // the body is body content, NOT a closer — it must not truncate the scan and let
+  // a later managed write slip past (regression guard for the round-2 fix).
+  const cmd = "python3 - <<'EOF'\nprint('benign')\n\tEOF\nopen('.claude/hooks/evil.mjs','w').write('EVIL')\nEOF";
+  assert.ok(extractBashReferencedManagedPaths(cmd).includes(".claude"), "the managed write after a fake closer must still be detected");
+});
+
 test("heredoc-bypass: <<- data-sink heredoc that MENTIONS a managed path is NOT flagged", () => {
   const cmd = "cat > docs/x.md <<-'EOF'\n\tsee .claude/settings.json\n\tEOF";
   assert.deepEqual(extractBashReferencedManagedPaths(cmd), [], "<<- data-sink mention is not a managed write");

@@ -1796,7 +1796,10 @@ function scanTextForManagedPrefixes(scanned) {
 // stay data sinks and their managed-path mentions remain non-matches.
 function heredocOpenerIsExecutable(openerLine) {
   if (typeof openerLine !== "string") return false;
-  return /\b(?:python|python2|python3|node|nodejs|deno|bun|ruby|perl|php|bash|sh|zsh|ksh|dash|eval|source|xargs|lua|tclsh|julia|Rscript|swift|osascript|awk|gawk)\b/.test(
+  // awk/gawk are intentionally excluded: a bare `awk <<EOF` consumes the heredoc
+  // as DATA records, not as a program (executing it needs `-f -`), so including
+  // them would over-trigger on data heredocs piped to awk.
+  return /\b(?:python|python2|python3|node|nodejs|deno|bun|ruby|perl|php|bash|sh|zsh|ksh|dash|eval|source|xargs|lua|tclsh|julia|Rscript|swift|osascript)\b/.test(
     openerLine
   );
 }
@@ -1807,18 +1810,21 @@ function heredocOpenerIsExecutable(openerLine) {
 function extractExecutableHeredocBodies(command) {
   if (typeof command !== "string") return [];
   const bodies = [];
-  // The closing delimiter is anchored with optional leading whitespace
-  // (`\n[ \t]*\3`) so a `<<-WORD` heredoc, whose closing delimiter may be
-  // tab-indented, is still matched — otherwise its executable body would not be
-  // scanned (SEC-HEREDOC-BYPASS residual).
-  const re = /(^|\n)([^\n]*?)<<-?['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n[ \t]*\3[ \t]*(?:\n|$)/g;
-  let match;
-  while ((match = re.exec(command)) !== null) {
-    const openerLine = `${match[2] ?? ""} ${match[4] ?? ""}`;
-    if (heredocOpenerIsExecutable(openerLine)) {
-      bodies.push(match[5] ?? "");
+  const collect = (re) => {
+    let match;
+    while ((match = re.exec(command)) !== null) {
+      const openerLine = `${match[2] ?? ""} ${match[4] ?? ""}`;
+      if (heredocOpenerIsExecutable(openerLine)) {
+        bodies.push(match[5] ?? "");
+      }
     }
-  }
+  };
+  // Plain `<<WORD`: bash requires the closing delimiter at column 0. Use a STRICT
+  // `\n\3` anchor — a tab-indented `\tWORD` line inside the body is NOT a closer,
+  // so an attacker cannot plant a fake closer to truncate the scanned body early.
+  collect(/(^|\n)([^\n]*?)<<['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n\3[ \t]*(?:\n|$)/g);
+  // `<<-WORD`: bash allows the closing delimiter to be preceded by TABS only.
+  collect(/(^|\n)([^\n]*?)<<-['"`]?(\w+)['"`]?([^\n]*)\n([\s\S]*?)\n\t*\3[ \t]*(?:\n|$)/g);
   return bodies;
 }
 
@@ -1856,14 +1862,14 @@ function stripHeredocBodies(command) {
   // do not trigger write-like detection. Handles <<WORD, <<'WORD', <<"WORD",
   // <<`WORD`, and <<-WORD variants. The opener and structure are kept; only the
   // body lines and closing delimiter are removed.
-  // Closing delimiter anchored with optional leading whitespace (`\n[ \t]*\1`)
-  // so a `<<-WORD` heredoc with a tab-indented closing delimiter is stripped too;
-  // otherwise its body would leak past the strip and (after quote-stripping) hide
-  // a managed-path write from the managed-path scan (SEC-HEREDOC-BYPASS residual).
-  return command.replace(
-    /<<-?['"`]?(\w+)['"`]?[^\n]*\n[\s\S]*?\n[ \t]*\1[ \t]*(?:\n|$)/g,
-    "<<STRIPPED\n"
-  );
+  // Two disjoint passes that respect bash closing-delimiter semantics:
+  //  - plain `<<WORD`: STRICT column-0 closer (`\n\1`). A tab-indented `\tWORD`
+  //    line inside the body is body content, not a closer — so it cannot truncate
+  //    the strip early and leak the tail into the managed-path scan.
+  //  - `<<-WORD`: the closer may be preceded by TABS only (`\n\t*\1`).
+  return command
+    .replace(/<<['"`]?(\w+)['"`]?[^\n]*\n[\s\S]*?\n\1[ \t]*(?:\n|$)/g, "<<STRIPPED\n")
+    .replace(/<<-['"`]?(\w+)['"`]?[^\n]*\n[\s\S]*?\n\t*\1[ \t]*(?:\n|$)/g, "<<-STRIPPED\n");
 }
 
 // Strip fd>/dev/null and fd>&N redirects from a single segment before write-like
