@@ -1029,9 +1029,9 @@ export async function executeWorkflowProofCommandFromArgs(
           (f): f is typeof f & { disposition: "accepted"; acceptedByRole: string; acceptanceReason: string } =>
             f.disposition === "accepted" &&
             typeof f.acceptedByRole === "string" &&
-            f.acceptedByRole.trim().length > 0 &&
+            !isBlankText(f.acceptedByRole) &&
             typeof f.acceptanceReason === "string" &&
-            f.acceptanceReason.trim().length > 0
+            !isBlankText(f.acceptanceReason)
         )
         .map((f) => ({
           role: review.reviewerRole,
@@ -1528,7 +1528,7 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
     // P2.1 acceptance-field completeness and hard security rule checks
     if (obj["disposition"] === "accepted") {
       const byRole = obj["acceptedByRole"];
-      if (typeof byRole !== "string" || byRole.trim().length === 0) {
+      if (typeof byRole !== "string" || isBlankText(byRole)) {
         throw new Error(
           `parseReviewFindingsJson: element [${i}] has disposition=accepted but acceptedByRole is missing or empty`
         );

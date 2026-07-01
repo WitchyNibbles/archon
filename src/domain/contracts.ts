@@ -881,7 +881,7 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
     errors.push("review findings must be an array");
   }
 
-  if (review.findings.some((finding) => finding.trim().length === 0)) {
+  if (review.findings.some((finding) => isBlankText(finding))) {
     errors.push("review findings must not contain empty items");
   }
 
@@ -950,7 +950,7 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
   }
 
   if (review.state === "waived") {
-    if (!review.waiverReason || review.waiverReason.trim().length === 0) {
+    if (!review.waiverReason || isBlankText(review.waiverReason)) {
       errors.push("waived reviews require waiverReason");
     }
 
@@ -1078,7 +1078,7 @@ export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
     return false;
   }
 
-  if (!review.waiverReason || review.waiverReason.trim().length === 0) {
+  if (!review.waiverReason || isBlankText(review.waiverReason)) {
     return false;
   }
 

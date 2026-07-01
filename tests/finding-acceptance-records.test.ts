@@ -1982,4 +1982,25 @@ describe("Gate-4 — Unicode-blank + parse coverage", () => {
     });
     assert.ok(errors.some((e) => /message/i.test(e)), errors.join(" | "));
   });
+
+  it("R5-A: gate rejects a waived review whose waiverReason is only a zero-width space", () => {
+    const review = makeReview({
+      state: "waived",
+      actorRole: "planner",
+      findings: [],
+      waiverReason: ZWSP
+    });
+    assert.strictEqual(canReviewRecordSatisfyGate(review), false);
+  });
+
+  it("R5-B: validateReviewAction flags a waived review whose waiverReason is only a zero-width space", () => {
+    const errors = validateReviewAction(gctx, {
+      reviewerRole: "reviewer",
+      state: "waived",
+      severity: "low",
+      findings: [],
+      waiverReason: ZWSP
+    });
+    assert.ok(errors.some((e) => /waiverReason/i.test(e)), errors.join(" | "));
+  });
 });
