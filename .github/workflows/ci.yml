@@ -168,11 +168,16 @@ jobs:
           npm init -y --quiet
           npm install --quiet "$TARBALL_PATH"
 
+          # Invoke the compiled bin entry directly (dist/cli/archon-bin.js is the
+          # bin target) so the smoke test is identical to the windows leg and does
+          # not depend on the npm-generated .bin shim.
+          BIN="./node_modules/archon/dist/cli/archon-bin.js"
+
           # archon --help must exit 0
-          node ./node_modules/.bin/archon --help
+          node "$BIN" --help
 
           # archon doctor: DB error (exit 1) is acceptable; module-not-found is not
-          node ./node_modules/.bin/archon doctor || {
+          node "$BIN" doctor || {
             code=$?
             if [ "$code" -ne 1 ]; then
               printf 'archon doctor exited with unexpected code %d\n' "$code" >&2
@@ -180,77 +185,18 @@ jobs:
             fi
           }
 
-          # Assert dist tree cleanliness:
-          #   1. No "--experimental-strip-types" adjacent to "node_modules" — this is
-          #      the specific bug pattern that was fixed (installer writing old-form
-          #      scripts that invoke archon via node --experimental-strip-types
-          #      ./node_modules/archon/src/...). String literals in usage messages and
-          #      archon:check-workflow templates (consumer-local .ts files) are fine.
-          #   2. No relative .ts import specifiers — confirms the esbuild rewrite ran.
-          node --input-type=module - "$INSTALL_DIR/node_modules/archon/dist" << 'JSEOF'
-          import { readdirSync, readFileSync } from "node:fs";
-          import path from "node:path";
-          function walk(dir) {
-            const out = [];
-            for (const e of readdirSync(dir, { withFileTypes: true })) {
-              const full = path.join(dir, e.name);
-              if (e.isDirectory()) out.push(...walk(full));
-              else if (e.isFile() && e.name.endsWith(".js")) out.push(full);
-            }
-            return out;
-          }
-          const files = walk(process.argv[2]);
-          // Matches strip-types combined with node_modules — the original bug pattern.
-          const stripTypesNodeModules = /--experimental-strip-types[^'"\n]*node_modules/;
-          // Matches relative .ts import specifiers (build rewrite must have removed these).
-          const tsDotImport = /from ['"]\..*\.ts['"]/m;
-          let failed = false;
-          for (const f of files) {
-            const src = readFileSync(f, "utf8");
-            if (stripTypesNodeModules.test(src)) {
-              console.error("FAIL: --experimental-strip-types+node_modules in " + f); failed = true;
-            }
-            if (tsDotImport.test(src)) {
-              console.error("FAIL: .ts import specifier in " + f); failed = true;
-            }
-          }
-          if (failed) process.exit(1);
-          console.log("OK: dist tree is clean (" + files.length + " .js files checked)");
-          JSEOF
-
-          # Also grep shipped shell scripts for node_modules/archon/src references.
-          # The dist/ scan above misses .sh files (they are not compiled JS).
-          # This is the class of bug that check-archon-workflow-live.sh carried before P1.
-          node --input-type=module - "$INSTALL_DIR/node_modules/archon/scripts" << 'JSEOF'
-          import { readdirSync, readFileSync } from "node:fs";
-          import path from "node:path";
-          const scriptsDir = process.argv[2];
-          let failed = false;
-          for (const name of readdirSync(scriptsDir)) {
-            if (!name.endsWith(".sh") && !name.endsWith(".ps1")) continue;
-            const content = readFileSync(path.join(scriptsDir, name), "utf8");
-            if (/node_modules\/archon\/src/.test(content)) {
-              console.error("FAIL: node_modules/archon/src in scripts/" + name); failed = true;
-            }
-          }
-          if (failed) process.exit(1);
-          console.log("OK: no node_modules/archon/src in shipped scripts");
-          JSEOF
-
-          # No lifecycle install hooks in package.json
-          node --input-type=module - "$INSTALL_DIR/node_modules/archon/package.json" << 'JSEOF'
-          import { readFileSync } from "node:fs";
-          const pkg = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          for (const h of ["postinstall", "install", "preinstall"]) {
-            if (pkg.scripts?.[h]) {
-              console.error("FAIL: forbidden lifecycle hook: " + h); process.exit(1);
-            }
-          }
-          console.log("OK: no lifecycle install hooks");
-          JSEOF
+          # Assert dist tree cleanliness, shipped-script cleanliness, and no install
+          # lifecycle hooks. The inspection logic lives in scripts/ci/*.mjs (shared
+          # verbatim with the windows leg) so the rules live in ONE place. $GITHUB_WORKSPACE
+          # is the repo checkout; the arg is the installed package under the temp dir.
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-dist-clean.mjs" "$INSTALL_DIR/node_modules/archon/dist"
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-scripts-clean.mjs" "$INSTALL_DIR/node_modules/archon/scripts"
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-no-lifecycle-hooks.mjs" "$INSTALL_DIR/node_modules/archon/package.json"
 
       # Pack → install into a clean temp dir → run smoke checks (windows)
-      # Uses temp .mjs files for inline JS (PowerShell has no bash <<< here-string).
+      # Inspection logic is shared with the unix leg via scripts/ci/*.mjs (no inline
+      # PowerShell here-strings — their column-0 closing delimiter is incompatible
+      # with an indented YAML `run: |` block and previously broke this workflow).
       - name: Pack and install in clean temp dir (windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -268,91 +214,34 @@ jobs:
           npm init -y --quiet
           npm install --quiet $tarballPath
 
+          # Invoke the compiled bin entry directly. The npm-generated .bin/archon
+          # shim is an extensionless POSIX script on Windows that `node` cannot
+          # execute; dist/cli/archon-bin.js is the bin target and runs identically
+          # on every platform. Node accepts forward slashes on Windows.
+          $bin = "node_modules/archon/dist/cli/archon-bin.js"
+
           # archon --help must exit 0
-          node ./node_modules/.bin/archon --help
+          node $bin --help
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
           # archon doctor: DB error (exit 1) acceptable; anything else is a failure
-          node ./node_modules/.bin/archon doctor
+          node $bin doctor
           $code = $LASTEXITCODE
           if ($code -ne 0 -and $code -ne 1) {
             Write-Error "archon doctor exited with unexpected code $code"
             exit 1
           }
 
-          # Helper: write JS to a temp .mjs file, run it with $arg, clean up.
-          # Uses a temp .mjs file because PowerShell has no bash <<< here-string;
-          # .mjs extension ensures Node treats the file as an ES module.
-          function Invoke-NodeScript([string]$Script, [string]$Arg) {
-            $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString() + ".mjs")
-            Set-Content -Path $tmp -Encoding UTF8 -Value $Script
-            node $tmp $Arg
-            $ec = $LASTEXITCODE
-            Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
-            if ($ec -ne 0) { exit $ec }
-          }
-
-          # Dist tree inspection (same logic as unix step)
-          $distPath = Join-Path $installDir "node_modules\archon\dist"
-          Invoke-NodeScript -Arg $distPath -Script @'
-import { readdirSync, readFileSync } from "node:fs";
-import path from "node:path";
-function walk(dir) {
-  const out = [];
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) out.push(...walk(full));
-    else if (e.isFile() && e.name.endsWith(".js")) out.push(full);
-  }
-  return out;
-}
-const files = walk(process.argv[2]);
-const stripTypesNodeModules = /--experimental-strip-types[^'"\n]*node_modules/;
-const tsDotImport = /from ['"]\..*\.ts['"]/m;
-let failed = false;
-for (const f of files) {
-  const src = readFileSync(f, "utf8");
-  if (stripTypesNodeModules.test(src)) {
-    console.error("FAIL: --experimental-strip-types+node_modules in " + f); failed = true;
-  }
-  if (tsDotImport.test(src)) {
-    console.error("FAIL: .ts import specifier in " + f); failed = true;
-  }
-}
-if (failed) process.exit(1);
-console.log("OK: dist tree is clean (" + files.length + " .js files checked)");
-'@
-
-          # Shell scripts: no node_modules/archon/src references (same as unix step)
-          $scriptsPath = Join-Path $installDir "node_modules\archon\scripts"
-          Invoke-NodeScript -Arg $scriptsPath -Script @'
-import { readdirSync, readFileSync } from "node:fs";
-import path from "node:path";
-const scriptsDir = process.argv[2];
-let failed = false;
-for (const name of readdirSync(scriptsDir)) {
-  if (!name.endsWith(".sh") && !name.endsWith(".ps1")) continue;
-  const content = readFileSync(path.join(scriptsDir, name), "utf8");
-  if (/node_modules\/archon\/src/.test(content)) {
-    console.error("FAIL: node_modules/archon/src in scripts/" + name); failed = true;
-  }
-}
-if (failed) process.exit(1);
-console.log("OK: no node_modules/archon/src in shipped scripts");
-'@
-
-          # No lifecycle install hooks in package.json
-          $pkgPath = Join-Path $installDir "node_modules\archon\package.json"
-          Invoke-NodeScript -Arg $pkgPath -Script @'
-import { readFileSync } from "node:fs";
-const pkg = JSON.parse(readFileSync(process.argv[2], "utf8"));
-for (const h of ["postinstall", "install", "preinstall"]) {
-  if (pkg.scripts?.[h]) {
-    console.error("FAIL: forbidden lifecycle hook: " + h); process.exit(1);
-  }
-}
-console.log("OK: no lifecycle install hooks");
-'@
+          # Dist/scripts/package inspection. Same scripts/ci/*.mjs the unix leg runs
+          # (single source of truth). Node accepts forward slashes on Windows, so
+          # $env:GITHUB_WORKSPACE composes cleanly. Each check must exit 0.
+          $ci = "$env:GITHUB_WORKSPACE/scripts/ci"
+          node "$ci/assert-dist-clean.mjs" (Join-Path $installDir "node_modules\archon\dist")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node "$ci/assert-scripts-clean.mjs" (Join-Path $installDir "node_modules\archon\scripts")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node "$ci/assert-no-lifecycle-hooks.mjs" (Join-Path $installDir "node_modules\archon\package.json")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           Pop-Location
 
