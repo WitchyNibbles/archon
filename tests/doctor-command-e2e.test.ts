@@ -19,7 +19,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { doctorCommand, executeDoctorCommandFromArgs, handleDoctorCommandError, isRuntimeExecutionPreflightConnectionError } from "../src/runtime.ts";
 import type { DoctorCheckObservation, ExecuteDoctorCommandOptions } from "../src/runtime.ts";
-import { composeDatabaseUrlFromParts, loadDotEnv } from "../src/admin/db.ts";
+import { composeDatabaseUrlFromParts } from "../src/admin/db.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
