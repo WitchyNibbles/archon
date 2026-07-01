@@ -1,3 +1,14 @@
+# Archon local Postgres (pgvector)
+#
+# Start:    docker compose up -d archon-postgres
+# Stop:     docker compose down
+# Teardown: docker compose down -v   (removes the archon-postgres-data volume — DATA LOSS)
+#
+# Default host port: 5533 (ARCHON_POSTGRES_PORT env var overrides).
+# To connect from the host:
+#   psql "postgres://archon:<password>@127.0.0.1:5533/archon"
+# or set ARCHON_CORE_DATABASE_URL to the same value in .env / .env.archon.
+
 services:
   archon-postgres:
     image: pgvector/pgvector:0.8.2-pg18
@@ -10,7 +21,7 @@ services:
     ports:
       - "127.0.0.1:${ARCHON_POSTGRES_PORT:-5533}:5432"
     volumes:
-      - archon-postgres-data:/var/lib/postgresql
+      - archon-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test:
         [

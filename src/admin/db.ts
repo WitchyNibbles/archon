@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { Client as PgClient } from "pg";
+import { scrubPgError } from "./db-error-scrub.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -273,14 +274,14 @@ export async function withClientUsing<T>(
       error
     });
     if (!started) {
-      throw error;
+      throw scrubPgError(error);
     }
     client = await createClient(connectionString);
     try {
       await client.connect();
     } catch (retryError) {
       await safeEnd(client);
-      throw retryError;
+      throw scrubPgError(retryError);
     }
   }
 

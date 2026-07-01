@@ -333,7 +333,9 @@ if [[ -z "${ARCHON_RUNTIME_DATA_ROOT:-}" ]]; then
 fi
 
 if [[ -z "${ARCHON_POSTGRES_PORT:-}" ]]; then
-  export ARCHON_POSTGRES_PORT="5432"
+  # Default matches the docker-compose.yml host-side port (5533 → container:5432).
+  # For native runtime mode set ARCHON_POSTGRES_PORT=5432 explicitly in .env.
+  export ARCHON_POSTGRES_PORT="5533"
 fi
 
 if [[ -z "${ARCHON_POSTGRES_PASSWORD:-}" || "${ARCHON_POSTGRES_PASSWORD}" == "archon" ]]; then
@@ -377,7 +379,9 @@ wait_for_postgres_native() {
 ensure_native_linux_support() {
   [[ "$(uname -s)" == "Linux" ]] || fail "native runtime mode is only supported on Linux and WSL"
   systemd_available || fail "native runtime mode requires systemd; on WSL enable systemd or use ARCHON_RUNTIME_MODE=managed"
-  [[ "${ARCHON_POSTGRES_PORT}" == "5432" ]] || fail "native runtime mode currently supports ARCHON_POSTGRES_PORT=5432 only"
+  # Native mode binds to system PostgreSQL which always listens on 5432.
+  # The default port (5533) is for Docker; set ARCHON_POSTGRES_PORT=5432 in .env for native.
+  [[ "${ARCHON_POSTGRES_PORT}" == "5432" ]] || fail "native runtime mode requires ARCHON_POSTGRES_PORT=5432 (the default 5533 is for Docker only; set ARCHON_POSTGRES_PORT=5432 in .env)"
 }
 
 ensure_native_postgres_tools() {
