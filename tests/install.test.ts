@@ -2780,8 +2780,11 @@ test("upgradeDevgodInProject rewrites pre-P1 old-form src/ invocations to compil
     );
     await writeFile(path.join(targetRoot, "CLAUDE.md"), preP1ClaudeMd, "utf8");
 
-    // --dry-run must not write anything
+    // --dry-run must not write anything, but MUST detect that updates are needed.
+    // (If updated.length === 0 the dry-run wouldn't have caught the old-form scripts.)
     const dry = await upgradeDevgodInProject({ sourceRoot, targetRoot, dryRun: true });
+    assert.ok(dry.updated.length > 0,
+      "--dry-run must report at least one entry it would update (self-proves detection)");
     assert.equal(dry.writesPerformed, false,
       "--dry-run must not write when rewriting old-form consumer");
     // Verify old-form still in place (dry-run unchanged)
@@ -2871,6 +2874,13 @@ test("MCP config fragments use pinned versions with no @latest or --yes flags (c
   assert.ok(
     archonFragment.mcpServers.archon.args.some((a) => a.includes("dist/cli/archon-bin.js")),
     "archon MCP fragment must use the compiled dist/cli/archon-bin.js"
+  );
+  // The "mcp" verb must follow the bin path so the bin router can dispatch it.
+  const binIdx = archonFragment.mcpServers.archon.args.findIndex((a) => a.includes("dist/cli/archon-bin.js"));
+  assert.equal(
+    archonFragment.mcpServers.archon.args[binIdx + 1],
+    "mcp",
+    "archon MCP fragment must pass 'mcp' as the verb after the bin path"
   );
 });
 

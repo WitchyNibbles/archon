@@ -24,6 +24,7 @@ import {
   mkdirSync,
   copyFileSync,
   chmodSync,
+  rmSync,
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +68,17 @@ function rewriteTsSpecifiers(code) {
     "$1$2.js$3",
   );
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Step 0: Clean the dist directory before transpile so stale .js files from
+// renamed or deleted sources do not survive into the next build.
+// ---------------------------------------------------------------------------
+try {
+  rmSync(distDir, { recursive: true, force: true });
+  console.log("Cleaned dist/ before build.");
+} catch (err) {
+  console.warn(`Warning: could not clean dist/: ${err.message}`);
 }
 
 // ---------------------------------------------------------------------------

@@ -288,7 +288,25 @@ export function grafanaMcpConfigFragment(): string {
 // manual verification of the mcpvault tools when upgrading.
 export const MCPVAULT_VERSION = "0.12.1";
 
+/**
+ * Validate a caller-supplied vaultPath before embedding it in a generated MCP
+ * config.  Rejects path-traversal sequences and flag-like values (leading "-")
+ * that could be misinterpreted by the child process.  If the value is absent
+ * the config uses the ${ARCHON_OBSIDIAN_VAULT_PATH} env-var placeholder.
+ */
+function validateVaultPath(vaultPath: string): void {
+  if (vaultPath.includes("..")) {
+    throw new Error(`obsidianMcpConfigFragment: vaultPath must not contain ".." (path traversal): ${JSON.stringify(vaultPath)}`);
+  }
+  if (vaultPath.startsWith("-")) {
+    throw new Error(`obsidianMcpConfigFragment: vaultPath must not start with "-" (flag-like value): ${JSON.stringify(vaultPath)}`);
+  }
+}
+
 export function obsidianMcpConfigFragment(vaultPath?: string): string {
+  if (vaultPath !== undefined) {
+    validateVaultPath(vaultPath);
+  }
   return JSON.stringify({
     mcpServers: {
       obsidian: {
@@ -354,6 +372,7 @@ export function mergeGitignore(
   existingContent: string | undefined
 ): string {
   const requiredLines = [
+    ".env",
     ".env.archon",
     ".env.archon.*",
     "graphify-out/*",

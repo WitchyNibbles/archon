@@ -126,9 +126,9 @@ jobs:
       - run: npm run check:coverage
 
   # P1 pack-install smoke: proves the compiled package is self-contained and
-  # invocable via the bin without --experimental-strip-types.  Deliberately NOT
-  # added to required-checks initially — it must run and pass but does not gate
-  # PRs while the job is being established.
+  # invocable via the bin without --experimental-strip-types.  Added to
+  # required-checks so tarball validation gates merges (all 4 legs: Linux+Windows,
+  # Node 22+24).
   pack-install:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -250,12 +250,14 @@ jobs:
           JSEOF
 
       # Pack → install into a clean temp dir → run smoke checks (windows)
+      # Uses temp .mjs files for inline JS (PowerShell has no bash <<< here-string).
       - name: Pack and install in clean temp dir (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $packDir  = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid())
-          $installDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid())
+          $ErrorActionPreference = "Stop"
+          $packDir  = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+          $installDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
           New-Item -ItemType Directory -Path $packDir  | Out-Null
           New-Item -ItemType Directory -Path $installDir | Out-Null
 
@@ -278,73 +280,79 @@ jobs:
             exit 1
           }
 
-          # Dist tree inspection via inline JS (same logic as unix step)
-          $distPath = Join-Path $installDir "node_modules/archon/dist"
-          $jsInspect = @'
-          import { readdirSync, readFileSync } from "node:fs";
-          import path from "node:path";
-          function walk(dir) {
-            const out = [];
-            for (const e of readdirSync(dir, { withFileTypes: true })) {
-              const full = path.join(dir, e.name);
-              if (e.isDirectory()) out.push(...walk(full));
-              else if (e.isFile() && e.name.endsWith(".js")) out.push(full);
-            }
-            return out;
+          # Helper: write JS to a temp .mjs file, run it with $arg, clean up.
+          # Uses a temp .mjs file because PowerShell has no bash <<< here-string;
+          # .mjs extension ensures Node treats the file as an ES module.
+          function Invoke-NodeScript([string]$Script, [string]$Arg) {
+            $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString() + ".mjs")
+            Set-Content -Path $tmp -Encoding UTF8 -Value $Script
+            node $tmp $Arg
+            $ec = $LASTEXITCODE
+            Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
+            if ($ec -ne 0) { exit $ec }
           }
-          const files = walk(process.argv[2]);
-          const stripTypesNodeModules = /--experimental-strip-types[^'"\n]*node_modules/;
-          const tsDotImport = /from ['"]\..*\.ts['"]/m;
-          let failed = false;
-          for (const f of files) {
-            const src = readFileSync(f, "utf8");
-            if (stripTypesNodeModules.test(src)) {
-              console.error("FAIL: --experimental-strip-types+node_modules in " + f); failed = true;
-            }
-            if (tsDotImport.test(src)) {
-              console.error("FAIL: .ts import specifier in " + f); failed = true;
-            }
-          }
-          if (failed) process.exit(1);
-          console.log("OK: dist tree is clean (" + files.length + " .js files checked)");
-          '@
-          node --input-type=module - $distPath <<<"$jsInspect"
-          if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          # Also grep shipped scripts for node_modules/archon/src (same as unix step)
-          $scriptsPath = Join-Path $installDir "node_modules/archon/scripts"
-          $jsScripts = @'
-          import { readdirSync, readFileSync } from "node:fs";
-          import path from "node:path";
-          const scriptsDir = process.argv[2];
-          let failed = false;
-          for (const name of readdirSync(scriptsDir)) {
-            if (!name.endsWith(".sh") && !name.endsWith(".ps1")) continue;
-            const content = readFileSync(path.join(scriptsDir, name), "utf8");
-            if (/node_modules\/archon\/src/.test(content)) {
-              console.error("FAIL: node_modules/archon/src in scripts/" + name); failed = true;
-            }
-          }
-          if (failed) process.exit(1);
-          console.log("OK: no node_modules/archon/src in shipped scripts");
-          '@
-          node --input-type=module - $scriptsPath <<<"$jsScripts"
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Dist tree inspection (same logic as unix step)
+          $distPath = Join-Path $installDir "node_modules\archon\dist"
+          Invoke-NodeScript -Arg $distPath -Script @'
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+function walk(dir) {
+  const out = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...walk(full));
+    else if (e.isFile() && e.name.endsWith(".js")) out.push(full);
+  }
+  return out;
+}
+const files = walk(process.argv[2]);
+const stripTypesNodeModules = /--experimental-strip-types[^'"\n]*node_modules/;
+const tsDotImport = /from ['"]\..*\.ts['"]/m;
+let failed = false;
+for (const f of files) {
+  const src = readFileSync(f, "utf8");
+  if (stripTypesNodeModules.test(src)) {
+    console.error("FAIL: --experimental-strip-types+node_modules in " + f); failed = true;
+  }
+  if (tsDotImport.test(src)) {
+    console.error("FAIL: .ts import specifier in " + f); failed = true;
+  }
+}
+if (failed) process.exit(1);
+console.log("OK: dist tree is clean (" + files.length + " .js files checked)");
+'@
 
-          # No lifecycle install hooks
-          $pkgPath = Join-Path $installDir "node_modules/archon/package.json"
-          $jsLifecycle = @'
-          import { readFileSync } from "node:fs";
-          const pkg = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          for (const h of ["postinstall", "install", "preinstall"]) {
-            if (pkg.scripts?.[h]) {
-              console.error("FAIL: forbidden lifecycle hook: " + h); process.exit(1);
-            }
-          }
-          console.log("OK: no lifecycle install hooks");
-          '@
-          node --input-type=module - $pkgPath <<<"$jsLifecycle"
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Shell scripts: no node_modules/archon/src references (same as unix step)
+          $scriptsPath = Join-Path $installDir "node_modules\archon\scripts"
+          Invoke-NodeScript -Arg $scriptsPath -Script @'
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+const scriptsDir = process.argv[2];
+let failed = false;
+for (const name of readdirSync(scriptsDir)) {
+  if (!name.endsWith(".sh") && !name.endsWith(".ps1")) continue;
+  const content = readFileSync(path.join(scriptsDir, name), "utf8");
+  if (/node_modules\/archon\/src/.test(content)) {
+    console.error("FAIL: node_modules/archon/src in scripts/" + name); failed = true;
+  }
+}
+if (failed) process.exit(1);
+console.log("OK: no node_modules/archon/src in shipped scripts");
+'@
+
+          # No lifecycle install hooks in package.json
+          $pkgPath = Join-Path $installDir "node_modules\archon\package.json"
+          Invoke-NodeScript -Arg $pkgPath -Script @'
+import { readFileSync } from "node:fs";
+const pkg = JSON.parse(readFileSync(process.argv[2], "utf8"));
+for (const h of ["postinstall", "install", "preinstall"]) {
+  if (pkg.scripts?.[h]) {
+    console.error("FAIL: forbidden lifecycle hook: " + h); process.exit(1);
+  }
+}
+console.log("OK: no lifecycle install hooks");
+'@
 
           Pop-Location
 
@@ -355,6 +363,7 @@ jobs:
       - live-migrations
       - lint
       - unit-tests
+      - pack-install
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -365,13 +374,16 @@ jobs:
           LIVE_MIGRATIONS_RESULT: ${{ needs.live-migrations.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
+          PACK_INSTALL_RESULT: ${{ needs.pack-install.result }}
         run: |
           echo "release-overlay: ${RELEASE_OVERLAY_RESULT}"
           echo "live-migrations: ${LIVE_MIGRATIONS_RESULT}"
           echo "lint: ${LINT_RESULT}"
           echo "unit-tests: ${UNIT_TESTS_RESULT}"
+          echo "pack-install: ${PACK_INSTALL_RESULT}"
 
           test "${RELEASE_OVERLAY_RESULT}" = "success"
           test "${LIVE_MIGRATIONS_RESULT}" = "success"
           test "${LINT_RESULT}" = "success"
           test "${UNIT_TESTS_RESULT}" = "success"
+          test "${PACK_INSTALL_RESULT}" = "success"

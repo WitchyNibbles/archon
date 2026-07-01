@@ -64,8 +64,10 @@ const adminCommands = new Set([
   "export-docs",
   "/export-docs",
   "github-dispatch",
-  "mcp",
   "autonomous-enable",
+  // NOTE: "mcp" is intentionally absent — it is handled by the dedicated
+  // `command === "mcp"` branch above the adminCommands lookup, so including
+  // it here would create an unreachable dead branch.
 ]);
 
 const installCommands = new Set([
