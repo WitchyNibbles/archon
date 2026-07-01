@@ -2,7 +2,7 @@
 // fs/promises imported here (top-level) for makeFileLockLeaseStore.
 // The import is referenced only by makeFileLockLeaseStore; other exports
 // have no dependency on fs.
-import { link as linkLock, unlink, open as openLock, readFile as readFileLock, mkdir as mkdirLock, rename as renameLock, stat as statLock } from "node:fs/promises";
+import { link as linkLock, unlink, open as openLock, mkdir as mkdirLock, rename as renameLock } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 
 //
@@ -321,11 +321,17 @@ export function makeFileLockLeaseStore(
   }
 
   async function readLock(lp: string): Promise<LockFileContent | undefined> {
+    let fh: Awaited<ReturnType<typeof openLock>> | undefined;
     try {
-      const info = await statLock(lp);
-      if (info.size > MAX_LOCK_BYTES) return undefined; // oversized → treat as corrupt (S6)
-      const raw = await readFileLock(lp, "utf8");
-      const parsed: unknown = JSON.parse(raw);
+      // Read a bounded number of bytes from a SINGLE open fd. Reading from the fd
+      // (not re-resolving the path) closes the stat→read TOCTOU (S-N3): an
+      // attacker cannot swap a small file for a huge one between calls. Anything
+      // larger than the cap is treated as corrupt (S6).
+      fh = await openLock(lp, "r");
+      const buf = Buffer.alloc(MAX_LOCK_BYTES + 1);
+      const { bytesRead } = await fh.read(buf, 0, MAX_LOCK_BYTES + 1, 0);
+      if (bytesRead > MAX_LOCK_BYTES) return undefined; // oversized → corrupt
+      const parsed: unknown = JSON.parse(buf.toString("utf8", 0, bytesRead));
       if (
         parsed !== null &&
         typeof parsed === "object" &&
@@ -339,6 +345,10 @@ export function makeFileLockLeaseStore(
       return undefined;
     } catch {
       return undefined;
+    } finally {
+      if (fh !== undefined) {
+        try { await fh.close(); } catch { /* best-effort */ }
+      }
     }
   }
 
@@ -429,9 +439,21 @@ export function makeFileLockLeaseStore(
     }
   }
 
+  function assertValidOwner(method: string, owner: RespawnOwner): void {
+    // R-M2/S-N1: an oversized owner would push the lock JSON past MAX_LOCK_BYTES,
+    // making readLock report the just-granted lock as corrupt → immediately
+    // reclaimable by anyone. Constrain owner to the same safe, bounded token.
+    if (!isValidLeaseId(owner)) {
+      throw new TypeError(
+        `${method}: invalid owner ${JSON.stringify(owner)} — must match ^[A-Za-z0-9_-]+$ and be <= ${MAX_LEASE_ID_LENGTH} chars`
+      );
+    }
+  }
+
   return {
     async tryAcquire(runId, owner, opts): Promise<ClaimResult> {
       assertValidRunId("tryAcquire", runId);
+      assertValidOwner("tryAcquire", owner);
       return withMutex(runId, async () => {
         const now = opts?.now ?? new Date();
         const lp = lockPath(runId);
@@ -444,15 +466,16 @@ export function makeFileLockLeaseStore(
         // EEXIST: a lock file exists. Read it to determine owner / staleness.
         const existing = await readLock(lp);
 
-        // Same owner: idempotent re-claim (refresh claimedAt). Safe — we own it.
-        if (existing !== undefined && existing.owner === owner) {
-          await writeLockContent(lp, owner, runId, now);
-          return { granted: true, runId, owner };
-        }
-
-        // Corrupt/unreadable (undefined) or expired locks are reclaimable. With
-        // the atomic link create, `undefined` no longer means "mid-creation" — it
-        // means genuinely corrupt or abandoned — so treating it as stale is safe.
+        // Staleness is checked FIRST — before the same-owner shortcut. A stale
+        // lock (even our OWN stale lock) may be concurrently evicted+reclaimed by
+        // a different owner right now, so it must be reclaimed EXCLUSIVELY. The
+        // same-owner idempotent path below uses an unconditional rename, which
+        // would clobber that concurrent winner's fresh lock (INFRA-C1 violation,
+        // e.g. daemon crash → stale → daemon restarts while interactive reclaims).
+        //
+        // Corrupt/unreadable (undefined) counts as stale: with the atomic link
+        // create, `undefined` no longer means "mid-creation", only "genuinely
+        // corrupt or abandoned".
         if (isContentStale(existing, now)) {
           // Evict via rename compare-and-swap so exactly one racer re-creates.
           if ((await evictStale(lp, now)) && (await tryAtomicCreate(lp, owner, runId, now))) {
@@ -464,6 +487,14 @@ export function makeFileLockLeaseStore(
           return { granted: false, runId, currentOwner: current?.owner ?? "unknown" };
         }
 
+        // Not stale, same owner: idempotent re-claim (refresh claimedAt). Safe —
+        // a NON-stale lock cannot be concurrently evicted (evictStale only fires
+        // on stale locks), so the rename cannot clobber a different winner.
+        if (existing !== undefined && existing.owner === owner) {
+          await writeLockContent(lp, owner, runId, now);
+          return { granted: true, runId, owner };
+        }
+
         // Held by a different, non-stale owner.
         return { granted: false, runId, currentOwner: existing!.owner };
       });
@@ -471,11 +502,18 @@ export function makeFileLockLeaseStore(
 
     async release(runId, owner): Promise<void> {
       assertValidRunId("release", runId);
+      assertValidOwner("release", owner);
       return withMutex(runId, async () => {
         const lp = lockPath(runId);
         const existing = await readLock(lp);
         if (existing !== undefined && existing.owner === owner) {
-          try { await unlink(lp); } catch { /* no-op if already gone */ }
+          try {
+            await unlink(lp);
+          } catch (err: unknown) {
+            // ENOENT = already gone (fine). Anything else (EACCES/EIO/EROFS)
+            // means the lease is stuck until TTL with no signal — surface it (S5/R-M3).
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+          }
         }
         // No-op if not held or held by a different owner.
       });
@@ -484,6 +522,7 @@ export function makeFileLockLeaseStore(
     async readOwner(runId): Promise<RespawnOwner | undefined> {
       assertValidRunId("readOwner", runId);
       const lp = lockPath(runId);
+      // (readOwner takes no owner argument, so no owner validation here.)
       // Single read (R2/Q6): compute staleness from the SAME content we return,
       // so a concurrent replacement cannot desync owner vs staleness verdict.
       const existing = await readLock(lp);
@@ -501,11 +540,12 @@ export function makeFileLockLeaseStore(
  * Claim the respawn lease for a given runId.
  *
  * INFRA-C1: The claim is atomic — exactly one caller wins when multiple
- * callers race for the same runId. The LeaseStore implementation ensures
- * this via Postgres advisory lock (production) or per-key mutex (in-memory).
+ * callers race for the same runId. The LeaseStore implementation ensures this
+ * via a cross-process file lock (link()/rename() on a local POSIX filesystem,
+ * production) or a per-key mutex (in-memory adapter).
  *
- * INFRA-C2: Stale leases (age > staleAfterMs / connection-close for advisory
- * locks) are automatically overridable.
+ * INFRA-C2: Stale leases (claimedAt age > staleAfterMs) are automatically
+ * reclaimable — recovering a lease whose holder crashed without releasing it.
  *
  * I/O contract:
  *   Input:  runId, owner, store, options?
@@ -524,8 +564,9 @@ export async function claimRespawnLease(
 /**
  * Release the respawn lease.
  *
- * No-op if the lease is not held by the given owner.
- * Simulates Postgres advisory lock connection-close auto-release (INFRA-C2).
+ * No-op if the lease is not held by the given owner. For the file-lock store,
+ * this removes the .lock file (the successor's crash-recovery path is the
+ * staleAfterMs TTL, INFRA-C2).
  */
 export async function releaseRespawnLease(
   runId: string,

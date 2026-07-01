@@ -389,16 +389,20 @@ describe("makeFileLockLeaseStore", () => {
   });
 
   // Q4 / R1: two independent stores concurrently reclaiming the SAME stale lock
-  // must yield exactly one winner — the rename() compare-and-swap eviction, not a
-  // bare unlink (which let a late racer evict the fresh winner's lock).
+  // must yield exactly one winner via the rename() compare-and-swap eviction, not
+  // a bare unlink (which let a late racer evict the fresh winner's lock).
+  //
+  // The stale lock is owned by a THIRD party ("crashed-process") so BOTH
+  // claimants take the evictStale path (neither matches the stale owner) — this
+  // genuinely exercises the CAS, rather than one caller shortcutting through the
+  // same-owner idempotent path.
   it("concurrent stale-reclaim by two independent stores yields exactly one winner (20 rounds)", async () => {
     for (let round = 0; round < 20; round++) {
       const runId = `run-fl-stale-race-${round}`;
       const lp = path.join(tmpLockDir, `respawn-lease-${runId}.lock`);
-      // Pre-seed a stale lock (crashed holder).
       await writeFile(
         lp,
-        `${JSON.stringify({ owner: "daemon", runId, claimedAt: new Date(Date.now() - 600_000).toISOString() })}\n`,
+        `${JSON.stringify({ owner: "crashed-process", runId, claimedAt: new Date(Date.now() - 600_000).toISOString() })}\n`,
         "utf8"
       );
 
@@ -416,6 +420,47 @@ describe("makeFileLockLeaseStore", () => {
         `round ${round}: exactly one may reclaim a stale lock, got ${granted.length} ` +
           `(rA=${JSON.stringify(rA)} rB=${JSON.stringify(rB)})`
       );
+      // The loser reports the winner as current owner, OR "unknown" if it read lp
+      // while the winner was still materializing its lock (evictStale moved the
+      // stale lock aside → brief window before tryAtomicCreate links the new one).
+      // Both are correct; the invariant that matters is exactly-one-winner (Q-L3).
+      const loser = [rA, rB].find((r) => !r.granted);
+      assert.ok(
+        loser?.currentOwner === granted[0]!.owner || loser?.currentOwner === "unknown",
+        `round ${round}: loser currentOwner must be the winner or "unknown", got ${loser?.currentOwner}`
+      );
+    }
+  });
+
+  // R-M1: a daemon restarting to reclaim its OWN stale lock must not clobber a
+  // different owner that concurrently evicted+won that stale lock. Because
+  // staleness is checked before the same-owner shortcut, the restarting daemon
+  // goes through evictStale too — so exactly one winner even here.
+  it("same-owner reclaim of a stale lock races safely against a different owner (20 rounds)", async () => {
+    for (let round = 0; round < 20; round++) {
+      const runId = `run-fl-restart-race-${round}`;
+      const lp = path.join(tmpLockDir, `respawn-lease-${runId}.lock`);
+      // Stale lock owned by "daemon" (the crashed daemon's own lock).
+      await writeFile(
+        lp,
+        `${JSON.stringify({ owner: "daemon", runId, claimedAt: new Date(Date.now() - 600_000).toISOString() })}\n`,
+        "utf8"
+      );
+
+      const storeDaemon = makeFileLockLeaseStore({ lockDir: tmpLockDir, staleAfterMs: 300_000 });
+      const storeInteractive = makeFileLockLeaseStore({ lockDir: tmpLockDir, staleAfterMs: 300_000 });
+      const [rD, rI] = await Promise.all([
+        claimRespawnLease(runId, "daemon", storeDaemon), // same owner as stale lock
+        claimRespawnLease(runId, "interactive", storeInteractive)
+      ]);
+
+      const granted = [rD, rI].filter((r) => r.granted);
+      assert.equal(
+        granted.length,
+        1,
+        `round ${round}: exactly one winner in daemon-restart race, got ${granted.length} ` +
+          `(rD=${JSON.stringify(rD)} rI=${JSON.stringify(rI)})`
+      );
     }
   });
 
@@ -427,6 +472,16 @@ describe("makeFileLockLeaseStore", () => {
       await assert.rejects(() => claimRespawnLease(bad, "daemon", store), /invalid runId/, `claim ${JSON.stringify(bad)}`);
       await assert.rejects(() => releaseRespawnLease(bad, "daemon", store), /invalid runId/, `release ${JSON.stringify(bad)}`);
       await assert.rejects(() => readRespawnOwner(bad, store), /invalid runId/, `readOwner ${JSON.stringify(bad)}`);
+    }
+  });
+
+  // R-M2/S-N1: an oversized/invalid owner would bloat the lock JSON past
+  // MAX_LOCK_BYTES (→ readLock treats a just-granted lock as corrupt) — reject it.
+  it("rejects invalid owners on tryAcquire / release", async () => {
+    const store = makeFileLockLeaseStore({ lockDir: tmpLockDir });
+    for (const bad of ["owner with spaces", "", "x".repeat(4000)]) {
+      await assert.rejects(() => claimRespawnLease("run-owner-check", bad, store), /invalid owner/, `claim owner ${bad.slice(0, 12)}`);
+      await assert.rejects(() => releaseRespawnLease("run-owner-check", bad, store), /invalid owner/, `release owner ${bad.slice(0, 12)}`);
     }
   });
 
