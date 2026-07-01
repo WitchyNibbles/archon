@@ -415,6 +415,11 @@ test("mergeGitignore adds archon env ignores once", () => {
   const second = mergeGitignore(first);
 
   assert.match(first, /\.env\.archon/);
+  // Bare .env and conventional credential-bearing env file patterns
+  assert.match(first, /^\.env$/m, "must include bare .env");
+  assert.match(first, /^\.env\.\*$/m, "must include .env.* glob");
+  assert.match(first, /^\.env\.local$/m, "must include .env.local");
+  assert.match(first, /^\.env\.\*\.local$/m, "must include .env.*.local");
   assert.equal(first, second);
 });
 
@@ -472,6 +477,10 @@ test("ci workflow routes the release posture through the release overlay gate", 
   assert.match(ciWorkflow, /jobs:[\s\S]*\n {2}unit-tests:/);
   assert.match(ciWorkflow, /- run: npm run check:coverage/);
   assert.match(ciWorkflow, /needs:[\s\S]*unit-tests/);
+  // P1 install hardening: pack-install smoke job must be in required-checks needs
+  // so removing it breaks CI immediately rather than silently.
+  assert.match(ciWorkflow, /needs:[\s\S]*pack-install/,
+    "required-checks must gate on pack-install so removing the job fails CI");
 });
 
 test("README frames archon as an opt-in overlay with production-oriented package checks", async () => {
@@ -2881,6 +2890,47 @@ test("MCP config fragments use pinned versions with no @latest or --yes flags (c
     archonFragment.mcpServers.archon.args[binIdx + 1],
     "mcp",
     "archon MCP fragment must pass 'mcp' as the verb after the bin path"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// P1 condition 3b: validateVaultPath rejects unsafe values
+// ---------------------------------------------------------------------------
+test("validateVaultPath rejects path traversal, flag values, empty string, NUL bytes, and newlines", () => {
+  // path traversal
+  assert.throws(
+    () => obsidianMcpConfigFragment("../etc/passwd"),
+    /path traversal/,
+    "must reject path traversal sequences"
+  );
+  // flag-like (leading dash)
+  assert.throws(
+    () => obsidianMcpConfigFragment("-f"),
+    /flag-like/,
+    "must reject flag-like values starting with -"
+  );
+  // empty string
+  assert.throws(
+    () => obsidianMcpConfigFragment(""),
+    /empty/,
+    "must reject empty string"
+  );
+  // NUL byte
+  assert.throws(
+    () => obsidianMcpConfigFragment("/valid/path\0injected"),
+    /NUL/,
+    "must reject NUL bytes"
+  );
+  // newline
+  assert.throws(
+    () => obsidianMcpConfigFragment("/valid\npath"),
+    /newline/,
+    "must reject newline characters"
+  );
+  // valid path — must NOT throw
+  assert.doesNotThrow(
+    () => obsidianMcpConfigFragment("/home/user/my-vault"),
+    "must accept a normal absolute path"
   );
 });
 

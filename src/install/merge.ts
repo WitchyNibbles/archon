@@ -295,6 +295,15 @@ export const MCPVAULT_VERSION = "0.12.1";
  * the config uses the ${ARCHON_OBSIDIAN_VAULT_PATH} env-var placeholder.
  */
 function validateVaultPath(vaultPath: string): void {
+  if (vaultPath.length === 0) {
+    throw new Error(`obsidianMcpConfigFragment: vaultPath must not be empty`);
+  }
+  if (vaultPath.includes("\0")) {
+    throw new Error(`obsidianMcpConfigFragment: vaultPath must not contain NUL bytes`);
+  }
+  if (/[\r\n]/.test(vaultPath)) {
+    throw new Error(`obsidianMcpConfigFragment: vaultPath must not contain newline characters`);
+  }
   if (vaultPath.includes("..")) {
     throw new Error(`obsidianMcpConfigFragment: vaultPath must not contain ".." (path traversal): ${JSON.stringify(vaultPath)}`);
   }
@@ -373,6 +382,9 @@ export function mergeGitignore(
 ): string {
   const requiredLines = [
     ".env",
+    ".env.*",
+    ".env.local",
+    ".env.*.local",
     ".env.archon",
     ".env.archon.*",
     "graphify-out/*",

@@ -2,7 +2,7 @@
   "mcpServers": {
     "obsidian": {
       "command": "npx",
-      "args": ["@bitbonsai/mcpvault@latest", "${ARCHON_OBSIDIAN_VAULT_PATH}"],
+      "args": ["@bitbonsai/mcpvault@0.12.1", "${ARCHON_OBSIDIAN_VAULT_PATH}"],
       "env": {}
     }
   }

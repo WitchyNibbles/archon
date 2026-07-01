@@ -78,7 +78,8 @@ try {
   rmSync(distDir, { recursive: true, force: true });
   console.log("Cleaned dist/ before build.");
 } catch (err) {
-  console.warn(`Warning: could not clean dist/: ${err.message}`);
+  console.error(`Error: could not clean dist/ — aborting build to avoid shipping stale artifacts: ${err.message}`);
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
