@@ -835,6 +835,22 @@ export function validateHandoff(input: HandoffInput): string[] {
   return errors;
 }
 
+/**
+ * True when a string carries no meaningful content — i.e. it contains NO graphic
+ * character (letter, number, punctuation, or symbol). This is a POSITIVE
+ * requirement rather than a blacklist of invisible Unicode categories: it rejects
+ * strings made only of whitespace, format/zero-width chars (Cf, e.g. U+200B),
+ * combining marks (Mn, e.g. U+034F), or control chars in one rule, so the whole
+ * invisible-character class is closed instead of being chased category by
+ * category. `String.trim()` alone does not strip Cf/Mn, so a phantom-but-present
+ * value would otherwise pass a `.trim().length` check. Used for review fields
+ * (message, acceptedByRole, acceptanceReason, waiverReason, findings items) where
+ * an invisible-only value must be rejected from the audit trail.
+ */
+export function isBlankText(value: string): boolean {
+  return !/[\p{L}\p{N}\p{P}\p{S}]/u.test(value);
+}
+
 export function validateReviewAction(context: TrustedReviewActionContext, review: ReviewInput): string[] {
   const errors: string[] = [];
 
@@ -868,7 +884,7 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
     errors.push("review findings must be an array");
   }
 
-  if (review.findings.some((finding) => finding.trim().length === 0)) {
+  if (review.findings.some((finding) => isBlankText(finding))) {
     errors.push("review findings must not contain empty items");
   }
 
@@ -883,8 +899,51 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
     }
   }
 
-  if (review.state === "passed" && review.findings.length > 0) {
-    errors.push("passed reviews must not carry findings");
+  // P2.1 defense-in-depth: validate acceptance fields on any findingDetail that
+  // has disposition=accepted. These checks mirror the gate predicate and catch
+  // invalid input before it reaches the DB.
+  if (Array.isArray(review.findingDetails)) {
+    for (let i = 0; i < review.findingDetails.length; i++) {
+      const f = review.findingDetails[i]!;
+      if (f.disposition === "accepted") {
+        if (!f.message || isBlankText(f.message)) {
+          errors.push(`findingDetails[${i}]: accepted finding requires a non-empty message`);
+        }
+        if (!f.acceptedByRole || isBlankText(f.acceptedByRole)) {
+          errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptedByRole`);
+        } else if (!isGateReviewRole(f.acceptedByRole.trim())) {
+          // Gate-3 Fix #2: acceptedByRole must be a gate review role, not just any catalog role.
+          errors.push(`findingDetails[${i}]: acceptedByRole "${f.acceptedByRole}" is not a gate review role (reviewer, qa_engineer, or security_reviewer)`);
+        }
+        if (!f.acceptanceReason || isBlankText(f.acceptanceReason)) {
+          errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptanceReason`);
+        }
+        // Positive allowlist: only low or medium may be accepted.
+        // Using an exclusion list (high|critical) is a bypass risk when severity is undefined.
+        if (f.severity !== "low" && f.severity !== "medium") {
+          errors.push(`findingDetails[${i}]: only low or medium severity findings may be accepted, got ${f.severity ?? "undefined"} (hard security rule)`);
+        }
+      }
+    }
+  }
+
+  // Fix #2: also run the acceptance check when accepted findingDetails are present
+  // even when findings[] is empty.  Without this, a review with findings:[] but
+  // accepted findingDetails would slip past validateReviewAction — the gate would
+  // then pass because findings.length===0 skips its own check, making accepted
+  // findingDetails invisible to both layers.
+  const hasAcceptedDetailsInValidate = Array.isArray(review.findingDetails) &&
+    review.findingDetails.some((f) => f.disposition === "accepted");
+  if (review.state === "passed" && (review.findings.length > 0 || hasAcceptedDetailsInValidate)) {
+    // P2.1: passed + non-empty findings (or any accepted detail) is allowed only
+    // when every findingDetail is a fully accepted low/medium finding AND
+    // findingDetails.length === findings.length.
+    if (!checkFindingsAreFullyAccepted(review.findings, review.findingDetails)) {
+      errors.push(
+        "passed reviews with findings require all findingDetails to be accepted " +
+        "(disposition=accepted, non-empty acceptedByRole and acceptanceReason, severity low or medium)"
+      );
+    }
   }
 
   if (review.reviewerRole === "security_reviewer" && review.state === "passed") {
@@ -894,7 +953,7 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
   }
 
   if (review.state === "waived") {
-    if (!review.waiverReason || review.waiverReason.trim().length === 0) {
+    if (!review.waiverReason || isBlankText(review.waiverReason)) {
       errors.push("waived reviews require waiverReason");
     }
 
@@ -915,6 +974,62 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
   }
 
   return errors;
+}
+
+/**
+ * P2.1 helper: returns true when every finding in `findingDetails` is a valid
+ * accepted-by-decision finding:
+ *   - `disposition === "accepted"`
+ *   - `acceptedByRole` is a non-empty string
+ *   - `acceptanceReason` is a non-empty string
+ *   - HARD RULE: severity must be exactly "low" or "medium"; undefined, null,
+ *     and any unrecognised value are rejected (positive allowlist)
+ *
+ * Also requires `findingDetails` to have the same length as `findings` so every
+ * free-text finding has a corresponding structured acceptance record.
+ * Returns false when `findingDetails` is absent or empty.
+ *
+ * Named `checkFindingsAreFullyAccepted` to be usable from both
+ * `canReviewRecordSatisfyGate` (ReviewRecord) and `validateReviewAction` (ReviewInput).
+ */
+function checkFindingsAreFullyAccepted(
+  findings: readonly string[],
+  findingDetails: readonly import("./types.ts").ReviewFinding[] | undefined
+): boolean {
+  if (!Array.isArray(findingDetails) || findingDetails.length === 0) {
+    return false;
+  }
+  if (findingDetails.length !== findings.length) {
+    return false;
+  }
+  return findingDetails.every((f) => {
+    // Gate-3 Fix #3: a finding with an empty/whitespace/zero-width message cannot be accepted.
+    if (!f.message || isBlankText(f.message)) {
+      return false;
+    }
+    if (f.disposition !== "accepted") {
+      return false;
+    }
+    if (!f.acceptedByRole || isBlankText(f.acceptedByRole)) {
+      return false;
+    }
+    // Gate-3 Fix #2: acceptedByRole must be a gate review role (reviewer, qa_engineer,
+    // or security_reviewer). Any other string — including valid retrieval roles like
+    // memory_curator — is rejected here.
+    if (!isGateReviewRole(f.acceptedByRole.trim())) {
+      return false;
+    }
+    if (!f.acceptanceReason || isBlankText(f.acceptanceReason)) {
+      return false;
+    }
+    // HARD SECURITY RULE: only "low" or "medium" severity findings may be accepted.
+    // Rejection list (high|critical) is a bypass risk when severity is undefined —
+    // use a positive allowlist so any absent or unrecognised severity also fails.
+    if (f.severity !== "low" && f.severity !== "medium") {
+      return false;
+    }
+    return true;
+  });
 }
 
 export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
@@ -939,8 +1054,17 @@ export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
   }
 
   if (review.state === "passed") {
-    if (review.findings.length > 0) {
-      return false;
+    // Fix #2 (gate mirror): also run acceptance check when accepted findingDetails
+    // are present but findings:[] — same as the validateReviewAction fix.
+    const hasAcceptedDetailsInGate = Array.isArray(review.findingDetails) &&
+      review.findingDetails.some((f) => f.disposition === "accepted");
+    if (review.findings.length > 0 || hasAcceptedDetailsInGate) {
+      // P2.1: Findings present (or accepted details) on a passed review are allowed
+      // only when every findingDetail is a fully accepted-by-decision low/medium
+      // finding and findingDetails.length === findings.length.
+      if (!checkFindingsAreFullyAccepted(review.findings, review.findingDetails)) {
+        return false;
+      }
     }
 
     if (
@@ -957,7 +1081,7 @@ export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
     return false;
   }
 
-  if (!review.waiverReason || review.waiverReason.trim().length === 0) {
+  if (!review.waiverReason || isBlankText(review.waiverReason)) {
     return false;
   }
 

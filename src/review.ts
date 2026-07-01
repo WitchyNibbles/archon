@@ -1,5 +1,6 @@
 // Review gate, review identity, record-review, workflow proof, approvals.
 // Extracted verbatim from src/admin.ts (P8-T1 split). MOVE ONLY — no logic changes.
+import { realpathSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -25,6 +26,7 @@ import {
 
 import {
   effectiveRequiredReviewsForTask,
+  isBlankText,
   isGateReviewRole,
   isPlaywrightRequiredForTask,
   isReviewSeverity,
@@ -428,6 +430,24 @@ export interface ExecuteWorkflowProofCommandOptions {
 }
 
 
+/**
+ * P2.1 audit surface: a finding that was explicitly accepted-by-decision in a
+ * passed review. Surfaced in WorkflowProofResult so accepted findings are never
+ * invisible in the workflow-proof output.
+ */
+export interface AcceptedFindingSurface {
+  /** The reviewerRole that recorded this passed review. */
+  role: string;
+  /** The finding message. */
+  message: string;
+  /** Severity of the finding (low or medium — high/critical are never accepted). */
+  severity?: import("./domain/types.ts").ReviewSeverity | undefined;
+  /** The role that accepted this finding. */
+  acceptedByRole: string;
+  /** The recorded reason for accepting this finding. */
+  acceptanceReason: string;
+}
+
 export interface WorkflowProofResult {
   authorityLabel: "runtime_authoritative";
   runId: string;
@@ -439,6 +459,13 @@ export interface WorkflowProofResult {
   latestApproval: ApprovalRecord;
   continuationApplied: boolean;
   nextTaskId: string | null;
+  /**
+   * P2.1: Accepted findings from all latest reviews for this task. Empty when
+   * all reviews are clean (zero findings). Never undefined — always an array.
+   * These are findings that were explicitly accepted-by-decision rather than
+   * fixed, making accepted findings auditable and never invisible.
+   */
+  acceptedFindings: AcceptedFindingSurface[];
 }
 
 
@@ -516,6 +543,16 @@ export function normalizeRecordReviewCommandInput(raw: string): RecordReviewComm
 
   if (!findings) {
     throw new Error("record-review input requires review.findings to be an array of strings");
+  }
+
+  // Fix #8: findingDetails (accepted-finding acceptance records) are NOT supported
+  // via record-review --input. The caller must use save-review --findings-json instead,
+  // which correctly stores findings as string[] and derives them from findingDetails.
+  if (reviewCandidate.findingDetails !== undefined) {
+    throw new Error(
+      "record-review --input does not support findingDetails; " +
+      "use save-review --findings-json to record accepted findings"
+    );
   }
 
   return {
@@ -980,6 +1017,31 @@ export async function executeWorkflowProofCommandFromArgs(
     options
   );
 
+  // P2.1: collect accepted findings from genuine accepted-pass reviews only.
+  // Fix #9: pre-filter to reviews where state==="passed" && findings.length>0
+  // so blocked/waived reviews with stray accepted findingDetails never appear
+  // in the surface.  A clean-pass review (findings:[]) contributes nothing.
+  const acceptedFindings: AcceptedFindingSurface[] = latestReviews
+    .filter((review) => review.state === "passed" && review.findings.length > 0)
+    .flatMap((review) =>
+      (review.findingDetails ?? [])
+        .filter(
+          (f): f is typeof f & { disposition: "accepted"; acceptedByRole: string; acceptanceReason: string } =>
+            f.disposition === "accepted" &&
+            typeof f.acceptedByRole === "string" &&
+            !isBlankText(f.acceptedByRole) &&
+            typeof f.acceptanceReason === "string" &&
+            !isBlankText(f.acceptanceReason)
+        )
+        .map((f) => ({
+          role: review.reviewerRole,
+          message: f.message,
+          severity: f.severity,
+          acceptedByRole: f.acceptedByRole,
+          acceptanceReason: f.acceptanceReason
+        }))
+    );
+
   return {
     authorityLabel: "runtime_authoritative",
     runId,
@@ -990,7 +1052,8 @@ export async function executeWorkflowProofCommandFromArgs(
     latestReviews,
     latestApproval,
     continuationApplied: continuation.applied,
-    nextTaskId: continuation.nextTaskId
+    nextTaskId: continuation.nextTaskId,
+    acceptedFindings
   };
 }
 
@@ -1371,9 +1434,22 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
         `parseReviewFindingsJson: element [${i}].message must be a string`
       );
     }
+    // Gate-3 Fix #3 / Gate-4: empty, whitespace, or zero-width message is not a valid finding.
+    if (isBlankText(obj["message"])) {
+      throw new Error(
+        `parseReviewFindingsJson: element [${i}].message must not be empty or whitespace-only`
+      );
+    }
 
-    // Optional severity — must be a known ReviewSeverity if present
-    if (obj["severity"] !== undefined && obj["severity"] !== null) {
+    // Optional severity — must be a known ReviewSeverity if present.
+    // Fix #4: reject null explicitly instead of silently treating it as absent;
+    // null would otherwise be cast into ReviewFinding["severity"] violating the type.
+    if (obj["severity"] !== undefined) {
+      if (obj["severity"] === null) {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].severity must be a string or omitted, got null`
+        );
+      }
       if (typeof obj["severity"] !== "string") {
         throw new Error(
           `parseReviewFindingsJson: element [${i}].severity must be a string`
@@ -1422,13 +1498,77 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
       }
     }
 
+    // P2.1: Optional disposition — only "accepted" is a valid value
+    if (obj["disposition"] !== undefined && obj["disposition"] !== null) {
+      if (obj["disposition"] !== "accepted") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].disposition must be "accepted" or omitted, got "${obj["disposition"]}"`
+        );
+      }
+    }
+
+    // P2.1: Optional acceptedByRole — string, required when disposition=accepted
+    if (obj["acceptedByRole"] !== undefined && obj["acceptedByRole"] !== null) {
+      if (typeof obj["acceptedByRole"] !== "string") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].acceptedByRole must be a string`
+        );
+      }
+    }
+
+    // P2.1: Optional acceptanceReason — string, required when disposition=accepted
+    if (obj["acceptanceReason"] !== undefined && obj["acceptanceReason"] !== null) {
+      if (typeof obj["acceptanceReason"] !== "string") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].acceptanceReason must be a string`
+        );
+      }
+    }
+
+    // P2.1 acceptance-field completeness and hard security rule checks
+    if (obj["disposition"] === "accepted") {
+      const byRole = obj["acceptedByRole"];
+      if (typeof byRole !== "string" || isBlankText(byRole)) {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}] has disposition=accepted but acceptedByRole is missing or empty`
+        );
+      }
+      // Gate-3 Fix #2: acceptedByRole must be a gate review role (reviewer, qa_engineer,
+      // or security_reviewer). Retrieval roles and freeform strings are rejected.
+      if (!isGateReviewRole(byRole.trim())) {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].acceptedByRole "${byRole}" is not a gate review role (reviewer, qa_engineer, or security_reviewer)`
+        );
+      }
+      const reason = obj["acceptanceReason"];
+      if (typeof reason !== "string" || isBlankText(reason)) {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}] has disposition=accepted but acceptanceReason is missing or empty`
+        );
+      }
+      // HARD SECURITY RULE: only "low" or "medium" severity findings may be accepted.
+      // Positive allowlist — an exclusion list (high|critical) would be bypassed when
+      // severity is absent or an unrecognised value. Any severity that is not explicitly
+      // "low" or "medium" is rejected here.
+      const sev = obj["severity"];
+      if (sev !== "low" && sev !== "medium") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}] cannot accept a ${sev ?? "undefined"} severity finding — ` +
+          `only low and medium severity findings may be accepted`
+        );
+      }
+    }
+
     results.push({
       message: obj["message"] as string,
       severity: obj["severity"] as ReviewFinding["severity"],
       category: obj["category"] as string | undefined,
       file: obj["file"] as string | undefined,
       line: obj["line"] as number | undefined,
-      symbol: obj["symbol"] as string | undefined
+      symbol: obj["symbol"] as string | undefined,
+      disposition: obj["disposition"] as ReviewFinding["disposition"],
+      acceptedByRole: obj["acceptedByRole"] as string | undefined,
+      acceptanceReason: obj["acceptanceReason"] as string | undefined
     });
   }
 
@@ -1464,22 +1604,36 @@ export async function parseOrReadFindingsJson(
     // Treat as file path — resolve against cwd and guard against traversal
     const resolved = path.resolve(cwd, trimmed);
     const cwdNormalized = path.resolve(cwd);
-    // Ensure the resolved path is within cwd (starts with cwd + sep, or equals cwd)
+    // Gate-3 Fix #9: use realpathSync so in-cwd symlinks pointing outside are caught.
+    // If the file does not exist yet (timing race), realpathSync throws — fall back to
+    // the path.resolve check only. The realpath check is the strict guard when the file
+    // is present; path.resolve is the best-effort guard when it is not.
+    let effectivePath: string;
+    try {
+      effectivePath = realpathSync(resolved);
+    } catch {
+      // file does not exist at guard time — use the lexical resolved path
+      effectivePath = resolved;
+    }
+    // Ensure the resolved (or realpath'd) path is within cwd (starts with cwd + sep, or equals cwd)
     const cwdWithSep = cwdNormalized.endsWith(path.sep)
       ? cwdNormalized
       : cwdNormalized + path.sep;
-    if (!resolved.startsWith(cwdWithSep) && resolved !== cwdNormalized) {
+    if (!effectivePath.startsWith(cwdWithSep) && effectivePath !== cwdNormalized) {
       throw new Error(
-        `save-review: --findings-json path "${trimmed}" resolves to "${resolved}" which is ` +
+        `save-review: --findings-json path "${trimmed}" resolves to "${effectivePath}" which is ` +
           `outside the working directory "${cwdNormalized}". Path traversal is forbidden.`
       );
     }
     let jsonContent: string;
     try {
-      jsonContent = await readFileFn(resolved);
+      // Read the canonicalized effectivePath (the value that was traversal-checked),
+      // NOT the original `resolved` symlink path — otherwise a symlink swapped between
+      // the realpath guard and this read (TOCTOU) could redirect the read outside cwd.
+      jsonContent = await readFileFn(effectivePath);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`save-review: could not read --findings-json file "${resolved}": ${msg}`);
+      throw new Error(`save-review: could not read --findings-json file "${effectivePath}": ${msg}`);
     }
     return parseReviewFindingsJson(jsonContent);
   }
@@ -1521,6 +1675,14 @@ export async function saveReviewCommand(args: readonly string[], deps?: SaveRevi
   if (!role) {
     throw new Error("save-review requires --role");
   }
+  // Gate-3 Fix #8: restrict --role to gate review roles so invalid roles cannot
+  // accumulate in review history. Any role outside the gate set is rejected here
+  // before any DB access.
+  if (!isGateReviewRole(role)) {
+    throw new Error(
+      `save-review requires --role to be a gate review role (reviewer, qa_engineer, or security_reviewer), got "${role}"`
+    );
+  }
   if (!outcome || (outcome !== "passed" && outcome !== "failed")) {
     throw new Error("save-review requires --outcome <passed|failed>");
   }
@@ -1548,12 +1710,16 @@ export async function saveReviewCommand(args: readonly string[], deps?: SaveRevi
     findingDetails = await parseOrReadFindingsJson(findingsJsonArg.trim(), cwd, readFileFn);
   }
 
-  // When structured findingDetails are present, derive the string findings view.
-  // This mirrors the service.ts recordReview derivation for the CLI path.
-  const derivedFindings: string =
+  // When structured findingDetails are present, derive findings[] from the message
+  // fields — each finding becomes a separate element so the stored array length
+  // matches findingDetails.length, satisfying the gate's length-match check.
+  // Fix #1 (multi-finding CLI bug): was join("; ") → single string stored as [string];
+  // N accepted findings produced findings.length===1 !== findingDetails.length===N,
+  // so canReviewRecordSatisfyGate always returned false for N>1 accepted findings.
+  const derivedFindings: string[] =
     findingDetails !== undefined && findingDetails.length > 0
-      ? findingDetails.map((f) => f.message).join("; ")
-      : findings;
+      ? findingDetails.map((f) => f.message)
+      : findings.trim().length > 0 ? [findings] : [];
 
   const withClientFn =
     deps?.withClientFn ??

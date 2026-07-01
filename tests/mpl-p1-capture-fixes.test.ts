@@ -37,7 +37,7 @@ import { saveReviewCommand } from "../src/review.ts";
 // ---------------------------------------------------------------------------
 
 describe("FIX 1: recordReview — passed review with findingDetails must produce gate-satisfiable record", () => {
-  it("canReviewRecordSatisfyGate returns true for passed review with empty findings, even when findingDetails is non-empty", () => {
+  it("canReviewRecordSatisfyGate returns true for passed review with empty findings, when findingDetails has no accepted disposition", () => {
     // The fix: when state==="passed", findings must remain [] regardless of findingDetails.
     // Gate at contracts.ts line 942 requires findings.length === 0 for a pass.
     const record: ReviewRecord = {
@@ -236,12 +236,14 @@ describe("FIX 2: collectMistakeMetrics — concrete store produces non-zero base
 // ---------------------------------------------------------------------------
 
 describe("FIX 4: saveReviewCommand — --findings-json flag wiring", () => {
-  // Minimal store mock that captures what was passed to saveOrchestratorReview
+  // Minimal store mock that captures what was passed to saveOrchestratorReview.
+  // Fix #1 (multi-finding CLI): findings is now readonly string[] — one element per
+  // finding, not a single joined string.
   type CapturedReview = {
     taskId: string;
     role: string;
     outcome: string;
-    findings: string;
+    findings: readonly string[];
     findingDetails: readonly ReviewFinding[] | undefined;
     workspaceId: string;
     projectId: string;
@@ -332,7 +334,7 @@ describe("FIX 4: saveReviewCommand — --findings-json flag wiring", () => {
     assert.strictEqual(saved.findingDetails![0]!.category, "sql_injection");
   });
 
-  it("no --findings-json: findingDetails is undefined, findings is empty string", async () => {
+  it("no --findings-json: findingDetails is undefined, findings is empty array", async () => {
     const captured: CapturedReview[] = [];
     const mock = makeStoreMock(captured);
 
@@ -349,10 +351,11 @@ describe("FIX 4: saveReviewCommand — --findings-json flag wiring", () => {
     assert.strictEqual(captured.length, 1);
     const saved = captured[0]!;
     assert.strictEqual(saved.findingDetails, undefined);
-    assert.strictEqual(saved.findings, ""); // no --findings flag, no --findings-json
+    // Fix #1: findings is now string[] — no --findings flag → empty array, not empty string
+    assert.deepEqual([...saved.findings], []);
   });
 
-  it("--findings-json with inline JSON produces derivedFindings for passed outcome", async () => {
+  it("--findings-json with inline JSON produces derivedFindings array for passed outcome", async () => {
     const captured: CapturedReview[] = [];
     const mock = makeStoreMock(captured);
 
@@ -372,8 +375,9 @@ describe("FIX 4: saveReviewCommand — --findings-json flag wiring", () => {
       deps
     );
 
-    // derivedFindings for non-empty findingDetails is joined messages
-    assert.strictEqual(captured[0]!.findings, "finding A; finding B");
+    // Fix #1: derivedFindings for non-empty findingDetails is now string[] (one per finding),
+    // not a single joined "finding A; finding B" string.
+    assert.deepEqual([...captured[0]!.findings], ["finding A", "finding B"]);
   });
 });
 

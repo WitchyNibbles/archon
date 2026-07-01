@@ -206,7 +206,7 @@ export class PostgresStore implements ArchonStore {
     taskId: string;
     role: string;
     outcome: string;
-    findings: string;
+    findings: readonly string[];
     workspaceId: string;
     projectId: string;
     runId?: string | null | undefined;

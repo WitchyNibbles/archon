@@ -92,7 +92,7 @@ export async function saveOrchestratorReview(
     taskId: string;
     role: string;
     outcome: string;
-    findings: string;
+    findings: readonly string[];
     workspaceId: string;
     projectId: string;
     runId?: string | null | undefined;
@@ -104,6 +104,8 @@ export async function saveOrchestratorReview(
   // Two-authorities fix: persist the run id so the Stop-hook's run-scoped review
   // query can no longer be satisfied by a run-agnostic (null) review row that
   // would otherwise apply to every run.
+  // Fix #1 (multi-finding CLI): findings is now string[] — pass the array directly
+  // so N accepted findings are stored as N elements, not joined into one string.
   await client.query(
     `insert into reviews (
        id, workspace_id, project_id, run_id, task_id, reviewer_role, actor, actor_role,
@@ -119,7 +121,7 @@ export async function saveOrchestratorReview(
       input.taskId,
       input.role,
       state,
-      input.findings.trim() ? [input.findings] : [],
+      input.findings.length > 0 ? [...input.findings] : [],
       input.role,
       input.findingDetails !== undefined ? JSON.stringify(input.findingDetails) : null
     ]
