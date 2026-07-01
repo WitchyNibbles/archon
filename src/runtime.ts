@@ -17,6 +17,13 @@ import {
   probeRepoContextProfile
 } from "./runtime/repo-context-profile.ts";
 import { withClient } from "./admin/db.ts";
+import {
+  buildSslGuidance,
+  isSslError,
+  pgvectorGuidance,
+  scrubPgCredentials,
+  validateDatabaseUrl
+} from "./admin/db-error-scrub.ts";
 
 
 
@@ -152,14 +159,34 @@ export async function verifySetup() {
     throw new Error("ARCHON_PROJECT_SLUG is required");
   }
 
+  // Validate the database URL is parseable before attempting connection.
+  const dbUrl = process.env.ARCHON_CORE_DATABASE_URL;
+  if (dbUrl) {
+    const urlCheck = validateDatabaseUrl(dbUrl);
+    if (!urlCheck.valid) {
+      throw new Error(urlCheck.guidance);
+    }
+  }
+
   await withClient(async (client) => {
     const store = new PostgresStore(client);
-    const extensionResult = await client.query<{ extversion: string }>(
-      `select extversion from pg_extension where extname = 'vector'`
+
+    // Check pgvector in two steps so we can give branched guidance:
+    // 1. Is the extension available on this server at all?
+    // 2. Is it enabled in this specific database?
+    const availableResult = await client.query<{ name: string }>(
+      `SELECT name FROM pg_available_extensions WHERE name = 'vector'`
+    );
+    const enabledResult = await client.query<{ extversion: string }>(
+      `SELECT extversion FROM pg_extension WHERE extname = 'vector'`
     );
 
-    if (extensionResult.rows.length === 0) {
-      throw new Error("pgvector extension is not installed in the target database");
+    const guidance = pgvectorGuidance(
+      availableResult.rows.length > 0,
+      enabledResult.rows.length > 0
+    );
+    if (!guidance.ok) {
+      throw new Error(guidance.message);
     }
 
     const tablesResult = await client.query<{ table_name: string }>(
@@ -477,29 +504,50 @@ export function isRuntimeExecutionPreflightConnectionError(error: unknown): bool
     /\bECONNRESET\b/i.test(message) ||
     /\bENOTFOUND\b/i.test(message) ||
     /\bETIMEDOUT\b/i.test(message) ||
+    /\bEHOSTUNREACH\b/i.test(message) ||
+    /\bENETUNREACH\b/i.test(message) ||
+    /\bEADDRNOTAVAIL\b/i.test(message) ||
     /\bConnection terminated unexpectedly\b/i.test(message) ||
     /\bconnect\b.*\brefused\b/i.test(message)
   );
 }
 
 
-export function buildRuntimeExecutionConnectionFailure(error: unknown): RuntimeExecutionPreflightFailure {
-  const message = extractRuntimeExecutionErrorMessage(error);
-  const summary = /ARCHON_CORE_DATABASE_URL is required/i.test(message)
-    ? "ARCHON_CORE_DATABASE_URL is missing"
-    : `database unavailable: ${message}`;
+export function buildRuntimeExecutionConnectionFailure(
+  error: unknown,
+  currentDatabaseUrl?: string
+): RuntimeExecutionPreflightFailure {
+  const rawMessage = extractRuntimeExecutionErrorMessage(error);
+  // Scrub any credentials before embedding the message in operator-visible output.
+  const message = scrubPgCredentials(rawMessage);
+
+  let summary: string;
+  if (/ARCHON_CORE_DATABASE_URL is required/i.test(rawMessage)) {
+    summary = "ARCHON_CORE_DATABASE_URL is missing";
+  } else {
+    summary = `database unavailable: ${message}`;
+  }
+
+  const nextActions: string[] = [
+    // Full runtime mode (Postgres is the completion authority).
+    "to use the full runtime: start Postgres (`npm run setup:local`) or set a valid `ARCHON_CORE_DATABASE_URL`, then rerun `npm run archon:doctor`",
+    // Local-only mode — the supported escape hatch for a fresh install with no
+    // backing database. The agent workflow runs from local .archon/ state; only the
+    // Postgres-backed runtime proof (workflow-proof) is unavailable.
+    "to run without a database: unset `ARCHON_CORE_DATABASE_URL` (comment it out in `.env.archon` / `.env`) to fall back to local-only mode"
+  ];
+
+  // SSL errors: provide targeted sslmode guidance.
+  if (isSslError(error)) {
+    const dbUrl = currentDatabaseUrl ?? process.env.ARCHON_CORE_DATABASE_URL ?? "";
+    nextActions.unshift(buildSslGuidance(dbUrl));
+  }
+
   return {
     blockers: [summary],
     reason: `runtime execution preflight failed: ${summary}`,
     activeRunId: null,
-    nextActions: [
-      // Full runtime mode (Postgres is the completion authority).
-      "to use the full runtime: start Postgres (`npm run setup:local`) or set a valid `ARCHON_CORE_DATABASE_URL`, then rerun `npm run archon:doctor`",
-      // Local-only mode — the supported escape hatch for a fresh install with no
-      // backing database. The agent workflow runs from local .archon/ state; only the
-      // Postgres-backed runtime proof (workflow-proof) is unavailable.
-      "to run without a database: unset `ARCHON_CORE_DATABASE_URL` (comment it out in `.env.archon` / `.env`) to fall back to local-only mode"
-    ]
+    nextActions
   };
 }
 
@@ -1135,7 +1183,7 @@ export function resolveDoctorRepairPlan(input: {
     return {
       step: undefined,
       skippedReasons: [
-        `doctor failed before a safe repair plan could be derived: ${extractRuntimeExecutionErrorMessage(input.error)}`
+        `doctor failed before a safe repair plan could be derived: ${scrubPgCredentials(extractRuntimeExecutionErrorMessage(input.error))}`
       ]
     };
   }
@@ -1305,7 +1353,7 @@ export async function executeDoctorRepairCommandFromArgs(
         repair: {
           ...baseRepair,
           status: "failed",
-          failure: extractRuntimeExecutionErrorMessage(initialError)
+          failure: scrubPgCredentials(extractRuntimeExecutionErrorMessage(initialError))
         }
       };
     }
@@ -1368,7 +1416,7 @@ export async function executeDoctorRepairCommandFromArgs(
           integrityRepairsAttempted: deriveIntegrityRepairSteps(repairStepsAttempted),
           integrityRepairsApplied: deriveIntegrityRepairSteps(repairStepsApplied),
           skippedReasons,
-          failure: extractRuntimeExecutionErrorMessage(error)
+          failure: scrubPgCredentials(extractRuntimeExecutionErrorMessage(error))
         }
       };
     }
@@ -1616,12 +1664,119 @@ export async function executeRuntimeExecutionPreflight(
 }
 
 
+/**
+ * Emits a structured JSON error report to stdout and sets process.exitCode = 1.
+ * Used by doctorCommand to keep the output format consistent even on connection
+ * failures, so callers can always parse JSON from stdout.
+ */
+function emitDoctorConnectionError(error: unknown, dbUrl: string | undefined): void {
+  const failure = buildRuntimeExecutionConnectionFailure(error, dbUrl);
+  console.log(
+    JSON.stringify({
+      ok: false,
+      blockers: failure.blockers,
+      advisories: [] as string[],
+      nextActions: failure.nextActions,
+      reason: failure.reason
+    })
+  );
+  process.exitCode = 1;
+}
+
+/**
+ * Shared catch handler for the doctor command's two `withClient` blocks.
+ *
+ * Narrow classification (P2 reviewer finding): ONLY genuine connection failures
+ * are absorbed into the structured "database unavailable" JSON. Any other error
+ * thrown inside the callback — a domain error such as "project not bootstrapped"
+ * or "could not resolve project context" — is re-thrown so it surfaces truthfully
+ * instead of being misreported as a DB connectivity problem.
+ *
+ * Exported so both branches (emit vs re-throw) are unit-testable without a live DB.
+ */
+export function handleDoctorCommandError(error: unknown, dbUrl: string | undefined): void {
+  if (isRuntimeExecutionPreflightConnectionError(error)) {
+    emitDoctorConnectionError(error, dbUrl);
+  } else {
+    throw error;
+  }
+}
+
 export async function doctorCommand(args: readonly string[]) {
+  // --- URL parse preflight (before any DB connection attempt) ---
+  const dbUrl = process.env.ARCHON_CORE_DATABASE_URL;
+  if (dbUrl) {
+    const urlCheck = validateDatabaseUrl(dbUrl);
+    if (!urlCheck.valid) {
+      console.log(
+        JSON.stringify({
+          ok: false,
+          blockers: [urlCheck.guidance],
+          advisories: [] as string[],
+          nextActions: [
+            "fix ARCHON_CORE_DATABASE_URL — ensure the URL is in the form " +
+              "postgres://user:password@host:port/dbname and percent-encode any " +
+              "special characters in the password (@ → %40, # → %23, / → %2F)"
+          ],
+          reason: `database URL is invalid: ${urlCheck.guidance}`
+        })
+      );
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   if (hasCommandFlag(args, "--repair")) {
+    try {
+      await withClient(async (client) => {
+        const store = new PostgresStore(client);
+        const service = new ArchonCoreService(store);
+        const result = await executeDoctorRepairCommandFromArgs(args, {
+          cwd: process.cwd(),
+          env: process.env,
+          findLatestRun(workspaceSlug, projectSlug) {
+            return store.findLatestRun({ workspaceSlug, projectSlug });
+          },
+          findProjectContext(workspaceSlug, projectSlug) {
+            return store.getProjectContext({ workspaceSlug, projectSlug });
+          },
+          getProjectContext(params) {
+            return store.getProjectContext(params);
+          },
+          getProjectRuntimeState(projectId) {
+            return store.getProjectRuntimeState(projectId);
+          },
+          saveProjectRuntimeState(state) {
+            return store.saveProjectRuntimeState(state);
+          },
+          getStatusSnapshot(runId) {
+            return service.getStatus(runId);
+          },
+          getExecutionPlan(runId, staleAfterHours) {
+            return service.getExecutionPlan(runId, { staleAfterHours });
+          },
+          applyRecovery(runId, actionIds, staleAfterHours) {
+            return service.applyRecovery(runId, actionIds, { staleAfterHours });
+          },
+          getProjectRuntimeRegistration(projectId) {
+            return store.getProjectRuntimeRegistration(projectId);
+          }
+        });
+        console.log(JSON.stringify(result));
+      });
+    } catch (error) {
+      // Only absorb genuine connection errors; re-throw domain errors (not
+      // bootstrapped, project not found, etc.) so they surface truthfully.
+      handleDoctorCommandError(error, dbUrl);
+    }
+    return;
+  }
+
+  try {
     await withClient(async (client) => {
       const store = new PostgresStore(client);
       const service = new ArchonCoreService(store);
-      const result = await executeDoctorRepairCommandFromArgs(args, {
+      const report = await executeDoctorCommandFromArgs(args, {
         cwd: process.cwd(),
         env: process.env,
         findLatestRun(workspaceSlug, projectSlug) {
@@ -1630,54 +1785,19 @@ export async function doctorCommand(args: readonly string[]) {
         findProjectContext(workspaceSlug, projectSlug) {
           return store.getProjectContext({ workspaceSlug, projectSlug });
         },
-        getProjectContext(params) {
-          return store.getProjectContext(params);
-        },
-        getProjectRuntimeState(projectId) {
-          return store.getProjectRuntimeState(projectId);
-        },
-        saveProjectRuntimeState(state) {
-          return store.saveProjectRuntimeState(state);
-        },
         getStatusSnapshot(runId) {
           return service.getStatus(runId);
-        },
-        getExecutionPlan(runId, staleAfterHours) {
-          return service.getExecutionPlan(runId, { staleAfterHours });
-        },
-        applyRecovery(runId, actionIds, staleAfterHours) {
-          return service.applyRecovery(runId, actionIds, { staleAfterHours });
         },
         getProjectRuntimeRegistration(projectId) {
           return store.getProjectRuntimeRegistration(projectId);
         }
       });
-      console.log(JSON.stringify(result));
+      console.log(JSON.stringify(report));
     });
-    return;
+  } catch (error) {
+    // Same narrowing: only absorb connection errors; re-throw everything else.
+    handleDoctorCommandError(error, dbUrl);
   }
-
-  await withClient(async (client) => {
-    const store = new PostgresStore(client);
-    const service = new ArchonCoreService(store);
-    const report = await executeDoctorCommandFromArgs(args, {
-      cwd: process.cwd(),
-      env: process.env,
-      findLatestRun(workspaceSlug, projectSlug) {
-        return store.findLatestRun({ workspaceSlug, projectSlug });
-      },
-      findProjectContext(workspaceSlug, projectSlug) {
-        return store.getProjectContext({ workspaceSlug, projectSlug });
-      },
-      getStatusSnapshot(runId) {
-        return service.getStatus(runId);
-      },
-      getProjectRuntimeRegistration(projectId) {
-        return store.getProjectRuntimeRegistration(projectId);
-      }
-    });
-    console.log(JSON.stringify(report));
-  });
 }
 
 

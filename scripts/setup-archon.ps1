@@ -230,7 +230,9 @@ if (-not $env:ARCHON_POSTGRES_PASSWORD -or $env:ARCHON_POSTGRES_PASSWORD -eq "ar
 }
 
 if (-not $env:ARCHON_POSTGRES_PORT) {
-    $env:ARCHON_POSTGRES_PORT = "5432"
+    # Default matches the docker-compose.yml host-side port (5533 -> container:5432).
+    # For native runtime mode set ARCHON_POSTGRES_PORT=5432 explicitly in .env.
+    $env:ARCHON_POSTGRES_PORT = "5533"
 }
 
 if (-not $env:ARCHON_CORE_DATABASE_URL) {
