@@ -13,12 +13,130 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { HandoffController, type HandoffStoreLike } from "./handoff-controller.ts";
+import type { CreateAgentInvocationInput } from "../store/agent-runtime-store.ts";
 
 // ---------------------------------------------------------------------------
 // Re-exports for callers that need the store interface
 // ---------------------------------------------------------------------------
 
 export type { HandoffStoreLike };
+
+// ---------------------------------------------------------------------------
+// upsertInteractiveInvocationRow — shared, idempotent invocation-row creation
+//
+// The interactive (plain `claude`) surface mints a synthetic invocationId
+// (inv_interactive_<uuid>) in archon-session-start.mjs. That id has NO backing
+// agent_invocations row until it is explicitly created. Every handoff-commit
+// surface — the MCP archon_handoff_commit tool, PreCompact parachute, and
+// context sampling — resolves `from_invocation_id`/`invocation_id` against
+// agent_invocations (NOT NULL FK). Without a row those writes FK-violate, so the
+// context guard can demand a handoff that can never be committed.
+//
+// This helper is the single authoritative creation point, reused by BOTH hooks:
+//   - archon-session-start.mjs calls it EAGERLY when it registers the session,
+//     so the row exists for the whole session lifetime.
+//   - archon-pre-compact.mjs calls it as an idempotent backstop before the
+//     precompact_fallback handoff commits (covers a DB-unavailable session start).
+// ---------------------------------------------------------------------------
+
+/** Minimal store surface required to create the backing invocation row. */
+export interface InteractiveInvocationCreator {
+  createAgentInvocation(data: CreateAgentInvocationInput): Promise<unknown>;
+}
+
+/** Identity fields for the interactive invocation row. */
+export interface InteractiveInvocationRowInput {
+  readonly id: string;
+  readonly runId: string;
+  readonly taskId: string;
+  readonly role: string;
+  readonly startedAt?: string | undefined;
+}
+
+export interface UpsertInteractiveInvocationResult {
+  /** A new row was inserted. */
+  readonly created: boolean;
+  /** The row already existed (Postgres 23505) — idempotent success. */
+  readonly alreadyExisted: boolean;
+  /**
+   * A non-idempotent (structural: FK/schema) failure occurred. The row does NOT
+   * exist, so downstream handoff commits will fail — callers must log this loudly.
+   */
+  readonly structuralError?: string | undefined;
+}
+
+/**
+ * Fixed identity defaults for an interactive root session's invocation row.
+ * `agentKind: "root_manager"` because the interactive `claude` REPL is the
+ * archon manager/root. The values are descriptive metadata, not load-bearing
+ * for handoff correctness — the load-bearing property is that the row EXISTS.
+ */
+const INTERACTIVE_INVOCATION_DEFAULTS = {
+  agentKind: "root_manager",
+  model: "claude-sonnet-4-6",
+  effort: "high",
+  status: "running",
+  contextPolicyId: "default"
+} as const;
+
+/**
+ * Idempotently create the backing agent_invocations row for an interactive
+ * session.
+ *
+ * I/O contract:
+ *   Input:  store (InteractiveInvocationCreator), row identity fields
+ *   Output: UpsertInteractiveInvocationResult
+ *   Side effects: INSERT into agent_invocations (idempotent on 23505)
+ *
+ * Best-effort + idempotent: a Postgres unique_violation (23505) means the row
+ * already exists (session-start created it, or repeated compaction) and is
+ * treated as success. Any OTHER error is structural (FK/schema) and returned in
+ * `structuralError` so the caller can surface it — a silent miss strands the
+ * session with no committable handoff. This function never throws.
+ */
+export async function upsertInteractiveInvocationRow(
+  store: InteractiveInvocationCreator,
+  input: InteractiveInvocationRowInput
+): Promise<UpsertInteractiveInvocationResult> {
+  try {
+    await store.createAgentInvocation({
+      id: input.id,
+      runId: input.runId,
+      taskId: input.taskId,
+      role: input.role,
+      agentKind: INTERACTIVE_INVOCATION_DEFAULTS.agentKind,
+      model: INTERACTIVE_INVOCATION_DEFAULTS.model,
+      effort: INTERACTIVE_INVOCATION_DEFAULTS.effort,
+      status: INTERACTIVE_INVOCATION_DEFAULTS.status,
+      contextPolicyId: INTERACTIVE_INVOCATION_DEFAULTS.contextPolicyId,
+      startedAt: input.startedAt
+    });
+    return { created: true, alreadyExisted: false };
+  } catch (err) {
+    const code =
+      err && typeof err === "object" && "code" in err
+        ? (err as { code?: unknown }).code
+        : undefined;
+    if (code === "23505") {
+      // Row already exists — expected and idempotent.
+      return { created: false, alreadyExisted: true };
+    }
+    // Structural failure (FK/schema): the row does NOT exist. Surface it with a
+    // diagnosable message. pg errors carry `.code` + `.message`; a bare object's
+    // default String() ("[object Object]") would hide the cause, so extract the
+    // message explicitly and prefix the SQLSTATE code when present.
+    const message =
+      err && typeof err === "object" && "message" in err && typeof err.message === "string"
+        ? err.message
+        : String(err);
+    const codeStr = typeof code === "string" && code.length > 0 ? `${code}: ` : "";
+    return {
+      created: false,
+      alreadyExisted: false,
+      structuralError: `${codeStr}${message}`
+    };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // normalizeRole — imported from the shared module and re-exported.

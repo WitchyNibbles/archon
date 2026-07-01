@@ -24,6 +24,8 @@ const existingResponse = evaluateSessionStart(payload, context);
 // can merge its continuation text into a single JSON output.
 let runId;
 let newInvocationId;
+let sessionRole;
+let registeredAt;
 const guardPath = path.join(context.repoRoot, ".archon", "work", "context-guard.json");
 
 if (context.activeTaskId) {
@@ -51,12 +53,13 @@ if (context.activeTaskId) {
       // (runPrecompactHandoff re-validates via normalizeRole — this is
       // defense-in-depth at the write boundary.)
       const rawRole = typeof process.env.ARCHON_ROLE === "string" ? process.env.ARCHON_ROLE.trim() : "";
-      const role = /^[a-z][a-z0-9_-]{0,39}$/.test(rawRole) ? rawRole : "interactive";
+      sessionRole = /^[a-z][a-z0-9_-]{0,39}$/.test(rawRole) ? rawRole : "interactive";
+      registeredAt = new Date().toISOString();
       writeFileSync(guardPath, JSON.stringify({
         invocationId: newInvocationId, runId, taskId: context.activeTaskId,
-        role,
+        role: sessionRole,
         surface: "interactive", state: "registered",
-        registeredAt: new Date().toISOString()
+        registeredAt
       }), "utf-8");
       process.stderr.write(`[archon-session-start] interactive parachute registered: ${newInvocationId} (task: ${context.activeTaskId})\n`);
     }
@@ -92,6 +95,9 @@ if (context.activeTaskId && runId && newInvocationId) {
     const { consumeInteractiveHandoff } = await import(
       path.join(repoRoot, "src", "runtime", "handoff-consumer.ts")
     );
+    const { upsertInteractiveInvocationRow } = await import(
+      path.join(repoRoot, "src", "runtime", "interactive-parachute.ts")
+    );
     const { makeFileLockLeaseStore } = await import(
       path.join(repoRoot, "src", "runtime", "respawn-lease.ts")
     );
@@ -101,6 +107,35 @@ if (context.activeTaskId && runId && newInvocationId) {
 
     await withClient(async (client) => {
       const agentStore = new AgentRuntimeStore(client);
+
+      // EAGER invocation-row creation (interactiveInvocationRegister fix).
+      //
+      // archon-session-start.mjs mints a synthetic invocationId but historically
+      // wrote ONLY context-guard.json — no agent_invocations row. When the
+      // context guard later demands a handoff mid-session, the MCP
+      // archon_handoff_commit tool (and context sampling) resolve
+      // from_invocation_id against agent_invocations (NOT NULL FK) and
+      // FK-violate: the guard demands a handoff that can never be committed.
+      //
+      // Create the row now so it exists for the whole session lifetime. The
+      // PreCompact parachute keeps its own idempotent upsert as a backstop for
+      // the case where the DB was unreachable at session start.
+      const upsert = await upsertInteractiveInvocationRow(agentStore, {
+        id: newInvocationId,
+        runId,
+        taskId: context.activeTaskId,
+        role: sessionRole ?? "interactive",
+        startedAt: registeredAt
+      });
+      if (upsert.created) {
+        process.stderr.write(
+          `[archon-session-start] interactive invocation row created: ${newInvocationId}\n`
+        );
+      } else if (upsert.structuralError !== undefined) {
+        process.stderr.write(
+          `[archon-session-start][WARN] interactive invocation row NOT created (guard-demanded handoffs will fail): ${upsert.structuralError}\n`
+        );
+      }
 
       // Composite store: exposes only getLatestUnconsumedHandoff + markHandoffConsumed
       // to the consume path (plus the other HandoffStoreLike stubs required by
