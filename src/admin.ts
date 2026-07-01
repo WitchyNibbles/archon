@@ -117,7 +117,6 @@ const COMMAND_REQUIRED = new Map<string, readonly (keyof ArchonConfig)[]>([
   ["close-run",               ["ARCHON_CORE_DATABASE_URL"]],
   ["continue-session",        ["ARCHON_CORE_DATABASE_URL"]],
   ["forge",                   ["ARCHON_CORE_DATABASE_URL"]],
-  ["secret",                  ["ARCHON_CORE_DATABASE_URL"]],
   ["context-status",          ["ARCHON_CORE_DATABASE_URL"]],
   ["handoffs",                ["ARCHON_CORE_DATABASE_URL"]],
   ["invocations",             ["ARCHON_CORE_DATABASE_URL"]],

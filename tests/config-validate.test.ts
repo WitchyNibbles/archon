@@ -627,16 +627,16 @@ test("(regression) bad URL + required ARCHON_WORKSPACE_SLUG: no spurious workspa
     { ARCHON_GRAFANA_URL: "ftp://bad-scheme" },
     { required: ["ARCHON_WORKSPACE_SLUG"] }
   );
-  // Grafana URL format error expected, but NOT a missing-workspace-slug error
-  if (!result.ok) {
-    const allErrors = result.errors.join("\n");
-    assert.ok(
-      !allErrors.includes("ARCHON_WORKSPACE_SLUG"),
-      `Spurious WORKSPACE_SLUG error found in:\n${allErrors}`
-    );
-    // Grafana URL error should be present
-    assert.ok(allErrors.includes("ARCHON_GRAFANA_URL"), `Expected GRAFANA_URL error in:\n${allErrors}`);
-  }
+  // The bad Grafana URL MUST make validation fail — assert that up front so the
+  // regression body below can never pass vacuously.
+  assert.ok(!result.ok, "expected validation to fail on the bad Grafana URL");
+  const allErrors = result.errors.join("\n");
+  assert.ok(
+    !allErrors.includes("ARCHON_WORKSPACE_SLUG"),
+    `Spurious WORKSPACE_SLUG error found in:\n${allErrors}`
+  );
+  // Grafana URL error should be present.
+  assert.ok(allErrors.includes("ARCHON_GRAFANA_URL"), `Expected GRAFANA_URL error in:\n${allErrors}`);
 });
 
 // ---------------------------------------------------------------------------
