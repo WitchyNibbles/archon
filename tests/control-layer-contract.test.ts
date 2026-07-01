@@ -65,7 +65,12 @@ test("workflow templates encode clarification, regression, and risk-closure expe
   assert.match(qualityMatrix, /### `progress_proof_required`/);
   assert.match(qualityMatrix, /### `checkpoint_resume_required`/);
   assert.match(qualityMatrix, /### `reasoning_strict_required`/);
-  assert.match(qualityMatrix, /discovered `CRITICAL` or `HIGH` defects in touched scope/i);
+  // Strengthened to the no-buts bar: discovered defects must be fixed or carried
+  // as an explicit recorded blocker (never silently left); CRITICAL/HIGH still
+  // block outright.
+  assert.match(qualityMatrix, /discovered defects in touched scope must be fixed, or carried as an explicit/i);
+  assert.match(qualityMatrix, /recorded blocker with an owner — never silently left/i);
+  assert.match(qualityMatrix, /`CRITICAL`\/`HIGH` block completion outright/i);
   assert.match(reasoningQuality, /facts, assumptions, and guesses/i);
   assert.match(reasoningQuality, /structured dissent pass/i);
   assert.match(reasoningQuality, /multiple plausible hypotheses/i);
