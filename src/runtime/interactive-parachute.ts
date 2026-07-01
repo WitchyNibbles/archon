@@ -98,12 +98,18 @@ export async function upsertInteractiveInvocationRow(
   store: InteractiveInvocationCreator,
   input: InteractiveInvocationRowInput
 ): Promise<UpsertInteractiveInvocationResult> {
+  // SECURITY: `role` originates from attacker-writable sources (ARCHON_ROLE env,
+  // context-guard.json). Both current callers pre-sanitize, but the helper is
+  // the authoritative write boundary into agent_invocations.role — which feeds
+  // the review-independence check (review.ts) — so normalize here unconditionally
+  // rather than trusting every future caller to do it.
+  const safeRole = normalizeRole(input.role);
   try {
     await store.createAgentInvocation({
       id: input.id,
       runId: input.runId,
       taskId: input.taskId,
-      role: input.role,
+      role: safeRole,
       agentKind: INTERACTIVE_INVOCATION_DEFAULTS.agentKind,
       model: INTERACTIVE_INVOCATION_DEFAULTS.model,
       effort: INTERACTIVE_INVOCATION_DEFAULTS.effort,
@@ -139,6 +145,65 @@ export async function upsertInteractiveInvocationRow(
 }
 
 // ---------------------------------------------------------------------------
+// runInteractiveSessionStart — testable session-start orchestration
+//
+// archon-session-start.mjs must (1) eagerly create the interactive invocation
+// row, then (2) consume any pending handoff from the prior session. The ORDER is
+// load-bearing: the consume path's markHandoffConsumed writes
+// `to_invocation_id = <this session's invocationId>` (agent_handoffs.to_invocation_id
+// is a FK to agent_invocations, migration 020 line 93). If the row was not
+// created, consume FK-violates.
+//
+// So: when the eager upsert returns a structuralError (row does NOT exist),
+// consume is SKIPPED — the prior handoff stays unconsumed and is recovered on the
+// next session start once the DB is healthy again. This function is injectable
+// (upsert + consume are thunks) so the ordering contract is unit-testable without
+// a DB or the untestable .mjs hook body.
+// ---------------------------------------------------------------------------
+
+/** Outcome of consuming a prior session's handoff (subset of consumeInteractiveHandoff). */
+export interface InteractiveConsumeOutcome {
+  readonly consumed: boolean;
+  readonly continuationText?: string | undefined;
+  readonly handoffId?: string | undefined;
+  readonly skipped?: string | undefined;
+}
+
+export interface RunInteractiveSessionStartDeps {
+  /** Eagerly create the backing invocation row (idempotent). */
+  upsertRow(): Promise<UpsertInteractiveInvocationResult>;
+  /** Consume any pending handoff. Called ONLY when the row is guaranteed to exist. */
+  consume(): Promise<InteractiveConsumeOutcome>;
+}
+
+export interface RunInteractiveSessionStartResult {
+  readonly upsert: UpsertInteractiveInvocationResult;
+  readonly consume?: InteractiveConsumeOutcome | undefined;
+  /** Set when consume was deliberately not attempted (row creation failed). */
+  readonly consumeSkippedReason?: string | undefined;
+}
+
+/**
+ * Orchestrate the interactive session-start DB work with FK-safe ordering.
+ *
+ * I/O contract:
+ *   Input:  deps { upsertRow, consume }
+ *   Output: RunInteractiveSessionStartResult
+ *   Side effects: whatever the injected thunks do (never throws on its own)
+ */
+export async function runInteractiveSessionStart(
+  deps: RunInteractiveSessionStartDeps
+): Promise<RunInteractiveSessionStartResult> {
+  const upsert = await deps.upsertRow();
+  if (upsert.structuralError !== undefined) {
+    // Row does NOT exist → consume's to_invocation_id FK would violate. Skip it.
+    return { upsert, consumeSkippedReason: "invocation_row_not_created" };
+  }
+  const consume = await deps.consume();
+  return { upsert, consume };
+}
+
+// ---------------------------------------------------------------------------
 // normalizeRole — imported from the shared module and re-exported.
 //
 // Moved to src/runtime/normalize-role.ts so that handoff-controller.ts can
@@ -149,6 +214,7 @@ export async function upsertInteractiveInvocationRow(
 // ---------------------------------------------------------------------------
 
 import { normalizeRole } from "./normalize-role.ts";
+import { isValidLeaseId } from "./respawn-lease.ts";
 export { normalizeRole };
 
 // ---------------------------------------------------------------------------
@@ -288,6 +354,16 @@ export async function runPrecompactHandoff(opts: {
       : undefined;
 
   if (invocationId === undefined) {
+    return { committed: false };
+  }
+
+  // SECURITY (C3): context-guard.json is attacker-writable (within many
+  // subagents' default write scope). The consume (read) path gates invocationId
+  // through isValidLeaseId (^[A-Za-z0-9_-]+$) before any DB call; the write path
+  // must too. Without this, an injected existing PK makes createAgentInvocation
+  // report alreadyExisted and HandoffController commit a phantom handoff
+  // attributed to an unrelated invocation.
+  if (!isValidLeaseId(invocationId)) {
     return { committed: false };
   }
 

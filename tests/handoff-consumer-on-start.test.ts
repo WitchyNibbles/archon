@@ -50,6 +50,20 @@ class ConsumeStoreDouble implements HandoffStoreLike {
   private readonly registered = new Set<string>();
   readonly consumedCalls: Array<{ handoffId: string; toInvocationId: string }> = [];
 
+  // Opt-in FK enforcement (default OFF so existing tests are unaffected).
+  // When enabled, markHandoffConsumed mirrors the production constraint
+  // agent_handoffs.to_invocation_id → agent_invocations.id (migration 020 line
+  // 93): a toInvocationId with no backing invocation row FK-violates. This is
+  // exactly what the session-start eager invocation-row upsert protects against.
+  private enforceToInvocationFk = false;
+  private readonly invocationRows = new Set<string>();
+
+  /** Turn on to_invocation_id FK enforcement, seeding the existing invocation rows. */
+  enableToInvocationFk(existingInvocationIds: readonly string[] = []): void {
+    this.enforceToInvocationFk = true;
+    for (const id of existingInvocationIds) this.invocationRows.add(id);
+  }
+
   seedHandoff(h: HandoffRecord): void {
     this.handoffs.push({ ...h });
     this.registered.add(h.id);
@@ -74,6 +88,17 @@ class ConsumeStoreDouble implements HandoffStoreLike {
       throw new Error(
         `contract violation: markHandoffConsumed called for unregistered handoff ` +
           `${handoffId}. Only handoffs returned by getLatestUnconsumedHandoff may be consumed.`
+      );
+    }
+    // Production FK: to_invocation_id references agent_invocations(id). Without a
+    // backing row (the session-start eager upsert), this write violates the FK.
+    if (this.enforceToInvocationFk && !this.invocationRows.has(toInvocationId)) {
+      throw Object.assign(
+        new Error(
+          `insert or update on table "agent_handoffs" violates foreign key ` +
+            `constraint on to_invocation_id (${toInvocationId} not in agent_invocations)`
+        ),
+        { code: "23503" }
       );
     }
     this.consumedCalls.push({ handoffId, toInvocationId });
@@ -228,6 +253,64 @@ describe("handoffConsumeOnStart — Phase A", () => {
       newInvocationId,
       "toInvocationId must be the new session's invocationId from context-guard.json"
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Test A1-1b: to_invocation_id FK dependency (interactiveInvocationRegister).
+  //
+  // consume writes to_invocation_id = <this session's invocationId>, a FK to
+  // agent_invocations. consume marks best-effort (it SWALLOWS a failed mark), so
+  // without a backing invocation row the FK violation is silent and the mark
+  // never persists — the handoff is re-consumed every session start. The
+  // session-start eager invocation-row upsert is what makes the mark STICK.
+  // These two tests pin both halves of that constraint.
+  // -------------------------------------------------------------------------
+
+  it("A1: without an invocation row the to_invocation_id mark silently fails to persist (re-consume loop)", async () => {
+    const handoff = makeHandoffRecord();
+    store.seedHandoff(handoff);
+    // Enforce the FK but do NOT register newInvocationId as an invocation row —
+    // i.e. session-start's eager upsert did not run / failed.
+    store.enableToInvocationFk([]);
+
+    const result = await consumeInteractiveHandoff({
+      store,
+      runId: RUN_ID,
+      taskId: TASK_ID,
+      contextGuardPath
+    });
+
+    // consume is best-effort: it still returns the continuation text …
+    assert.equal(result.consumed, true, "consume still returns continuation (best-effort)");
+    // … but the FK violation prevented the mark from persisting, so the handoff
+    // stays unconsumed and will be re-consumed on the next start.
+    assert.equal(
+      store.consumedCalls.length,
+      0,
+      "no mark persists without a backing invocation row (FK violation swallowed)"
+    );
+    const stillUnconsumed = await store.getLatestUnconsumedHandoff(RUN_ID, TASK_ID);
+    assert.ok(stillUnconsumed !== undefined, "handoff remains unconsumed → re-consume loop");
+  });
+
+  it("A1: with the invocation row present the mark persists (eager upsert ran)", async () => {
+    const handoff = makeHandoffRecord();
+    store.seedHandoff(handoff);
+    // Session-start's eager upsert created the row → FK is satisfied.
+    store.enableToInvocationFk([newInvocationId]);
+
+    const result = await consumeInteractiveHandoff({
+      store,
+      runId: RUN_ID,
+      taskId: TASK_ID,
+      contextGuardPath
+    });
+
+    assert.equal(result.consumed, true, "consume succeeds when the invocation row backs the session");
+    assert.equal(store.consumedCalls.length, 1, "the mark persists exactly once");
+    assert.equal(store.consumedCalls[0]!.toInvocationId, newInvocationId);
+    const nowConsumed = await store.getLatestUnconsumedHandoff(RUN_ID, TASK_ID);
+    assert.equal(nowConsumed, undefined, "handoff is now consumed → no re-consume loop");
   });
 
   // -------------------------------------------------------------------------

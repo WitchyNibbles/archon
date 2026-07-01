@@ -95,7 +95,7 @@ if (context.activeTaskId && runId && newInvocationId) {
     const { consumeInteractiveHandoff } = await import(
       path.join(repoRoot, "src", "runtime", "handoff-consumer.ts")
     );
-    const { upsertInteractiveInvocationRow } = await import(
+    const { upsertInteractiveInvocationRow, runInteractiveSessionStart } = await import(
       path.join(repoRoot, "src", "runtime", "interactive-parachute.ts")
     );
     const { makeFileLockLeaseStore } = await import(
@@ -107,35 +107,6 @@ if (context.activeTaskId && runId && newInvocationId) {
 
     await withClient(async (client) => {
       const agentStore = new AgentRuntimeStore(client);
-
-      // EAGER invocation-row creation (interactiveInvocationRegister fix).
-      //
-      // archon-session-start.mjs mints a synthetic invocationId but historically
-      // wrote ONLY context-guard.json — no agent_invocations row. When the
-      // context guard later demands a handoff mid-session, the MCP
-      // archon_handoff_commit tool (and context sampling) resolve
-      // from_invocation_id against agent_invocations (NOT NULL FK) and
-      // FK-violate: the guard demands a handoff that can never be committed.
-      //
-      // Create the row now so it exists for the whole session lifetime. The
-      // PreCompact parachute keeps its own idempotent upsert as a backstop for
-      // the case where the DB was unreachable at session start.
-      const upsert = await upsertInteractiveInvocationRow(agentStore, {
-        id: newInvocationId,
-        runId,
-        taskId: context.activeTaskId,
-        role: sessionRole ?? "interactive",
-        startedAt: registeredAt
-      });
-      if (upsert.created) {
-        process.stderr.write(
-          `[archon-session-start] interactive invocation row created: ${newInvocationId}\n`
-        );
-      } else if (upsert.structuralError !== undefined) {
-        process.stderr.write(
-          `[archon-session-start][WARN] interactive invocation row NOT created (guard-demanded handoffs will fail): ${upsert.structuralError}\n`
-        );
-      }
 
       // Composite store: exposes only getLatestUnconsumedHandoff + markHandoffConsumed
       // to the consume path (plus the other HandoffStoreLike stubs required by
@@ -149,22 +120,59 @@ if (context.activeTaskId && runId && newInvocationId) {
         updateAgentInvocationStatus: () => Promise.resolve()
       };
 
-      const result = await consumeInteractiveHandoff({
-        store,
-        leaseStore,
-        runId,
-        taskId: context.activeTaskId,
-        contextGuardPath: guardPath
+      // FK-safe orchestration (interactiveInvocationRegister fix):
+      //   1. EAGERLY create the interactive agent_invocations row so it exists
+      //      for the whole session — every commit surface (MCP archon_handoff_commit,
+      //      context sampling, PreCompact parachute) resolves from_invocation_id
+      //      against agent_invocations (NOT NULL FK). Without it, a guard-demanded
+      //      handoff can never be committed.
+      //   2. THEN consume any prior-session handoff. This order is load-bearing:
+      //      markHandoffConsumed writes to_invocation_id = newInvocationId (FK), so
+      //      if the row was not created, consume is SKIPPED (recovered next start).
+      const outcome = await runInteractiveSessionStart({
+        upsertRow: () =>
+          upsertInteractiveInvocationRow(agentStore, {
+            id: newInvocationId,
+            runId,
+            taskId: context.activeTaskId,
+            role: sessionRole,
+            startedAt: registeredAt
+          }),
+        consume: () =>
+          consumeInteractiveHandoff({
+            store,
+            leaseStore,
+            runId,
+            taskId: context.activeTaskId,
+            contextGuardPath: guardPath
+          })
       });
 
-      if (result.consumed) {
-        continuationText = result.continuationText;
+      if (outcome.upsert.created) {
         process.stderr.write(
-          `[archon-session-start] handoff ${result.handoffId} consumed — continuation injected\n`
+          `[archon-session-start] interactive invocation row created: ${newInvocationId}\n`
+        );
+      } else if (outcome.upsert.alreadyExisted) {
+        process.stderr.write(
+          `[archon-session-start] interactive invocation ${newInvocationId} already exists (idempotent)\n`
+        );
+      } else if (outcome.upsert.structuralError !== undefined) {
+        process.stderr.write(
+          `[archon-session-start][WARN] interactive invocation row NOT created (guard-demanded handoffs will fail, consume skipped): ${outcome.upsert.structuralError}\n`
+        );
+      }
+
+      if (outcome.consumeSkippedReason !== undefined) {
+        // Consume was deliberately not attempted (row creation failed).
+        // The prior handoff stays unconsumed and is recovered next session.
+      } else if (outcome.consume?.consumed) {
+        continuationText = outcome.consume.continuationText;
+        process.stderr.write(
+          `[archon-session-start] handoff ${outcome.consume.handoffId} consumed — continuation injected\n`
         );
       } else {
         process.stderr.write(
-          `[archon-session-start] consume-on-start: ${result.skipped}\n`
+          `[archon-session-start] consume-on-start: ${outcome.consume?.skipped}\n`
         );
       }
     });

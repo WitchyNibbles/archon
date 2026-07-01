@@ -81,7 +81,14 @@ async function main() {
             role: data.role,
             startedAt: data.startedAt
           });
-          if (res.alreadyExisted) {
+          if (res.created) {
+            // Backstop rescued the session: session-start could not create the
+            // row (DB unavailable then), pre-compact did. Log it so an operator
+            // debugging an intermittent session-start DB failure can confirm.
+            process.stderr.write(
+              `[archon-pre-compact] interactive invocation row created by backstop: ${data.id}\n`
+            );
+          } else if (res.alreadyExisted) {
             process.stderr.write(
               `[archon-pre-compact] invocation ${data.id} already exists (idempotent)\n`
             );
