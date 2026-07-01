@@ -7,6 +7,9 @@ Use this rule when planning, debugging, implementing, researching, reviewing, or
 ## Core contract
 
 - separate facts, assumptions, and guesses explicitly
+- pursue the best durable solution for the user's actual goal, not the first
+  approach that merely works or the lowest-cost option; when the request as stated
+  is not the best path, reason toward the better one and say so
 - generate multiple plausible hypotheses before committing when ambiguity, failure, or contradiction exists
 - prefer evidence-backed conclusions over confident-sounding speculation
 - investigate at least one alternative when the first approach fails or produces suspicious results
@@ -51,7 +54,7 @@ For plans, task packets, and related artifacts, capture:
 
 - plans, architecture decisions, code changes, and research conclusions should receive a critic or reviewer pass before they are finalized
 - council-reviewed design or architecture work should also receive a structured dissent pass, with one named dissent owner and at least one serious alternative
-- if the critic pass finds weak evidence, hidden assumptions, or missing alternatives, either repair the reasoning or carry the issue forward as an explicit blocker or warning
+- if the critic pass finds weak evidence, hidden assumptions, or missing alternatives, repair the reasoning; an issue may only be carried forward as an explicit, recorded blocker with an owner and justification — never smoothed into a silent "warning" that does not block
 
 ## Failure handling
 
