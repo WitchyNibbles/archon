@@ -34,7 +34,13 @@ if (path.basename(pkgPath) !== "package.json") {
 }
 
 let failed = false;
-const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+let pkg;
+try {
+  pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+} catch (e) {
+  console.error(`FAIL: could not parse ${pkgPath}: ${e instanceof Error ? e.message : String(e)}`);
+  process.exit(1);
+}
 
 if (!pkg.devDependencies?.archon) {
   console.error("FAIL: init --apply did not write devDependencies.archon");

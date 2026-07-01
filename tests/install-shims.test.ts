@@ -217,6 +217,23 @@ test("package.json files[]: archon-setup.sh and archon-setup.ps1 phantom scripts
   );
 });
 
+test("package.json files[]: .claude/settings.json and .graphifyignore actually exist on disk", async () => {
+  // Positive guard: npm pack silently omits files[] entries that are missing on disk,
+  // producing a tarball that looks correct but omits the file.  This test closes the
+  // symmetric gap to the phantom-script removal above: if either file is deleted or
+  // moved without updating files[], this test catches it before a release.
+  const settingsPath = path.join(repoRoot, ".claude", "settings.json");
+  const graphifyPath = path.join(repoRoot, ".graphifyignore");
+  await assert.doesNotReject(
+    access(settingsPath, constants.R_OK),
+    ".claude/settings.json is listed in package.json files[] and must exist on disk (silently omitted by npm pack if missing)"
+  );
+  await assert.doesNotReject(
+    access(graphifyPath, constants.R_OK),
+    ".graphifyignore is listed in package.json files[] and must exist on disk (silently omitted by npm pack if missing)"
+  );
+});
+
 // ---------------------------------------------------------------------------
 // assert-scripts-clean.mjs: adversarial regression test for the regex
 // ---------------------------------------------------------------------------
@@ -246,6 +263,37 @@ test("assert-scripts-clean.mjs: exits 1 on synthetic dirty shim with strip-types
       exitCode,
       1,
       "assert-scripts-clean.mjs must exit 1 when a shim contains 'experimental-strip-types src/'"
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("assert-scripts-clean.mjs: exits 1 on synthetic dirty shim with node_modules/archon/src pattern", async () => {
+  const tempDir = path.join(tmpdir(), `archon-scripts-adv2-${process.pid}-${Date.now()}`);
+  await mkdir(tempDir, { recursive: true });
+
+  try {
+    // Synthetic dirty shim that references the installed source path directly.
+    const dirtyContent = [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'node /path/to/node_modules/archon/src/install/cli.js --target "$1"'
+    ].join("\n");
+    await writeFile(path.join(tempDir, "install-archon.sh"), dirtyContent, "utf8");
+
+    let exitCode = 0;
+    try {
+      await execFileAsync("node", [assertScriptsCleanScript, tempDir]);
+    } catch (err: unknown) {
+      const e = err as { code?: number };
+      exitCode = e.code ?? 1;
+    }
+
+    assert.equal(
+      exitCode,
+      1,
+      "assert-scripts-clean.mjs must exit 1 when a shim contains 'node_modules/archon/src'"
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });

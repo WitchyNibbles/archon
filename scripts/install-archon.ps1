@@ -29,8 +29,9 @@ $resolvedTarget = [System.IO.Path]::GetFullPath($TargetPath)
 $bin = Join-Path $repoRoot "dist\cli\archon-bin.js"
 
 if (-not (Test-Path -LiteralPath $bin)) {
+    # $ErrorActionPreference = "Stop" converts Write-Error to a terminating error
+    # that exits the script with code 1.  No explicit exit statement is needed.
     Write-Error "compiled bin not found at $bin`n  (run 'npm run build:dist' in the archon repo and then retry)"
-    exit 1
 }
 
 $extraArgs = if ($AdditionalArgs) { $AdditionalArgs } else { @() }
