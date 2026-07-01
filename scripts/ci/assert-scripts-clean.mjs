@@ -7,7 +7,11 @@
 //
 // Usage: node scripts/ci/assert-scripts-clean.mjs <installed-archon-scripts-dir>
 //
-// Fails (exit 1) when a shipped .sh/.ps1 references node_modules/archon/src.
+// Fails (exit 1) when a shipped .sh/.ps1 contains any of:
+//   • node_modules/archon/src  — absolute installed-src path (original P1 check)
+//   • experimental-strip-types src/  — install shim invoking TS source via strip-types
+//     (P4: install-archon.sh/.ps1 must exec the compiled bin, not the TS source;
+//      note: "strip-types scripts/..." in check-archon-*.sh is intentional and ok)
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -18,15 +22,31 @@ if (!scriptsDir) {
   process.exit(2);
 }
 
+const FORBIDDEN = [
+  {
+    pattern: /node_modules\/archon\/src/,
+    label: "node_modules/archon/src",
+  },
+  {
+    // Catch install shims that invoke TS source via strip-types.
+    // "strip-types scripts/..." is intentional in check-archon-*.sh (dev dispatch);
+    // "strip-types src/" is never correct in a shipped install shim.
+    pattern: /experimental-strip-types\s+\S*src\//,
+    label: "experimental-strip-types src/ (install shim invoking TS source)",
+  },
+];
+
 let failed = false;
 for (const name of readdirSync(scriptsDir)) {
   if (!name.endsWith(".sh") && !name.endsWith(".ps1")) continue;
   const content = readFileSync(path.join(scriptsDir, name), "utf8");
-  if (/node_modules\/archon\/src/.test(content)) {
-    console.error("FAIL: node_modules/archon/src in scripts/" + name);
-    failed = true;
+  for (const { pattern, label } of FORBIDDEN) {
+    if (pattern.test(content)) {
+      console.error(`FAIL: ${label} in scripts/${name}`);
+      failed = true;
+    }
   }
 }
 
 if (failed) process.exit(1);
-console.log("OK: no node_modules/archon/src in shipped scripts");
+console.log("OK: no forbidden source refs in shipped scripts");
