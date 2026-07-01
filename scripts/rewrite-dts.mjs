@@ -15,6 +15,7 @@
  */
 
 import {
+  existsSync,
   readdirSync,
   readFileSync,
   writeFileSync,
@@ -53,6 +54,11 @@ function rewriteDtsSpecifiers(code) {
   // import type { … } from './foo.ts'  (already covered above, but guard again)
   // re-export via `export * from "./foo.ts"`  (covered)
   return out;
+}
+
+if (!existsSync(distDir)) {
+  console.log("dist/ not found — nothing to rewrite. Run npm run build:dist first.");
+  process.exit(0);
 }
 
 let dtsCount = 0;

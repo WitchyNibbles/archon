@@ -18,7 +18,8 @@ if (!pkgPath) {
 }
 
 const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-for (const h of ["postinstall", "install", "preinstall"]) {
+// Also guard prepare (runs on git-URL installs), prepack, and postpack.
+for (const h of ["postinstall", "install", "preinstall", "prepare", "prepack", "postpack"]) {
   if (pkg.scripts?.[h]) {
     console.error("FAIL: forbidden lifecycle hook: " + h);
     process.exit(1);

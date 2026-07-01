@@ -183,3 +183,15 @@ test("grafanaMcpConfigFragment(): uses scoped @witchynibbles/archon install path
     "grafanaMcpConfigFragment() must not reference the unscoped node_modules/archon/ path"
   );
 });
+
+test("package.json: bin field maps archon to dist/cli/archon-bin.js", async () => {
+  const pkg = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8")) as {
+    bin?: Record<string, string>;
+  };
+  assert.ok(pkg.bin, "package.json must have a bin field");
+  assert.equal(
+    pkg.bin["archon"],
+    "dist/cli/archon-bin.js",
+    "package.json bin.archon must point to dist/cli/archon-bin.js — changing this breaks the installed archon command"
+  );
+});

@@ -121,6 +121,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # build:dist compiles src/**/*.ts → dist/**/*.js (esbuild). Tests that run
+      # npm pack --dry-run must see a populated dist/ to make non-vacuous assertions.
+      - run: npm run build:dist
       # Runs the full suite under c8 and enforces the coverage ratchet floor
       # (package.json "c8" key). Fails on test failure OR coverage regression.
       - run: npm run check:coverage

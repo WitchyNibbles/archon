@@ -25,7 +25,7 @@ The runbook terminates with a **Definition of Healthy** gate that proves the ins
    ↓
 2. Run installer (init --apply) from archon source
    ↓
-3. cd to consumer && npm install (MANDATORY: populates node_modules/archon)
+3. cd to consumer && npm install (MANDATORY: populates node_modules/@witchynibbles/archon)
    ↓
 4. Configure .env (from .env.archon.example template)
    ↓
@@ -124,7 +124,7 @@ claude code --version 2>/dev/null | head -1 || echo "claude code not found"
 
 ## Part 2: Run the Installer and npm install
 
-The installer must run from the archon SOURCE repo. After installation, you must run `npm install` in the consumer to populate `node_modules/archon` (archon is a file: devDependency). Without this step, `npm run archon:*` commands will fail with "Cannot find module .../node_modules/archon/...".
+The installer must run from the archon SOURCE repo. After installation, you must run `npm install` in the consumer to populate `node_modules/@witchynibbles/archon` (@witchynibbles/archon is a file: devDependency). Without this step, `npm run archon:*` commands will fail with "Cannot find module .../node_modules/@witchynibbles/archon/...".
 
 ### 2.1. Run Installer (from archon source)
 
@@ -181,7 +181,7 @@ cd /path/to/consumer
 npm install
 ```
 
-**Why mandatory:** The installer wires npm scripts that invoke archon from `./node_modules/archon/src/admin/archon.ts`. These scripts (like `npm run archon:migrate`) will NOT work until `npm install` populates `node_modules/archon` with the archon package.
+**Why mandatory:** The installer wires npm scripts that invoke the compiled archon binary from `./node_modules/@witchynibbles/archon/dist/cli/archon-bin.js` (and other `dist/` paths). These scripts (like `npm run archon:migrate`) will NOT work until `npm install` populates `node_modules/@witchynibbles/archon` with the archon package. Note: post-P1, archon ships compiled JS only — there is no `src/` tree in the installed package.
 
 **Expected output:** npm output showing package installations. No errors.
 
@@ -195,7 +195,7 @@ npm install
 
 **Idempotency:** Safe to re-run; npm caches skipped packages.
 
-**Critical:** If any `npm run archon:*` command fails with "Cannot find module" after this, `npm install` was skipped. Re-run it.
+**Critical:** If any `npm run archon:*` command fails with "Cannot find module .../node_modules/@witchynibbles/archon/..." after this, `npm install` was skipped. Re-run it.
 
 ---
 
@@ -301,7 +301,7 @@ npm run archon:migrate
 **Success signal:** Exit code 0; no errors.
 
 **On-failure:**
-- **"Cannot find module .../node_modules/archon/...":** `npm install` was skipped. Go back to Part 2.2 and run it.
+- **"Cannot find module .../node_modules/@witchynibbles/archon/...":** `npm install` was skipped. Go back to Part 2.2 and run it.
 - **"postgres is configured but unreachable":** Confirm postgres is running and `ARCHON_CORE_DATABASE_URL` is correct. Check `docker ps` for archon-postgres container.
 - **"ARCHON_CORE_DATABASE_URL not set":** Set it in `.env` and retry.
 - **"role does not exist":** Postgres role/db not created. Re-run step 3.1.
@@ -602,7 +602,7 @@ At this point, the consumer repo has a healthy archon install with an active tas
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Cannot find module .../node_modules/archon/..." | `npm install` was skipped in the consumer. Archon is a file: devDependency; node_modules/archon must exist. | Run `npm install` in the consumer (Part 2.2). |
+| "Cannot find module .../node_modules/@witchynibbles/archon/..." | `npm install` was skipped in the consumer. @witchynibbles/archon is a file: devDependency; node_modules/@witchynibbles/archon must exist. | Run `npm install` in the consumer (Part 2.2). |
 | "Cannot find module .../.claude/hooks/archon-pre-tool.mjs" at session start | Installer did not copy all 11 hook modules. | Re-run installer from updated archon source; or manually copy missing hooks from archon source `.claude/hooks/`. |
 | "write to X blocked — no active archon task" on every write attempt | No task registered yet. | Complete Part 5 (register task). |
 | "write to X is outside active task write scope" | Task scope too narrow for the write. | Edit `.archon/ACTIVE` (TASK.md) and expand the `## Allowed write scope` to include the path; or register a new task with broader scope (Part 5). |
@@ -626,7 +626,7 @@ git pull origin main
 npm install
 
 cd /path/to/consumer
-node --experimental-strip-types /path/to/archon/src/install/cli.ts upgrade --apply --target .
+node /path/to/archon/dist/cli/archon-bin.js upgrade --apply --target .
 ```
 
 **Expected output:** JSON summary showing updated managed files. No conflicts.
@@ -666,11 +666,11 @@ The following items could not be fully verified and are marked for future review
 
 An agent following this runbook end-to-end will produce a healthy archon install in a consumer repo with:
 - All files and overlays copied and merged by the installer.
-- `node_modules/archon` populated (mandatory `npm install` completed).
+- `node_modules/@witchynibbles/archon` populated (mandatory `npm install` completed).
 - PostgreSQL provisioned and reachable (if using full runtime).
 - Database schema migrated and workflow state bootstrapped.
 - All 11 hook modules in place and functional.
 - An active task registered to unblock the managed-path guard.
-- No "Cannot find module .../node_modules/archon/...", "Cannot find module .../.claude/hooks/...", or "no active archon task" errors blocking further work.
+- No "Cannot find module .../node_modules/@witchynibbles/archon/...", "Cannot find module .../.claude/hooks/...", or "no active archon task" errors blocking further work.
 
 The Definition of Healthy gate (Part 4) provides clear evidence that the install is not broken. Agents can then proceed to invoke archon workflow skills and runtime commands with confidence using `npm run archon:*` (for wired commands) or `npm run archon -- <cmd>` (for others).
