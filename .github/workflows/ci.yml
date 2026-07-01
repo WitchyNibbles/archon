@@ -196,26 +196,9 @@ jobs:
           printf '{"name":"smoke-project","private":true}\n' > "$INIT_DIR/package.json"
           PATH="$FAKE_BIN_DIR:$PATH" node "$BIN" init --apply --target "$INIT_DIR"
 
-          node --input-type=module - "$INIT_DIR/package.json" "$DOCKER_SENTINEL" <<'SMOKE_EOF'
-import { existsSync, readFileSync } from "node:fs";
-const [,, pkgPath, dockerSentinel] = process.argv;
-const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-let failed = false;
-if (!pkg.devDependencies?.archon) {
-  console.error("FAIL: init --apply did not write devDependencies.archon");
-  failed = true;
-}
-if (pkg.scripts?.["archon:migrate"] !== "archon migrate") {
-  console.error("FAIL: init --apply did not wire archon:migrate script");
-  failed = true;
-}
-if (existsSync(dockerSentinel)) {
-  console.error("FAIL: init --apply invoked docker — it must not");
-  failed = true;
-}
-if (failed) process.exit(1);
-console.log("OK: init --apply wrote devDependencies.archon, archon scripts, and did not invoke docker");
-SMOKE_EOF
+          # Assertions live in scripts/ci/assert-init-applied.mjs (shared with the
+          # windows leg) — no inline heredoc in the YAML block.
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-init-applied.mjs" "$INIT_DIR/package.json" "$DOCKER_SENTINEL"
 
           # Assert dist tree cleanliness, shipped-script cleanliness, and no install
           # lifecycle hooks. The inspection logic lives in scripts/ci/*.mjs (shared
@@ -273,20 +256,10 @@ SMOKE_EOF
           node $bin init --apply --target $initDir
           if ($LASTEXITCODE -ne 0) { Write-Error "init --apply failed"; exit 1 }
 
-          $initPkg = Get-Content -LiteralPath (Join-Path $initDir "package.json") -Raw | ConvertFrom-Json
-          if (-not $initPkg.devDependencies.archon) {
-            Write-Error "FAIL: init --apply did not write devDependencies.archon"
-            exit 1
-          }
-          if ($initPkg.scripts."archon:migrate" -ne "archon migrate") {
-            Write-Error "FAIL: init --apply did not wire archon:migrate script"
-            exit 1
-          }
-          if (Test-Path -LiteralPath $dockerSentinel) {
-            Write-Error "FAIL: init --apply invoked docker — it must not"
-            exit 1
-          }
-          Write-Host "OK: init --apply wrote devDependencies.archon, archon scripts, and did not invoke docker"
+          # Assertions live in scripts/ci/assert-init-applied.mjs (shared with the
+          # unix leg) — single source of truth, no inline here-string in the YAML.
+          node "$env:GITHUB_WORKSPACE/scripts/ci/assert-init-applied.mjs" (Join-Path $initDir "package.json") $dockerSentinel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Dist/scripts/package inspection. Same scripts/ci/*.mjs the unix leg runs
           # (single source of truth). Node accepts forward slashes on Windows, so
