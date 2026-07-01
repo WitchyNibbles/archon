@@ -1,10 +1,18 @@
 {
-  "name": "archon",
+  "name": "@witchynibbles/archon",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Opt-in overlay for archon's shared-core orchestration.",
   "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     ".githooks/",
     ".claude/skills/archon-performance/SKILL.md",
@@ -112,27 +120,6 @@
     "scripts/setup-archon.sh",
     "scripts/verify-archon-workflow-check.sh",
     "scripts/verify-release-overlay.sh",
-    "src/admin.ts",
-    "src/admin/",
-    "src/archon/",
-    "src/core/",
-    "src/domain/",
-    "src/evals/orchestration-baseline.ts",
-    "src/evals/retrieval-memory-baseline.ts",
-    "src/index.ts",
-    "src/install/cli.ts",
-    "src/install/git-guard.ts",
-    "src/install/merge.ts",
-    "src/install/setup-git-guard.ts",
-    "src/install/setup-local.ts",
-    "src/install/setup-playwright.ts",
-    "src/install/types.ts",
-    "src/install/verify-git-guard.ts",
-    "src/mcp/",
-    "src/runtime/",
-    "src/sql/migrations/",
-    "src/store/",
-    "src/forge/",
     "dist/**"
   ],
   "engines": {
@@ -144,6 +131,8 @@
   "scripts": {
     "build": "tsc",
     "build:dist": "node scripts/build-dist.mjs",
+    "build:types": "tsc -p scripts/tsconfig.build-types.json && node scripts/rewrite-dts.mjs",
+    "prepublishOnly": "npm run build:dist && npm run build:types",
     "dev": "tsx watch src/admin.ts",
     "archon": "node --experimental-strip-types src/admin/archon.ts",
     "test": "node --experimental-strip-types --test tests/*.test.ts",

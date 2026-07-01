@@ -264,7 +264,7 @@ test("mergePackageJson adds archon dependency and scripts without removing exist
   // autopilot-status is a standalone script — references compiled dist directly
   assert.equal(
     merged.scripts["archon:autopilot-status"],
-    "node ./node_modules/archon/dist/archon/autopilot-status.js"
+    "node ./node_modules/@witchynibbles/archon/dist/archon/autopilot-status.js"
   );
   assert.equal(merged.scripts["archon:github-dispatch"], "archon github-dispatch --target .");
   assert.equal(merged.scripts["archon:mcp"], "archon mcp");
@@ -277,7 +277,7 @@ test("mergePackageJson adds archon dependency and scripts without removing exist
   // verify-git-guard and setup-* are standalone scripts — reference compiled dist
   assert.equal(
     merged.scripts["archon:verify:git-guard"],
-    "node ./node_modules/archon/dist/install/verify-git-guard.js"
+    "node ./node_modules/@witchynibbles/archon/dist/install/verify-git-guard.js"
   );
   assert.equal(
     merged.scripts["archon:record-review"],
@@ -285,19 +285,19 @@ test("mergePackageJson adds archon dependency and scripts without removing exist
   );
   assert.equal(
     merged.scripts["archon:setup:git-guard"],
-    "node ./node_modules/archon/dist/install/setup-git-guard.js"
+    "node ./node_modules/@witchynibbles/archon/dist/install/setup-git-guard.js"
   );
   assert.equal(
     merged.scripts["archon:setup:local"],
-    "node ./node_modules/archon/dist/install/setup-local.js"
+    "node ./node_modules/@witchynibbles/archon/dist/install/setup-local.js"
   );
   assert.equal(
     merged.scripts["archon:setup:playwright"],
-    "node ./node_modules/archon/dist/install/setup-playwright.js"
+    "node ./node_modules/@witchynibbles/archon/dist/install/setup-playwright.js"
   );
   assert.equal(
     merged.scripts["archon:verify:playwright"],
-    "node ./node_modules/archon/dist/install/setup-playwright.js --verify"
+    "node ./node_modules/@witchynibbles/archon/dist/install/setup-playwright.js --verify"
   );
   // Verify no old-form src references remain
   const allScriptValues = Object.values(merged.scripts).join("\n");
@@ -305,7 +305,7 @@ test("mergePackageJson adds archon dependency and scripts without removing exist
     "no node_modules/archon/src/ references in consumer scripts");
   assert.doesNotMatch(allScriptValues, /--experimental-strip-types.*node_modules/,
     "no --experimental-strip-types for node_modules references");
-  assert.equal(merged.devDependencies.archon, "file:../archon");
+  assert.equal(merged.devDependencies["@witchynibbles/archon"], "file:../archon");
 });
 
 test("verifyAgentCatalogArtifacts reports missing and unexpected AGENT.md files deterministically", async () => {
@@ -406,7 +406,7 @@ test("mergePackageJson adds a Grafana MCP helper only when requested", () => {
 
   assert.equal(
     merged.scripts["archon:grafana:mcp"],
-    "node ./node_modules/archon/dist/grafana/mcp-server.js"
+    "node ./node_modules/@witchynibbles/archon/dist/grafana/mcp-server.js"
   );
 });
 
@@ -590,26 +590,8 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     "scripts/setup-archon.sh",
     "scripts/verify-archon-workflow-check.sh",
     "scripts/verify-release-overlay.sh",
-    "src/admin.ts",
-    "src/admin/",
-    "src/core/",
-    "src/archon/",
-    "src/domain/",
-    "src/evals/orchestration-baseline.ts",
-    "src/evals/retrieval-memory-baseline.ts",
-    "src/index.ts",
-    "src/install/cli.ts",
-    "src/install/git-guard.ts",
-    "src/install/merge.ts",
-    "src/install/setup-git-guard.ts",
-    "src/install/setup-local.ts",
-    "src/install/setup-playwright.ts",
-    "src/install/types.ts",
-    "src/install/verify-git-guard.ts",
-    "src/mcp/",
-    "src/runtime/",
-    "src/sql/migrations/",
-    "src/store/"
+    // P1: src/ is no longer shipped; compiled output ships via dist/**
+    "dist/**"
   ];
   const excludedOverlayFiles = [
     ".archon/install-backups/",
@@ -637,7 +619,8 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
   const catalogSkillVerification = await verifyCatalogRepoLocalSkills({ repoRoot: sourceRoot });
   assert.equal(catalogSkillVerification.ok, true);
   assert.deepEqual(catalogSkillVerification.missingSkillFiles, []);
-  assert.equal(pkg.private, true);
+  // P1: private was removed so the package is publishable
+  assert.ok(!pkg.private, "package.json must not be private — it must be publishable (P1)");
   assert.equal(pkg.license, "MIT");
   assert.match(pkg.description ?? "", /opt-in overlay/i);
   // P1/condition-4: no lifecycle install hooks that run code on npm install
@@ -676,8 +659,11 @@ test("package dry run includes the orchestration eval entrypoint exported by src
   }>;
 
   const packedFiles = new Set(packResult[0]?.files.map((entry) => entry.path) ?? []);
-  assert.ok(packedFiles.has("src/evals/orchestration-baseline.ts"));
-  assert.ok(packedFiles.has("src/index.ts"));
+  // P1: src/ is no longer shipped; compiled output ships via dist/**
+  assert.ok(packedFiles.has("dist/evals/orchestration-baseline.js"),
+    "dist/evals/orchestration-baseline.js must be present in packed output (P1: dist ships, not src)");
+  assert.ok(packedFiles.has("dist/index.js"),
+    "dist/index.js must be present in packed output (P1: dist ships, not src)");
 });
 
 test("installDevgodIntoProject dry-run reports planned changes without writing", async () => {
@@ -740,11 +726,11 @@ test("installDevgodIntoProject ships Playwright MCP configs and setup wiring", a
     assert.match(codexConfig, /"playwright_vision"/);
     assert.equal(
       packageJson.scripts?.["archon:setup:playwright"],
-      "node ./node_modules/archon/dist/install/setup-playwright.js"
+      "node ./node_modules/@witchynibbles/archon/dist/install/setup-playwright.js"
     );
     assert.equal(
       packageJson.scripts?.["archon:verify:playwright"],
-      "node ./node_modules/archon/dist/install/setup-playwright.js --verify"
+      "node ./node_modules/@witchynibbles/archon/dist/install/setup-playwright.js --verify"
     );
     assert.match(kernelAgents, /BEGIN ARCHON KERNEL/);
     assert.match(kernelAgents, /archon-intake/);
@@ -942,7 +928,7 @@ test("installDevgodIntoProject first apply backs up divergent managed content", 
       await readFile(path.join(targetRoot, "package.json"), "utf8")
     ) as { devDependencies: Record<string, string>; scripts: Record<string, string> };
     assert.equal(installedPackageJson.scripts.test, "vitest");
-    assert.ok(installedPackageJson.devDependencies.archon);
+    assert.ok(installedPackageJson.devDependencies["@witchynibbles/archon"]);
   } finally {
     await rm(targetRoot, { recursive: true, force: true });
   }
@@ -992,7 +978,7 @@ test("installDevgodIntoProject opt-in Grafana setup adds MCP config, env guidanc
 
     assert.equal(
       packageJson.scripts["archon:grafana:mcp"],
-      "node ./node_modules/archon/dist/grafana/mcp-server.js"
+      "node ./node_modules/@witchynibbles/archon/dist/grafana/mcp-server.js"
     );
     // archon uses JSON settings (not TOML), check JSON patterns
     assert.match(codexConfig, /"grafana"/);
@@ -1075,7 +1061,7 @@ test("installDevgodIntoProject auto-detects configured Grafana env and adds MCP 
 
     assert.equal(
       packageJson.scripts["archon:grafana:mcp"],
-      "node ./node_modules/archon/dist/grafana/mcp-server.js"
+      "node ./node_modules/@witchynibbles/archon/dist/grafana/mcp-server.js"
     );
     // archon uses JSON settings (not TOML)
     assert.match(codexConfig, /"grafana"/);
@@ -1119,7 +1105,7 @@ test("install CLI init --apply is explicit, replay-safe, and does not run docker
     const installedPackageJson = JSON.parse(
       await readFile(path.join(targetRoot, "package.json"), "utf8")
     ) as { devDependencies: Record<string, string> };
-    assert.ok(installedPackageJson.devDependencies.archon);
+    assert.ok(installedPackageJson.devDependencies["@witchynibbles/archon"]);
 
     const reviewIdentityAdapter = await readFile(
       path.join(targetRoot, "archon/review-identity-adapter.ts"),
@@ -1836,14 +1822,14 @@ test("installDevgodIntoProject seeds scaffolding but not live work or reviewed m
   assert.equal(targetPackageJson.scripts["archon:verify:review-identity"], "archon verify-review-identity");
   assert.equal(targetPackageJson.scripts["archon:refresh-repo-context"], "archon refresh-repo-context");
   assert.equal(targetPackageJson.scripts["archon:repair-task-queue"], "archon repair-task-queue");
-  // standalone scripts reference compiled dist directly
+  // standalone scripts reference compiled dist directly (P1: scoped package path)
   assert.equal(
     targetPackageJson.scripts["archon:autopilot-status"],
-    "node ./node_modules/archon/dist/archon/autopilot-status.js"
+    "node ./node_modules/@witchynibbles/archon/dist/archon/autopilot-status.js"
   );
   assert.equal(
     targetPackageJson.scripts["archon:verify:git-guard"],
-    "node ./node_modules/archon/dist/install/verify-git-guard.js"
+    "node ./node_modules/@witchynibbles/archon/dist/install/verify-git-guard.js"
   );
   assert.equal(
     targetPackageJson.scripts["archon:record-review"],
@@ -1851,7 +1837,7 @@ test("installDevgodIntoProject seeds scaffolding but not live work or reviewed m
   );
   assert.equal(
     targetPackageJson.scripts["archon:setup:git-guard"],
-    "node ./node_modules/archon/dist/install/setup-git-guard.js"
+    "node ./node_modules/@witchynibbles/archon/dist/install/setup-git-guard.js"
   );
   // Smoke: no old-form src references anywhere in consumer scripts
   const installedScripts = Object.values(targetPackageJson.scripts).join("\n");
@@ -2393,7 +2379,7 @@ test("workflow live wrapper forwards the active task id to the workflow checker"
     };
     packageJson.devDependencies = {
       ...(packageJson.devDependencies ?? {}),
-      archon: `file:${stubRoot}`
+      "@witchynibbles/archon": `file:${stubRoot}`
     };
     await writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2) + "\n", "utf8");
 
@@ -2454,11 +2440,11 @@ test("workflow live wrapper uses compiled bin for consumer-installed archon (no 
     await writeFile(path.join(targetRoot, "package.json"), '{ "name": "consumer-smoke", "private": true }\n');
     await installDevgodIntoProject({ sourceRoot, targetRoot });
 
-    // Create node_modules/archon/dist/cli/archon-bin.js stub.
+    // Create node_modules/@witchynibbles/archon/dist/cli/archon-bin.js stub.
     // This is a compiled .js file — it must run with plain "node", no strip-types.
     // The stub logs process.argv[1] (its own resolved path) + remaining args so
     // the test can assert the bin path was used, not the src path.
-    const archonBinDir = path.join(targetRoot, "node_modules", "archon", "dist", "cli");
+    const archonBinDir = path.join(targetRoot, "node_modules", "@witchynibbles", "archon", "dist", "cli");
     await mkdir(archonBinDir, { recursive: true });
     await writeFile(
       path.join(archonBinDir, "archon-bin.js"),
@@ -2738,16 +2724,17 @@ test("npm pack dry run includes the new agent, skill, and retrieval policy surfa
     ".claude/hooks/archon-session-start.mjs",
     ".claude/hooks/archon-stop.mjs",
     ".claude/hooks/archon-prompt-submit.mjs",
-    "src/admin.ts",
-    "src/archon/autopilot-status.ts",
-    "src/archon/task-queue.ts",
-    "src/index.ts",
-    "src/install/cli.ts",
-    "src/install/git-guard.ts",
-    "src/install/setup-git-guard.ts",
-    "src/install/setup-local.ts",
-    "src/install/verify-git-guard.ts",
-    "src/sql/migrations/001_initial_schema.sql"
+    // P1: src/ is no longer shipped; compiled output ships via dist/**
+    "dist/admin.js",
+    "dist/archon/autopilot-status.js",
+    "dist/archon/task-queue.js",
+    "dist/index.js",
+    "dist/install/cli.js",
+    "dist/install/git-guard.js",
+    "dist/install/setup-git-guard.js",
+    "dist/install/setup-local.js",
+    "dist/install/verify-git-guard.js",
+    "dist/sql/migrations/001_initial_schema.sql"
   ]) {
     assert.ok(packedFiles.has(expectedPath), `${expectedPath} should be present in npm pack --dry-run output`);
   }
@@ -2835,15 +2822,15 @@ test("upgradeDevgodInProject rewrites pre-P1 old-form src/ invocations to compil
     assert.equal(upgradedPackageJson.scripts["archon:status"], "archon status");
     assert.equal(
       upgradedPackageJson.scripts["archon:verify:git-guard"],
-      "node ./node_modules/archon/dist/install/verify-git-guard.js"
+      "node ./node_modules/@witchynibbles/archon/dist/install/verify-git-guard.js"
     );
     assert.equal(
       upgradedPackageJson.scripts["archon:autopilot-status"],
-      "node ./node_modules/archon/dist/archon/autopilot-status.js"
+      "node ./node_modules/@witchynibbles/archon/dist/archon/autopilot-status.js"
     );
     assert.equal(
       upgradedPackageJson.scripts["archon:setup:local"],
-      "node ./node_modules/archon/dist/install/setup-local.js"
+      "node ./node_modules/@witchynibbles/archon/dist/install/setup-local.js"
     );
 
     // CLAUDE.md workflow_check must use npx archon bin form after upgrade

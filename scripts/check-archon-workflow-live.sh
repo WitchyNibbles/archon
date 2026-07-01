@@ -36,7 +36,7 @@ resolve_archon_cli() {
   # Branch 2 — consumer / installed (archon is in node_modules).
   # Resolve the compiled bin — no --experimental-strip-types needed.
   # dist/cli/archon-bin.js is guaranteed to exist in any P1+ published package.
-  local installed_bin="$repo_root/node_modules/archon/dist/cli/archon-bin.js"
+  local installed_bin="$repo_root/node_modules/@witchynibbles/archon/dist/cli/archon-bin.js"
   if [[ -f "$installed_bin" ]]; then
     printf '%s\n' "$installed_bin"
     return
@@ -60,9 +60,9 @@ const packageJsonPath = process.argv[2];
 const repoRoot = process.argv[3];
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 const dependency =
-  packageJson.devDependencies?.archon ??
-  packageJson.dependencies?.archon ??
-  packageJson.optionalDependencies?.archon;
+  packageJson.devDependencies?.["@witchynibbles/archon"] ??
+  packageJson.dependencies?.["@witchynibbles/archon"] ??
+  packageJson.optionalDependencies?.["@witchynibbles/archon"];
 
 if (typeof dependency !== "string" || !dependency.startsWith("file:")) {
   process.exit(0);
@@ -175,7 +175,7 @@ fi
 
 # EXPLICIT RESIDUAL: scripts/check-archon-workflow.ts is a consumer-local file
 # (copied by the installer into the consuming repo's scripts/ directory — it is
-# NOT part of node_modules/archon/).  It runs via --experimental-strip-types
+# NOT part of node_modules/@witchynibbles/archon/).  It runs via --experimental-strip-types
 # because it is a TypeScript file that lives in the consumer's own tree.
 # This is intentional and does NOT reproduce the P1 bug (which was invoking
 # archon's OWN src from node_modules via strip-types).

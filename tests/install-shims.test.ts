@@ -382,13 +382,13 @@ test("compiled bin: init --apply installs into a target dir (build-only; skipped
       }
     );
 
-    // archon installs devDependencies.archon into the target package.json
+    // archon installs devDependencies["@witchynibbles/archon"] into the target package.json
     const installedPkg = JSON.parse(await readFile(path.join(targetDir, "package.json"), "utf8")) as {
       devDependencies?: Record<string, string>;
     };
     assert.ok(
-      installedPkg.devDependencies?.archon,
-      "init --apply via compiled bin must write devDependencies.archon into target package.json"
+      installedPkg.devDependencies?.["@witchynibbles/archon"],
+      "init --apply via compiled bin must write devDependencies[\"@witchynibbles/archon\"] into target package.json"
     );
 
     // Docker must not have been called

@@ -4,7 +4,7 @@
 # This script works in two contexts:
 #   (a) Inside the archon source repo (dev): REPO_ROOT/dist/cli/archon-bin.js
 #       must exist.  Run 'npm run build:dist' first if it does not.
-#   (b) Installed in a consumer project as node_modules/archon/scripts/:
+#   (b) Installed in a consumer project as node_modules/@witchynibbles/archon/scripts/:
 #       the package always ships dist/**, so the bin is always present.
 #
 # The shim invokes the compiled bin only — no TypeScript source flags needed.

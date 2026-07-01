@@ -42,8 +42,8 @@ try {
   process.exit(1);
 }
 
-if (!pkg.devDependencies?.archon) {
-  console.error("FAIL: init --apply did not write devDependencies.archon");
+if (!pkg.devDependencies?.["@witchynibbles/archon"]) {
+  console.error("FAIL: init --apply did not write devDependencies[\"@witchynibbles/archon\"]");
   failed = true;
 }
 if (pkg.scripts?.["archon:migrate"] !== "archon migrate") {
@@ -56,4 +56,4 @@ if (existsSync(dockerSentinel)) {
 }
 
 if (failed) process.exit(1);
-console.log("OK: init --apply wrote devDependencies.archon, archon scripts, and did not invoke docker");
+console.log("OK: init --apply wrote devDependencies[\"@witchynibbles/archon\"], archon scripts, and did not invoke docker");

@@ -200,8 +200,8 @@ async function main(): Promise<void> {
 //
 // Compare the invoked script path against this module's path, resolving symlinks
 // on BOTH sides. Node canonicalizes symlinks in import.meta.url, but a consumer
-// that runs `node ./node_modules/archon/src/install/setup-playwright.ts` where
-// node_modules/archon is a symlink (npm link / workspaces) passes the symlinked
+// that invokes this file via node (e.g. `node ./node_modules/@witchynibbles/archon/dist/install/setup-playwright.js`)
+// where node_modules/@witchynibbles/archon is a symlink (npm link / workspaces) passes the symlinked
 // path in argv[1]. Without realpath on both sides the comparison is false and the
 // installer's `archon:setup:playwright` script would silently no-op.
 function canonical(p: string): string {
