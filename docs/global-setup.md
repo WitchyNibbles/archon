@@ -28,7 +28,7 @@ cp .env.example .env
 Key variables:
 
 ```bash
-ARCHON_CORE_DATABASE_URL=postgresql://archon:archon-local-password@127.0.0.1:5432/archon
+ARCHON_CORE_DATABASE_URL=postgresql://archon:CHANGEME_SET_A_STRONG_PASSWORD_NEVER_USE_IN_PRODUCTION@127.0.0.1:5432/archon
 ARCHON_RUNTIME_MODE=auto
 ARCHON_RUNTIME_PROFILE=local-docker
 ```

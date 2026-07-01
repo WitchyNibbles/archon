@@ -9,13 +9,17 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { auditMaintainerOnlyPublishedPaths } from "../src/install/maintainer-boundary.ts";
 import {
+  archonMcpConfigFragment,
   grafanaMcpConfigFragment,
   mergeAgentsMd,
   mergeDotAgentsMd,
   mergeClaudeSettings,
   mergeGitignore,
   mergePackageJson,
-  playwrightMcpConfigFragment
+  obsidianMcpConfigFragment,
+  playwrightMcpConfigFragment,
+  MCPVAULT_VERSION,
+  PLAYWRIGHT_MCP_VERSION
 } from "../src/install/merge.ts";
 import {
   installDevgodIntoProject,
@@ -188,7 +192,10 @@ test("playwrightMcpConfigFragment adds Playwright MCP settings with standard and
   assert.ok(parsed.mcpServers?.playwright, "expected playwright mcp server");
   assert.ok(parsed.mcpServers?.playwright_vision, "expected playwright_vision mcp server");
   const pw = parsed.mcpServers?.playwright as { args?: string[] };
-  assert.ok(JSON.stringify(pw.args ?? []).includes("@playwright/mcp@latest"));
+  // Pinned version — no @latest, no --yes
+  assert.ok(JSON.stringify(pw.args ?? []).includes(`@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`));
+  assert.doesNotMatch(JSON.stringify(pw.args ?? []), /@latest/);
+  assert.doesNotMatch(JSON.stringify(pw.args ?? []), /--yes/);
   assert.ok(JSON.stringify(pw.args ?? []).includes(".archon/playwright/mcp.json"));
   const pwv = parsed.mcpServers?.playwright_vision as { args?: string[] };
   assert.ok(JSON.stringify(pwv.args ?? []).includes(".archon/playwright/mcp.vision.json"));
@@ -202,7 +209,9 @@ test("grafanaMcpConfigFragment adds Grafana MCP settings without overwriting exi
   assert.ok(parsed.mcpServers?.grafana, "expected grafana mcp server");
   const grafana = parsed.mcpServers?.grafana as { command?: string; args?: string[] };
   assert.equal(grafana.command, "node");
-  assert.ok(JSON.stringify(grafana.args ?? []).includes("src/grafana/mcp-server.ts"));
+  // Must reference compiled dist, not src
+  assert.ok(JSON.stringify(grafana.args ?? []).includes("dist/grafana/mcp-server.js"));
+  assert.doesNotMatch(JSON.stringify(grafana.args ?? []), /src\/grafana\/mcp-server\.ts/);
 });
 
 test("mergePackageJson adds archon dependency and scripts without removing existing scripts", () => {
@@ -222,147 +231,80 @@ test("mergePackageJson adds archon dependency and scripts without removing exist
   };
 
   assert.equal(merged.scripts.test, "vitest");
-  assert.equal(
-    merged.scripts.archon,
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts"
-  );
-  assert.match(merged.scripts["archon:migrate"], /node_modules\/archon\/src\/admin\/archon\.ts migrate/);
-  assert.match(merged.scripts["archon:doctor"], /node_modules\/archon\/src\/admin\/archon\.ts doctor/);
-  assert.match(merged.scripts["archon:heal"], /node_modules\/archon\/src\/admin\/archon\.ts doctor --repair/);
-  assert.match(merged.scripts["archon:status"], /node_modules\/archon\/src\/admin\/archon\.ts status/);
-  assert.equal(
-    merged.scripts["archon:coverage"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts coverage --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:gaps"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts gaps --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:checkpoint"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts checkpoint --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:resume"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts resume --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:seed-workflow-proof"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts seed-workflow-proof"
-  );
-  assert.equal(
-    merged.scripts["archon:advance-active-task"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts advance-active-task --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:reconcile"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts reconcile-runtime-state --apply --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:sync-runtime-exports"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts sync-runtime-exports --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:daemon"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts daemon --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:supervisor"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts supervisor --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:supervisor-history"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts supervisor-history --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:loop"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts loop --format text"
-  );
+  // P1: consumer scripts use the compiled archon bin via npm PATH resolution,
+  // not --experimental-strip-types or node_modules/archon/src/ references.
+  assert.equal(merged.scripts.archon, "archon");
+  assert.equal(merged.scripts["archon:migrate"], "archon migrate");
+  assert.equal(merged.scripts["archon:doctor"], "archon doctor");
+  assert.equal(merged.scripts["archon:heal"], "archon doctor --repair");
+  assert.equal(merged.scripts["archon:status"], "archon status");
+  assert.equal(merged.scripts["archon:coverage"], "archon coverage --format text");
+  assert.equal(merged.scripts["archon:gaps"], "archon gaps --format text");
+  assert.equal(merged.scripts["archon:checkpoint"], "archon checkpoint --format text");
+  assert.equal(merged.scripts["archon:resume"], "archon resume --format text");
+  assert.equal(merged.scripts["archon:seed-workflow-proof"], "archon seed-workflow-proof");
+  assert.equal(merged.scripts["archon:advance-active-task"], "archon advance-active-task --format text");
+  assert.equal(merged.scripts["archon:reconcile"], "archon reconcile-runtime-state --apply --format text");
+  assert.equal(merged.scripts["archon:sync-runtime-exports"], "archon sync-runtime-exports --format text");
+  assert.equal(merged.scripts["archon:daemon"], "archon daemon --format text");
+  assert.equal(merged.scripts["archon:supervisor"], "archon supervisor --format text");
+  assert.equal(merged.scripts["archon:supervisor-history"], "archon supervisor-history --format text");
+  assert.equal(merged.scripts["archon:loop"], "archon loop --format text");
+  // check-workflow runs a consumer-owned TypeScript file installed in scripts/
   assert.equal(
     merged.scripts["archon:check-workflow"],
     "node --experimental-strip-types scripts/check-archon-workflow.ts"
   );
-  assert.equal(
-    merged.scripts["archon:report"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts report --format markdown"
-  );
-  assert.equal(
-    merged.scripts["archon:focus"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts ops --format text"
-  );
-  assert.equal(
-    merged.scripts["archon:refresh-retrieval"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts refresh-retrieval"
-  );
-  assert.equal(
-    merged.scripts["archon:refresh-retrieval:fast"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts refresh-retrieval --artifacts-only"
-  );
-  assert.equal(
-    merged.scripts["archon:refresh-repo-context"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts refresh-repo-context"
-  );
-  assert.equal(
-    merged.scripts["archon:repair-task-queue"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts repair-task-queue"
-  );
+  assert.equal(merged.scripts["archon:report"], "archon report --format markdown");
+  assert.equal(merged.scripts["archon:focus"], "archon ops --format text");
+  assert.equal(merged.scripts["archon:refresh-retrieval"], "archon refresh-retrieval");
+  assert.equal(merged.scripts["archon:refresh-retrieval:fast"], "archon refresh-retrieval --artifacts-only");
+  assert.equal(merged.scripts["archon:refresh-repo-context"], "archon refresh-repo-context");
+  assert.equal(merged.scripts["archon:repair-task-queue"], "archon repair-task-queue");
+  // autopilot-status is a standalone script — references compiled dist directly
   assert.equal(
     merged.scripts["archon:autopilot-status"],
-    "node --experimental-strip-types ./node_modules/archon/src/archon/autopilot-status.ts"
+    "node ./node_modules/archon/dist/archon/autopilot-status.js"
   );
-  assert.equal(
-    merged.scripts["archon:github-dispatch"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts github-dispatch --target ."
-  );
-  assert.equal(
-    merged.scripts["archon:mcp"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts mcp"
-  );
-  assert.match(
-    merged.scripts["archon:verify:migrations:live"],
-    /node_modules\/archon\/src\/admin\/archon\.ts verify-live-migrations/
-  );
-  assert.equal(
-    merged.scripts["archon:scaffold-workflow"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts scaffold-workflow --target ."
-  );
-  assert.equal(
-    merged.scripts["archon:upgrade-reasoning-workflow"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts upgrade-reasoning-workflow --target ."
-  );
-  assert.equal(
-    merged.scripts["archon:seed-happy-path-fixture"],
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts seed-happy-path-fixture --target ."
-  );
+  assert.equal(merged.scripts["archon:github-dispatch"], "archon github-dispatch --target .");
+  assert.equal(merged.scripts["archon:mcp"], "archon mcp");
+  assert.equal(merged.scripts["archon:verify:migrations:live"], "archon verify-live-migrations");
+  assert.equal(merged.scripts["archon:scaffold-workflow"], "archon scaffold-workflow --target .");
+  assert.equal(merged.scripts["archon:upgrade-reasoning-workflow"], "archon upgrade-reasoning-workflow --target .");
+  assert.equal(merged.scripts["archon:seed-happy-path-fixture"], "archon seed-happy-path-fixture --target .");
   assert.equal(merged.scripts["archon:check:happy-path"], "bash scripts/check-archon-happy-path.sh");
-  assert.match(
-    merged.scripts["archon:verify:review-identity"],
-    /node_modules\/archon\/src\/admin\/archon\.ts verify-review-identity/
-  );
+  assert.equal(merged.scripts["archon:verify:review-identity"], "archon verify-review-identity");
+  // verify-git-guard and setup-* are standalone scripts — reference compiled dist
   assert.equal(
     merged.scripts["archon:verify:git-guard"],
-    "node --experimental-strip-types ./node_modules/archon/src/install/verify-git-guard.ts"
+    "node ./node_modules/archon/dist/install/verify-git-guard.js"
   );
-  assert.match(
+  assert.equal(
     merged.scripts["archon:record-review"],
-    /node_modules\/archon\/src\/admin\/archon\.ts record-review --input \.archon\/review-action\.json/
+    "archon record-review --input .archon/review-action.json"
   );
   assert.equal(
     merged.scripts["archon:setup:git-guard"],
-    "node --experimental-strip-types ./node_modules/archon/src/install/setup-git-guard.ts"
+    "node ./node_modules/archon/dist/install/setup-git-guard.js"
   );
-  assert.match(
+  assert.equal(
     merged.scripts["archon:setup:local"],
-    /node_modules\/archon\/src\/install\/setup-local\.ts/
+    "node ./node_modules/archon/dist/install/setup-local.js"
   );
-  assert.match(
+  assert.equal(
     merged.scripts["archon:setup:playwright"],
-    /node_modules\/archon\/src\/install\/setup-playwright\.ts/
+    "node ./node_modules/archon/dist/install/setup-playwright.js"
   );
-  assert.match(
+  assert.equal(
     merged.scripts["archon:verify:playwright"],
-    /node_modules\/archon\/src\/install\/setup-playwright\.ts --verify/
+    "node ./node_modules/archon/dist/install/setup-playwright.js --verify"
   );
+  // Verify no old-form src references remain
+  const allScriptValues = Object.values(merged.scripts).join("\n");
+  assert.doesNotMatch(allScriptValues, /node_modules\/archon\/src\//,
+    "no node_modules/archon/src/ references in consumer scripts");
+  assert.doesNotMatch(allScriptValues, /--experimental-strip-types.*node_modules/,
+    "no --experimental-strip-types for node_modules references");
   assert.equal(merged.devDependencies.archon, "file:../archon");
 });
 
@@ -464,7 +406,7 @@ test("mergePackageJson adds a Grafana MCP helper only when requested", () => {
 
   assert.equal(
     merged.scripts["archon:grafana:mcp"],
-    "node --experimental-strip-types ./node_modules/archon/src/grafana/mcp-server.ts"
+    "node ./node_modules/archon/dist/grafana/mcp-server.js"
   );
 });
 
@@ -473,6 +415,11 @@ test("mergeGitignore adds archon env ignores once", () => {
   const second = mergeGitignore(first);
 
   assert.match(first, /\.env\.archon/);
+  // Bare .env and conventional credential-bearing env file patterns
+  assert.match(first, /^\.env$/m, "must include bare .env");
+  assert.match(first, /^\.env\.\*$/m, "must include .env.* glob");
+  assert.match(first, /^\.env\.local$/m, "must include .env.local");
+  assert.match(first, /^\.env\.\*\.local$/m, "must include .env.*.local");
   assert.equal(first, second);
 });
 
@@ -529,7 +476,25 @@ test("ci workflow routes the release posture through the release overlay gate", 
   // and is gated in required-checks.
   assert.match(ciWorkflow, /jobs:[\s\S]*\n {2}unit-tests:/);
   assert.match(ciWorkflow, /- run: npm run check:coverage/);
-  assert.match(ciWorkflow, /needs:[\s\S]*unit-tests/);
+  // Anchor to the required-checks needs LIST ITEM (same class of fix as the
+  // pack-install guard below): a bare /needs:[\s\S]*unit-tests/ would false-match
+  // the env block's `needs.unit-tests.result` dot-reference even if unit-tests were
+  // removed from the needs list.
+  assert.match(
+    ciWorkflow,
+    /required-checks:[\s\S]*?\n\s+needs:(?:\n\s+- [\w-]+)*\n\s+- unit-tests\b/,
+    "required-checks must gate on unit-tests (as a needs list item) so removing the job fails CI"
+  );
+  // P1 install hardening: pack-install smoke job must be in required-checks needs
+  // so removing it breaks CI immediately rather than silently. Anchor to the
+  // required-checks needs LIST ITEM ("- pack-install"), not a bare substring — the
+  // env block also references `needs.pack-install.result` (dot form), which a greedy
+  // /needs:[\s\S]*pack-install/ would false-match even after the job was removed.
+  assert.match(
+    ciWorkflow,
+    /required-checks:[\s\S]*?\n\s+needs:(?:\n\s+- [\w-]+)*\n\s+- pack-install\b/,
+    "required-checks must gate on pack-install (as a needs list item) so removing the job fails CI"
+  );
 });
 
 test("README frames archon as an opt-in overlay with production-oriented package checks", async () => {
@@ -675,6 +640,10 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
   assert.equal(pkg.private, true);
   assert.equal(pkg.license, "MIT");
   assert.match(pkg.description ?? "", /opt-in overlay/i);
+  // P1/condition-4: no lifecycle install hooks that run code on npm install
+  assert.equal(pkg.scripts["postinstall"], undefined, "package must not have a postinstall lifecycle hook");
+  assert.equal(pkg.scripts["install"], undefined, "package must not have an install lifecycle hook");
+  assert.equal(pkg.scripts["preinstall"], undefined, "package must not have a preinstall lifecycle hook");
   assert.equal(pkg.scripts["check:happy-path"], "bash scripts/check-archon-happy-path.sh");
   assert.equal(
     pkg.scripts["scaffold:workflow"],
@@ -693,7 +662,9 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     assert.ok(!pkg.files.includes(relativePath), `${relativePath} should stay out of the overlay package manifest`);
   }
   assert.deepEqual(auditMaintainerOnlyPublishedPaths(pkg.files), []);
-  assert.ok(pkg.files.every((file) => !file.includes("*")));
+  // dist/** is the one permitted glob: a deliberate catch-all for compiled output.
+  // All other entries must be explicit paths (no wildcards) to prevent accidents.
+  assert.ok(pkg.files.every((file) => !file.includes("*") || file === "dist/**"));
 });
 
 test("package dry run includes the orchestration eval entrypoint exported by src/index.ts", async () => {
@@ -769,11 +740,11 @@ test("installDevgodIntoProject ships Playwright MCP configs and setup wiring", a
     assert.match(codexConfig, /"playwright_vision"/);
     assert.equal(
       packageJson.scripts?.["archon:setup:playwright"],
-      "node --experimental-strip-types ./node_modules/archon/src/install/setup-playwright.ts"
+      "node ./node_modules/archon/dist/install/setup-playwright.js"
     );
     assert.equal(
       packageJson.scripts?.["archon:verify:playwright"],
-      "node --experimental-strip-types ./node_modules/archon/src/install/setup-playwright.ts --verify"
+      "node ./node_modules/archon/dist/install/setup-playwright.js --verify"
     );
     assert.match(kernelAgents, /BEGIN ARCHON KERNEL/);
     assert.match(kernelAgents, /archon-intake/);
@@ -1021,11 +992,11 @@ test("installDevgodIntoProject opt-in Grafana setup adds MCP config, env guidanc
 
     assert.equal(
       packageJson.scripts["archon:grafana:mcp"],
-      "node --experimental-strip-types ./node_modules/archon/src/grafana/mcp-server.ts"
+      "node ./node_modules/archon/dist/grafana/mcp-server.js"
     );
     // archon uses JSON settings (not TOML), check JSON patterns
     assert.match(codexConfig, /"grafana"/);
-    assert.match(codexConfig, /src\/grafana\/mcp-server\.ts/);
+    assert.match(codexConfig, /dist\/grafana\/mcp-server\.js/);
     assert.match(envExample, /ARCHON_GRAFANA_URL=/);
     assert.match(envExample, /ARCHON_GRAFANA_LOGS_DATASOURCE_UID=/);
     assert.match(summary.nextSteps.join("\n"), /ARCHON_GRAFANA_URL/);
@@ -1054,7 +1025,7 @@ test("installDevgodIntoProject ships daemon wiring: archon:daemon script + .env.
     };
     assert.equal(
       packageJson.scripts["archon:daemon"],
-      "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts daemon --format text",
+      "archon daemon --format text",
       "consumer install must wire the archon:daemon entrypoint"
     );
 
@@ -1104,7 +1075,7 @@ test("installDevgodIntoProject auto-detects configured Grafana env and adds MCP 
 
     assert.equal(
       packageJson.scripts["archon:grafana:mcp"],
-      "node --experimental-strip-types ./node_modules/archon/src/grafana/mcp-server.ts"
+      "node ./node_modules/archon/dist/grafana/mcp-server.js"
     );
     // archon uses JSON settings (not TOML)
     assert.match(codexConfig, /"grafana"/);
@@ -1846,82 +1817,48 @@ test("installDevgodIntoProject seeds scaffolding but not live work or reviewed m
   );
   assert.match(reviewIdentityAdapter, /Implement archon\/review-identity-adapter\.ts/);
 
+  // P1: fresh install produces zero old-form src references in consumer scripts
   const targetPackageJson = JSON.parse(
     await readFile(path.join(targetRoot, "package.json"), "utf8")
   ) as { scripts: Record<string, string> };
-  assert.match(
-    targetPackageJson.scripts["archon:upgrade-reasoning-workflow"],
-    /node_modules\/archon\/src\/admin\/archon\.ts upgrade-reasoning-workflow --target \./
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:seed-happy-path-fixture"],
-    /node_modules\/archon\/src\/admin\/archon\.ts seed-happy-path-fixture --target \./
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:seed-workflow-proof"],
-    /node_modules\/archon\/src\/admin\/archon\.ts seed-workflow-proof/
-  );
-  assert.match(targetPackageJson.scripts.archon, /node_modules\/archon\/src\/admin\/archon\.ts/);
-  assert.match(
-    targetPackageJson.scripts["archon:status"],
-    /node_modules\/archon\/src\/admin\/archon\.ts status/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:coverage"],
-    /node_modules\/archon\/src\/admin\/archon\.ts coverage --format text/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:gaps"],
-    /node_modules\/archon\/src\/admin\/archon\.ts gaps --format text/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:checkpoint"],
-    /node_modules\/archon\/src\/admin\/archon\.ts checkpoint --format text/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:resume"],
-    /node_modules\/archon\/src\/admin\/archon\.ts resume --format text/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:supervisor-history"],
-    /node_modules\/archon\/src\/admin\/archon\.ts supervisor-history --format text/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:heal"],
-    /node_modules\/archon\/src\/admin\/archon\.ts doctor --repair/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:reconcile"],
-    /node_modules\/archon\/src\/admin\/archon\.ts reconcile-runtime-state --apply --format text/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:verify:review-identity"],
-    /node_modules\/archon\/src\/admin\/archon\.ts verify-review-identity/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:refresh-repo-context"],
-    /node_modules\/archon\/src\/admin\/archon\.ts refresh-repo-context/
-  );
-  assert.match(
-    targetPackageJson.scripts["archon:repair-task-queue"],
-    /node_modules\/archon\/src\/admin\/archon\.ts repair-task-queue/
-  );
-  assert.match(
+  assert.equal(targetPackageJson.scripts["archon:upgrade-reasoning-workflow"], "archon upgrade-reasoning-workflow --target .");
+  assert.equal(targetPackageJson.scripts["archon:seed-happy-path-fixture"], "archon seed-happy-path-fixture --target .");
+  assert.equal(targetPackageJson.scripts["archon:seed-workflow-proof"], "archon seed-workflow-proof");
+  assert.equal(targetPackageJson.scripts.archon, "archon");
+  assert.equal(targetPackageJson.scripts["archon:status"], "archon status");
+  assert.equal(targetPackageJson.scripts["archon:coverage"], "archon coverage --format text");
+  assert.equal(targetPackageJson.scripts["archon:gaps"], "archon gaps --format text");
+  assert.equal(targetPackageJson.scripts["archon:checkpoint"], "archon checkpoint --format text");
+  assert.equal(targetPackageJson.scripts["archon:resume"], "archon resume --format text");
+  assert.equal(targetPackageJson.scripts["archon:supervisor-history"], "archon supervisor-history --format text");
+  assert.equal(targetPackageJson.scripts["archon:heal"], "archon doctor --repair");
+  assert.equal(targetPackageJson.scripts["archon:reconcile"], "archon reconcile-runtime-state --apply --format text");
+  assert.equal(targetPackageJson.scripts["archon:verify:review-identity"], "archon verify-review-identity");
+  assert.equal(targetPackageJson.scripts["archon:refresh-repo-context"], "archon refresh-repo-context");
+  assert.equal(targetPackageJson.scripts["archon:repair-task-queue"], "archon repair-task-queue");
+  // standalone scripts reference compiled dist directly
+  assert.equal(
     targetPackageJson.scripts["archon:autopilot-status"],
-    /node_modules\/archon\/src\/archon\/autopilot-status\.ts/
+    "node ./node_modules/archon/dist/archon/autopilot-status.js"
   );
   assert.equal(
     targetPackageJson.scripts["archon:verify:git-guard"],
-    "node --experimental-strip-types ./node_modules/archon/src/install/verify-git-guard.ts"
+    "node ./node_modules/archon/dist/install/verify-git-guard.js"
   );
-  assert.match(
+  assert.equal(
     targetPackageJson.scripts["archon:record-review"],
-    /node_modules\/archon\/src\/admin\/archon\.ts record-review --input \.archon\/review-action\.json/
+    "archon record-review --input .archon/review-action.json"
   );
   assert.equal(
     targetPackageJson.scripts["archon:setup:git-guard"],
-    "node --experimental-strip-types ./node_modules/archon/src/install/setup-git-guard.ts"
+    "node ./node_modules/archon/dist/install/setup-git-guard.js"
   );
+  // Smoke: no old-form src references anywhere in consumer scripts
+  const installedScripts = Object.values(targetPackageJson.scripts).join("\n");
+  assert.doesNotMatch(installedScripts, /node_modules\/archon\/src\//,
+    "fresh install must produce zero node_modules/archon/src/ references");
+  assert.doesNotMatch(installedScripts, /--experimental-strip-types.*node_modules/,
+    "fresh install must produce zero --experimental-strip-types for node_modules references");
 
   await assert.rejects(
     readFile(path.join(targetRoot, ".archon/memory/project-profile.md"), "utf8")
@@ -2504,6 +2441,81 @@ test("workflow live wrapper forwards the active task id to the workflow checker"
   }
 });
 
+test("workflow live wrapper uses compiled bin for consumer-installed archon (no node_modules/archon/src/)", async () => {
+  // Proves that when archon is installed as a package (dist present, src absent),
+  // resolve_archon_cli() picks node_modules/archon/dist/cli/archon-bin.js and
+  // run_archon_cli() invokes it WITHOUT --experimental-strip-types.
+  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-workflow-live-consumer-"));
+  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const proofArgsLog = path.join(targetRoot, "workflow-proof-args.txt");
+  const checkArgsLog = path.join(targetRoot, "workflow-check-args.txt");
+
+  try {
+    await writeFile(path.join(targetRoot, "package.json"), '{ "name": "consumer-smoke", "private": true }\n');
+    await installDevgodIntoProject({ sourceRoot, targetRoot });
+
+    // Create node_modules/archon/dist/cli/archon-bin.js stub.
+    // This is a compiled .js file — it must run with plain "node", no strip-types.
+    // The stub logs process.argv[1] (its own resolved path) + remaining args so
+    // the test can assert the bin path was used, not the src path.
+    const archonBinDir = path.join(targetRoot, "node_modules", "archon", "dist", "cli");
+    await mkdir(archonBinDir, { recursive: true });
+    await writeFile(
+      path.join(archonBinDir, "archon-bin.js"),
+      [
+        "import { writeFileSync } from \"node:fs\";",
+        "const log = process.env.ARCHON_WORKFLOW_PROOF_ARGS_LOG;",
+        // Include argv[1] (the stub's own path) so the test can verify which file was called
+        "if (log) writeFileSync(log, [process.argv[1], ...process.argv.slice(2)].join(\" \"), \"utf8\");",
+        "process.stdout.write(JSON.stringify({ authorityLabel: \"runtime_authoritative\", taskStatus: \"approved\" }) + \"\\n\");",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    // Intentionally do NOT create node_modules/archon/src/ — consumer installs get only dist
+
+    // Consumer-local check-archon-workflow.ts stub
+    await writeFile(
+      path.join(targetRoot, "scripts", "check-archon-workflow.ts"),
+      [
+        "import fs from \"node:fs\";",
+        "const logPath = process.env.ARCHON_WORKFLOW_CHECK_ARGS_LOG;",
+        "if (!logPath) throw new Error(\"missing workflow args log\");",
+        "fs.writeFileSync(logPath, process.argv.slice(2).join(\" \") + \"\\n\", \"utf8\");",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await writeFile(
+      path.join(targetRoot, ".archon", "ACTIVE"),
+      "task_id=consumer-smoke\nworkflow=archon\nstate=active\n",
+      "utf8"
+    );
+
+    await execFileAsync("bash", [path.join(targetRoot, "scripts", "check-archon-workflow-live.sh")], {
+      cwd: targetRoot,
+      env: {
+        ...process.env,
+        ARCHON_WORKFLOW_CHECK_ARGS_LOG: checkArgsLog,
+        ARCHON_WORKFLOW_PROOF_ARGS_LOG: proofArgsLog
+      }
+    });
+
+    const proofArgs = await readFile(proofArgsLog, "utf8");
+    // argv[1] is the stub path — must contain dist/cli/archon-bin.js
+    assert.match(proofArgs, /dist\/cli\/archon-bin\.js/, "resolve_archon_cli must pick the compiled bin in the consumer case");
+    // Must NOT have resolved to the src path
+    assert.doesNotMatch(proofArgs, /node_modules\/archon\/src/, "resolve_archon_cli must not use node_modules/archon/src in the consumer case");
+    // Standard workflow-proof args must be present
+    assert.match(proofArgs, /workflow-proof/);
+    assert.match(proofArgs, /--task-id consumer-smoke/);
+    assert.match(proofArgs, /--run-id latest/);
+  } finally {
+    await rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
 test("setup-git-guard configures hooks and blocks managed control-layer commits", async (t) => {
   const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-git-guard-"));
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -2747,4 +2759,204 @@ test("npm pack dry run includes the new agent, skill, and retrieval policy surfa
   ]) {
     assert.ok(!packedFiles.has(excludedPath), `${excludedPath} should not be present in npm pack --dry-run output`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// P1 condition 2: upgrade rewrites old-form src/ invocations to compiled bin
+// ---------------------------------------------------------------------------
+test("upgradeDevgodInProject rewrites pre-P1 old-form src/ invocations to compiled bin form (condition 2)", async () => {
+  const targetRoot = await mkdtemp(path.join(tmpdir(), "archon-upgrade-old-form-"));
+  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+  try {
+    await writeFile(path.join(targetRoot, "package.json"), '{ "name": "fixture", "private": true }\n');
+    // Fresh install gives new-form; then we simulate a pre-P1 consumer by
+    // overwriting scripts back to old-form with --experimental-strip-types src/ refs.
+    await installDevgodIntoProject({ sourceRoot, targetRoot });
+
+    const oldEntry = "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts";
+    const installedPackageJson = JSON.parse(
+      await readFile(path.join(targetRoot, "package.json"), "utf8")
+    ) as { scripts: Record<string, string>; devDependencies: Record<string, string> };
+
+    installedPackageJson.scripts["archon"] = oldEntry;
+    installedPackageJson.scripts["archon:doctor"] = `${oldEntry} doctor`;
+    installedPackageJson.scripts["archon:status"] = `${oldEntry} status`;
+    installedPackageJson.scripts["archon:verify:git-guard"] =
+      "node --experimental-strip-types ./node_modules/archon/src/install/verify-git-guard.ts";
+    installedPackageJson.scripts["archon:autopilot-status"] =
+      "node --experimental-strip-types ./node_modules/archon/src/archon/autopilot-status.ts";
+    installedPackageJson.scripts["archon:setup:local"] =
+      "node --experimental-strip-types ./node_modules/archon/src/install/setup-local.ts";
+
+    await writeFile(
+      path.join(targetRoot, "package.json"),
+      `${JSON.stringify(installedPackageJson, null, 2)}\n`,
+      "utf8"
+    );
+
+    // Simulate old workflow_check in CLAUDE.md
+    const oldClaudeMd = await readFile(path.join(targetRoot, "CLAUDE.md"), "utf8");
+    const preP1ClaudeMd = oldClaudeMd.replace(
+      /workflow_check=npx archon workflow-proof/,
+      "workflow_check=node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts workflow-proof"
+    );
+    await writeFile(path.join(targetRoot, "CLAUDE.md"), preP1ClaudeMd, "utf8");
+
+    // --dry-run must not write anything, but MUST detect that updates are needed.
+    // (If updated.length === 0 the dry-run wouldn't have caught the old-form scripts.)
+    const dry = await upgradeDevgodInProject({ sourceRoot, targetRoot, dryRun: true });
+    assert.ok(dry.updated.length > 0,
+      "--dry-run must report at least one entry it would update (self-proves detection)");
+    assert.equal(dry.writesPerformed, false,
+      "--dry-run must not write when rewriting old-form consumer");
+    // Verify old-form still in place (dry-run unchanged)
+    const dryPackageJson = JSON.parse(
+      await readFile(path.join(targetRoot, "package.json"), "utf8")
+    ) as { scripts: Record<string, string> };
+    assert.equal(dryPackageJson.scripts["archon"], oldEntry,
+      "--dry-run must not mutate package.json");
+
+    // Apply: upgrade must rewrite to new bin form
+    await upgradeDevgodInProject({ sourceRoot, targetRoot });
+
+    const upgradedPackageJson = JSON.parse(
+      await readFile(path.join(targetRoot, "package.json"), "utf8")
+    ) as { scripts: Record<string, string> };
+
+    const allScripts = Object.values(upgradedPackageJson.scripts).join("\n");
+    assert.doesNotMatch(allScripts, /node_modules\/archon\/src\//,
+      "upgrade must rewrite all node_modules/archon/src/ references");
+    assert.doesNotMatch(allScripts, /--experimental-strip-types.*node_modules/,
+      "upgrade must rewrite --experimental-strip-types node_modules refs");
+
+    assert.equal(upgradedPackageJson.scripts["archon"], "archon");
+    assert.equal(upgradedPackageJson.scripts["archon:doctor"], "archon doctor");
+    assert.equal(upgradedPackageJson.scripts["archon:status"], "archon status");
+    assert.equal(
+      upgradedPackageJson.scripts["archon:verify:git-guard"],
+      "node ./node_modules/archon/dist/install/verify-git-guard.js"
+    );
+    assert.equal(
+      upgradedPackageJson.scripts["archon:autopilot-status"],
+      "node ./node_modules/archon/dist/archon/autopilot-status.js"
+    );
+    assert.equal(
+      upgradedPackageJson.scripts["archon:setup:local"],
+      "node ./node_modules/archon/dist/install/setup-local.js"
+    );
+
+    // CLAUDE.md workflow_check must use npx archon bin form after upgrade
+    const upgradedClaudeMd = await readFile(path.join(targetRoot, "CLAUDE.md"), "utf8");
+    assert.match(upgradedClaudeMd, /workflow_check=npx archon workflow-proof/,
+      "upgrade must rewrite workflow_check to npx archon form");
+    assert.doesNotMatch(upgradedClaudeMd, /workflow_check=node --experimental-strip-types/,
+      "upgrade must eliminate old --experimental-strip-types workflow_check form");
+
+    // Idempotent: second run produces no writes
+    const replay = await upgradeDevgodInProject({ sourceRoot, targetRoot });
+    assert.equal(replay.updated.length, 0, "second upgrade run must be a no-op");
+    assert.equal(replay.writesPerformed, false, "second upgrade run must not write");
+  } finally {
+    await rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// P1 condition 3: MCP fragments use pinned versions, no @latest, no --yes
+// ---------------------------------------------------------------------------
+test("MCP config fragments use pinned versions with no @latest or --yes flags (condition 3)", () => {
+  const fragments = [
+    { name: "obsidian", content: obsidianMcpConfigFragment() },
+    { name: "playwright", content: playwrightMcpConfigFragment() }
+  ];
+
+  for (const { name, content } of fragments) {
+    assert.doesNotMatch(content, /@latest/,
+      `${name} MCP fragment must not use @latest (supply-chain risk)`);
+    assert.doesNotMatch(content, /--yes/,
+      `${name} MCP fragment must not use --yes auto-confirm`);
+  }
+
+  // Explicit version pins
+  assert.ok(
+    obsidianMcpConfigFragment().includes(`@bitbonsai/mcpvault@${MCPVAULT_VERSION}`),
+    `obsidian fragment must pin @bitbonsai/mcpvault@${MCPVAULT_VERSION}`
+  );
+  assert.ok(
+    playwrightMcpConfigFragment().includes(`@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`),
+    `playwright fragment must pin @playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`
+  );
+
+  // archon MCP fragment uses compiled dist bin, no src/ reference
+  const archonFragment = JSON.parse(archonMcpConfigFragment()) as {
+    mcpServers: { archon: { command: string; args: string[] } }
+  };
+  assert.doesNotMatch(JSON.stringify(archonFragment), /src\/mcp\/server\.ts/,
+    "archon MCP fragment must not reference src/mcp/server.ts");
+  assert.ok(
+    archonFragment.mcpServers.archon.args.some((a) => a.includes("dist/cli/archon-bin.js")),
+    "archon MCP fragment must use the compiled dist/cli/archon-bin.js"
+  );
+  // The "mcp" verb must follow the bin path so the bin router can dispatch it.
+  const binIdx = archonFragment.mcpServers.archon.args.findIndex((a) => a.includes("dist/cli/archon-bin.js"));
+  assert.equal(
+    archonFragment.mcpServers.archon.args[binIdx + 1],
+    "mcp",
+    "archon MCP fragment must pass 'mcp' as the verb after the bin path"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// P1 condition 3b: validateVaultPath rejects unsafe values
+// ---------------------------------------------------------------------------
+test("validateVaultPath rejects path traversal, flag values, empty string, NUL bytes, and newlines", () => {
+  // path traversal
+  assert.throws(
+    () => obsidianMcpConfigFragment("../etc/passwd"),
+    /path traversal/,
+    "must reject path traversal sequences"
+  );
+  // flag-like (leading dash)
+  assert.throws(
+    () => obsidianMcpConfigFragment("-f"),
+    /flag-like/,
+    "must reject flag-like values starting with -"
+  );
+  // empty string
+  assert.throws(
+    () => obsidianMcpConfigFragment(""),
+    /empty/,
+    "must reject empty string"
+  );
+  // NUL byte
+  assert.throws(
+    () => obsidianMcpConfigFragment("/valid/path\0injected"),
+    /NUL/,
+    "must reject NUL bytes"
+  );
+  // newline
+  assert.throws(
+    () => obsidianMcpConfigFragment("/valid\npath"),
+    /newline/,
+    "must reject newline characters"
+  );
+  // valid path — must NOT throw
+  assert.doesNotThrow(
+    () => obsidianMcpConfigFragment("/home/user/my-vault"),
+    "must accept a normal absolute path"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// P1 condition 4: .env.example ships no live-looking credentials
+// ---------------------------------------------------------------------------
+test(".env.example has no live-looking credentials and carries a NEVER-in-production header (condition 4)", async () => {
+  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const envExample = await readFile(path.join(sourceRoot, ".env.example"), "utf8");
+
+  assert.doesNotMatch(envExample, /archon-local-password/,
+    ".env.example must not contain the old live-looking default password");
+  assert.match(envExample, /NEVER use.*in production/i,
+    ".env.example must carry a NEVER-use-in-production warning header");
 });

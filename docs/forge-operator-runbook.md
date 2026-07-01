@@ -117,7 +117,7 @@ The encrypted store is unlocked by a single **master key** supplied via the envi
 
 ```bash
 # .env.archon — PLACEHOLDER, generate your own (see below)
-ARCHON_SECRETS_MASTER_KEY=0000000000000000000000000000000000000000000000000000000000000000
+ARCHON_SECRETS_MASTER_KEY=REPLACE_WITH_64_HEX_CHARS_generate_with_openssl_rand_hex_32
 ```
 
 Requirements and behavior:

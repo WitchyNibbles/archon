@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: ${ARCHON_POSTGRES_DB:-archon}
       POSTGRES_USER: ${ARCHON_POSTGRES_USER:-archon}
-      POSTGRES_PASSWORD: ${ARCHON_POSTGRES_PASSWORD:-archon-local-password}
+      POSTGRES_PASSWORD: ${ARCHON_POSTGRES_PASSWORD:?ARCHON_POSTGRES_PASSWORD must be set - see .env.example for local setup}
     ports:
       - "127.0.0.1:${ARCHON_POSTGRES_PORT:-5533}:5432"
     volumes:

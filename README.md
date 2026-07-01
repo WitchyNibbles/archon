@@ -267,7 +267,7 @@ Copy `.env.example` and configure it. The runtime loader checks **`.env.archon` 
 
 ```bash
 # PostgreSQL — workflow state, task queue, run history
-ARCHON_CORE_DATABASE_URL=postgresql://archon:archon-local-password@127.0.0.1:5432/archon
+ARCHON_CORE_DATABASE_URL=postgresql://archon:CHANGEME_SET_A_STRONG_PASSWORD_NEVER_USE_IN_PRODUCTION@127.0.0.1:5432/archon
 ARCHON_POSTGRES_PORT=5432
 
 # Runtime mode

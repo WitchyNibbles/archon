@@ -25,18 +25,25 @@ while [[ $# -gt 0 ]]; do
 done
 
 resolve_archon_cli() {
+  # Branch 1 — archon DEV repo (this repo's own src/ is present).
+  # Keeps --experimental-strip-types; test/dev cycle stays on TS sources.
   local source_cli="$repo_root/src/admin/archon.ts"
   if [[ -f "$source_cli" ]]; then
     printf '%s\n' "$source_cli"
     return
   fi
 
-  local installed_cli="$repo_root/node_modules/archon/src/admin/archon.ts"
-  if [[ -f "$installed_cli" ]]; then
-    printf '%s\n' "$installed_cli"
+  # Branch 2 — consumer / installed (archon is in node_modules).
+  # Resolve the compiled bin — no --experimental-strip-types needed.
+  # dist/cli/archon-bin.js is guaranteed to exist in any P1+ published package.
+  local installed_bin="$repo_root/node_modules/archon/dist/cli/archon-bin.js"
+  if [[ -f "$installed_bin" ]]; then
+    printf '%s\n' "$installed_bin"
     return
   fi
 
+  # Branch 3 — file: dependency (linked local package).
+  # Prefer compiled bin if it exists; fall back to TS source for linked dev packages.
   local package_json="$repo_root/package.json"
   if [[ ! -f "$package_json" ]]; then
     printf 'missing package.json for archon CLI resolution: %s\n' "${package_json#"$repo_root"/}" >&2
@@ -63,10 +70,16 @@ if (typeof dependency !== "string" || !dependency.startsWith("file:")) {
 
 const rawPath = dependency.slice("file:".length);
 const resolvedRoot = path.resolve(repoRoot, rawPath);
-const cliPath = path.join(resolvedRoot, "src", "admin", "archon.ts");
 
-if (existsSync(cliPath)) {
-  process.stdout.write(`${cliPath}\n`);
+// Prefer the compiled bin over the TS source for file: dependencies too.
+const binPath = path.join(resolvedRoot, "dist", "cli", "archon-bin.js");
+if (existsSync(binPath)) {
+  process.stdout.write(`${binPath}\n`);
+  process.exit(0);
+}
+const srcPath = path.join(resolvedRoot, "src", "admin", "archon.ts");
+if (existsSync(srcPath)) {
+  process.stdout.write(`${srcPath}\n`);
 }
 EOF
   )"
@@ -78,6 +91,17 @@ EOF
 
   printf 'unable to resolve archon CLI for runtime workflow proof from %s\n' "$repo_root" >&2
   exit 1
+}
+
+# Invoke the resolved archon CLI with the correct node flags.
+# Compiled .js bin: plain "node" (no strip-types flag needed).
+# TS source (.ts): "node --experimental-strip-types" (dev / archon-own-repo path).
+run_archon_cli() {
+  if [[ "$archon_cli" == *.ts ]]; then
+    node --experimental-strip-types "$archon_cli" "$@"
+  else
+    node "$archon_cli" "$@"
+  fi
 }
 
 if [[ -z "$requested_task_id" ]]; then
@@ -105,7 +129,7 @@ fi
 
 archon_cli="$(resolve_archon_cli)"
 workflow_proof_json="$(
-  node --experimental-strip-types "$archon_cli" workflow-proof --task-id "$requested_task_id" --run-id latest --format json
+  run_archon_cli workflow-proof --task-id "$requested_task_id" --run-id latest --format json
 )"
 
 proof_run_id="$(
@@ -119,7 +143,7 @@ EOF
 
 if [[ -n "$proof_run_id" ]]; then
   status_json="$(
-    node --experimental-strip-types "$archon_cli" status --run-id "$proof_run_id" --format json
+    run_archon_cli status --run-id "$proof_run_id" --format json
   )"
   node --input-type=module - "$status_json" <<'EOF'
 const payload = JSON.parse(process.argv[2]);
@@ -149,4 +173,13 @@ if (seedFailure?.recoveryState === "stale_metadata") {
 EOF
 fi
 
+# EXPLICIT RESIDUAL: scripts/check-archon-workflow.ts is a consumer-local file
+# (copied by the installer into the consuming repo's scripts/ directory — it is
+# NOT part of node_modules/archon/).  It runs via --experimental-strip-types
+# because it is a TypeScript file that lives in the consumer's own tree.
+# This is intentional and does NOT reproduce the P1 bug (which was invoking
+# archon's OWN src from node_modules via strip-types).
+# Node 23.6+ does not require the flag; Node 22 consumers need it.
+# Follow-up owner: infra_engineer — migrate if archon bin ever exposes a
+# compiled path for this check, or when Node 22 LTS is dropped.
 node --experimental-strip-types "$repo_root/scripts/check-archon-workflow.ts" --live --external-review-authority --repo-root "$repo_root" --task-id "$requested_task_id"

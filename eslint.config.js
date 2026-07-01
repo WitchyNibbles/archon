@@ -5,6 +5,7 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import unusedImports from "eslint-plugin-unused-imports";
+import globals from "globals";
 
 export default tseslint.config(
   {
@@ -113,6 +114,17 @@ export default tseslint.config(
         },
       ],
     },
+  },
+  {
+    // Build scripts (.mjs) run in Node.js and use globals (console, process,
+    // etc.) that are invisible to ESLint unless declared.  This block surfaces
+    // them without disabling any other rules.
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      }
+    }
   },
   {
     files: ["**/*.ts"],
