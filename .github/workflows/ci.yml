@@ -185,6 +185,38 @@ jobs:
             fi
           }
 
+          # P4: init --apply smoke — prove the compiled bin routes init to the
+          # install CLI, writes devDependencies.archon, and wires archon scripts.
+          # Docker is not available in CI so we stub it; init --apply must not call it.
+          INIT_DIR="$(mktemp -d)"
+          DOCKER_SENTINEL="$INIT_DIR/.docker-called"
+          FAKE_BIN_DIR="$(mktemp -d)"
+          printf '#!/usr/bin/env bash\nset -euo pipefail\n: > "%s"\nexit 0\n' "$DOCKER_SENTINEL" > "$FAKE_BIN_DIR/docker"
+          chmod +x "$FAKE_BIN_DIR/docker"
+          printf '{"name":"smoke-project","private":true}\n' > "$INIT_DIR/package.json"
+          PATH="$FAKE_BIN_DIR:$PATH" node "$BIN" init --apply --target "$INIT_DIR"
+
+          node --input-type=module - "$INIT_DIR/package.json" "$DOCKER_SENTINEL" <<'SMOKE_EOF'
+import { existsSync, readFileSync } from "node:fs";
+const [,, pkgPath, dockerSentinel] = process.argv;
+const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+let failed = false;
+if (!pkg.devDependencies?.archon) {
+  console.error("FAIL: init --apply did not write devDependencies.archon");
+  failed = true;
+}
+if (pkg.scripts?.["archon:migrate"] !== "archon migrate") {
+  console.error("FAIL: init --apply did not wire archon:migrate script");
+  failed = true;
+}
+if (existsSync(dockerSentinel)) {
+  console.error("FAIL: init --apply invoked docker — it must not");
+  failed = true;
+}
+if (failed) process.exit(1);
+console.log("OK: init --apply wrote devDependencies.archon, archon scripts, and did not invoke docker");
+SMOKE_EOF
+
           # Assert dist tree cleanliness, shipped-script cleanliness, and no install
           # lifecycle hooks. The inspection logic lives in scripts/ci/*.mjs (shared
           # verbatim with the windows leg) so the rules live in ONE place. $GITHUB_WORKSPACE
@@ -231,6 +263,30 @@ jobs:
             Write-Error "archon doctor exited with unexpected code $code"
             exit 1
           }
+
+          # P4: init --apply smoke — prove the compiled bin routes init to the
+          # install CLI, writes devDependencies.archon, and wires archon scripts.
+          $initDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $initDir | Out-Null
+          $dockerSentinel = Join-Path $initDir ".docker-called"
+          Set-Content -Path (Join-Path $initDir "package.json") -Value '{"name":"smoke-project","private":true}'
+          node $bin init --apply --target $initDir
+          if ($LASTEXITCODE -ne 0) { Write-Error "init --apply failed"; exit 1 }
+
+          $initPkg = Get-Content -LiteralPath (Join-Path $initDir "package.json") -Raw | ConvertFrom-Json
+          if (-not $initPkg.devDependencies.archon) {
+            Write-Error "FAIL: init --apply did not write devDependencies.archon"
+            exit 1
+          }
+          if ($initPkg.scripts."archon:migrate" -ne "archon migrate") {
+            Write-Error "FAIL: init --apply did not wire archon:migrate script"
+            exit 1
+          }
+          if (Test-Path -LiteralPath $dockerSentinel) {
+            Write-Error "FAIL: init --apply invoked docker — it must not"
+            exit 1
+          }
+          Write-Host "OK: init --apply wrote devDependencies.archon, archon scripts, and did not invoke docker"
 
           # Dist/scripts/package inspection. Same scripts/ci/*.mjs the unix leg runs
           # (single source of truth). Node accepts forward slashes on Windows, so
