@@ -236,6 +236,11 @@ describe("isValidLeaseId", () => {
     assert.equal(isValidLeaseId("../etc/passwd"), false);
     assert.equal(isValidLeaseId("run..id"), false);
   });
+
+  it("rejects ids longer than the max length (filename-component safety)", () => {
+    assert.equal(isValidLeaseId("a".repeat(200)), true, "200 chars is the boundary and allowed");
+    assert.equal(isValidLeaseId("a".repeat(201)), false, "201 chars exceeds the cap");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -352,6 +357,86 @@ describe("makeFileLockLeaseStore", () => {
 
     const winners = results.filter((r) => r.granted);
     assert.equal(winners.length, 1, `expected 1 winner, got ${winners.length}`);
+  });
+
+  // Q1: a corrupt (malformed-JSON) lock file must be reclaimable. The fix's
+  // central claim is that readLock → undefined now means "genuinely corrupt or
+  // abandoned" (never "mid-creation"), so a new claimant reclaims it.
+  it("reclaims a corrupt (malformed-JSON) lock file", async () => {
+    const runId = "run-fl-corrupt";
+    const lp = path.join(tmpLockDir, `respawn-lease-${runId}.lock`);
+    await writeFile(lp, "{ this is not valid json", "utf8");
+
+    const store = makeFileLockLeaseStore({ lockDir: tmpLockDir });
+    const result = await claimRespawnLease(runId, "interactive", store);
+    assert.equal(result.granted, true, "a corrupt lock must be reclaimed, not deadlock");
+    assert.equal(result.owner, "interactive");
+    assert.equal(await readRespawnOwner(runId, store), "interactive");
+  });
+
+  // Q3: readOwner must report undefined for a stale on-disk lock (the isContentStale
+  // path inside readOwner, previously uncovered for the file-lock store).
+  it("readOwner returns undefined for a stale on-disk lock", async () => {
+    const runId = "run-fl-readowner-stale";
+    const lp = path.join(tmpLockDir, `respawn-lease-${runId}.lock`);
+    await writeFile(
+      lp,
+      `${JSON.stringify({ owner: "daemon", runId, claimedAt: new Date(Date.now() - 600_000).toISOString() })}\n`,
+      "utf8"
+    );
+    const store = makeFileLockLeaseStore({ lockDir: tmpLockDir, staleAfterMs: 300_000 });
+    assert.equal(await readRespawnOwner(runId, store), undefined, "stale lock owner must read as undefined");
+  });
+
+  // Q4 / R1: two independent stores concurrently reclaiming the SAME stale lock
+  // must yield exactly one winner — the rename() compare-and-swap eviction, not a
+  // bare unlink (which let a late racer evict the fresh winner's lock).
+  it("concurrent stale-reclaim by two independent stores yields exactly one winner (20 rounds)", async () => {
+    for (let round = 0; round < 20; round++) {
+      const runId = `run-fl-stale-race-${round}`;
+      const lp = path.join(tmpLockDir, `respawn-lease-${runId}.lock`);
+      // Pre-seed a stale lock (crashed holder).
+      await writeFile(
+        lp,
+        `${JSON.stringify({ owner: "daemon", runId, claimedAt: new Date(Date.now() - 600_000).toISOString() })}\n`,
+        "utf8"
+      );
+
+      const storeA = makeFileLockLeaseStore({ lockDir: tmpLockDir, staleAfterMs: 300_000 });
+      const storeB = makeFileLockLeaseStore({ lockDir: tmpLockDir, staleAfterMs: 300_000 });
+      const [rA, rB] = await Promise.all([
+        claimRespawnLease(runId, "interactive", storeA),
+        claimRespawnLease(runId, "daemon", storeB)
+      ]);
+
+      const granted = [rA, rB].filter((r) => r.granted);
+      assert.equal(
+        granted.length,
+        1,
+        `round ${round}: exactly one may reclaim a stale lock, got ${granted.length} ` +
+          `(rA=${JSON.stringify(rA)} rB=${JSON.stringify(rB)})`
+      );
+    }
+  });
+
+  // S3: invalid runIds must be rejected at the store boundary (not silently
+  // sanitized into the path while written raw into the JSON).
+  it("rejects invalid runIds on tryAcquire / release / readOwner", async () => {
+    const store = makeFileLockLeaseStore({ lockDir: tmpLockDir });
+    for (const bad of ["run id", "run/../x", "run$(x)", "", "a".repeat(201)]) {
+      await assert.rejects(() => claimRespawnLease(bad, "daemon", store), /invalid runId/, `claim ${JSON.stringify(bad)}`);
+      await assert.rejects(() => releaseRespawnLease(bad, "daemon", store), /invalid runId/, `release ${JSON.stringify(bad)}`);
+      await assert.rejects(() => readRespawnOwner(bad, store), /invalid runId/, `readOwner ${JSON.stringify(bad)}`);
+    }
+  });
+
+  // S4: a lockDir with a traversal segment must be rejected at construction.
+  it("rejects a lockDir containing '..' traversal segments", () => {
+    assert.throws(
+      () => makeFileLockLeaseStore({ lockDir: `${tmpLockDir}/../evil` }),
+      /must not contain '\.\.'/,
+      "traversal lockDir must be rejected"
+    );
   });
 });
 
