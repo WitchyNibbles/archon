@@ -172,7 +172,7 @@ if (context.activeTaskId && runId && newInvocationId) {
         );
       } else {
         process.stderr.write(
-          `[archon-session-start] consume-on-start: ${outcome.consume?.skipped}\n`
+          `[archon-session-start] consume-on-start: ${outcome.consume?.skipped ?? "(no reason)"}\n`
         );
       }
     });
