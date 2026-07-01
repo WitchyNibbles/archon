@@ -32,11 +32,18 @@ test("scrubPgCredentials: redacts postgresql:// URL variant", () => {
   assert.doesNotMatch(result, /\bhost\b/);
 });
 
-test("scrubPgCredentials: redacts 'for user' auth-failure fragment", () => {
+test("scrubPgCredentials: redacts 'for user' auth-failure fragment (quoted)", () => {
   const input = 'FATAL: password authentication failed for user "archon"';
   const result = scrubPgCredentials(input);
   assert.match(result, /for user \[redacted\]/);
   assert.doesNotMatch(result, /"archon"/);
+});
+
+test("scrubPgCredentials: redacts 'for user' with unquoted username", () => {
+  const input = "FATAL: password authentication failed for user archon";
+  const result = scrubPgCredentials(input);
+  assert.match(result, /for user \[redacted\]/);
+  assert.doesNotMatch(result, /\barchon\b/);
 });
 
 test("scrubPgCredentials: redacts ENOTFOUND hostname", () => {
@@ -57,8 +64,39 @@ test("scrubPgCredentials: redacts key=value password token", () => {
   assert.doesNotMatch(result, /dbhost/);
 });
 
+test("scrubPgCredentials: redacts ECONNREFUSED ip:port (loopback)", () => {
+  const result = scrubPgCredentials("connect ECONNREFUSED 127.0.0.1:5533");
+  assert.match(result, /ECONNREFUSED \[redacted\]/);
+  assert.doesNotMatch(result, /127\.0\.0\.1/);
+  assert.doesNotMatch(result, /5533/);
+});
+
+test("scrubPgCredentials: redacts ECONNREFUSED non-loopback IPv4", () => {
+  const result = scrubPgCredentials("connect ECONNREFUSED 10.42.0.1:5432");
+  assert.match(result, /ECONNREFUSED \[redacted\]/);
+  assert.doesNotMatch(result, /10\.42\.0\.1/);
+});
+
+test("scrubPgCredentials: redacts ETIMEDOUT ip:port", () => {
+  const result = scrubPgCredentials("connect ETIMEDOUT 192.168.1.100:5432");
+  assert.match(result, /ETIMEDOUT \[redacted\]/);
+  assert.doesNotMatch(result, /192\.168\.1\.100/);
+});
+
+test("scrubPgCredentials: redacts EHOSTUNREACH address", () => {
+  const result = scrubPgCredentials("connect EHOSTUNREACH db-prod.internal:5432");
+  assert.match(result, /EHOSTUNREACH \[redacted\]/);
+  assert.doesNotMatch(result, /db-prod/);
+});
+
+test("scrubPgCredentials: redacts IPv6 address after ECONNREFUSED", () => {
+  const result = scrubPgCredentials("connect ECONNREFUSED ::1:5432");
+  assert.match(result, /ECONNREFUSED \[redacted\]/);
+  assert.doesNotMatch(result, /::1/);
+});
+
 test("scrubPgCredentials: preserves non-credential text unchanged", () => {
-  const input = "connect ECONNREFUSED 127.0.0.1:5533";
+  const input = "FATAL: database does not exist";
   const result = scrubPgCredentials(input);
   assert.equal(result, input);
 });
@@ -111,14 +149,12 @@ test("validateDatabaseUrl: valid postgresql:// URL returns valid", () => {
   assert.equal(result.valid, true);
 });
 
-test("validateDatabaseUrl: invalid URL returns guidance with percent-encoding advice", () => {
-  // An @ sign unencoded in the password breaks URL parsing
-  const result = validateDatabaseUrl("postgres://user:p@ss@host/db");
-  // node:url may parse this differently but the guidance path is the wrong-scheme or parse-fail
-  // At minimum, if valid=false we should get guidance
-  if (!result.valid) {
-    assert.match(result.guidance, /percent-encod/i);
-  }
+test("validateDatabaseUrl: port out of range (>65535) is unparseable — returns guidance", () => {
+  // WHATWG URL rejects port numbers > 65535; this is the kind of error that can happen
+  // when operators accidentally include two colons or a non-numeric port segment.
+  const result = validateDatabaseUrl("postgres://host:999999/db");
+  assert.equal(result.valid, false);
+  assert.ok(!result.valid && result.guidance.length > 0, "guidance must be non-empty");
 });
 
 test("validateDatabaseUrl: wrong scheme returns guidance", () => {

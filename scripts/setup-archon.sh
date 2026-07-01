@@ -418,9 +418,14 @@ ensure_native_postgres_database() {
 
   role_exists="$(run_as_postgres psql -Atqc "select 1 from pg_roles where rolname = '${escaped_user}'" postgres 2>/dev/null || true)"
   if [[ "$role_exists" != "1" ]]; then
-    run_as_postgres psql -v ON_ERROR_STOP=1 -c "create role \"${ARCHON_POSTGRES_USER:-archon}\" with login password '${escaped_password}'" postgres
+    # Pipe SQL via stdin so the password does not appear in ps aux process arguments.
+    printf "CREATE ROLE \"%s\" WITH LOGIN PASSWORD '%s';\n" \
+      "${ARCHON_POSTGRES_USER:-archon}" "${escaped_password}" \
+      | run_as_postgres psql -v ON_ERROR_STOP=1 postgres
   else
-    run_as_postgres psql -v ON_ERROR_STOP=1 -c "alter role \"${ARCHON_POSTGRES_USER:-archon}\" with login password '${escaped_password}'" postgres
+    printf "ALTER ROLE \"%s\" WITH LOGIN PASSWORD '%s';\n" \
+      "${ARCHON_POSTGRES_USER:-archon}" "${escaped_password}" \
+      | run_as_postgres psql -v ON_ERROR_STOP=1 postgres
   fi
 
   db_exists="$(run_as_postgres psql -Atqc "select 1 from pg_database where datname = '${escaped_db}'" postgres 2>/dev/null || true)"

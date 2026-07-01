@@ -15,8 +15,9 @@
 /**
  * Removes credential-sensitive fragments from a Postgres error string:
  *  - Full `postgres[ql]://` URLs (user, password, host, port are all redacted)
- *  - `for user "name"` / `for user 'name'` auth-failure fragments
- *  - `getaddrinfo ENOTFOUND <hostname>` host leaks
+ *  - `for user "name"` / `for user 'name'` / `for user name` auth-failure fragments
+ *  - `ENOTFOUND <hostname>` host leaks via DNS
+ *  - `ECONNREFUSED <addr>`, `ETIMEDOUT <addr>`, `EHOSTUNREACH <addr>`, etc. — ip:port leaks
  *  - Key-value connection string tokens: `password=`, `user=`, `host=`
  *
  * Returns the scrubbed string. Input is not mutated.
@@ -29,17 +30,19 @@ export function scrubPgCredentials(text: string): string {
     "postgres://[redacted]"
   );
 
-  // 2. Redact "for user" fragments that appear in pg auth-failure messages,
-  //    e.g.: password authentication failed for user "archon"
+  // 2. Redact "for user" fragments that appear in pg auth-failure messages.
+  //    Handles both quoted and bare (unquoted) usernames:
+  //    e.g. 'for user "archon"'  OR  'for user archon'
   result = result.replace(
-    /\bfor user\s+["'][^"']*["']/gi,
+    /\bfor user\s+(?:["'][^"']*["']|\S+)/gi,
     "for user [redacted]"
   );
 
-  // 3. Redact ENOTFOUND <hostname> — host token leaks via DNS lookups.
+  // 3. Redact address tokens in OS-level network error codes that leak ip:port.
+  //    Covers IPv4 (10.0.0.1:5432), IPv6 (::1, [::1]), and bare hostnames.
   result = result.replace(
-    /\bENOTFOUND\s+\S+/g,
-    "ENOTFOUND [redacted]"
+    /\b(ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EADDRNOTAVAIL|ENOTFOUND)\s+\S+/g,
+    "$1 [redacted]"
   );
 
   // 4. Redact libpq-style key=value tokens in connection strings.

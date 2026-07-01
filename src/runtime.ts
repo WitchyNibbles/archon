@@ -504,6 +504,9 @@ export function isRuntimeExecutionPreflightConnectionError(error: unknown): bool
     /\bECONNRESET\b/i.test(message) ||
     /\bENOTFOUND\b/i.test(message) ||
     /\bETIMEDOUT\b/i.test(message) ||
+    /\bEHOSTUNREACH\b/i.test(message) ||
+    /\bENETUNREACH\b/i.test(message) ||
+    /\bEADDRNOTAVAIL\b/i.test(message) ||
     /\bConnection terminated unexpectedly\b/i.test(message) ||
     /\bconnect\b.*\brefused\b/i.test(message)
   );
@@ -1180,7 +1183,7 @@ export function resolveDoctorRepairPlan(input: {
     return {
       step: undefined,
       skippedReasons: [
-        `doctor failed before a safe repair plan could be derived: ${extractRuntimeExecutionErrorMessage(input.error)}`
+        `doctor failed before a safe repair plan could be derived: ${scrubPgCredentials(extractRuntimeExecutionErrorMessage(input.error))}`
       ]
     };
   }
@@ -1350,7 +1353,7 @@ export async function executeDoctorRepairCommandFromArgs(
         repair: {
           ...baseRepair,
           status: "failed",
-          failure: extractRuntimeExecutionErrorMessage(initialError)
+          failure: scrubPgCredentials(extractRuntimeExecutionErrorMessage(initialError))
         }
       };
     }
@@ -1413,7 +1416,7 @@ export async function executeDoctorRepairCommandFromArgs(
           integrityRepairsAttempted: deriveIntegrityRepairSteps(repairStepsAttempted),
           integrityRepairsApplied: deriveIntegrityRepairSteps(repairStepsApplied),
           skippedReasons,
-          failure: extractRuntimeExecutionErrorMessage(error)
+          failure: scrubPgCredentials(extractRuntimeExecutionErrorMessage(error))
         }
       };
     }
@@ -1743,7 +1746,14 @@ export async function doctorCommand(args: readonly string[]) {
         console.log(JSON.stringify(result));
       });
     } catch (error) {
-      emitDoctorConnectionError(error, dbUrl);
+      // Only absorb genuine connection errors; re-throw domain errors (not bootstrapped,
+      // project not found, etc.) so they surface truthfully and are not misclassified
+      // as "database unavailable".
+      if (isRuntimeExecutionPreflightConnectionError(error)) {
+        emitDoctorConnectionError(error, dbUrl);
+      } else {
+        throw error;
+      }
     }
     return;
   }
@@ -1771,7 +1781,12 @@ export async function doctorCommand(args: readonly string[]) {
       console.log(JSON.stringify(report));
     });
   } catch (error) {
-    emitDoctorConnectionError(error, dbUrl);
+    // Same narrowing: only absorb connection errors; re-throw everything else.
+    if (isRuntimeExecutionPreflightConnectionError(error)) {
+      emitDoctorConnectionError(error, dbUrl);
+    } else {
+      throw error;
+    }
   }
 }
 

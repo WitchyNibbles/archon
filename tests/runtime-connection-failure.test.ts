@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildRuntimeExecutionConnectionFailure } from "../src/runtime.ts";
+import {
+  buildRuntimeExecutionConnectionFailure,
+  isRuntimeExecutionPreflightConnectionError
+} from "../src/runtime.ts";
+import { scrubPgError } from "../src/admin/db-error-scrub.ts";
 
 // A fresh consuming-repo install with ARCHON_CORE_DATABASE_URL set but no reachable
 // Postgres must surface BOTH recovery paths: start/point-at a database (full runtime)
@@ -78,4 +82,81 @@ test("buildRuntimeExecutionConnectionFailure: SSL error includes sslmode guidanc
   assert.match(actions, /sslmode/);
   // Must not leak the URL or credentials
   assert.doesNotMatch(actions, /pass/);
+});
+
+// Condition 12 — credential scrub: ECONNREFUSED/ETIMEDOUT ip:port must be scrubbed.
+
+test("buildRuntimeExecutionConnectionFailure: ECONNREFUSED ip:port is scrubbed from blockers/reason", () => {
+  const failure = buildRuntimeExecutionConnectionFailure(
+    new Error("connect ECONNREFUSED 10.42.0.1:5432")
+  );
+  const combined = [failure.blockers.join(" "), failure.reason].join(" ");
+  assert.doesNotMatch(combined, /10\.42\.0\.1/);
+  assert.doesNotMatch(combined, /\b5432\b/);
+  assert.match(combined, /ECONNREFUSED \[redacted\]/);
+});
+
+// isRuntimeExecutionPreflightConnectionError — detection coverage
+
+test("isRuntimeExecutionPreflightConnectionError: recognises ECONNREFUSED", () => {
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(new Error("connect ECONNREFUSED 127.0.0.1:5533")),
+    true
+  );
+});
+
+test("isRuntimeExecutionPreflightConnectionError: recognises ECONNRESET", () => {
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(new Error("read ECONNRESET")),
+    true
+  );
+});
+
+test("isRuntimeExecutionPreflightConnectionError: recognises Connection terminated unexpectedly", () => {
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(
+      new Error("Connection terminated unexpectedly")
+    ),
+    true
+  );
+});
+
+test("isRuntimeExecutionPreflightConnectionError: recognises EHOSTUNREACH", () => {
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(new Error("connect EHOSTUNREACH 10.0.0.1:5432")),
+    true
+  );
+});
+
+test("isRuntimeExecutionPreflightConnectionError: recognises ENETUNREACH", () => {
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(new Error("connect ENETUNREACH 10.0.0.1:5432")),
+    true
+  );
+});
+
+test("isRuntimeExecutionPreflightConnectionError: returns false for domain errors", () => {
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(new Error("Project default/archon is not bootstrapped")),
+    false
+  );
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(new Error("doctor could not resolve project context")),
+    false
+  );
+});
+
+// withClientUsing scrub wiring — db.ts throw sites route through scrubPgError
+
+test("scrubPgError: wiring — db.ts throw-site output does not contain credentials", () => {
+  // Simulate what withClientUsing does: scrubPgError wraps the raw pg error
+  // and strips credentials before the error crosses the module boundary.
+  const rawPgError = new Error(
+    'connect ECONNREFUSED 10.42.0.17:5432 — password=hunter2 for user "dbadmin"'
+  );
+  const scrubbed = scrubPgError(rawPgError);
+  assert.doesNotMatch(scrubbed.message, /10\.42\.0\.17/);
+  assert.doesNotMatch(scrubbed.message, /hunter2/);
+  assert.doesNotMatch(scrubbed.message, /dbadmin/);
+  assert.match(scrubbed.message, /ECONNREFUSED \[redacted\]/);
 });
