@@ -428,6 +428,24 @@ export interface ExecuteWorkflowProofCommandOptions {
 }
 
 
+/**
+ * P2.1 audit surface: a finding that was explicitly accepted-by-decision in a
+ * passed review. Surfaced in WorkflowProofResult so accepted findings are never
+ * invisible in the workflow-proof output.
+ */
+export interface AcceptedFindingSurface {
+  /** The reviewerRole that recorded this passed review. */
+  role: string;
+  /** The finding message. */
+  message: string;
+  /** Severity of the finding (low or medium — high/critical are never accepted). */
+  severity?: import("./domain/types.ts").ReviewSeverity | undefined;
+  /** The role that accepted this finding. */
+  acceptedByRole: string;
+  /** The recorded reason for accepting this finding. */
+  acceptanceReason: string;
+}
+
 export interface WorkflowProofResult {
   authorityLabel: "runtime_authoritative";
   runId: string;
@@ -439,6 +457,13 @@ export interface WorkflowProofResult {
   latestApproval: ApprovalRecord;
   continuationApplied: boolean;
   nextTaskId: string | null;
+  /**
+   * P2.1: Accepted findings from all latest reviews for this task. Empty when
+   * all reviews are clean (zero findings). Never undefined — always an array.
+   * These are findings that were explicitly accepted-by-decision rather than
+   * fixed, making accepted findings auditable and never invisible.
+   */
+  acceptedFindings: AcceptedFindingSurface[];
 }
 
 
@@ -980,6 +1005,26 @@ export async function executeWorkflowProofCommandFromArgs(
     options
   );
 
+  // P2.1: collect accepted findings from all latest reviews for audit surface.
+  const acceptedFindings: AcceptedFindingSurface[] = latestReviews.flatMap((review) =>
+    (review.findingDetails ?? [])
+      .filter(
+        (f): f is typeof f & { disposition: "accepted"; acceptedByRole: string; acceptanceReason: string } =>
+          f.disposition === "accepted" &&
+          typeof f.acceptedByRole === "string" &&
+          f.acceptedByRole.trim().length > 0 &&
+          typeof f.acceptanceReason === "string" &&
+          f.acceptanceReason.trim().length > 0
+      )
+      .map((f) => ({
+        role: review.reviewerRole,
+        message: f.message,
+        severity: f.severity,
+        acceptedByRole: f.acceptedByRole,
+        acceptanceReason: f.acceptanceReason
+      }))
+  );
+
   return {
     authorityLabel: "runtime_authoritative",
     runId,
@@ -990,7 +1035,8 @@ export async function executeWorkflowProofCommandFromArgs(
     latestReviews,
     latestApproval,
     continuationApplied: continuation.applied,
-    nextTaskId: continuation.nextTaskId
+    nextTaskId: continuation.nextTaskId,
+    acceptedFindings
   };
 }
 
@@ -1422,13 +1468,67 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
       }
     }
 
+    // P2.1: Optional disposition — only "accepted" is a valid value
+    if (obj["disposition"] !== undefined && obj["disposition"] !== null) {
+      if (obj["disposition"] !== "accepted") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].disposition must be "accepted" or omitted, got "${obj["disposition"]}"`
+        );
+      }
+    }
+
+    // P2.1: Optional acceptedByRole — string, required when disposition=accepted
+    if (obj["acceptedByRole"] !== undefined && obj["acceptedByRole"] !== null) {
+      if (typeof obj["acceptedByRole"] !== "string") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].acceptedByRole must be a string`
+        );
+      }
+    }
+
+    // P2.1: Optional acceptanceReason — string, required when disposition=accepted
+    if (obj["acceptanceReason"] !== undefined && obj["acceptanceReason"] !== null) {
+      if (typeof obj["acceptanceReason"] !== "string") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].acceptanceReason must be a string`
+        );
+      }
+    }
+
+    // P2.1 acceptance-field completeness and hard security rule checks
+    if (obj["disposition"] === "accepted") {
+      const byRole = obj["acceptedByRole"];
+      if (typeof byRole !== "string" || byRole.trim().length === 0) {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}] has disposition=accepted but acceptedByRole is missing or empty`
+        );
+      }
+      const reason = obj["acceptanceReason"];
+      if (typeof reason !== "string" || reason.trim().length === 0) {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}] has disposition=accepted but acceptanceReason is missing or empty`
+        );
+      }
+      // HARD SECURITY RULE: high or critical findings can never be accepted
+      const sev = obj["severity"];
+      if (sev === "high" || sev === "critical") {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}] cannot accept a ${sev} severity finding — ` +
+          `high and critical severity findings can never be accepted`
+        );
+      }
+    }
+
     results.push({
       message: obj["message"] as string,
       severity: obj["severity"] as ReviewFinding["severity"],
       category: obj["category"] as string | undefined,
       file: obj["file"] as string | undefined,
       line: obj["line"] as number | undefined,
-      symbol: obj["symbol"] as string | undefined
+      symbol: obj["symbol"] as string | undefined,
+      disposition: obj["disposition"] as ReviewFinding["disposition"],
+      acceptedByRole: obj["acceptedByRole"] as string | undefined,
+      acceptanceReason: obj["acceptanceReason"] as string | undefined
     });
   }
 

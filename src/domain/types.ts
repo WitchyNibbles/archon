@@ -524,15 +524,25 @@ export interface HandoffInput {
 }
 
 /**
- * Structured review finding — P1.5 structured findings contract.
+ * Structured review finding — P1.5 structured findings contract (extended by P2.1
+ * finding-acceptance-records).
  *
  * `findingDetails` is OPTIONAL and additive. Existing `findings: string[]` and
- * all gate logic (`canReviewRecordSatisfyGate`, `evaluateReviewDecision`) are
- * unchanged. When `findingDetails` is supplied, string `findings` is derived
+ * the waived path in gate logic (`canReviewRecordSatisfyGate`, `evaluateReviewDecision`)
+ * are unchanged. When `findingDetails` is supplied, string `findings` is derived
  * from `findingDetails.map(f => f.message)` by `recordReview` so reviewers
  * do not double-author. The `symbolLocus` field in MistakeOccurrenceRecord
  * is populated from `symbol` (preferred) or `file` when structured details
  * are present, giving finer fingerprint cardinality than P1.
+ *
+ * P2.1 acceptance extension:
+ * A `passed` review MAY carry findings when EVERY finding is fully accepted:
+ *   - `disposition === "accepted"`
+ *   - `acceptedByRole` is a non-empty string
+ *   - `acceptanceReason` is a non-empty string
+ *   - HARD RULE: severity `"high"` or `"critical"` CANNOT be accepted — the gate
+ *     rejects such a finding even when all other acceptance fields are present.
+ * Absent / undefined `disposition` means the finding is open.
  */
 export interface ReviewFinding {
   /** Human-readable description of the finding. Required. */
@@ -550,6 +560,24 @@ export interface ReviewFinding {
   readonly line?: number | undefined;
   /** Symbol (function, class, method) where the finding was observed. Optional. */
   readonly symbol?: string | undefined;
+  /**
+   * P2.1 acceptance disposition. When `"accepted"`, this finding has been
+   * explicitly accepted-by-decision and is not considered open. Absent/undefined
+   * means the finding is still open. Only `"accepted"` is a valid value; the gate
+   * rejects any other value.
+   */
+  readonly disposition?: "accepted" | undefined;
+  /**
+   * P2.1: The role that accepted this finding. Required when `disposition === "accepted"`.
+   * Must be a non-empty string.
+   */
+  readonly acceptedByRole?: string | undefined;
+  /**
+   * P2.1: The reason this finding was accepted instead of fixed. Required when
+   * `disposition === "accepted"`. Must be a non-empty string. This is the
+   * auditable record of the acceptance decision.
+   */
+  readonly acceptanceReason?: string | undefined;
 }
 
 export interface ReviewInput {
@@ -1130,9 +1158,11 @@ export interface ReviewRecord {
   evidenceRefs?: string[] | undefined;
   createdAt: string;
   /**
-   * Optional structured finding details — P1.5 additive extension.
-   * Gate logic reads only `findings` and `state`; this field is metadata-only
-   * for the mistake ledger to compute fine-grained symbolLocus fingerprints.
+   * Optional structured finding details — P1.5 additive extension, extended by P2.1.
+   * When `state === "passed"` and `findings` is non-empty, the gate reads this
+   * field to verify that every finding is fully accepted (disposition=accepted,
+   * non-empty acceptedByRole + acceptanceReason, severity not high/critical).
+   * When `findings` is empty, this field is metadata-only for the mistake ledger.
    */
   findingDetails?: readonly ReviewFinding[] | undefined;
 }

@@ -33,28 +33,55 @@ Every review record you write MUST include:
 
 ## Gate semantics — no-buts bar (passed means nothing is left open)
 
-The runtime enforces that a `passed` review records **empty findings**
-(`canReviewRecordSatisfyGate` rejects `passed` with a non-empty findings array).
-Use that mechanism to enforce the no-buts bar — do NOT use it to launder findings:
+The runtime enforces a **no-buts bar**: a `passed` review is only gate-satisfying
+when every finding is either fixed OR explicitly accepted-by-decision (see below).
+Do NOT move findings into a narrative report and record `passed` with empty findings
+— that is the exact loophole this bar closes.
 
-- If a role produced ANY finding that is not resolved — at ANY severity, including
-  MEDIUM and LOW — record that role `failed` with the structured findings via
-  `--findings-json`. This forces a repair loop. Do NOT record `passed` and move
-  the findings into your narrative report; that is the exact loophole this bar
-  closes.
-- Record `outcome: passed` (empty findings) for a role ONLY when that role has no
-  open findings left — i.e. every issue it raised was actually fixed in the code,
-  or was explicitly and defensibly closed as a recorded decision (genuinely
-  out-of-scope with a named follow-up owner, or a deliberate trade-off the user's
-  intent supports). State any such closed-by-decision item, with owner and reason,
-  in your aggregate report. "Advisory / non-blocking / nice-to-have" is NOT a
-  reason to pass with the issue unaddressed.
+### Path 1 — fixed finding (default)
+Record `outcome: passed` with an empty `--findings-json '[]'` (or no `--findings-json`
+at all) ONLY when every issue the role raised was actually fixed in the code.
+
+### Path 2 — accepted-by-decision finding (explicit, auditable record required)
+If a finding cannot be fixed but is defensibly accepted (genuinely out-of-scope
+with a named follow-up owner, or a deliberate trade-off the user's intent
+supports), you MAY record the role as `passed` BUT you MUST include the finding in
+`--findings-json` with full acceptance fields:
+
+```json
+[{
+  "message": "...",
+  "severity": "low",
+  "category": "immutability_violation",
+  "disposition": "accepted",
+  "acceptedByRole": "<the role accepting it, e.g. reviewer>",
+  "acceptanceReason": "<specific, non-generic reason — who owns follow-up and why>"
+}]
+```
+
+**Hard rules for accepted findings:**
+- `high` and `critical` severity findings can NEVER be accepted. They must be
+  fixed or the review must be recorded as `failed`. The gate rejects any accepted
+  finding with severity `high` or `critical`.
+- `acceptanceReason` and `acceptedByRole` MUST be non-empty strings. Generic
+  reasons like "advisory" or "nice-to-have" are not acceptable; state the specific
+  trade-off, the owner, and the follow-up reference.
+- "Advisory / non-blocking / nice-to-have" is NOT a reason to accept a finding.
+
+### Path 3 — open findings (gate blocks)
+Record `outcome: failed` with the structured findings when ANY finding is genuinely
+open (not fixed, not explicitly accepted). This forces a repair loop.
 - A low-cost shortcut where a better long-term solution fit the goal is a blocking
-  finding → `failed`, not a passable nit.
+  finding → `failed`, not an accepted nit.
 
-The loop is: spawn roles → if any open findings, record `failed`, report what must
-change, and drive the fix → re-review → only when all roles are genuinely clean do
-you record the `passed` set and let `save-approval`/`workflow-proof` proceed.
+### Loop
+Spawn roles → if any open findings, record `failed`, report what must change, and
+drive the fix → re-review → only when all roles are genuinely clean (fixed or
+explicitly accepted with full acceptance fields) do you record the `passed` set
+and let `save-approval`/`workflow-proof` proceed.
+
+The accepted findings are surfaced in `workflow-proof` output as `acceptedFindings`
+so every acceptance is auditable and never invisible.
 
 ## On failure
 

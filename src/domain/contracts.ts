@@ -883,8 +883,35 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
     }
   }
 
+  // P2.1 defense-in-depth: validate acceptance fields on any findingDetail that
+  // has disposition=accepted. These checks mirror the gate predicate and catch
+  // invalid input before it reaches the DB.
+  if (Array.isArray(review.findingDetails)) {
+    for (let i = 0; i < review.findingDetails.length; i++) {
+      const f = review.findingDetails[i]!;
+      if (f.disposition === "accepted") {
+        if (!f.acceptedByRole || f.acceptedByRole.trim().length === 0) {
+          errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptedByRole`);
+        }
+        if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
+          errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptanceReason`);
+        }
+        if (f.severity === "high" || f.severity === "critical") {
+          errors.push(`findingDetails[${i}]: ${f.severity} severity findings cannot be accepted (hard security rule)`);
+        }
+      }
+    }
+  }
+
   if (review.state === "passed" && review.findings.length > 0) {
-    errors.push("passed reviews must not carry findings");
+    // P2.1: passed + non-empty findings is allowed only when every findingDetail
+    // is a fully accepted low/medium finding.
+    if (!checkFindingsAreFullyAccepted(review.findings, review.findingDetails)) {
+      errors.push(
+        "passed reviews with findings require all findingDetails to be accepted " +
+        "(disposition=accepted, non-empty acceptedByRole and acceptanceReason, severity low or medium)"
+      );
+    }
   }
 
   if (review.reviewerRole === "security_reviewer" && review.state === "passed") {
@@ -917,6 +944,49 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
   return errors;
 }
 
+/**
+ * P2.1 helper: returns true when every finding in `findingDetails` is a valid
+ * accepted-by-decision finding:
+ *   - `disposition === "accepted"`
+ *   - `acceptedByRole` is a non-empty string
+ *   - `acceptanceReason` is a non-empty string
+ *   - HARD RULE: severity is NOT "high" or "critical"
+ *
+ * Also requires `findingDetails` to have the same length as `findings` so every
+ * free-text finding has a corresponding structured acceptance record.
+ * Returns false when `findingDetails` is absent or empty.
+ *
+ * Named `checkFindingsAreFullyAccepted` to be usable from both
+ * `canReviewRecordSatisfyGate` (ReviewRecord) and `validateReviewAction` (ReviewInput).
+ */
+function checkFindingsAreFullyAccepted(
+  findings: readonly string[],
+  findingDetails: readonly import("./types.ts").ReviewFinding[] | undefined
+): boolean {
+  if (!findingDetails || findingDetails.length === 0) {
+    return false;
+  }
+  if (findingDetails.length !== findings.length) {
+    return false;
+  }
+  return findingDetails.every((f) => {
+    if (f.disposition !== "accepted") {
+      return false;
+    }
+    if (!f.acceptedByRole || f.acceptedByRole.trim().length === 0) {
+      return false;
+    }
+    if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
+      return false;
+    }
+    // HARD SECURITY RULE: high or critical findings can never be accepted
+    if (f.severity === "high" || f.severity === "critical") {
+      return false;
+    }
+    return true;
+  });
+}
+
 export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
   if (review.source !== "orchestrator") {
     return false;
@@ -940,7 +1010,11 @@ export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
 
   if (review.state === "passed") {
     if (review.findings.length > 0) {
-      return false;
+      // P2.1: Findings present on a passed review are allowed only when every
+      // finding is a fully accepted-by-decision low/medium finding in findingDetails.
+      if (!checkFindingsAreFullyAccepted(review.findings, review.findingDetails)) {
+        return false;
+      }
     }
 
     if (
