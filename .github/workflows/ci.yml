@@ -185,6 +185,21 @@ jobs:
             fi
           }
 
+          # P4: init --apply smoke — prove the compiled bin routes init to the
+          # install CLI, writes devDependencies.archon, and wires archon scripts.
+          # Docker is not available in CI so we stub it; init --apply must not call it.
+          INIT_DIR="$(mktemp -d)"
+          DOCKER_SENTINEL="$INIT_DIR/.docker-called"
+          FAKE_BIN_DIR="$(mktemp -d)"
+          printf '#!/usr/bin/env bash\nset -euo pipefail\n: > "%s"\nexit 0\n' "$DOCKER_SENTINEL" > "$FAKE_BIN_DIR/docker"
+          chmod +x "$FAKE_BIN_DIR/docker"
+          printf '{"name":"smoke-project","private":true}\n' > "$INIT_DIR/package.json"
+          PATH="$FAKE_BIN_DIR:$PATH" node "$BIN" init --apply --target "$INIT_DIR"
+
+          # Assertions live in scripts/ci/assert-init-applied.mjs (shared with the
+          # windows leg) — no inline heredoc in the YAML block.
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-init-applied.mjs" "$INIT_DIR/package.json" "$DOCKER_SENTINEL"
+
           # Assert dist tree cleanliness, shipped-script cleanliness, and no install
           # lifecycle hooks. The inspection logic lives in scripts/ci/*.mjs (shared
           # verbatim with the windows leg) so the rules live in ONE place. $GITHUB_WORKSPACE
@@ -231,6 +246,28 @@ jobs:
             Write-Error "archon doctor exited with unexpected code $code"
             exit 1
           }
+
+          # P4: init --apply smoke — prove the compiled bin routes init to the
+          # install CLI, writes devDependencies.archon, and wires archon scripts.
+          $initDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $initDir | Out-Null
+          $dockerSentinel = Join-Path $initDir ".docker-called"
+          Set-Content -Path (Join-Path $initDir "package.json") -Value '{"name":"smoke-project","private":true}'
+          # Fake docker on PATH (analogous to the unix bash stub): a docker.cmd that
+          # records the sentinel when invoked, so the docker-not-called assertion is
+          # genuine on Windows too. exit /b 0 so init treats it as available.
+          $fakeBin = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $fakeBin | Out-Null
+          $dockerCmd = "@echo off`r`necho called> `"$dockerSentinel`"`r`nexit /b 0"
+          Set-Content -Path (Join-Path $fakeBin "docker.cmd") -Value $dockerCmd -Encoding ASCII
+          $env:PATH = "$fakeBin;$env:PATH"
+          node $bin init --apply --target $initDir
+          if ($LASTEXITCODE -ne 0) { Write-Error "init --apply failed"; exit 1 }
+
+          # Assertions live in scripts/ci/assert-init-applied.mjs (shared with the
+          # unix leg) — single source of truth, no inline here-string in the YAML.
+          node "$env:GITHUB_WORKSPACE/scripts/ci/assert-init-applied.mjs" (Join-Path $initDir "package.json") $dockerSentinel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Dist/scripts/package inspection. Same scripts/ci/*.mjs the unix leg runs
           # (single source of truth). Node accepts forward slashes on Windows, so
