@@ -12,6 +12,14 @@
 //   • experimental-strip-types src/  — install shim invoking TS source via strip-types
 //     (P4: install-archon.sh/.ps1 must exec the compiled bin, not the TS source;
 //      note: "strip-types scripts/..." in check-archon-*.sh is intentional and ok)
+//
+// Input trust (owner: infra_engineer): CI-internal helper — the scripts-dir arg is
+// hardcoded in the ci.yml `run:` steps (the installed package's scripts/ under a
+// temp dir); no external/untrusted input reaches it and its only output is a
+// pass/fail exit code, so no path sandboxing is warranted for this CI-only surface.
+// The forbidden-pattern regexes use forward slashes only: every historical shim
+// regression used forward slashes (node accepts them on Windows), so a backslash
+// variant is out of scope.
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";

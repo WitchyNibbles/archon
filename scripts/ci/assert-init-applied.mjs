@@ -12,13 +12,24 @@
 // Fails (exit 1) when the target package.json is missing the archon devDependency
 // or the archon:migrate script, or when the docker sentinel exists (init invoked
 // the stubbed docker, which it must not).
+//
+// Input trust (owner: infra_engineer): this is a CI-internal helper. Both args are
+// hardcoded in the .github/workflows/ci.yml `run:` steps (temp paths minted in the
+// same step); no external/untrusted input reaches it and its only output is a
+// pass/fail exit code. A defensive basename check on the package path is applied
+// below; no further path sandboxing is warranted for this CI-only surface.
 
+import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
 const pkgPath = process.argv[2];
 const dockerSentinel = process.argv[3];
 if (!pkgPath || !dockerSentinel) {
   console.error("usage: node scripts/ci/assert-init-applied.mjs <package.json> <docker-sentinel>");
+  process.exit(2);
+}
+if (path.basename(pkgPath) !== "package.json") {
+  console.error(`assert-init-applied: expected a package.json path, got ${pkgPath}`);
   process.exit(2);
 }
 

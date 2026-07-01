@@ -253,6 +253,14 @@ jobs:
           New-Item -ItemType Directory -Path $initDir | Out-Null
           $dockerSentinel = Join-Path $initDir ".docker-called"
           Set-Content -Path (Join-Path $initDir "package.json") -Value '{"name":"smoke-project","private":true}'
+          # Fake docker on PATH (analogous to the unix bash stub): a docker.cmd that
+          # records the sentinel when invoked, so the docker-not-called assertion is
+          # genuine on Windows too. exit /b 0 so init treats it as available.
+          $fakeBin = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $fakeBin | Out-Null
+          $dockerCmd = "@echo off`r`necho called> `"$dockerSentinel`"`r`nexit /b 0"
+          Set-Content -Path (Join-Path $fakeBin "docker.cmd") -Value $dockerCmd -Encoding ASCII
+          $env:PATH = "$fakeBin;$env:PATH"
           node $bin init --apply --target $initDir
           if ($LASTEXITCODE -ne 0) { Write-Error "init --apply failed"; exit 1 }
 
