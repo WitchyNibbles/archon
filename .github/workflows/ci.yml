@@ -39,6 +39,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      # build:dist compiles src/**/*.ts → dist/**/*.js (esbuild). verify-release-overlay
+      # runs the full suite, including tests that assert `npm pack --dry-run` ships a
+      # populated dist/ — they hard-fail unless dist/ exists first (same reason unit-tests
+      # builds dist below).
+      - run: npm run build:dist
       - run: npm run verify:release-overlay
 
   live-migrations:
