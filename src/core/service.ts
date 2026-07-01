@@ -1514,17 +1514,28 @@ export class ArchonCoreService {
       throw new Error(`Invalid review action: ${validationErrors.join("; ")}`);
     }
 
-    // P1.5: when structured findingDetails are supplied AND the review is NOT passing,
-    // derive the string findings view from the message fields so reviewers don't double-author.
-    // For passed reviews findings MUST remain as supplied (normally []) — the gate at
-    // contracts.ts canReviewRecordSatisfyGate requires findings.length === 0 for a clean pass.
-    // findingDetails is persisted separately for provenance regardless of state.
-    const derivedFindings: string[] =
-      review.state !== "passed" &&
+    // P2.1 / P1.5: when findingDetails is supplied, derive findings[] from the message
+    // fields so the free-text view always matches the structured records and callers
+    // cannot record divergent text.  Three sub-cases:
+    //   • Accepted pass (all findingDetails have disposition="accepted"): derive from
+    //     findingDetails — makes findings[] canonical for the P2.1 accepted path.
+    //   • Non-passing review (blocked/failed) with findingDetails: derive from
+    //     findingDetails so reviewers don't double-author (P1.5 behaviour).
+    //   • Clean pass with provenance-only findingDetails (no acceptance disposition):
+    //     keep findings[] from the caller (normally []) so the gate is not broken by
+    //     deriving non-empty findings that lack acceptance records.
+    const allFindingDetailsAccepted =
       review.findingDetails !== undefined &&
-      review.findingDetails.length > 0
-        ? review.findingDetails.map((f) => f.message)
-        : [...review.findings];
+      review.findingDetails.length > 0 &&
+      review.findingDetails.every((f) => f.disposition === "accepted");
+    const shouldDeriveFromDetails =
+      allFindingDetailsAccepted ||
+      (review.state !== "passed" &&
+       review.findingDetails !== undefined &&
+       review.findingDetails.length > 0);
+    const derivedFindings: string[] = shouldDeriveFromDetails
+      ? review.findingDetails!.map((f) => f.message)
+      : [...review.findings];
 
     const reviewRecord: ReviewRecord = {
       id: randomUUID(),

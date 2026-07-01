@@ -1509,12 +1509,15 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
           `parseReviewFindingsJson: element [${i}] has disposition=accepted but acceptanceReason is missing or empty`
         );
       }
-      // HARD SECURITY RULE: high or critical findings can never be accepted
+      // HARD SECURITY RULE: only "low" or "medium" severity findings may be accepted.
+      // Positive allowlist — an exclusion list (high|critical) would be bypassed when
+      // severity is absent or an unrecognised value. Any severity that is not explicitly
+      // "low" or "medium" is rejected here.
       const sev = obj["severity"];
-      if (sev === "high" || sev === "critical") {
+      if (sev !== "low" && sev !== "medium") {
         throw new Error(
-          `parseReviewFindingsJson: element [${i}] cannot accept a ${sev} severity finding — ` +
-          `high and critical severity findings can never be accepted`
+          `parseReviewFindingsJson: element [${i}] cannot accept a ${sev ?? "undefined"} severity finding — ` +
+          `only low and medium severity findings may be accepted`
         );
       }
     }

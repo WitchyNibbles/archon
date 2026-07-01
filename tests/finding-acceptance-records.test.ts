@@ -16,10 +16,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { canReviewRecordSatisfyGate } from "../src/domain/contracts.ts";
+import { canReviewRecordSatisfyGate, validateReviewAction } from "../src/domain/contracts.ts";
+import { createTrustedReviewActionContextForTest } from "../src/core/review-context.ts";
 import type {
   ReviewRecord,
-  ReviewFinding
+  ReviewFinding,
+  ReviewInput
 } from "../src/domain/types.ts";
 import { executeWorkflowProofCommandFromArgs, parseReviewFindingsJson } from "../src/review.ts";
 import type { WorkflowProofResult } from "../src/review.ts";
@@ -274,14 +276,34 @@ describe("canReviewRecordSatisfyGate — accepted findings", () => {
       actorRole: "planner",
       reviewerRole: "reviewer"
     });
-    // canActorWaiveReview checks planner can waive reviewer — verify it passes
-    // (if this passes, waived path is unchanged)
+    // planner is in managerWaiverRoles and CAN waive the "reviewer" gate role.
+    // All other conditions are satisfied: source=orchestrator, non-empty actor,
+    // valid actorRole, valid reviewerRole, valid state, non-empty waiverReason.
+    // Assert the specific expected value — not just typeof — to prove the waived
+    // path is intact and returns the correct decision.
     const result = canReviewRecordSatisfyGate(review);
-    // The test checks the gate is decided correctly; waiver permission depends on
-    // the waiverAllowList in contracts — if planner cannot waive reviewer this
-    // returns false, which is also correct behavior (it's unchanged from before).
-    // The assertion is that our changes did NOT break the waived branch.
-    assert.strictEqual(typeof result, "boolean");  // gates returns a boolean — always
+    assert.strictEqual(result, true);  // planner can waive reviewer — waived path unchanged
+  });
+
+  // ── A14: accepted finding with undefined severity → gate NOT satisfied ────
+  // Regression: the old exclusion list (severity === "high" || severity === "critical")
+  // was bypassed when severity was undefined. The positive allowlist fixes this.
+
+  it("A14: passed + accepted finding with undefined severity → gate NOT satisfied (allowlist bypass fix)", () => {
+    const review = makeReview({
+      state: "passed",
+      findings: ["some low-signal finding"],
+      findingDetails: [
+        {
+          message: "some low-signal finding",
+          // severity field intentionally omitted — undefined
+          disposition: "accepted",
+          acceptedByRole: "reviewer",
+          acceptanceReason: "Low signal, owner aware"
+        }
+      ]
+    });
+    assert.strictEqual(canReviewRecordSatisfyGate(review), false);
   });
 });
 
@@ -291,13 +313,10 @@ describe("canReviewRecordSatisfyGate — accepted findings", () => {
 
 describe("validateReviewAction — acceptance input validation", () => {
 
-  // We cannot create a proper TrustedReviewActionContext without going through
-  // the real resolver, so we test via the save-review CLI arg parsing path
-  // which calls validateReviewInput/contracts internally. For unit isolation,
-  // we test canReviewRecordSatisfyGate as a proxy for the gate contract,
-  // and test input-level validation via parseReviewFindingsJson for the
-  // structured form. Direct validateReviewAction testing is in the B-prime
-  // section below using a structural context object.
+  // These exercise the gate-level contract (canReviewRecordSatisfyGate) which
+  // embeds the same acceptance rule. Direct validateReviewAction coverage — the
+  // input-layer defense-in-depth loop itself — is in the "B-prime" describe block
+  // below, using createTrustedReviewActionContextForTest to mint a trusted context.
 
   // ── B1: accepted finding requires non-empty reason ───────────────────────
 
@@ -374,6 +393,64 @@ describe("validateReviewAction — acceptance input validation", () => {
       ]
     });
     assert.strictEqual(canReviewRecordSatisfyGate(review), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-prime. validateReviewAction — DIRECT coverage of the input-layer acceptance
+// loop (not proxied through the gate). Uses a minted trusted context so the
+// per-finding acceptance validation branch runs on its own.
+// ---------------------------------------------------------------------------
+
+describe("validateReviewAction — direct input-layer acceptance validation", () => {
+  const ctx = createTrustedReviewActionContextForTest({ actor: "review-orchestrator", actorRole: "reviewer" });
+
+  function makeInput(findingDetails: readonly ReviewFinding[]): ReviewInput {
+    return {
+      reviewerRole: "reviewer",
+      state: "passed",
+      severity: "low",
+      findings: findingDetails.map((f) => f.message),
+      findingDetails
+    };
+  }
+
+  it("Bd1: accepted finding missing acceptanceReason → errors name acceptanceReason", () => {
+    const errors = validateReviewAction(ctx, makeInput([
+      { message: "x", severity: "low", disposition: "accepted", acceptedByRole: "reviewer", acceptanceReason: "  " }
+    ]));
+    assert.ok(errors.some((e) => /acceptanceReason/i.test(e)), errors.join(" | "));
+  });
+
+  it("Bd2: accepted finding missing acceptedByRole → errors name acceptedByRole", () => {
+    const errors = validateReviewAction(ctx, makeInput([
+      { message: "x", severity: "low", disposition: "accepted", acceptedByRole: "", acceptanceReason: "trade-off" }
+    ]));
+    assert.ok(errors.some((e) => /acceptedByRole/i.test(e)), errors.join(" | "));
+  });
+
+  it("Bd3: accepted high-severity finding → errors reject the acceptance (hard rule)", () => {
+    const errors = validateReviewAction(ctx, makeInput([
+      { message: "x", severity: "high", disposition: "accepted", acceptedByRole: "reviewer", acceptanceReason: "risk" }
+    ]));
+    assert.ok(errors.some((e) => /accept/i.test(e) && /high/i.test(e)), errors.join(" | "));
+  });
+
+  it("Bd4: accepted finding with UNDEFINED severity → rejected at the input layer (bypass fix)", () => {
+    const errors = validateReviewAction(ctx, makeInput([
+      { message: "x", disposition: "accepted", acceptedByRole: "reviewer", acceptanceReason: "trade-off" }
+    ]));
+    assert.ok(errors.length > 0, "an accepted finding with no severity must not validate clean");
+  });
+
+  it("Bd5: a fully valid low-severity accepted finding produces no acceptance errors", () => {
+    const errors = validateReviewAction(ctx, makeInput([
+      { message: "x", severity: "low", disposition: "accepted", acceptedByRole: "reviewer", acceptanceReason: "out of scope; owner: infra" }
+    ]));
+    assert.ok(
+      !errors.some((e) => /acceptedByRole|acceptanceReason|cannot be accepted|severity/i.test(e)),
+      errors.join(" | ")
+    );
   });
 });
 
@@ -516,6 +593,23 @@ describe("parseReviewFindingsJson — acceptance fields", () => {
     ]);
     assert.throws(() => parseReviewFindingsJson(input), /acceptanceReason/i);
   });
+
+  // ── C10: undefined severity accepted finding rejected at parse level ───────
+  // Regression: the old exclusion list (high|critical) was bypassed when severity
+  // was absent. The positive allowlist rejects any severity that is not "low" or "medium".
+
+  it("C10: undefined severity + disposition=accepted → throws (allowlist bypass fix)", () => {
+    const input = JSON.stringify([
+      {
+        message: "some finding",
+        // severity field intentionally omitted
+        disposition: "accepted",
+        acceptedByRole: "reviewer",
+        acceptanceReason: "Deliberate"
+      }
+    ]);
+    assert.throws(() => parseReviewFindingsJson(input), /severity.*accept|accept.*severity/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -597,10 +691,12 @@ describe("executeWorkflowProofCommandFromArgs — acceptedFindings surface", () 
       handoffFormat: "standard"
     };
 
+    // taskId lives on packet, not on the record itself — proof uses candidate.packet.taskId
     const task: TaskRecord = {
       id: "task-db-id",
       runId: "run-test",
-      taskId,
+      workspaceId: "ws-1",
+      projectId: "proj-1",
       class: "general",
       packet,
       status: "approved",
@@ -613,10 +709,30 @@ describe("executeWorkflowProofCommandFromArgs — acceptedFindings surface", () 
         id: "run-test",
         workspaceId: "ws-1",
         projectId: "proj-1",
+        actor: "review-orchestrator",
+        title: "Test run",
+        request: "test",
+        summary: {
+          goal: "test",
+          audience: [],
+          constraints: [],
+          risks: [],
+          unknowns: [],
+          successCriteria: [],
+          outOfScope: [],
+          trustBoundaries: [],
+          destructiveActions: [],
+          externalIntegrations: [],
+          stopGo: "go"
+        },
         status: "in_progress",
-        createdAt: "2026-07-01T00:00:00Z"
+        createdAt: "2026-07-01T00:00:00Z",
+        updatedAt: "2026-07-01T00:00:00Z"
       },
-      tasks: [task]
+      tasks: [task],
+      activeLocks: [],
+      blockers: [],
+      nextTaskIds: []
     };
   }
 

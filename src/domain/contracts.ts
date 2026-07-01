@@ -896,8 +896,10 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
         if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
           errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptanceReason`);
         }
-        if (f.severity === "high" || f.severity === "critical") {
-          errors.push(`findingDetails[${i}]: ${f.severity} severity findings cannot be accepted (hard security rule)`);
+        // Positive allowlist: only low or medium may be accepted.
+        // Using an exclusion list (high|critical) is a bypass risk when severity is undefined.
+        if (f.severity !== "low" && f.severity !== "medium") {
+          errors.push(`findingDetails[${i}]: only low or medium severity findings may be accepted, got ${f.severity ?? "undefined"} (hard security rule)`);
         }
       }
     }
@@ -963,7 +965,7 @@ function checkFindingsAreFullyAccepted(
   findings: readonly string[],
   findingDetails: readonly import("./types.ts").ReviewFinding[] | undefined
 ): boolean {
-  if (!findingDetails || findingDetails.length === 0) {
+  if (!Array.isArray(findingDetails) || findingDetails.length === 0) {
     return false;
   }
   if (findingDetails.length !== findings.length) {
@@ -979,8 +981,10 @@ function checkFindingsAreFullyAccepted(
     if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
       return false;
     }
-    // HARD SECURITY RULE: high or critical findings can never be accepted
-    if (f.severity === "high" || f.severity === "critical") {
+    // HARD SECURITY RULE: only "low" or "medium" severity findings may be accepted.
+    // Rejection list (high|critical) is a bypass risk when severity is undefined —
+    // use a positive allowlist so any absent or unrecognised severity also fails.
+    if (f.severity !== "low" && f.severity !== "medium") {
       return false;
     }
     return true;
