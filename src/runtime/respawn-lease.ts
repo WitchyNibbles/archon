@@ -2,13 +2,17 @@
 // fs/promises imported here (top-level) for makeFileLockLeaseStore.
 // The import is referenced only by makeFileLockLeaseStore; other exports
 // have no dependency on fs.
-import { open, unlink, readFile as readFileLock, mkdir as mkdirLock, writeFile as writeFileLock, rename as renameLock } from "node:fs/promises";
+import { link as linkLock, unlink, readFile as readFileLock, mkdir as mkdirLock, writeFile as writeFileLock, rename as renameLock } from "node:fs/promises";
 
 //
 // Atomicity choice (INFRA-C1) — TWO implementations:
 //
 //   makeFileLockLeaseStore (primary, cross-process):
-//     Uses fs.open(lockPath, "wx") — O_CREAT|O_EXCL atomic exclusive create.
+//     Stages the lock content in a private temp file, then link()s it to the
+//     per-runId .lock path. link() is atomic and fails with EEXIST if the target
+//     exists — the same exclusivity as O_CREAT|O_EXCL — but the lock file, the
+//     instant it becomes visible, ALREADY contains the full JSON (no empty
+//     create-then-write window a concurrent claimant could misread as corrupt).
 //     Both Node (daemon) and bash (watcher) contend on the SAME per-runId
 //     .lock file under .archon/work/daemon/. This is the POSIX cross-language
 //     primitive that satisfies INFRA-C1 (exactly one winner across processes).
@@ -295,20 +299,36 @@ export function makeFileLockLeaseStore(
   }
 
   async function tryAtomicCreate(lp: string, owner: RespawnOwner, runId: string, now: Date): Promise<boolean> {
-    // O_CREAT|O_EXCL: atomic exclusive create. Returns true on success.
+    // Atomic exclusive create WITH content already present.
+    //
+    // The previous implementation opened the lock file with "wx"
+    // (O_CREAT|O_EXCL) and then wrote the JSON in a SEPARATE step. That left a
+    // window in which the lock file existed but was empty; a concurrent claimant
+    // hitting EEXIST during that window read an empty file (readLock → undefined)
+    // and treated it as corrupt/stale, overwriting it — TWO winners for the same
+    // runId (INFRA-C1 violation, and the source of the cross-process test's CI
+    // flakiness under load).
+    //
+    // Fix: stage the full content in a private temp file, then link() it to the
+    // lock path. link() is atomic and fails with EEXIST if the target already
+    // exists — same exclusivity as O_EXCL — but the lock file, the instant it
+    // becomes visible, ALREADY contains the complete JSON. There is no empty
+    // window a racer can observe.
+    await mkdirLock(lockDir, { recursive: true });
+    const content: LockFileContent = { owner, runId, claimedAt: now.toISOString() };
+    const tmp = `${lp}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+    await writeFileLock(tmp, `${JSON.stringify(content)}\n`, "utf8");
     try {
-      await mkdirLock(lockDir, { recursive: true });
-      // Open with "wx" = O_WRONLY|O_CREAT|O_EXCL — fails with EEXIST if exists.
-      const fh = await open(lp, "wx");
-      const content: LockFileContent = { owner, runId, claimedAt: now.toISOString() };
-      await fh.writeFile(`${JSON.stringify(content)}\n`, "utf8");
-      await fh.close();
+      await linkLock(tmp, lp);
       return true;
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") {
         return false;
       }
       throw err;
+    } finally {
+      // Always remove the staging file (the durable lock is the linked lp).
+      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
     }
   }
 
@@ -327,23 +347,27 @@ export function makeFileLockLeaseStore(
         // EEXIST: lock file exists. Read it to determine owner / staleness.
         const existing = await readLock(lp);
 
-        if (existing === undefined) {
-          // Unreadable / corrupt — treat as stale, overwrite.
+        // Same owner: idempotent re-claim (refresh claimedAt). Overwriting our
+        // own lock is safe.
+        if (existing !== undefined && existing.owner === owner) {
           await writeLock(lp, owner, runId, now);
           return { granted: true, runId, owner };
         }
 
-        // Same owner: idempotent re-claim (refresh claimedAt).
-        if (existing.owner === owner) {
-          await writeLock(lp, owner, runId, now);
-          return { granted: true, runId, owner };
-        }
+        // A corrupt/unreadable lock (existing === undefined) or an expired one is
+        // reclaimable. Because the atomic create now links a fully-written file,
+        // `undefined` no longer means "mid-creation" — it means genuinely corrupt
+        // or abandoned, so treating it as stale is safe.
+        const claimedMs = existing !== undefined ? new Date(existing.claimedAt).getTime() : Number.NaN;
+        const stale =
+          existing === undefined ||
+          !Number.isFinite(claimedMs) ||
+          now.getTime() - claimedMs > staleAfterMs;
 
-        // Check staleness.
-        const claimedMs = new Date(existing.claimedAt).getTime();
-        const stale = !Number.isFinite(claimedMs) || now.getTime() - claimedMs > staleAfterMs;
         if (stale) {
-          // Stale: unlink and re-attempt once.
+          // Reclaim EXCLUSIVELY: unlink then O_EXCL-equivalent create. A
+          // non-exclusive overwrite here would let two racers both grant. If
+          // another process wins the re-create, we lose cleanly.
           try { await unlink(lp); } catch { /* ignore */ }
           const reclaimed = await tryAtomicCreate(lp, owner, runId, now);
           if (reclaimed) {

@@ -427,4 +427,43 @@ process.stdout.write(JSON.stringify(result) + "\\n");
     const grantedCount = [r1, r2].filter((r) => r.granted).length;
     assert.equal(grantedCount, 1, `cross-process spawn-count must be 1, got ${grantedCount} (r1=${out1} r2=${out2})`);
   });
+
+  // -------------------------------------------------------------------------
+  // INFRA-C1 regression (deterministic): the create-then-write window must not
+  // let two concurrent claimants both win.
+  //
+  // Two SEPARATE store instances share the lock dir — separate per-store mutex
+  // chains, so their claims for the same runId genuinely race via Promise.all.
+  // The guarantee rests on link() atomicity (exactly one of two concurrent links
+  // to the same target succeeds), NOT on process-spawn timing, so this is
+  // deterministic and fast.
+  //
+  // Against the previous open("wx")+separate-write implementation this reliably
+  // reproduced two winners: the loser hit EEXIST, read the winner's still-empty
+  // lock file (readLock → undefined), treated it as corrupt, and overwrote it.
+  // -------------------------------------------------------------------------
+
+  it("two independent stores racing a FRESH lock yield exactly one winner (20 rounds)", async () => {
+    for (let round = 0; round < 20; round++) {
+      const runId = `run-xproc-fresh-${round}`;
+      const storeA = makeFileLockLeaseStore({ lockDir: tmpLockDir });
+      const storeB = makeFileLockLeaseStore({ lockDir: tmpLockDir });
+
+      const [rA, rB] = await Promise.all([
+        claimRespawnLease(runId, "daemon", storeA),
+        claimRespawnLease(runId, "interactive", storeB)
+      ]);
+
+      const granted = [rA, rB].filter((r) => r.granted);
+      assert.equal(
+        granted.length,
+        1,
+        `round ${round}: exactly one claimant may win a fresh lock, got ${granted.length} ` +
+          `(rA=${JSON.stringify(rA)} rB=${JSON.stringify(rB)})`
+      );
+      // The loser must report the winner as the current owner.
+      const loser = [rA, rB].find((r) => !r.granted);
+      assert.equal(loser?.currentOwner, granted[0]!.owner, `round ${round}: loser must see the winner`);
+    }
+  });
 });
