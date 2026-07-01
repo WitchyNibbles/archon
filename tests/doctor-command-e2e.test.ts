@@ -10,11 +10,15 @@
  *
  * Also asserts the URL-validation-before-connect ordering (URL parse failure must
  * short-circuit without attempting withClient).
+ *
+ * Section 4 covers the P2 injection surface: checkPgvector / checkMigrations wiring
+ * inside executeDoctorCommandFromArgs (no live DB required — stubs injected).
  */
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { doctorCommand, handleDoctorCommandError } from "../src/runtime.ts";
+import { doctorCommand, executeDoctorCommandFromArgs, handleDoctorCommandError } from "../src/runtime.ts";
+import type { DoctorCheckObservation, ExecuteDoctorCommandOptions } from "../src/runtime.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -194,4 +198,206 @@ test("handleDoctorCommandError: a non-connection domain error RE-THROWS (not mis
   } finally {
     console.log = origLog;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Section 4: P2 injection surface — checkPgvector / checkMigrations wiring
+// ---------------------------------------------------------------------------
+//
+// executeDoctorCommandFromArgs is tested here with stub injections so the DB
+// preflight wiring can be verified without a live Postgres connection.
+//
+// Strategy:
+//   - findProjectContext returns a minimal context → the function does not throw
+//     "not bootstrapped"
+//   - getProjectRuntimeRegistration returns undefined → registration/repoPath/
+//     dataRoot checks are all ok=false (expected — this is not the focus here)
+//   - inspectReviewIdentity returns a stub → no filesystem access
+//   - checkPgvector / checkMigrations are the injected stubs under test
+// ---------------------------------------------------------------------------
+
+/** Minimal stub options shared across injection tests. */
+function makeStubOptions(
+  overrides: Partial<ExecuteDoctorCommandOptions> = {}
+): ExecuteDoctorCommandOptions {
+  return {
+    // Required by type but never called when no runId is resolved:
+    getStatusSnapshot: () => Promise.reject(new Error("getStatusSnapshot should not be called in these tests")),
+    // Returns a minimal context so the function does not throw "not bootstrapped":
+    findProjectContext: () =>
+      Promise.resolve({
+        workspace: {
+          id: "ws-001",
+          slug: "test-workspace",
+          name: "Test Workspace",
+          createdAt: "2026-01-01T00:00:00Z"
+        },
+        project: {
+          id: "proj-001",
+          workspaceId: "ws-001",
+          slug: "test-project",
+          name: "Test Project",
+          createdAt: "2026-01-01T00:00:00Z"
+        }
+      }),
+    // No registration → registration/repoPath/dataRoot checks are ok=false.
+    getProjectRuntimeRegistration: () => Promise.resolve(undefined),
+    // Stub so it doesn't read the filesystem for review-identity bindings:
+    inspectReviewIdentity: () =>
+      Promise.resolve({
+        authorityLabel: "derived_only" as const,
+        adapterConfigured: false,
+        adapterExists: false,
+        availableBackends: [],
+        bindingsPresent: false,
+        bindingsPath: "/stub/bindings.json",
+        bindingsUseShippedTemplate: false,
+        liveTrustReady: false,
+        notes: ["stub: no review identity configured"]
+      }),
+    cwd: process.cwd(),
+    ...overrides
+  };
+}
+
+/** Args that give resolveProjectSelector a workspace + project slug. */
+const STUB_ARGS = ["--workspace-slug", "test-workspace", "--project-slug", "test-project"] as const;
+
+// -- Test 4.1: checks.pgvector absent when no injection --
+
+test("executeDoctorCommandFromArgs: checks.pgvector absent when checkPgvector not injected", async () => {
+  const report = await executeDoctorCommandFromArgs([...STUB_ARGS], makeStubOptions());
+  assert.ok(!("pgvector" in report.checks), "checks.pgvector must be absent when not injected");
+});
+
+// -- Test 4.2: checks.migrations absent when no injection --
+
+test("executeDoctorCommandFromArgs: checks.migrations absent when checkMigrations not injected", async () => {
+  const report = await executeDoctorCommandFromArgs([...STUB_ARGS], makeStubOptions());
+  assert.ok(!("migrations" in report.checks), "checks.migrations must be absent when not injected");
+});
+
+// -- Test 4.3: ok=true pgvector check is included and does NOT add a blocker --
+
+test("executeDoctorCommandFromArgs: ok=true pgvector check is present in report.checks, not a blocker", async () => {
+  const pgvectorOk: DoctorCheckObservation = {
+    authorityLabel: "runtime_authoritative",
+    ok: true,
+    summary: "pgvector extension is enabled"
+  };
+
+  const report = await executeDoctorCommandFromArgs(
+    [...STUB_ARGS],
+    makeStubOptions({ checkPgvector: async () => pgvectorOk })
+  );
+
+  assert.ok("pgvector" in report.checks, "checks.pgvector must be present when injected");
+  assert.equal(report.checks.pgvector?.ok, true, "checks.pgvector.ok must be true");
+  assert.equal(
+    report.checks.pgvector?.summary,
+    "pgvector extension is enabled",
+    "summary must be passed through"
+  );
+  assert.ok(
+    !report.blockers.includes("pgvector extension is enabled"),
+    "ok=true pgvector must not appear in blockers"
+  );
+});
+
+// -- Test 4.4: ok=false pgvector check adds a blocker --
+
+test("executeDoctorCommandFromArgs: ok=false pgvector check is a blocker", async () => {
+  const pgvectorFail: DoctorCheckObservation = {
+    authorityLabel: "runtime_authoritative",
+    ok: false,
+    summary: "pgvector extension is not enabled — run: CREATE EXTENSION IF NOT EXISTS vector"
+  };
+
+  const report = await executeDoctorCommandFromArgs(
+    [...STUB_ARGS],
+    makeStubOptions({ checkPgvector: async () => pgvectorFail })
+  );
+
+  assert.ok("pgvector" in report.checks, "checks.pgvector must be present");
+  assert.equal(report.checks.pgvector?.ok, false, "checks.pgvector.ok must be false");
+  assert.ok(
+    report.blockers.includes(pgvectorFail.summary),
+    "ok=false pgvector summary must appear in report.blockers"
+  );
+  assert.equal(report.ok, false, "report.ok must be false when pgvector is a blocker");
+});
+
+// -- Test 4.5: ok=true migrations check is present and not a blocker --
+
+test("executeDoctorCommandFromArgs: ok=true migrations check is present, not a blocker", async () => {
+  const migrationsOk: DoctorCheckObservation = {
+    authorityLabel: "runtime_authoritative",
+    ok: true,
+    summary: "all required migrations are applied"
+  };
+
+  const report = await executeDoctorCommandFromArgs(
+    [...STUB_ARGS],
+    makeStubOptions({ checkMigrations: async () => migrationsOk })
+  );
+
+  assert.ok("migrations" in report.checks, "checks.migrations must be present when injected");
+  assert.equal(report.checks.migrations?.ok, true);
+  assert.ok(!report.blockers.includes(migrationsOk.summary), "ok=true migrations must not be a blocker");
+});
+
+// -- Test 4.6: ok=false migrations check adds a blocker --
+
+test("executeDoctorCommandFromArgs: ok=false migrations check is a blocker", async () => {
+  const migrationsFail: DoctorCheckObservation = {
+    authorityLabel: "runtime_authoritative",
+    ok: false,
+    summary: "migrations not current — missing tables: tasks — run: archon migrate"
+  };
+
+  const report = await executeDoctorCommandFromArgs(
+    [...STUB_ARGS],
+    makeStubOptions({ checkMigrations: async () => migrationsFail })
+  );
+
+  assert.ok("migrations" in report.checks, "checks.migrations must be present");
+  assert.equal(report.checks.migrations?.ok, false);
+  assert.ok(
+    report.blockers.includes(migrationsFail.summary),
+    "ok=false migrations summary must appear in report.blockers"
+  );
+  assert.equal(report.ok, false, "report.ok must be false when migrations is a blocker");
+});
+
+// -- Test 4.7: both checks injected and both ok=false → both are blockers --
+
+test("executeDoctorCommandFromArgs: both ok=false checks produce two blockers", async () => {
+  const pgvectorFail: DoctorCheckObservation = {
+    authorityLabel: "runtime_authoritative",
+    ok: false,
+    summary: "pgvector not enabled"
+  };
+  const migrationsFail: DoctorCheckObservation = {
+    authorityLabel: "runtime_authoritative",
+    ok: false,
+    summary: "migrations not current"
+  };
+
+  const report = await executeDoctorCommandFromArgs(
+    [...STUB_ARGS],
+    makeStubOptions({
+      checkPgvector: async () => pgvectorFail,
+      checkMigrations: async () => migrationsFail
+    })
+  );
+
+  assert.ok(
+    report.blockers.includes(pgvectorFail.summary),
+    "pgvector blocker must be in report.blockers"
+  );
+  assert.ok(
+    report.blockers.includes(migrationsFail.summary),
+    "migrations blocker must be in report.blockers"
+  );
+  assert.equal(report.ok, false);
 });

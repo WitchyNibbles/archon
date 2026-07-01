@@ -47,12 +47,70 @@ function applyDotEnvText(raw: string, env: NodeJS.ProcessEnv): void {
   }
 }
 
-function requireDatabaseUrl(env: NodeJS.ProcessEnv): string {
-  const databaseUrl = env.ARCHON_CORE_DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error("ARCHON_CORE_DATABASE_URL is required");
+/**
+ * Composes a postgres:// URL from the `ARCHON_POSTGRES_*` docker-compose
+ * convenience variables.
+ *
+ * Returns undefined when any required part (user, password, db) is absent
+ * so that the caller can distinguish "not configured via parts" from
+ * "configured but produces an empty URL."
+ *
+ * Precedence contract (enforced by resolveDatabaseUrl):
+ *   ARCHON_CORE_DATABASE_URL  (explicit URL — always wins)
+ *   ARCHON_POSTGRES_*         (docker-compose convenience — only when explicit URL absent)
+ *
+ * The composed URL always targets 127.0.0.1 (docker-compose bind address).
+ * ARCHON_POSTGRES_PORT defaults to 5533 (the archon docker default port).
+ */
+export function composeDatabaseUrlFromParts(env: NodeJS.ProcessEnv): string | undefined {
+  const user = env.ARCHON_POSTGRES_USER?.trim();
+  const password = env.ARCHON_POSTGRES_PASSWORD?.trim();
+  const db = env.ARCHON_POSTGRES_DB?.trim();
+  const port = env.ARCHON_POSTGRES_PORT?.trim() ?? "5533";
+
+  if (!user || !password || !db) {
+    return undefined;
   }
-  return databaseUrl;
+
+  // Percent-encode each component so special characters in passwords do not
+  // corrupt the URL structure.
+  const encodedUser = encodeURIComponent(user);
+  const encodedPassword = encodeURIComponent(password);
+  const encodedDb = encodeURIComponent(db);
+  return `postgres://${encodedUser}:${encodedPassword}@127.0.0.1:${port}/${encodedDb}`;
+}
+
+/**
+ * Resolves the database URL to use for a connection.
+ *
+ * Resolution order (first match wins):
+ *   1. ARCHON_CORE_DATABASE_URL — canonical; explicit URL always takes precedence.
+ *   2. ARCHON_POSTGRES_* parts  — docker-compose convenience; composed when the
+ *      explicit URL is absent and all required parts (user, password, db) are set.
+ *
+ * Returns undefined when neither source is configured.
+ * Does NOT throw — callers decide how to handle the undefined case.
+ */
+export function resolveDatabaseUrl(env: NodeJS.ProcessEnv): string | undefined {
+  const explicit = env.ARCHON_CORE_DATABASE_URL?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  return composeDatabaseUrlFromParts(env);
+}
+
+function requireDatabaseUrl(env: NodeJS.ProcessEnv): string {
+  const url = resolveDatabaseUrl(env);
+  if (url) {
+    return url;
+  }
+  throw new Error(
+    "ARCHON_CORE_DATABASE_URL is required — set it to a pgvector-capable Postgres connection " +
+    "string (e.g. postgres://user:pass@host:5432/db). " +
+    "When using docker-compose, you may instead set ARCHON_POSTGRES_USER, " +
+    "ARCHON_POSTGRES_PASSWORD, ARCHON_POSTGRES_DB, and ARCHON_POSTGRES_PORT " +
+    "(defaults to 5533) to have the URL composed automatically."
+  );
 }
 
 interface ConnectableClient {
