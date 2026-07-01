@@ -85,6 +85,8 @@
     ".claude/agents/technical-writer/AGENT.md",
     ".claude/agents/ux-researcher/AGENT.md",
     ".claude/hooks/",
+    ".claude/settings.json",
+    ".graphifyignore",
     ".env.example",
     "README.md",
     "docker-compose.yml",
