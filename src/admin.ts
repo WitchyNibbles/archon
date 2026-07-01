@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url";
 
 
 import { loadDotEnv, withClient } from "./admin/db.ts";
+import { validateArchonConfig, assertValidArchonConfig } from "./config/validate.ts";
 
 
 
@@ -59,6 +60,19 @@ export * from "./daemon.ts";
 
 async function main() {
   await loadDotEnv();
+
+  // Fail fast: validate all ARCHON_* env vars immediately after loading the
+  // dot-env file so format problems (malformed URL, invalid enum, out-of-range
+  // number) are surfaced at startup with a clear, aggregated message rather
+  // than as a cryptic error deep inside a command handler.
+  //
+  // This does NOT require any specific var to be present — absence is only
+  // checked when the caller explicitly passes a `required` list.  The
+  // downstream checks (e.g. requireDatabaseUrl in db.ts) remain in place as
+  // defence-in-depth.
+  const cfgResult = validateArchonConfig(process.env as Record<string, string | undefined>);
+  assertValidArchonConfig(cfgResult);
+
   const command = process.argv[2];
   const args = process.argv.slice(3);
 
