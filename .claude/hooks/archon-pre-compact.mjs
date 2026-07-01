@@ -53,7 +53,7 @@ async function main() {
     const { AgentRuntimeStore } = await import(
       path.join(repoRoot, "src", "store", "agent-runtime-store.ts")
     );
-    const { runPrecompactHandoff } = await import(
+    const { runPrecompactHandoff, upsertInteractiveInvocationRow } = await import(
       path.join(repoRoot, "src", "runtime", "interactive-parachute.ts")
     );
 
@@ -70,36 +70,35 @@ async function main() {
         markHandoffConsumed: (h, t) => agentStore.markHandoffConsumed(h, t),
         hasCommittedHandoff: (i) => agentStore.hasCommittedHandoff(i),
         updateAgentInvocationStatus: (i, s, m) => agentStore.updateAgentInvocationStatus(i, s, m),
+        // Idempotent create-on-demand (backstop for a DB-unavailable session
+        // start). Delegates to the shared helper so the row defaults live in ONE
+        // place (interactive-parachute.ts) and cannot drift between hooks.
         upsertInteractiveInvocation: async (data) => {
-          try {
-            await agentStore.createAgentInvocation({
-              id: data.id,
-              runId: data.runId,
-              taskId: data.taskId,
-              role: data.role,
-              agentKind: "specialist_owner",
-              model: "claude-sonnet-4-6",
-              effort: "high",
-              status: "running",
-              contextPolicyId: "default",
-              startedAt: data.startedAt
-            });
-          } catch (err) {
-            // Postgres unique_violation (23505) = the invocation row already
-            // exists (repeated compaction) — expected and idempotent, log quietly.
-            // Any OTHER error is a STRUCTURAL failure (FK, schema): the handoff
-            // commit will then fail to find the invocation, so surface it loudly
-            // so the silent loss of session protection is diagnosable.
-            const code = err && typeof err === "object" ? err.code : undefined;
-            if (code === "23505") {
-              process.stderr.write(
-                `[archon-pre-compact] invocation ${data.id} already exists (idempotent)\n`
-              );
-            } else {
-              process.stderr.write(
-                `[archon-pre-compact][WARN] upsertInteractiveInvocation structural failure (handoff will be lost): ${String(err)}\n`
-              );
-            }
+          const res = await upsertInteractiveInvocationRow(agentStore, {
+            id: data.id,
+            runId: data.runId,
+            taskId: data.taskId,
+            role: data.role,
+            startedAt: data.startedAt
+          });
+          if (res.created) {
+            // Backstop rescued the session: session-start could not create the
+            // row (DB unavailable then), pre-compact did. Log it so an operator
+            // debugging an intermittent session-start DB failure can confirm.
+            process.stderr.write(
+              `[archon-pre-compact] interactive invocation row created by backstop: ${data.id}\n`
+            );
+          } else if (res.alreadyExisted) {
+            process.stderr.write(
+              `[archon-pre-compact] invocation ${data.id} already exists (idempotent)\n`
+            );
+          } else if (res.structuralError !== undefined) {
+            // Structural failure (FK/schema): the handoff commit will then fail
+            // to find the invocation, so surface it loudly — the silent loss of
+            // session protection must be diagnosable.
+            process.stderr.write(
+              `[archon-pre-compact][WARN] upsertInteractiveInvocation structural failure (handoff will be lost): ${res.structuralError}\n`
+            );
           }
         }
       };
