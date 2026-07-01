@@ -2003,4 +2003,30 @@ describe("Gate-4 — Unicode-blank + parse coverage", () => {
     });
     assert.ok(errors.some((e) => /waiverReason/i.test(e)), errors.join(" | "));
   });
+
+  it("R5-C: validateReviewAction rejects a findings[] item that is only a zero-width space", () => {
+    const errors = validateReviewAction(gctx, {
+      reviewerRole: "reviewer",
+      state: "failed",
+      severity: "low",
+      findings: [ZWSP],
+      findingDetails: []
+    });
+    assert.ok(errors.some((e) => /findings/i.test(e)), errors.join(" | "));
+  });
+
+  it("R6-A: isBlankText treats invisible-only strings (combining mark U+034F) as blank, but visible content as non-blank", () => {
+    const CGJ = "͏"; // U+034F COMBINING GRAPHEME JOINER (category Mn)
+    const review = makeReview({
+      state: "waived",
+      actorRole: "planner",
+      findings: [],
+      waiverReason: CGJ
+    });
+    // an invisible combining-mark-only waiverReason must not satisfy the gate
+    assert.strictEqual(canReviewRecordSatisfyGate(review), false);
+    // a reason with a real character is accepted
+    const ok = makeReview({ state: "waived", actorRole: "planner", findings: [], waiverReason: "internal only" });
+    assert.strictEqual(canReviewRecordSatisfyGate(ok), true);
+  });
 });

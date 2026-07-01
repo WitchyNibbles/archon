@@ -836,16 +836,19 @@ export function validateHandoff(input: HandoffInput): string[] {
 }
 
 /**
- * True when a string is empty once Unicode whitespace AND format/zero-width
- * characters (category Cf, e.g. U+200B) are removed. `String.trim()` alone does
- * NOT strip Cf chars, so a value consisting only of U+200B (zero-width space)
- * would otherwise read as blank in the audit trail while passing a
- * `.trim().length` check. Used for acceptance
- * fields (message, acceptedByRole, acceptanceReason) where a phantom-but-present
- * value must be rejected.
+ * True when a string carries no meaningful content — i.e. it contains NO graphic
+ * character (letter, number, punctuation, or symbol). This is a POSITIVE
+ * requirement rather than a blacklist of invisible Unicode categories: it rejects
+ * strings made only of whitespace, format/zero-width chars (Cf, e.g. U+200B),
+ * combining marks (Mn, e.g. U+034F), or control chars in one rule, so the whole
+ * invisible-character class is closed instead of being chased category by
+ * category. `String.trim()` alone does not strip Cf/Mn, so a phantom-but-present
+ * value would otherwise pass a `.trim().length` check. Used for review fields
+ * (message, acceptedByRole, acceptanceReason, waiverReason, findings items) where
+ * an invisible-only value must be rejected from the audit trail.
  */
 export function isBlankText(value: string): boolean {
-  return value.replace(/[\s\p{Cf}]/gu, "").length === 0;
+  return !/[\p{L}\p{N}\p{P}\p{S}]/u.test(value);
 }
 
 export function validateReviewAction(context: TrustedReviewActionContext, review: ReviewInput): string[] {
