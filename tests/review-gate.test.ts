@@ -171,7 +171,10 @@ await test("review-gate: DB offline but markdown reviews present → stop is not
 
 // ── save-review CLI argument validation ───────────────────────────────────────
 
-function runAdmin(args: string[]): { status: number | null; stdout: string; stderr: string } {
+function runAdmin(
+  args: string[],
+  envOverride: Record<string, string> = {}
+): { status: number | null; stdout: string; stderr: string } {
   const adminPath = path.join(repoRoot, "src", "admin.ts");
   const result = spawnSync(
     process.execPath,
@@ -179,7 +182,15 @@ function runAdmin(args: string[]): { status: number | null; stdout: string; stde
     {
       encoding: "utf8",
       timeout: 10_000,
-      env: { ...process.env, ARCHON_CORE_DATABASE_URL: "" }
+      // Default: a syntactically-valid (unreachable) URL so the startup config
+      // validator passes and argument-validation tests reach the arg checks. The
+      // DB itself need not be reachable. `envOverride` lets a test simulate the
+      // no-DB case (empty URL) to exercise the fail-fast config validator.
+      env: {
+        ...process.env,
+        ARCHON_CORE_DATABASE_URL: "postgresql://u:p@127.0.0.1:9999/archon-test",
+        ...envOverride
+      }
     }
   );
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
@@ -215,16 +226,22 @@ await test("save-review CLI: invalid --source value → exits non-zero with erro
 });
 
 await test("save-review CLI: valid args but no DB env → exits non-zero with env error", () => {
-  const { status, stderr } = runAdmin([
-    "--task-id", "t1",
-    "--role", "reviewer",
-    "--outcome", "passed",
-    "--source", "orchestrator"
-  ]);
+  // Simulate the no-DB case: empty ARCHON_CORE_DATABASE_URL. save-review is in
+  // COMMAND_REQUIRED, so the startup config validator must fail fast and NAME the
+  // missing var (not surface a late/cryptic connection error).
+  const { status, stderr } = runAdmin(
+    [
+      "--task-id", "t1",
+      "--role", "reviewer",
+      "--outcome", "passed",
+      "--source", "orchestrator"
+    ],
+    { ARCHON_CORE_DATABASE_URL: "" }
+  );
   assert.ok(status !== 0, `expected non-zero exit without DB env, got ${status}`);
   assert.ok(
-    /workspace_slug|project_slug|ARCHON/i.test(stderr),
-    `expected env error in stderr, got: ${stderr}`
+    /ARCHON_CORE_DATABASE_URL/i.test(stderr),
+    `expected fail-fast config error naming ARCHON_CORE_DATABASE_URL, got: ${stderr}`
   );
 });
 

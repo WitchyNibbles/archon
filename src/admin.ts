@@ -12,6 +12,8 @@ import { pathToFileURL } from "node:url";
 
 
 import { loadDotEnv, withClient } from "./admin/db.ts";
+import { validateArchonConfig, assertValidArchonConfig } from "./config/validate.ts";
+import type { ArchonConfig } from "./config/schema.ts";
 
 
 
@@ -57,10 +59,100 @@ export * from "./export.ts";
 export * from "./daemon.ts";
 
 
+/**
+ * Per-command required environment variables for fail-fast startup validation.
+ *
+ * Commands in this map have their required vars checked at startup (in addition
+ * to format validation for every var in process.env).
+ *
+ * Commands NOT in this map are either:
+ *   - Explicitly exempt (doctor — its own preflight handles config errors and
+ *     must work even with a broken DATABASE_URL so the operator can diagnose).
+ *   - Unknown (fall through to dispatch so "Unknown command" shows, not a
+ *     spurious config error).
+ *
+ * "init-task" and "record-council" need both a DB connection AND a project
+ * identity to record workflow state — add ARCHON_PROJECT_SLUG for those.
+ */
+const COMMAND_REQUIRED = new Map<string, readonly (keyof ArchonConfig)[]>([
+  // DB-backed commands — require a live postgres connection
+  ["migrate",                 ["ARCHON_CORE_DATABASE_URL"]],
+  ["health",                  ["ARCHON_CORE_DATABASE_URL"]],
+  ["bootstrap-project",       ["ARCHON_CORE_DATABASE_URL"]],
+  ["verify-setup",            ["ARCHON_CORE_DATABASE_URL"]],
+  ["verify-live-migrations",  ["ARCHON_CORE_DATABASE_URL"]],
+  ["run-embedding-jobs",      ["ARCHON_CORE_DATABASE_URL"]],
+  ["refresh-retrieval",       ["ARCHON_CORE_DATABASE_URL"]],
+  ["refresh-repo-context",    ["ARCHON_CORE_DATABASE_URL"]],
+  ["repair-task-queue",       ["ARCHON_CORE_DATABASE_URL"]],
+  ["verify-review-identity",  ["ARCHON_CORE_DATABASE_URL"]],
+  ["record-review",           ["ARCHON_CORE_DATABASE_URL"]],
+  ["status",                  ["ARCHON_CORE_DATABASE_URL"]],
+  ["coverage",                ["ARCHON_CORE_DATABASE_URL"]],
+  ["gaps",                    ["ARCHON_CORE_DATABASE_URL"]],
+  ["checkpoint",              ["ARCHON_CORE_DATABASE_URL"]],
+  ["resume",                  ["ARCHON_CORE_DATABASE_URL"]],
+  ["ops",                     ["ARCHON_CORE_DATABASE_URL"]],
+  ["loop",                    ["ARCHON_CORE_DATABASE_URL"]],
+  ["recover",                 ["ARCHON_CORE_DATABASE_URL"]],
+  ["report",                  ["ARCHON_CORE_DATABASE_URL"]],
+  ["workflow-proof",          ["ARCHON_CORE_DATABASE_URL"]],
+  ["seed-workflow-proof",     ["ARCHON_CORE_DATABASE_URL"]],
+  ["advance-active-task",     ["ARCHON_CORE_DATABASE_URL"]],
+  ["reconcile-runtime-state", ["ARCHON_CORE_DATABASE_URL"]],
+  ["sync-runtime-exports",    ["ARCHON_CORE_DATABASE_URL"]],
+  ["daemon",                  ["ARCHON_CORE_DATABASE_URL"]],
+  ["autonomous-enable",       ["ARCHON_CORE_DATABASE_URL"]],
+  ["supervisor",              ["ARCHON_CORE_DATABASE_URL"]],
+  ["supervisor-history",      ["ARCHON_CORE_DATABASE_URL"]],
+  ["plan-context",            ["ARCHON_CORE_DATABASE_URL"]],
+  ["export-docs",             ["ARCHON_CORE_DATABASE_URL"]],
+  ["/export-docs",            ["ARCHON_CORE_DATABASE_URL"]],
+  ["github-dispatch",         ["ARCHON_CORE_DATABASE_URL"]],
+  ["index-repo-markdown",     ["ARCHON_CORE_DATABASE_URL"]],
+  ["save-review",             ["ARCHON_CORE_DATABASE_URL"]],
+  ["save-approval",           ["ARCHON_CORE_DATABASE_URL"]],
+  ["prune-orphans",           ["ARCHON_CORE_DATABASE_URL"]],
+  ["sweep-orphans",           ["ARCHON_CORE_DATABASE_URL"]],
+  ["close-run",               ["ARCHON_CORE_DATABASE_URL"]],
+  ["continue-session",        ["ARCHON_CORE_DATABASE_URL"]],
+  ["forge",                   ["ARCHON_CORE_DATABASE_URL"]],
+  ["context-status",          ["ARCHON_CORE_DATABASE_URL"]],
+  ["handoffs",                ["ARCHON_CORE_DATABASE_URL"]],
+  ["invocations",             ["ARCHON_CORE_DATABASE_URL"]],
+  ["subtasks",                ["ARCHON_CORE_DATABASE_URL"]],
+  ["debates",                 ["ARCHON_CORE_DATABASE_URL"]],
+  ["metrics",                 ["ARCHON_CORE_DATABASE_URL"]],
+  // Project-identity commands — also need ARCHON_PROJECT_SLUG
+  ["init-task",               ["ARCHON_CORE_DATABASE_URL", "ARCHON_PROJECT_SLUG"]],
+  ["record-council",          ["ARCHON_CORE_DATABASE_URL", "ARCHON_PROJECT_SLUG"]],
+]);
+
 async function main() {
   await loadDotEnv();
+
+  // Parse command and args BEFORE running config validation so that the
+  // "Unknown command" error and "doctor" diagnostics are never blocked by a
+  // bad-config startup failure.
   const command = process.argv[2];
   const args = process.argv.slice(3);
+
+  // Fail-fast startup validation: format-check all ARCHON_* vars, plus a
+  // per-command required-vars check for commands that need specific vars to
+  // be present.
+  //
+  // Exempt: doctor (its own preflight handles config errors; must work even
+  // when DATABASE_URL is malformed so the operator can diagnose the issue).
+  // Unknown commands: not in COMMAND_REQUIRED → skip assertValidArchonConfig
+  // so "Unknown command" shows rather than a spurious config error.
+  const required = COMMAND_REQUIRED.get(command ?? "");
+  if (required !== undefined) {
+    const cfgResult = validateArchonConfig(
+      process.env as Record<string, string | undefined>,
+      { required }
+    );
+    assertValidArchonConfig(cfgResult);
+  }
 
   if (command === "migrate") {
     await migrate();
