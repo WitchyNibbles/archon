@@ -168,11 +168,16 @@ jobs:
           npm init -y --quiet
           npm install --quiet "$TARBALL_PATH"
 
+          # Invoke the compiled bin entry directly (dist/cli/archon-bin.js is the
+          # bin target) so the smoke test is identical to the windows leg and does
+          # not depend on the npm-generated .bin shim.
+          BIN="./node_modules/archon/dist/cli/archon-bin.js"
+
           # archon --help must exit 0
-          node ./node_modules/.bin/archon --help
+          node "$BIN" --help
 
           # archon doctor: DB error (exit 1) is acceptable; module-not-found is not
-          node ./node_modules/.bin/archon doctor || {
+          node "$BIN" doctor || {
             code=$?
             if [ "$code" -ne 1 ]; then
               printf 'archon doctor exited with unexpected code %d\n' "$code" >&2
@@ -209,12 +214,18 @@ jobs:
           npm init -y --quiet
           npm install --quiet $tarballPath
 
+          # Invoke the compiled bin entry directly. The npm-generated .bin/archon
+          # shim is an extensionless POSIX script on Windows that `node` cannot
+          # execute; dist/cli/archon-bin.js is the bin target and runs identically
+          # on every platform. Node accepts forward slashes on Windows.
+          $bin = "node_modules/archon/dist/cli/archon-bin.js"
+
           # archon --help must exit 0
-          node ./node_modules/.bin/archon --help
+          node $bin --help
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
           # archon doctor: DB error (exit 1) acceptable; anything else is a failure
-          node ./node_modules/.bin/archon doctor
+          node $bin doctor
           $code = $LASTEXITCODE
           if ($code -ne 0 -and $code -ne 1) {
             Write-Error "archon doctor exited with unexpected code $code"
