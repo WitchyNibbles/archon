@@ -166,7 +166,7 @@ export async function verifySetup() {
   }
 
   // Validate the database URL is parseable before attempting connection.
-  const dbUrl = process.env.ARCHON_CORE_DATABASE_URL;
+  const dbUrl = resolveDatabaseUrl(process.env);
   if (dbUrl) {
     const urlCheck = validateDatabaseUrl(dbUrl);
     if (!urlCheck.valid) {
@@ -530,7 +530,13 @@ export function isRuntimeExecutionPreflightConnectionError(error: unknown): bool
     /\bENETUNREACH\b/i.test(message) ||
     /\bEADDRNOTAVAIL\b/i.test(message) ||
     /\bConnection terminated unexpectedly\b/i.test(message) ||
-    /\bconnect\b.*\brefused\b/i.test(message)
+    /\bconnect\b.*\brefused\b/i.test(message) ||
+    // pg authentication failures: "password authentication failed",
+    // "role \"<name>\" does not exist", etc. — scrubPgError already
+    // strips the username so we match on the stable surrounding text.
+    /password\s+authentication\s+failed/i.test(message) ||
+    /\bwrong\s+password\b/i.test(message) ||
+    /\brole\b.*\bdoes\s+not\s+exist\b/i.test(message)
   );
 }
 
@@ -561,7 +567,7 @@ export function buildRuntimeExecutionConnectionFailure(
 
   // SSL errors: provide targeted sslmode guidance.
   if (isSslError(error)) {
-    const dbUrl = currentDatabaseUrl ?? process.env.ARCHON_CORE_DATABASE_URL ?? "";
+    const dbUrl = currentDatabaseUrl ?? resolveDatabaseUrl(process.env) ?? "";
     nextActions.unshift(buildSslGuidance(dbUrl));
   }
 

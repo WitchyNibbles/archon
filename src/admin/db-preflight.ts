@@ -7,7 +7,7 @@
  *
  * Reuses pgvectorGuidance from db-error-scrub — do NOT duplicate that logic here.
  */
-import { pgvectorGuidance } from "./db-error-scrub.ts";
+import { pgvectorGuidance, scrubPgCredentials } from "./db-error-scrub.ts";
 
 // ---------------------------------------------------------------------------
 // Injectable query interface
@@ -242,7 +242,8 @@ export async function repairPgvectorExtension(
     await query("CREATE EXTENSION IF NOT EXISTS vector");
     return { applied: true };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    const msg = scrubPgCredentials(rawMsg);
     const lower = msg.toLowerCase();
 
     if (

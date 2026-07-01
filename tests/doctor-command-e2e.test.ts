@@ -17,8 +17,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { doctorCommand, executeDoctorCommandFromArgs, handleDoctorCommandError } from "../src/runtime.ts";
+import { doctorCommand, executeDoctorCommandFromArgs, handleDoctorCommandError, isRuntimeExecutionPreflightConnectionError } from "../src/runtime.ts";
 import type { DoctorCheckObservation, ExecuteDoctorCommandOptions } from "../src/runtime.ts";
+import { composeDatabaseUrlFromParts, loadDotEnv } from "../src/admin/db.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -400,4 +401,59 @@ test("executeDoctorCommandFromArgs: both ok=false checks produce two blockers", 
     "migrations blocker must be in report.blockers"
   );
   assert.equal(report.ok, false);
+});
+
+// ---------------------------------------------------------------------------
+// Section 5: auth error classification (H2) + ARCHON_POSTGRES_* normalization (H1)
+// ---------------------------------------------------------------------------
+
+test("isRuntimeExecutionPreflightConnectionError: classifies pg auth failures as connection errors", () => {
+  // pg auth errors must be absorbed into structured JSON, not re-thrown.
+  // scrubPgError redacts usernames so patterns match on stable surrounding text.
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(new Error("password authentication failed for user [redacted]")),
+    true,
+    "auth failure message must be classified as a connection error"
+  );
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(new Error("role [redacted] does not exist")),
+    true,
+    "missing-role message must be classified as a connection error"
+  );
+  // Unrelated domain errors must NOT be absorbed
+  assert.equal(
+    isRuntimeExecutionPreflightConnectionError(new Error("project not bootstrapped")),
+    false,
+    "domain errors must not be misclassified as connection errors"
+  );
+});
+
+test("loadDotEnv normalization: composeDatabaseUrlFromParts produces a URL when ARCHON_CORE_DATABASE_URL is absent", () => {
+  // loadDotEnv calls composeDatabaseUrlFromParts(process.env) at the end and
+  // injects the result as ARCHON_CORE_DATABASE_URL when the explicit URL is absent.
+  // We test the building block in isolation (calling loadDotEnv() directly would
+  // pick up the project .env file and race with ARCHON_POSTGRES_* test values).
+  const testEnv: NodeJS.ProcessEnv = {
+    ARCHON_POSTGRES_USER: "appuser",
+    ARCHON_POSTGRES_PASSWORD: "s3cr3t",
+    ARCHON_POSTGRES_DB: "appdb"
+    // ARCHON_CORE_DATABASE_URL intentionally absent
+  };
+
+  const composed = composeDatabaseUrlFromParts(testEnv);
+  assert.ok(composed !== undefined,
+    "composeDatabaseUrlFromParts must return a URL when all three POSTGRES parts are set");
+  // This is exactly what loadDotEnv injects: composed must be a valid postgres:// URL
+  assert.match(composed!, /^postgres:\/\//,
+    "composed URL must use postgres:// scheme");
+  assert.ok(composed!.includes("appuser") || composed!.includes(encodeURIComponent("appuser")),
+    "composed URL must contain the user");
+  assert.ok(composed!.includes("appdb") || composed!.includes(encodeURIComponent("appdb")),
+    "composed URL must contain the db name");
+  // Confirm the normalization condition: this is the URL that loadDotEnv would
+  // inject into process.env.ARCHON_CORE_DATABASE_URL when it is absent.
+  assert.ok(
+    !testEnv.ARCHON_CORE_DATABASE_URL,
+    "the test env must not have ARCHON_CORE_DATABASE_URL set (pre-normalization state)"
+  );
 });

@@ -11,7 +11,8 @@ import assert from "node:assert/strict";
 
 import {
   composeDatabaseUrlFromParts,
-  resolveDatabaseUrl
+  resolveDatabaseUrl,
+  withClientUsing
 } from "../src/admin/db.ts";
 
 import {
@@ -376,4 +377,78 @@ test("checkPgvector: error messages from bad queries must not leak the connectio
   const result = await checkPgvector(query);
   assert.doesNotMatch(result.message, /postgres:\/\//);
   assert.doesNotMatch(result.message, /password/i);
+});
+
+// ---------------------------------------------------------------------------
+// requireDatabaseUrl: empty-env message contract (M3)
+// ---------------------------------------------------------------------------
+
+test("requireDatabaseUrl: throws with ARCHON_CORE_DATABASE_URL message when env is empty", async () => {
+  // requireDatabaseUrl is private but tested via withClientUsing.
+  // The error message substring is load-bearing: isRuntimeExecutionPreflightConnectionError
+  // regex-matches on it to route DB-missing errors into structured JSON output.
+  await assert.rejects(
+    () => withClientUsing(async () => {}, { env: {} }),
+    (err: unknown) => {
+      assert.ok(err instanceof Error, "expected an Error");
+      assert.match(err.message, /ARCHON_CORE_DATABASE_URL is required/,
+        "error must contain the substring matched by isRuntimeExecutionPreflightConnectionError");
+      return true;
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// repairPgvectorExtension: fallback guidance credential scrubbing (M2 test)
+// ---------------------------------------------------------------------------
+
+test("repairPgvectorExtension: fallback guidance does not expose postgres:// URLs", async () => {
+  // Simulate a query error that contains a connection URL
+  // (defensive: future pg driver versions might enrich errors with context).
+  const leakyQuery: DbQueryFn = async () => {
+    throw new Error("could not connect to postgres://secret:password123@host:5432/db while enabling vector");
+  };
+  const result = await repairPgvectorExtension(leakyQuery);
+  assert.equal(result.applied, false);
+  assert.ok(result.guidance !== undefined);
+  // The scrubbed guidance must NOT expose credentials
+  assert.doesNotMatch(result.guidance!, /postgres:\/\/[^[]/,
+    "guidance must not expose a raw postgres:// URL");
+  assert.doesNotMatch(result.guidance!, /password123/,
+    "guidance must not expose the raw password");
+});
+
+// ---------------------------------------------------------------------------
+// checkMigrationsCurrent: simultaneous multi-table column absence (L4)
+// ---------------------------------------------------------------------------
+
+test("checkMigrationsCurrent: reports missing columns across multiple tables simultaneously", async () => {
+  // All required tables present, but two columns in different tables are missing
+  const allTables = REQUIRED_TABLES.map((t) => ({ table_name: t }));
+
+  // Provide all columns EXCEPT handoffs.owner_role AND reviews.actor
+  const allColumns = REQUIRED_COLUMNS
+    .filter((entry) => entry !== "handoffs.owner_role" && entry !== "reviews.actor")
+    .map((entry) => {
+      const dot = entry.indexOf(".");
+      return { table_name: entry.slice(0, dot), column_name: entry.slice(dot + 1) };
+    });
+
+  const query: DbQueryFn = async (sql) => {
+    if (sql.includes("information_schema.tables")) return { rows: allTables };
+    if (sql.includes("information_schema.columns")) return { rows: allColumns };
+    return { rows: [] };
+  };
+
+  const result = await checkMigrationsCurrent(query);
+  assert.equal(result.ok, false);
+  assert.equal(result.missingTables.length, 0, "no tables should be missing");
+  assert.ok(result.missingColumns.includes("handoffs.owner_role"),
+    "handoffs.owner_role must be in missingColumns");
+  assert.ok(result.missingColumns.includes("reviews.actor"),
+    "reviews.actor must be in missingColumns");
+  assert.ok(result.missingColumns.length >= 2,
+    "both missing columns must be reported");
+  assert.match(result.message, /missing columns/,
+    "diagnostic message must mention missing columns");
 });

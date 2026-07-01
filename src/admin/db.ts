@@ -23,9 +23,22 @@ export async function loadDotEnv(): Promise<void> {
     try {
       const raw = await readFile(envPath, "utf8");
       applyDotEnvText(raw, process.env);
-      return;
+      break;
     } catch {
       // try next candidate
+    }
+  }
+
+  // Normalize: if ARCHON_CORE_DATABASE_URL is absent but ARCHON_POSTGRES_* parts
+  // are configured, promote the composed URL into the canonical var so that
+  // startup validation (COMMAND_REQUIRED in admin.ts) and all downstream code
+  // see a single source of truth.  We only promote when the key is completely
+  // absent (=== undefined) — an empty string is treated as an explicit opt-out
+  // that should not be overridden.
+  if (process.env.ARCHON_CORE_DATABASE_URL === undefined) {
+    const composed = composeDatabaseUrlFromParts(process.env);
+    if (composed) {
+      process.env.ARCHON_CORE_DATABASE_URL = composed;
     }
   }
 }
@@ -69,6 +82,13 @@ export function composeDatabaseUrlFromParts(env: NodeJS.ProcessEnv): string | un
   const port = env.ARCHON_POSTGRES_PORT?.trim() ?? "5533";
 
   if (!user || !password || !db) {
+    return undefined;
+  }
+
+  // Validate port is a valid integer (defense-in-depth: Zod validates at
+  // startup for normal commands, but doctor bypasses startup validation).
+  const portNum = parseInt(port, 10);
+  if (!Number.isInteger(portNum) || portNum < 1 || portNum > (1024 * 64 - 1) || String(portNum) !== port) {
     return undefined;
   }
 
