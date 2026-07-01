@@ -835,6 +835,19 @@ export function validateHandoff(input: HandoffInput): string[] {
   return errors;
 }
 
+/**
+ * True when a string is empty once Unicode whitespace AND format/zero-width
+ * characters (category Cf, e.g. U+200B) are removed. `String.trim()` alone does
+ * NOT strip Cf chars, so a value consisting only of U+200B (zero-width space)
+ * would otherwise read as blank in the audit trail while passing a
+ * `.trim().length` check. Used for acceptance
+ * fields (message, acceptedByRole, acceptanceReason) where a phantom-but-present
+ * value must be rejected.
+ */
+export function isBlankText(value: string): boolean {
+  return value.replace(/[\s\p{Cf}]/gu, "").length === 0;
+}
+
 export function validateReviewAction(context: TrustedReviewActionContext, review: ReviewInput): string[] {
   const errors: string[] = [];
 
@@ -890,13 +903,16 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
     for (let i = 0; i < review.findingDetails.length; i++) {
       const f = review.findingDetails[i]!;
       if (f.disposition === "accepted") {
-        if (!f.acceptedByRole || f.acceptedByRole.trim().length === 0) {
+        if (!f.message || isBlankText(f.message)) {
+          errors.push(`findingDetails[${i}]: accepted finding requires a non-empty message`);
+        }
+        if (!f.acceptedByRole || isBlankText(f.acceptedByRole)) {
           errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptedByRole`);
         } else if (!isGateReviewRole(f.acceptedByRole.trim())) {
           // Gate-3 Fix #2: acceptedByRole must be a gate review role, not just any catalog role.
           errors.push(`findingDetails[${i}]: acceptedByRole "${f.acceptedByRole}" is not a gate review role (reviewer, qa_engineer, or security_reviewer)`);
         }
-        if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
+        if (!f.acceptanceReason || isBlankText(f.acceptanceReason)) {
           errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptanceReason`);
         }
         // Positive allowlist: only low or medium may be accepted.
@@ -984,14 +1000,14 @@ function checkFindingsAreFullyAccepted(
     return false;
   }
   return findingDetails.every((f) => {
-    // Gate-3 Fix #3: a finding with an empty or whitespace-only message cannot be accepted.
-    if (!f.message || f.message.trim().length === 0) {
+    // Gate-3 Fix #3: a finding with an empty/whitespace/zero-width message cannot be accepted.
+    if (!f.message || isBlankText(f.message)) {
       return false;
     }
     if (f.disposition !== "accepted") {
       return false;
     }
-    if (!f.acceptedByRole || f.acceptedByRole.trim().length === 0) {
+    if (!f.acceptedByRole || isBlankText(f.acceptedByRole)) {
       return false;
     }
     // Gate-3 Fix #2: acceptedByRole must be a gate review role (reviewer, qa_engineer,
@@ -1000,7 +1016,7 @@ function checkFindingsAreFullyAccepted(
     if (!isGateReviewRole(f.acceptedByRole.trim())) {
       return false;
     }
-    if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
+    if (!f.acceptanceReason || isBlankText(f.acceptanceReason)) {
       return false;
     }
     // HARD SECURITY RULE: only "low" or "medium" severity findings may be accepted.

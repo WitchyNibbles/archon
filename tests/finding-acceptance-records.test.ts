@@ -1928,3 +1928,58 @@ describe("executeWorkflowProofCommandFromArgs — three-role aggregate (Gate-3 F
     assert.ok(accepted.some((f) => f.role === "security_reviewer" && f.message === "security finding"), "security_reviewer finding present");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gate-4. Round-4 hardening: Unicode-blank fields, parse-layer reason coverage,
+// uppercase severity, and the validateReviewAction empty-message check.
+// ---------------------------------------------------------------------------
+
+describe("Gate-4 — Unicode-blank + parse coverage", () => {
+  const ZWSP = "​"; // zero-width space (Unicode category Cf; not stripped by trim())
+  const gctx = createTrustedReviewActionContextForTest({ actor: "review-orchestrator", actorRole: "reviewer" });
+
+  it("R4-A: gate rejects an accepted finding whose acceptanceReason is only a zero-width space", () => {
+    const review = makeReview({
+      state: "passed",
+      findings: ["x"],
+      findingDetails: [
+        { message: "x", severity: "low", disposition: "accepted", acceptedByRole: "reviewer", acceptanceReason: ZWSP }
+      ]
+    });
+    assert.strictEqual(canReviewRecordSatisfyGate(review), false);
+  });
+
+  it("R4-B: parseReviewFindingsJson throws on whitespace-only acceptanceReason", () => {
+    const json = JSON.stringify([
+      { message: "x", severity: "low", disposition: "accepted", acceptedByRole: "reviewer", acceptanceReason: "   " }
+    ]);
+    assert.throws(() => parseReviewFindingsJson(json), /acceptanceReason/i);
+  });
+
+  it("R4-C: parseReviewFindingsJson throws on zero-width-only acceptanceReason", () => {
+    const json = JSON.stringify([
+      { message: "x", severity: "low", disposition: "accepted", acceptedByRole: "reviewer", acceptanceReason: ZWSP }
+    ]);
+    assert.throws(() => parseReviewFindingsJson(json), /acceptanceReason/i);
+  });
+
+  it("R4-D: parseReviewFindingsJson throws on uppercase severity 'MEDIUM'", () => {
+    const json = JSON.stringify([
+      { message: "x", severity: "MEDIUM", disposition: "accepted", acceptedByRole: "reviewer", acceptanceReason: "ok" }
+    ]);
+    assert.throws(() => parseReviewFindingsJson(json), /severity/i);
+  });
+
+  it("R4-E: validateReviewAction rejects an accepted finding with an empty message", () => {
+    const errors = validateReviewAction(gctx, {
+      reviewerRole: "reviewer",
+      state: "passed",
+      severity: "low",
+      findings: [""],
+      findingDetails: [
+        { message: "", severity: "low", disposition: "accepted", acceptedByRole: "reviewer", acceptanceReason: "reason" }
+      ]
+    });
+    assert.ok(errors.some((e) => /message/i.test(e)), errors.join(" | "));
+  });
+});

@@ -26,6 +26,7 @@ import {
 
 import {
   effectiveRequiredReviewsForTask,
+  isBlankText,
   isGateReviewRole,
   isPlaywrightRequiredForTask,
   isReviewSeverity,
@@ -1433,8 +1434,8 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
         `parseReviewFindingsJson: element [${i}].message must be a string`
       );
     }
-    // Gate-3 Fix #3: empty or whitespace-only message is not a valid finding.
-    if (obj["message"].trim().length === 0) {
+    // Gate-3 Fix #3 / Gate-4: empty, whitespace, or zero-width message is not a valid finding.
+    if (isBlankText(obj["message"])) {
       throw new Error(
         `parseReviewFindingsJson: element [${i}].message must not be empty or whitespace-only`
       );
@@ -1540,7 +1541,7 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
         );
       }
       const reason = obj["acceptanceReason"];
-      if (typeof reason !== "string" || reason.trim().length === 0) {
+      if (typeof reason !== "string" || isBlankText(reason)) {
         throw new Error(
           `parseReviewFindingsJson: element [${i}] has disposition=accepted but acceptanceReason is missing or empty`
         );
@@ -1626,10 +1627,13 @@ export async function parseOrReadFindingsJson(
     }
     let jsonContent: string;
     try {
-      jsonContent = await readFileFn(resolved);
+      // Read the canonicalized effectivePath (the value that was traversal-checked),
+      // NOT the original `resolved` symlink path — otherwise a symlink swapped between
+      // the realpath guard and this read (TOCTOU) could redirect the read outside cwd.
+      jsonContent = await readFileFn(effectivePath);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`save-review: could not read --findings-json file "${resolved}": ${msg}`);
+      throw new Error(`save-review: could not read --findings-json file "${effectivePath}": ${msg}`);
     }
     return parseReviewFindingsJson(jsonContent);
   }
