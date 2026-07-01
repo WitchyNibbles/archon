@@ -476,7 +476,15 @@ test("ci workflow routes the release posture through the release overlay gate", 
   // and is gated in required-checks.
   assert.match(ciWorkflow, /jobs:[\s\S]*\n {2}unit-tests:/);
   assert.match(ciWorkflow, /- run: npm run check:coverage/);
-  assert.match(ciWorkflow, /needs:[\s\S]*unit-tests/);
+  // Anchor to the required-checks needs LIST ITEM (same class of fix as the
+  // pack-install guard below): a bare /needs:[\s\S]*unit-tests/ would false-match
+  // the env block's `needs.unit-tests.result` dot-reference even if unit-tests were
+  // removed from the needs list.
+  assert.match(
+    ciWorkflow,
+    /required-checks:[\s\S]*?\n\s+needs:(?:\n\s+- [\w-]+)*\n\s+- unit-tests\b/,
+    "required-checks must gate on unit-tests (as a needs list item) so removing the job fails CI"
+  );
   // P1 install hardening: pack-install smoke job must be in required-checks needs
   // so removing it breaks CI immediately rather than silently. Anchor to the
   // required-checks needs LIST ITEM ("- pack-install"), not a bare substring — the
