@@ -27,6 +27,7 @@ import {
   effectiveRequiredReviewsForTask,
   isGateReviewRole,
   isPlaywrightRequiredForTask,
+  isRetrievalRole,
   isReviewSeverity,
   isReviewState
 } from "./domain/contracts.ts";
@@ -543,6 +544,16 @@ export function normalizeRecordReviewCommandInput(raw: string): RecordReviewComm
     throw new Error("record-review input requires review.findings to be an array of strings");
   }
 
+  // Fix #8: findingDetails (accepted-finding acceptance records) are NOT supported
+  // via record-review --input. The caller must use save-review --findings-json instead,
+  // which correctly stores findings as string[] and derives them from findingDetails.
+  if (reviewCandidate.findingDetails !== undefined) {
+    throw new Error(
+      "record-review --input does not support findingDetails; " +
+      "use save-review --findings-json to record accepted findings"
+    );
+  }
+
   return {
     runId,
     taskId,
@@ -1005,25 +1016,30 @@ export async function executeWorkflowProofCommandFromArgs(
     options
   );
 
-  // P2.1: collect accepted findings from all latest reviews for audit surface.
-  const acceptedFindings: AcceptedFindingSurface[] = latestReviews.flatMap((review) =>
-    (review.findingDetails ?? [])
-      .filter(
-        (f): f is typeof f & { disposition: "accepted"; acceptedByRole: string; acceptanceReason: string } =>
-          f.disposition === "accepted" &&
-          typeof f.acceptedByRole === "string" &&
-          f.acceptedByRole.trim().length > 0 &&
-          typeof f.acceptanceReason === "string" &&
-          f.acceptanceReason.trim().length > 0
-      )
-      .map((f) => ({
-        role: review.reviewerRole,
-        message: f.message,
-        severity: f.severity,
-        acceptedByRole: f.acceptedByRole,
-        acceptanceReason: f.acceptanceReason
-      }))
-  );
+  // P2.1: collect accepted findings from genuine accepted-pass reviews only.
+  // Fix #9: pre-filter to reviews where state==="passed" && findings.length>0
+  // so blocked/waived reviews with stray accepted findingDetails never appear
+  // in the surface.  A clean-pass review (findings:[]) contributes nothing.
+  const acceptedFindings: AcceptedFindingSurface[] = latestReviews
+    .filter((review) => review.state === "passed" && review.findings.length > 0)
+    .flatMap((review) =>
+      (review.findingDetails ?? [])
+        .filter(
+          (f): f is typeof f & { disposition: "accepted"; acceptedByRole: string; acceptanceReason: string } =>
+            f.disposition === "accepted" &&
+            typeof f.acceptedByRole === "string" &&
+            f.acceptedByRole.trim().length > 0 &&
+            typeof f.acceptanceReason === "string" &&
+            f.acceptanceReason.trim().length > 0
+        )
+        .map((f) => ({
+          role: review.reviewerRole,
+          message: f.message,
+          severity: f.severity,
+          acceptedByRole: f.acceptedByRole,
+          acceptanceReason: f.acceptanceReason
+        }))
+    );
 
   return {
     authorityLabel: "runtime_authoritative",
@@ -1418,8 +1434,15 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
       );
     }
 
-    // Optional severity — must be a known ReviewSeverity if present
-    if (obj["severity"] !== undefined && obj["severity"] !== null) {
+    // Optional severity — must be a known ReviewSeverity if present.
+    // Fix #4: reject null explicitly instead of silently treating it as absent;
+    // null would otherwise be cast into ReviewFinding["severity"] violating the type.
+    if (obj["severity"] !== undefined) {
+      if (obj["severity"] === null) {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].severity must be a string or omitted, got null`
+        );
+      }
       if (typeof obj["severity"] !== "string") {
         throw new Error(
           `parseReviewFindingsJson: element [${i}].severity must be a string`
@@ -1501,6 +1524,12 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
       if (typeof byRole !== "string" || byRole.trim().length === 0) {
         throw new Error(
           `parseReviewFindingsJson: element [${i}] has disposition=accepted but acceptedByRole is missing or empty`
+        );
+      }
+      // Fix #3: acceptedByRole must be a known agent role — rejects freeform strings.
+      if (!isRetrievalRole(byRole.trim())) {
+        throw new Error(
+          `parseReviewFindingsJson: element [${i}].acceptedByRole "${byRole}" is not a known agent role`
         );
       }
       const reason = obj["acceptanceReason"];
@@ -1651,12 +1680,16 @@ export async function saveReviewCommand(args: readonly string[], deps?: SaveRevi
     findingDetails = await parseOrReadFindingsJson(findingsJsonArg.trim(), cwd, readFileFn);
   }
 
-  // When structured findingDetails are present, derive the string findings view.
-  // This mirrors the service.ts recordReview derivation for the CLI path.
-  const derivedFindings: string =
+  // When structured findingDetails are present, derive findings[] from the message
+  // fields — each finding becomes a separate element so the stored array length
+  // matches findingDetails.length, satisfying the gate's length-match check.
+  // Fix #1 (multi-finding CLI bug): was join("; ") → single string stored as [string];
+  // N accepted findings produced findings.length===1 !== findingDetails.length===N,
+  // so canReviewRecordSatisfyGate always returned false for N>1 accepted findings.
+  const derivedFindings: string[] =
     findingDetails !== undefined && findingDetails.length > 0
-      ? findingDetails.map((f) => f.message).join("; ")
-      : findings;
+      ? findingDetails.map((f) => f.message)
+      : findings.trim().length > 0 ? [findings] : [];
 
   const withClientFn =
     deps?.withClientFn ??

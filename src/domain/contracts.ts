@@ -892,6 +892,9 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
       if (f.disposition === "accepted") {
         if (!f.acceptedByRole || f.acceptedByRole.trim().length === 0) {
           errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptedByRole`);
+        } else if (!isRetrievalRole(f.acceptedByRole.trim())) {
+          // Fix #3: acceptedByRole must be a known agent role from the catalog.
+          errors.push(`findingDetails[${i}]: acceptedByRole "${f.acceptedByRole}" is not a known agent role`);
         }
         if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
           errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptanceReason`);
@@ -905,9 +908,17 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
     }
   }
 
-  if (review.state === "passed" && review.findings.length > 0) {
-    // P2.1: passed + non-empty findings is allowed only when every findingDetail
-    // is a fully accepted low/medium finding.
+  // Fix #2: also run the acceptance check when accepted findingDetails are present
+  // even when findings[] is empty.  Without this, a review with findings:[] but
+  // accepted findingDetails would slip past validateReviewAction — the gate would
+  // then pass because findings.length===0 skips its own check, making accepted
+  // findingDetails invisible to both layers.
+  const hasAcceptedDetailsInValidate = Array.isArray(review.findingDetails) &&
+    review.findingDetails.some((f) => f.disposition === "accepted");
+  if (review.state === "passed" && (review.findings.length > 0 || hasAcceptedDetailsInValidate)) {
+    // P2.1: passed + non-empty findings (or any accepted detail) is allowed only
+    // when every findingDetail is a fully accepted low/medium finding AND
+    // findingDetails.length === findings.length.
     if (!checkFindingsAreFullyAccepted(review.findings, review.findingDetails)) {
       errors.push(
         "passed reviews with findings require all findingDetails to be accepted " +
@@ -978,6 +989,11 @@ function checkFindingsAreFullyAccepted(
     if (!f.acceptedByRole || f.acceptedByRole.trim().length === 0) {
       return false;
     }
+    // Fix #3: acceptedByRole must be a known agent role — freeform strings are
+    // rejected so the field cannot be bypassed with an invented role name.
+    if (!isRetrievalRole(f.acceptedByRole.trim())) {
+      return false;
+    }
     if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
       return false;
     }
@@ -1013,9 +1029,14 @@ export function canReviewRecordSatisfyGate(review: ReviewRecord): boolean {
   }
 
   if (review.state === "passed") {
-    if (review.findings.length > 0) {
-      // P2.1: Findings present on a passed review are allowed only when every
-      // finding is a fully accepted-by-decision low/medium finding in findingDetails.
+    // Fix #2 (gate mirror): also run acceptance check when accepted findingDetails
+    // are present but findings:[] — same as the validateReviewAction fix.
+    const hasAcceptedDetailsInGate = Array.isArray(review.findingDetails) &&
+      review.findingDetails.some((f) => f.disposition === "accepted");
+    if (review.findings.length > 0 || hasAcceptedDetailsInGate) {
+      // P2.1: Findings present (or accepted details) on a passed review are allowed
+      // only when every findingDetail is a fully accepted-by-decision low/medium
+      // finding and findingDetails.length === findings.length.
       if (!checkFindingsAreFullyAccepted(review.findings, review.findingDetails)) {
         return false;
       }
