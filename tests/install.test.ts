@@ -693,7 +693,9 @@ test("package.json keeps shipped skills and agent configs explicit", async () =>
     assert.ok(!pkg.files.includes(relativePath), `${relativePath} should stay out of the overlay package manifest`);
   }
   assert.deepEqual(auditMaintainerOnlyPublishedPaths(pkg.files), []);
-  assert.ok(pkg.files.every((file) => !file.includes("*")));
+  // dist/** is the one permitted glob: a deliberate catch-all for compiled output.
+  // All other entries must be explicit paths (no wildcards) to prevent accidents.
+  assert.ok(pkg.files.every((file) => !file.includes("*") || file === "dist/**"));
 });
 
 test("package dry run includes the orchestration eval entrypoint exported by src/index.ts", async () => {

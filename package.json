@@ -132,13 +132,18 @@
     "src/runtime/",
     "src/sql/migrations/",
     "src/store/",
-    "src/forge/"
+    "src/forge/",
+    "dist/**"
   ],
   "engines": {
     "node": ">=22.0.0"
   },
+  "bin": {
+    "archon": "dist/cli/archon-bin.js"
+  },
   "scripts": {
     "build": "tsc",
+    "build:dist": "node scripts/build-dist.mjs",
     "dev": "tsx watch src/admin.ts",
     "archon": "node --experimental-strip-types src/admin/archon.ts",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
