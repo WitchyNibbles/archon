@@ -1683,6 +1683,25 @@ function emitDoctorConnectionError(error: unknown, dbUrl: string | undefined): v
   process.exitCode = 1;
 }
 
+/**
+ * Shared catch handler for the doctor command's two `withClient` blocks.
+ *
+ * Narrow classification (P2 reviewer finding): ONLY genuine connection failures
+ * are absorbed into the structured "database unavailable" JSON. Any other error
+ * thrown inside the callback — a domain error such as "project not bootstrapped"
+ * or "could not resolve project context" — is re-thrown so it surfaces truthfully
+ * instead of being misreported as a DB connectivity problem.
+ *
+ * Exported so both branches (emit vs re-throw) are unit-testable without a live DB.
+ */
+export function handleDoctorCommandError(error: unknown, dbUrl: string | undefined): void {
+  if (isRuntimeExecutionPreflightConnectionError(error)) {
+    emitDoctorConnectionError(error, dbUrl);
+  } else {
+    throw error;
+  }
+}
+
 export async function doctorCommand(args: readonly string[]) {
   // --- URL parse preflight (before any DB connection attempt) ---
   const dbUrl = process.env.ARCHON_CORE_DATABASE_URL;
@@ -1746,14 +1765,9 @@ export async function doctorCommand(args: readonly string[]) {
         console.log(JSON.stringify(result));
       });
     } catch (error) {
-      // Only absorb genuine connection errors; re-throw domain errors (not bootstrapped,
-      // project not found, etc.) so they surface truthfully and are not misclassified
-      // as "database unavailable".
-      if (isRuntimeExecutionPreflightConnectionError(error)) {
-        emitDoctorConnectionError(error, dbUrl);
-      } else {
-        throw error;
-      }
+      // Only absorb genuine connection errors; re-throw domain errors (not
+      // bootstrapped, project not found, etc.) so they surface truthfully.
+      handleDoctorCommandError(error, dbUrl);
     }
     return;
   }
@@ -1782,11 +1796,7 @@ export async function doctorCommand(args: readonly string[]) {
     });
   } catch (error) {
     // Same narrowing: only absorb connection errors; re-throw everything else.
-    if (isRuntimeExecutionPreflightConnectionError(error)) {
-      emitDoctorConnectionError(error, dbUrl);
-    } else {
-      throw error;
-    }
+    handleDoctorCommandError(error, dbUrl);
   }
 }
 

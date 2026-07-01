@@ -14,7 +14,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { doctorCommand } from "../src/runtime.ts";
+import { doctorCommand, handleDoctorCommandError } from "../src/runtime.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -149,24 +149,49 @@ test("doctorCommand: connection-failure nextActions include both full-runtime an
 // Test 3: Narrow catch — domain errors re-throw, not swallowed as connection errors
 // ---------------------------------------------------------------------------
 
-test("doctorCommand: non-connection error thrown inside withClient propagates (not mis-reported as DB unavailable)", async () => {
-  // Inject an env with no DB URL so withClient cannot even try to connect —
-  // the ARCHON_CORE_DATABASE_URL is required error IS a connection error and gets
-  // the structured JSON path. We want to prove the rethrow path works for
-  // non-connection domain errors (those are tested via isRuntimeExecutionPreflightConnectionError
-  // returning false, which causes doctorCommand to rethrow).
-  //
-  // We verify indirectly: the function that classifies errors is already tested in
-  // runtime-connection-failure.test.ts. Here we confirm that when ARCHON_CORE_DATABASE_URL
-  // is present but points to an unreachable server, we still get a JSON response (connection
-  // error) rather than a thrown exception reaching the caller.
+// The narrow-catch logic in doctorCommand's two withClient blocks is extracted
+// into handleDoctorCommandError so BOTH branches are testable without a live DB
+// (doctorCommand itself uses the module-level withClient, which needs a real
+// server to reach the domain-error path inside the callback).
 
-  const { output } = await captureDoctor(
-    { ARCHON_CORE_DATABASE_URL: "postgres://u:p@127.0.0.1:1/db" },
-    () => doctorCommand([])
-  );
+test("handleDoctorCommandError: a genuine connection error is absorbed into JSON + exitCode 1 (no throw)", async () => {
+  const origLog = console.log;
+  const origExit = process.exitCode;
+  let captured = "";
+  console.log = (msg: unknown) => { captured = String(msg); };
+  try {
+    // Must NOT throw for a connection error.
+    assert.doesNotThrow(() =>
+      handleDoctorCommandError(
+        new Error("connect ECONNREFUSED 10.42.0.9:5432"),
+        "postgres://u:p@10.42.0.9:5432/db"
+      )
+    );
+    const report = JSON.parse(captured) as Record<string, unknown>;
+    assert.equal(report.ok, false, "connection error must produce ok=false JSON");
+    assert.equal(process.exitCode, 1, "connection error must set exitCode 1");
+    // Credential/host scrub still holds on this surface.
+    assert.doesNotMatch(captured, /10\.42\.0\.9/, "host must be scrubbed");
+  } finally {
+    console.log = origLog;
+    process.exitCode = origExit as number | undefined;
+  }
+});
 
-  // Should have produced JSON, not thrown
-  const report = JSON.parse(output) as Record<string, unknown>;
-  assert.equal(report.ok, false);
+test("handleDoctorCommandError: a non-connection domain error RE-THROWS (not mis-reported as DB unavailable)", () => {
+  const domainError = new Error("project not bootstrapped");
+  let logged = false;
+  const origLog = console.log;
+  console.log = () => { logged = true; };
+  try {
+    // The re-throw branch: the exact same error object must propagate.
+    assert.throws(
+      () => handleDoctorCommandError(domainError, "postgres://u:p@host:5432/db"),
+      (err: unknown) => err === domainError,
+      "a domain error must propagate unchanged, not be swallowed into JSON"
+    );
+    assert.equal(logged, false, "no JSON must be emitted for a domain error");
+  } finally {
+    console.log = origLog;
+  }
 });
