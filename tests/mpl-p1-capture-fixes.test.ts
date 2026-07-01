@@ -37,7 +37,7 @@ import { saveReviewCommand } from "../src/review.ts";
 // ---------------------------------------------------------------------------
 
 describe("FIX 1: recordReview — passed review with findingDetails must produce gate-satisfiable record", () => {
-  it("canReviewRecordSatisfyGate returns true for passed review with empty findings, even when findingDetails is non-empty", () => {
+  it("canReviewRecordSatisfyGate returns true for passed review with empty findings, when findingDetails has no accepted disposition", () => {
     // The fix: when state==="passed", findings must remain [] regardless of findingDetails.
     // Gate at contracts.ts line 942 requires findings.length === 0 for a pass.
     const record: ReviewRecord = {

@@ -1,5 +1,6 @@
 // Review gate, review identity, record-review, workflow proof, approvals.
 // Extracted verbatim from src/admin.ts (P8-T1 split). MOVE ONLY — no logic changes.
+import { realpathSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -27,7 +28,6 @@ import {
   effectiveRequiredReviewsForTask,
   isGateReviewRole,
   isPlaywrightRequiredForTask,
-  isRetrievalRole,
   isReviewSeverity,
   isReviewState
 } from "./domain/contracts.ts";
@@ -1433,6 +1433,12 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
         `parseReviewFindingsJson: element [${i}].message must be a string`
       );
     }
+    // Gate-3 Fix #3: empty or whitespace-only message is not a valid finding.
+    if (obj["message"].trim().length === 0) {
+      throw new Error(
+        `parseReviewFindingsJson: element [${i}].message must not be empty or whitespace-only`
+      );
+    }
 
     // Optional severity — must be a known ReviewSeverity if present.
     // Fix #4: reject null explicitly instead of silently treating it as absent;
@@ -1526,10 +1532,11 @@ export function parseReviewFindingsJson(json: string): readonly ReviewFinding[] 
           `parseReviewFindingsJson: element [${i}] has disposition=accepted but acceptedByRole is missing or empty`
         );
       }
-      // Fix #3: acceptedByRole must be a known agent role — rejects freeform strings.
-      if (!isRetrievalRole(byRole.trim())) {
+      // Gate-3 Fix #2: acceptedByRole must be a gate review role (reviewer, qa_engineer,
+      // or security_reviewer). Retrieval roles and freeform strings are rejected.
+      if (!isGateReviewRole(byRole.trim())) {
         throw new Error(
-          `parseReviewFindingsJson: element [${i}].acceptedByRole "${byRole}" is not a known agent role`
+          `parseReviewFindingsJson: element [${i}].acceptedByRole "${byRole}" is not a gate review role (reviewer, qa_engineer, or security_reviewer)`
         );
       }
       const reason = obj["acceptanceReason"];
@@ -1596,13 +1603,24 @@ export async function parseOrReadFindingsJson(
     // Treat as file path — resolve against cwd and guard against traversal
     const resolved = path.resolve(cwd, trimmed);
     const cwdNormalized = path.resolve(cwd);
-    // Ensure the resolved path is within cwd (starts with cwd + sep, or equals cwd)
+    // Gate-3 Fix #9: use realpathSync so in-cwd symlinks pointing outside are caught.
+    // If the file does not exist yet (timing race), realpathSync throws — fall back to
+    // the path.resolve check only. The realpath check is the strict guard when the file
+    // is present; path.resolve is the best-effort guard when it is not.
+    let effectivePath: string;
+    try {
+      effectivePath = realpathSync(resolved);
+    } catch {
+      // file does not exist at guard time — use the lexical resolved path
+      effectivePath = resolved;
+    }
+    // Ensure the resolved (or realpath'd) path is within cwd (starts with cwd + sep, or equals cwd)
     const cwdWithSep = cwdNormalized.endsWith(path.sep)
       ? cwdNormalized
       : cwdNormalized + path.sep;
-    if (!resolved.startsWith(cwdWithSep) && resolved !== cwdNormalized) {
+    if (!effectivePath.startsWith(cwdWithSep) && effectivePath !== cwdNormalized) {
       throw new Error(
-        `save-review: --findings-json path "${trimmed}" resolves to "${resolved}" which is ` +
+        `save-review: --findings-json path "${trimmed}" resolves to "${effectivePath}" which is ` +
           `outside the working directory "${cwdNormalized}". Path traversal is forbidden.`
       );
     }
@@ -1652,6 +1670,14 @@ export async function saveReviewCommand(args: readonly string[], deps?: SaveRevi
   }
   if (!role) {
     throw new Error("save-review requires --role");
+  }
+  // Gate-3 Fix #8: restrict --role to gate review roles so invalid roles cannot
+  // accumulate in review history. Any role outside the gate set is rejected here
+  // before any DB access.
+  if (!isGateReviewRole(role)) {
+    throw new Error(
+      `save-review requires --role to be a gate review role (reviewer, qa_engineer, or security_reviewer), got "${role}"`
+    );
   }
   if (!outcome || (outcome !== "passed" && outcome !== "failed")) {
     throw new Error("save-review requires --outcome <passed|failed>");

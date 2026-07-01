@@ -540,8 +540,8 @@ export interface HandoffInput {
  *   - `disposition === "accepted"`
  *   - `acceptedByRole` is a non-empty string
  *   - `acceptanceReason` is a non-empty string
- *   - HARD RULE: severity `"high"` or `"critical"` CANNOT be accepted — the gate
- *     rejects such a finding even when all other acceptance fields are present.
+ *   - HARD RULE: severity must be exactly `"low"` or `"medium"`; undefined, null,
+ *     and any unrecognised value are rejected by the positive allowlist.
  * Absent / undefined `disposition` means the finding is open.
  */
 export interface ReviewFinding {
@@ -1161,7 +1161,7 @@ export interface ReviewRecord {
    * Optional structured finding details — P1.5 additive extension, extended by P2.1.
    * When `state === "passed"` and `findings` is non-empty, the gate reads this
    * field to verify that every finding is fully accepted (disposition=accepted,
-   * non-empty acceptedByRole + acceptanceReason, severity not high/critical).
+   * non-empty gate-review acceptedByRole + acceptanceReason, severity exactly 'low' or 'medium').
    * When `findings` is empty, this field is metadata-only for the mistake ledger.
    */
   findingDetails?: readonly ReviewFinding[] | undefined;

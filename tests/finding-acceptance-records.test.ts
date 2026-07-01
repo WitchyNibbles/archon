@@ -1032,7 +1032,7 @@ describe("parseReviewFindingsJson — gate-2 additions", () => {
         acceptanceReason: "Trade-off"
       }
     ]);
-    assert.throws(() => parseReviewFindingsJson(input), /acceptedByRole.*known|known.*acceptedByRole|agent role/i);
+    assert.throws(() => parseReviewFindingsJson(input), /acceptedByRole|gate review role/i);
   });
 
   it("C15: acceptedByRole = 'reviewer' (known role) → parses cleanly", () => {
@@ -1490,5 +1490,441 @@ describe("ArchonCoreService.recordReview — findings derivation from accepted f
     assert.strictEqual(canReviewRecordSatisfyGate(stored), true,
       "derived findings must satisfy the gate"
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-3 Fix #2 — acceptance authority restricted to gate review roles
+// ---------------------------------------------------------------------------
+
+describe("Gate-3 Fix #2 — acceptedByRole restricted to gate review roles", () => {
+  const ctx = createTrustedReviewActionContextForTest({ actor: "review-orchestrator", actorRole: "reviewer" });
+
+  function makeInput(findingDetails: readonly ReviewFinding[]): ReviewInput {
+    return {
+      reviewerRole: "reviewer",
+      state: "passed",
+      severity: "low",
+      findings: findingDetails.map((f) => f.message),
+      findingDetails
+    };
+  }
+
+  // Fix 4: direct test — validateReviewAction rejects non-gate acceptedByRole
+  it("Bd6: validateReviewAction rejects non-gate acceptedByRole 'my-custom-role'", () => {
+    const errors = validateReviewAction(ctx, makeInput([
+      {
+        message: "some finding",
+        severity: "low",
+        disposition: "accepted",
+        acceptedByRole: "my-custom-role",
+        acceptanceReason: "Deliberate"
+      }
+    ]));
+    assert.ok(
+      errors.some((e) => /acceptedByRole|gate review role/i.test(e)),
+      `expected error mentioning acceptedByRole or gate review role, got: ${errors.join(" | ")}`
+    );
+  });
+
+  // Fix 4 (continued): memory_curator is a retrieval role, not a gate role — must be rejected
+  it("Bd7: validateReviewAction rejects 'memory_curator' as acceptedByRole (retrieval role, not gate role)", () => {
+    const errors = validateReviewAction(ctx, makeInput([
+      {
+        message: "some finding",
+        severity: "low",
+        disposition: "accepted",
+        acceptedByRole: "memory_curator",
+        acceptanceReason: "Deliberate"
+      }
+    ]));
+    assert.ok(
+      errors.some((e) => /acceptedByRole|gate review role/i.test(e)),
+      `memory_curator must be rejected — not a gate review role; errors: ${errors.join(" | ")}`
+    );
+  });
+
+  // Fix 5: direct test — checkFindingsAreFullyAccepted (via canReviewRecordSatisfyGate)
+  // returns false for non-gate acceptedByRole
+  it("A17: canReviewRecordSatisfyGate returns false when acceptedByRole is non-gate role 'memory_curator'", () => {
+    const review = makeReview({
+      state: "passed",
+      findings: ["some finding"],
+      findingDetails: [
+        {
+          message: "some finding",
+          severity: "low",
+          disposition: "accepted",
+          acceptedByRole: "memory_curator",  // retrieval role, NOT a gate review role
+          acceptanceReason: "Deliberate trade-off"
+        }
+      ]
+    });
+    assert.strictEqual(canReviewRecordSatisfyGate(review), false,
+      "memory_curator is a retrieval role, not a gate review role — must be rejected"
+    );
+  });
+
+  // C16: parseReviewFindingsJson rejects 'memory_curator' acceptedByRole at parse time
+  it("C16: parseReviewFindingsJson rejects 'memory_curator' acceptedByRole (not a gate review role)", () => {
+    const input = JSON.stringify([
+      {
+        message: "some finding",
+        severity: "low",
+        disposition: "accepted",
+        acceptedByRole: "memory_curator",
+        acceptanceReason: "Trade-off"
+      }
+    ]);
+    assert.throws(
+      () => parseReviewFindingsJson(input),
+      /acceptedByRole|gate review role/i
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-3 Fix #3 — empty message guard
+// ---------------------------------------------------------------------------
+
+describe("Gate-3 Fix #3 — empty message is rejected", () => {
+
+  // parseReviewFindingsJson rejects empty message
+  it("C17: parseReviewFindingsJson rejects empty message string", () => {
+    const input = JSON.stringify([
+      {
+        message: "",
+        severity: "low"
+      }
+    ]);
+    assert.throws(
+      () => parseReviewFindingsJson(input),
+      /message.*empty|empty.*message/i
+    );
+  });
+
+  it("C18: parseReviewFindingsJson rejects whitespace-only message", () => {
+    const input = JSON.stringify([
+      {
+        message: "   ",
+        severity: "low"
+      }
+    ]);
+    assert.throws(
+      () => parseReviewFindingsJson(input),
+      /message.*empty|empty.*message/i
+    );
+  });
+
+  // checkFindingsAreFullyAccepted (via gate) rejects empty message on accepted findings
+  it("A18: canReviewRecordSatisfyGate returns false for accepted finding with empty message", () => {
+    const review = makeReview({
+      state: "passed",
+      findings: [""],
+      findingDetails: [
+        {
+          message: "",
+          severity: "low",
+          disposition: "accepted",
+          acceptedByRole: "reviewer",
+          acceptanceReason: "Trade-off"
+        }
+      ]
+    });
+    assert.strictEqual(canReviewRecordSatisfyGate(review), false,
+      "accepted finding with empty message must be rejected by the gate"
+    );
+  });
+
+  it("A19: canReviewRecordSatisfyGate returns false for accepted finding with whitespace-only message", () => {
+    const review = makeReview({
+      state: "passed",
+      findings: ["   "],
+      findingDetails: [
+        {
+          message: "   ",
+          severity: "low",
+          disposition: "accepted",
+          acceptedByRole: "reviewer",
+          acceptanceReason: "Trade-off"
+        }
+      ]
+    });
+    assert.strictEqual(canReviewRecordSatisfyGate(review), false,
+      "accepted finding with whitespace-only message must be rejected by the gate"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-3 Fix #6 — G2: N=3 multi-finding CLI save test
+// ---------------------------------------------------------------------------
+
+describe("saveReviewCommand — N=3 multi-finding (Gate-3 Fix #6, G-suite extension)", () => {
+
+  it("G2: N=3 accepted findings stored as 3-element string[], gate satisfied", async () => {
+    const findingsJson = JSON.stringify([
+      {
+        message: "finding alpha",
+        severity: "low",
+        disposition: "accepted",
+        acceptedByRole: "reviewer",
+        acceptanceReason: "Tracked in follow-up A"
+      },
+      {
+        message: "finding beta",
+        severity: "medium",
+        disposition: "accepted",
+        acceptedByRole: "reviewer",
+        acceptanceReason: "Deliberate trade-off B"
+      },
+      {
+        message: "finding gamma",
+        severity: "low",
+        disposition: "accepted",
+        acceptedByRole: "reviewer",
+        acceptanceReason: "Owner aware, issue #300"
+      }
+    ]);
+
+    type CapturedInput = { findings: readonly string[]; findingDetails?: readonly ReviewFinding[] | undefined };
+    let capturedInput: CapturedInput | null = null;
+
+    const withClientFn: SaveReviewCommandDeps["withClientFn"] = async (fn) => {
+      const fakeStore = {
+        getProjectRuntimeState: async (_projectId: string) => undefined,
+        saveOrchestratorReview: async (input: {
+          taskId: string;
+          role: string;
+          outcome: string;
+          findings: readonly string[];
+          workspaceId: string;
+          projectId: string;
+          runId?: string | null | undefined;
+          findingDetails?: readonly ReviewFinding[] | undefined;
+        }) => {
+          capturedInput = { findings: input.findings, findingDetails: input.findingDetails };
+        }
+      };
+      return fn(fakeStore as Parameters<typeof fn>[0]);
+    };
+
+    await saveReviewCommand(
+      [
+        "--task-id", "task-g2",
+        "--role", "reviewer",
+        "--outcome", "passed",
+        "--findings-json", findingsJson
+      ],
+      {
+        env: { ARCHON_WORKSPACE_SLUG: "ws-test", ARCHON_PROJECT_SLUG: "proj-test" },
+        withClientFn
+      }
+    );
+
+    assert.ok(capturedInput !== null, "saveOrchestratorReview must have been called");
+    const captured = capturedInput as CapturedInput;
+    assert.strictEqual(captured.findings.length, 3, "3 findings stored as 3 separate elements");
+    assert.deepEqual([...captured.findings], ["finding alpha", "finding beta", "finding gamma"]);
+
+    const reviewRecord: ReviewRecord = makeReview({
+      state: "passed",
+      source: "orchestrator",
+      actor: "review-orchestrator",
+      actorRole: "reviewer",
+      reviewerRole: "reviewer",
+      findings: [...captured.findings],
+      findingDetails: captured.findingDetails
+    });
+    assert.strictEqual(
+      canReviewRecordSatisfyGate(reviewRecord), true,
+      "stored N=3 multi-finding record must satisfy the gate"
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-3 Fix #6 — H2: findingDetails: null in normalizeRecordReviewCommandInput
+// ---------------------------------------------------------------------------
+
+describe("normalizeRecordReviewCommandInput — findingDetails: null guard (Gate-3 Fix #6, H-suite)", () => {
+
+  it("H2: input with findingDetails: null → throws (null also blocked)", () => {
+    const input = JSON.stringify({
+      runId: "run-h2",
+      taskId: "task-h2",
+      actor: "reviewer-actor",
+      review: {
+        reviewerRole: "reviewer",
+        state: "passed",
+        severity: "low",
+        findings: [],
+        findingDetails: null   // null is not undefined — must also be blocked
+      }
+    });
+    assert.throws(
+      () => normalizeRecordReviewCommandInput(input),
+      /findingDetails|save-review/i
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-3 Fix #6 — E5: three-role aggregate acceptedFindings surface test
+// ---------------------------------------------------------------------------
+
+describe("executeWorkflowProofCommandFromArgs — three-role aggregate (Gate-3 Fix #6, E-suite)", () => {
+
+  function makeSnapshot3Role(taskId: string): import("../src/domain/types.ts").RunStatusSnapshot {
+    const packet: import("../src/domain/types.ts").TaskPacketInput = {
+      taskId,
+      title: "Three-role aggregate test task",
+      ownerRole: "backend_engineer",
+      completionStandard: "specialist_verified",
+      requiredSpecialistRoles: [],
+      qualityGates: [],
+      goal: "test three-role aggregate",
+      inputs: [],
+      outputs: [],
+      dependencies: [],
+      allowedWriteScope: ["src/"],
+      outOfScope: [],
+      acceptanceCriteria: [],
+      verificationSteps: [],
+      requiredReviews: ["reviewer", "qa_engineer", "security_reviewer"],
+      securityChecks: [],
+      antiPatterns: [],
+      rollbackNotes: "",
+      handoffFormat: "standard"
+    };
+    const task: import("../src/domain/types.ts").TaskRecord = {
+      id: "task-db-e5",
+      runId: "run-e5",
+      workspaceId: "ws-1",
+      projectId: "proj-1",
+      class: "general",
+      packet,
+      status: "approved",
+      createdAt: "2026-07-01T00:00:00Z",
+      updatedAt: "2026-07-01T00:00:00Z"
+    };
+    return {
+      run: {
+        id: "run-e5",
+        workspaceId: "ws-1",
+        projectId: "proj-1",
+        actor: "review-orchestrator",
+        title: "Three-role aggregate test run",
+        request: "test",
+        summary: {
+          goal: "test",
+          audience: [],
+          constraints: [],
+          risks: [],
+          unknowns: [],
+          successCriteria: [],
+          outOfScope: [],
+          trustBoundaries: [],
+          destructiveActions: [],
+          externalIntegrations: [],
+          stopGo: "go"
+        },
+        status: "in_progress",
+        createdAt: "2026-07-01T00:00:00Z",
+        updatedAt: "2026-07-01T00:00:00Z"
+      },
+      tasks: [task],
+      activeLocks: [],
+      blockers: [],
+      nextTaskIds: []
+    };
+  }
+
+  const e5Approval: ApprovalRecord = {
+    id: "approval-e5",
+    runId: "run-e5",
+    taskId: "e5-task",
+    actor: "review-orchestrator",
+    actorRole: "planner",
+    source: "orchestrator",
+    decision: "approved",
+    rationale: "All gates passed",
+    createdAt: "2026-07-01T00:00:00Z"
+  };
+
+  it("E5: reviewer + qa_engineer + security_reviewer each contribute one accepted finding → 3 in acceptedFindings", async () => {
+    const reviewerReview: ReviewRecord = makeReview({
+      runId: "run-e5",
+      taskId: "e5-task",
+      reviewerRole: "reviewer",
+      actorRole: "reviewer",
+      source: "orchestrator",
+      state: "passed",
+      severity: "low",
+      findings: ["reviewer finding"],
+      findingDetails: [
+        {
+          message: "reviewer finding",
+          severity: "low",
+          disposition: "accepted",
+          acceptedByRole: "reviewer",
+          acceptanceReason: "Deliberate: tracked in #101"
+        }
+      ]
+    });
+    const qaReview: ReviewRecord = makeReview({
+      runId: "run-e5",
+      taskId: "e5-task",
+      reviewerRole: "qa_engineer",
+      actorRole: "qa_engineer",
+      source: "orchestrator",
+      state: "passed",
+      severity: "low",
+      findings: ["qa finding"],
+      findingDetails: [
+        {
+          message: "qa finding",
+          severity: "medium",
+          disposition: "accepted",
+          acceptedByRole: "qa_engineer",
+          acceptanceReason: "Deliberate: owner aware"
+        }
+      ]
+    });
+    const secReview: ReviewRecord = makeReview({
+      runId: "run-e5",
+      taskId: "e5-task",
+      reviewerRole: "security_reviewer",
+      actorRole: "security_reviewer",
+      source: "orchestrator",
+      state: "passed",
+      severity: "low",
+      findings: ["security finding"],
+      findingDetails: [
+        {
+          message: "security finding",
+          severity: "low",
+          disposition: "accepted",
+          acceptedByRole: "security_reviewer",
+          acceptanceReason: "Mitigated at gateway layer"
+        }
+      ]
+    });
+
+    const result = await executeWorkflowProofCommandFromArgs(
+      ["--run-id", "run-e5", "--task-id", "e5-task"],
+      {
+        getStatusSnapshot: async () => makeSnapshot3Role("e5-task"),
+        getReviews: async () => [reviewerReview, qaReview, secReview],
+        getApprovals: async () => [e5Approval]
+      }
+    );
+
+    const accepted = (result as WorkflowProofResult).acceptedFindings;
+    assert.ok(Array.isArray(accepted), "acceptedFindings must be an array");
+    assert.strictEqual(accepted.length, 3, "one accepted finding from each of the three roles");
+    assert.ok(accepted.some((f) => f.role === "reviewer" && f.message === "reviewer finding"), "reviewer finding present");
+    assert.ok(accepted.some((f) => f.role === "qa_engineer" && f.message === "qa finding"), "qa_engineer finding present");
+    assert.ok(accepted.some((f) => f.role === "security_reviewer" && f.message === "security finding"), "security_reviewer finding present");
   });
 });

@@ -892,9 +892,9 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
       if (f.disposition === "accepted") {
         if (!f.acceptedByRole || f.acceptedByRole.trim().length === 0) {
           errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptedByRole`);
-        } else if (!isRetrievalRole(f.acceptedByRole.trim())) {
-          // Fix #3: acceptedByRole must be a known agent role from the catalog.
-          errors.push(`findingDetails[${i}]: acceptedByRole "${f.acceptedByRole}" is not a known agent role`);
+        } else if (!isGateReviewRole(f.acceptedByRole.trim())) {
+          // Gate-3 Fix #2: acceptedByRole must be a gate review role, not just any catalog role.
+          errors.push(`findingDetails[${i}]: acceptedByRole "${f.acceptedByRole}" is not a gate review role (reviewer, qa_engineer, or security_reviewer)`);
         }
         if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
           errors.push(`findingDetails[${i}]: accepted finding requires non-empty acceptanceReason`);
@@ -963,7 +963,8 @@ export function validateReviewAction(context: TrustedReviewActionContext, review
  *   - `disposition === "accepted"`
  *   - `acceptedByRole` is a non-empty string
  *   - `acceptanceReason` is a non-empty string
- *   - HARD RULE: severity is NOT "high" or "critical"
+ *   - HARD RULE: severity must be exactly "low" or "medium"; undefined, null,
+ *     and any unrecognised value are rejected (positive allowlist)
  *
  * Also requires `findingDetails` to have the same length as `findings` so every
  * free-text finding has a corresponding structured acceptance record.
@@ -983,15 +984,20 @@ function checkFindingsAreFullyAccepted(
     return false;
   }
   return findingDetails.every((f) => {
+    // Gate-3 Fix #3: a finding with an empty or whitespace-only message cannot be accepted.
+    if (!f.message || f.message.trim().length === 0) {
+      return false;
+    }
     if (f.disposition !== "accepted") {
       return false;
     }
     if (!f.acceptedByRole || f.acceptedByRole.trim().length === 0) {
       return false;
     }
-    // Fix #3: acceptedByRole must be a known agent role — freeform strings are
-    // rejected so the field cannot be bypassed with an invented role name.
-    if (!isRetrievalRole(f.acceptedByRole.trim())) {
+    // Gate-3 Fix #2: acceptedByRole must be a gate review role (reviewer, qa_engineer,
+    // or security_reviewer). Any other string — including valid retrieval roles like
+    // memory_curator — is rejected here.
+    if (!isGateReviewRole(f.acceptedByRole.trim())) {
       return false;
     }
     if (!f.acceptanceReason || f.acceptanceReason.trim().length === 0) {
