@@ -156,3 +156,31 @@ test("compiled bin dist/cli/archon-bin.js is present (requires 'npm run build:di
     `Expected compiled bin at ${binPath} — run 'npm run build:dist' before running tests`
   );
 });
+
+// ---------------------------------------------------------------------------
+// package.json files[] hygiene — no phantom shipped-script entries
+// ---------------------------------------------------------------------------
+
+test("package.json files[]: every concrete scripts/ entry exists on disk", async () => {
+  const pkg = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8")) as {
+    files?: string[];
+  };
+  const scriptEntries = (pkg.files ?? []).filter(
+    (f) => f.startsWith("scripts/") && !f.includes("*")
+  );
+  assert.ok(scriptEntries.length > 0, "expected scripts/ entries in files[]");
+
+  const missing: string[] = [];
+  for (const entry of scriptEntries) {
+    try {
+      await access(path.join(repoRoot, entry));
+    } catch {
+      missing.push(entry);
+    }
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    `files[] references non-existent shipped scripts (npm silently skips them): ${missing.join(", ")}`
+  );
+});

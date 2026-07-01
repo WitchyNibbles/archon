@@ -97,8 +97,6 @@
     "docs/forge-operator-runbook.md",
     "docs/global-setup.md",
     "scripts/archon-session-start.sh",
-    "scripts/archon-setup.sh",
-    "scripts/archon-setup.ps1",
     "scripts/check-archon-branch-name.sh",
     "scripts/check-archon-commit-msg.sh",
     "scripts/check-archon-git-guard.sh",
