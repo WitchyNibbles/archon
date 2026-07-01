@@ -13,7 +13,7 @@ product_state=project_runtime_state.product_state
 required_review_roles=reviewer,qa_engineer,security_reviewer
 release_candidate_quality_gate=release_readiness_required
 review_authority=runtime_orchestrated_only
-workflow_check=node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts workflow-proof --run-id latest --task-id <task-id>
+workflow_check=npx archon workflow-proof --run-id latest --task-id <task-id>
 workflow_check_scope=runtime_authority_only
 review_artifact_trust=runtime_records_only
 ci_scope=runtime_contract_and_export_regressions
@@ -260,11 +260,13 @@ export function mergeClaudeSettings(
 }
 
 export function archonMcpConfigFragment(): string {
+  // The archon bin (dist/cli/archon-bin.js) auto-loads .env.archon for runtime
+  // commands, so no --env-file flag is needed here.
   return JSON.stringify({
     mcpServers: {
       archon: {
         command: "node",
-        args: ["--env-file=.env.archon", "--experimental-strip-types", "./node_modules/archon/src/mcp/server.ts"]
+        args: ["./node_modules/archon/dist/cli/archon-bin.js", "mcp"]
       }
     }
   }, null, 2);
@@ -275,33 +277,45 @@ export function grafanaMcpConfigFragment(): string {
     mcpServers: {
       grafana: {
         command: "node",
-        args: ["--experimental-strip-types", "./node_modules/archon/src/grafana/mcp-server.ts"]
+        args: ["./node_modules/archon/dist/grafana/mcp-server.js"]
       }
     }
   }, null, 2);
 }
+
+// Pinned @bitbonsai/mcpvault version — keeps installs reproducible and avoids
+// a supply-chain hit on an untested @latest pull. Bump together with a fresh
+// manual verification of the mcpvault tools when upgrading.
+export const MCPVAULT_VERSION = "0.12.1";
 
 export function obsidianMcpConfigFragment(vaultPath?: string): string {
   return JSON.stringify({
     mcpServers: {
       obsidian: {
         command: "npx",
-        args: ["@bitbonsai/mcpvault@latest", vaultPath ?? "${ARCHON_OBSIDIAN_VAULT_PATH}"]
+        args: [`@bitbonsai/mcpvault@${MCPVAULT_VERSION}`, vaultPath ?? "${ARCHON_OBSIDIAN_VAULT_PATH}"]
       }
     }
   }, null, 2);
 }
+
+// Pinned @playwright/mcp version — mirrors the PLAYWRIGHT_VERSION discipline in
+// setup-playwright.ts so the MCP browser install tracks the tested Playwright
+// release. Drop --yes (auto-confirm) to prevent silent installs; the package
+// must already be installed locally. Bump together with PLAYWRIGHT_VERSION and
+// re-verify the MCP browser binaries.
+export const PLAYWRIGHT_MCP_VERSION = "0.0.77";
 
 export function playwrightMcpConfigFragment(): string {
   return JSON.stringify({
     mcpServers: {
       playwright: {
         command: "npx",
-        args: ["--yes", "@playwright/mcp@latest", "--config", ".archon/playwright/mcp.json"]
+        args: [`@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`, "--config", ".archon/playwright/mcp.json"]
       },
       playwright_vision: {
         command: "npx",
-        args: ["--yes", "@playwright/mcp@latest", "--config", ".archon/playwright/mcp.vision.json"]
+        args: [`@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`, "--config", ".archon/playwright/mcp.vision.json"]
       }
     }
   }, null, 2);
@@ -400,64 +414,73 @@ export function mergePackageJson(
       ? { ...(packageJson.devDependencies as Record<string, string>) }
       : {};
 
-  const archonEntry =
-    "node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts";
-
-  scripts["archon"] = archonEntry;
-  scripts["archon:migrate"] = `${archonEntry} migrate`;
-  scripts["archon:health"] = `${archonEntry} health`;
-  scripts["archon:doctor"] = `${archonEntry} doctor`;
-  scripts["archon:heal"] = `${archonEntry} doctor --repair`;
-  scripts["archon:bootstrap"] = `${archonEntry} bootstrap-project`;
-  scripts["archon:verify:setup"] = `${archonEntry} verify-setup`;
-  scripts["archon:status"] = `${archonEntry} status`;
-  scripts["archon:coverage"] = `${archonEntry} coverage --format text`;
-  scripts["archon:gaps"] = `${archonEntry} gaps --format text`;
-  scripts["archon:checkpoint"] = `${archonEntry} checkpoint --format text`;
-  scripts["archon:resume"] = `${archonEntry} resume --format text`;
-  scripts["archon:seed-workflow-proof"] = `${archonEntry} seed-workflow-proof`;
-  scripts["archon:advance-active-task"] = `${archonEntry} advance-active-task --format text`;
-  scripts["archon:reconcile"] = `${archonEntry} reconcile-runtime-state --apply --format text`;
-  scripts["archon:sync-runtime-exports"] = `${archonEntry} sync-runtime-exports --format text`;
-  scripts["archon:daemon"] = `${archonEntry} daemon --format text`;
-  scripts["archon:supervisor"] = `${archonEntry} supervisor --format text`;
-  scripts["archon:supervisor-history"] = `${archonEntry} supervisor-history --format text`;
-  scripts["archon:ops"] = `${archonEntry} ops --format text`;
-  scripts["archon:focus"] = `${archonEntry} ops --format text`;
-  scripts["archon:loop"] = `${archonEntry} loop --format text`;
-  scripts["archon:recover"] = `${archonEntry} recover`;
-  scripts["archon:report"] = `${archonEntry} report --format markdown`;
-  scripts["archon:plan-context"] = `${archonEntry} plan-context`;
-  scripts["archon:refresh-retrieval"] = `${archonEntry} refresh-retrieval`;
-  scripts["archon:refresh-retrieval:fast"] = `${archonEntry} refresh-retrieval --artifacts-only`;
-  scripts["archon:refresh-repo-context"] = `${archonEntry} refresh-repo-context`;
-  scripts["archon:repair-task-queue"] = `${archonEntry} repair-task-queue`;
-  scripts["archon:export-docs"] = `${archonEntry} export-docs`;
+  // npm scripts run with ./node_modules/.bin prepended to PATH, so the bare
+  // "archon" name resolves to the installed bin without --experimental-strip-types
+  // or a full path.  This works cross-platform; npm creates the appropriate .cmd
+  // wrapper on Windows.  Standalone scripts that bypass the bin router (setup-*,
+  // verify-git-guard, autopilot-status, grafana-mcp) reference the compiled dist
+  // file directly — they are not sub-commands of the main bin router.
+  scripts["archon"] = "archon";
+  scripts["archon:migrate"] = "archon migrate";
+  scripts["archon:health"] = "archon health";
+  scripts["archon:doctor"] = "archon doctor";
+  scripts["archon:heal"] = "archon doctor --repair";
+  scripts["archon:bootstrap"] = "archon bootstrap-project";
+  scripts["archon:verify:setup"] = "archon verify-setup";
+  scripts["archon:status"] = "archon status";
+  scripts["archon:coverage"] = "archon coverage --format text";
+  scripts["archon:gaps"] = "archon gaps --format text";
+  scripts["archon:checkpoint"] = "archon checkpoint --format text";
+  scripts["archon:resume"] = "archon resume --format text";
+  scripts["archon:seed-workflow-proof"] = "archon seed-workflow-proof";
+  scripts["archon:advance-active-task"] = "archon advance-active-task --format text";
+  scripts["archon:reconcile"] = "archon reconcile-runtime-state --apply --format text";
+  scripts["archon:sync-runtime-exports"] = "archon sync-runtime-exports --format text";
+  scripts["archon:daemon"] = "archon daemon --format text";
+  scripts["archon:supervisor"] = "archon supervisor --format text";
+  scripts["archon:supervisor-history"] = "archon supervisor-history --format text";
+  scripts["archon:ops"] = "archon ops --format text";
+  scripts["archon:focus"] = "archon ops --format text";
+  scripts["archon:loop"] = "archon loop --format text";
+  scripts["archon:recover"] = "archon recover";
+  scripts["archon:report"] = "archon report --format markdown";
+  scripts["archon:plan-context"] = "archon plan-context";
+  scripts["archon:refresh-retrieval"] = "archon refresh-retrieval";
+  scripts["archon:refresh-retrieval:fast"] = "archon refresh-retrieval --artifacts-only";
+  scripts["archon:refresh-repo-context"] = "archon refresh-repo-context";
+  scripts["archon:repair-task-queue"] = "archon repair-task-queue";
+  scripts["archon:export-docs"] = "archon export-docs";
+  // autopilot-status is a standalone script not routed through the bin router
   scripts["archon:autopilot-status"] =
-    "node --experimental-strip-types ./node_modules/archon/src/archon/autopilot-status.ts";
-  scripts["archon:github-dispatch"] = `${archonEntry} github-dispatch --target .`;
-  scripts["archon:mcp"] = `${archonEntry} mcp`;
-  scripts["archon:scaffold-workflow"] = `${archonEntry} scaffold-workflow --target .`;
-  scripts["archon:upgrade-reasoning-workflow"] = `${archonEntry} upgrade-reasoning-workflow --target .`;
-  scripts["archon:seed-happy-path-fixture"] = `${archonEntry} seed-happy-path-fixture --target .`;
+    "node ./node_modules/archon/dist/archon/autopilot-status.js";
+  scripts["archon:github-dispatch"] = "archon github-dispatch --target .";
+  scripts["archon:mcp"] = "archon mcp";
+  scripts["archon:scaffold-workflow"] = "archon scaffold-workflow --target .";
+  scripts["archon:upgrade-reasoning-workflow"] = "archon upgrade-reasoning-workflow --target .";
+  scripts["archon:seed-happy-path-fixture"] = "archon seed-happy-path-fixture --target .";
   scripts["archon:check:happy-path"] = "bash scripts/check-archon-happy-path.sh";
+  // check-archon-workflow.ts is a consumer-owned TypeScript file installed in
+  // scripts/ (not in node_modules/archon/src/) — --experimental-strip-types here
+  // is for the consumer's own local TS helper, not archon source.
   scripts["archon:check-workflow"] = "node --experimental-strip-types scripts/check-archon-workflow.ts";
-  scripts["archon:verify:migrations:live"] = `${archonEntry} verify-live-migrations`;
-  scripts["archon:verify:review-identity"] = `${archonEntry} verify-review-identity`;
+  scripts["archon:verify:migrations:live"] = "archon verify-live-migrations";
+  scripts["archon:verify:review-identity"] = "archon verify-review-identity";
+  // verify-git-guard and setup-* are standalone scripts not in the bin router
   scripts["archon:verify:git-guard"] =
-    "node --experimental-strip-types ./node_modules/archon/src/install/verify-git-guard.ts";
-  scripts["archon:record-review"] = `${archonEntry} record-review --input .archon/review-action.json`;
+    "node ./node_modules/archon/dist/install/verify-git-guard.js";
+  scripts["archon:record-review"] = "archon record-review --input .archon/review-action.json";
   scripts["archon:setup:git-guard"] =
-    "node --experimental-strip-types ./node_modules/archon/src/install/setup-git-guard.ts";
-  scripts["archon:setup:local"] = "node --experimental-strip-types ./node_modules/archon/src/install/setup-local.ts";
+    "node ./node_modules/archon/dist/install/setup-git-guard.js";
+  scripts["archon:setup:local"] = "node ./node_modules/archon/dist/install/setup-local.js";
   scripts["archon:setup:playwright"] =
-    "node --experimental-strip-types ./node_modules/archon/src/install/setup-playwright.ts";
+    "node ./node_modules/archon/dist/install/setup-playwright.js";
   scripts["archon:verify:playwright"] =
-    "node --experimental-strip-types ./node_modules/archon/src/install/setup-playwright.ts --verify";
+    "node ./node_modules/archon/dist/install/setup-playwright.js --verify";
 
   if (options.withGrafana) {
+    // grafana-mcp is a standalone server not routed through the bin router
     scripts["archon:grafana:mcp"] =
-      "node --experimental-strip-types ./node_modules/archon/src/grafana/mcp-server.ts";
+      "node ./node_modules/archon/dist/grafana/mcp-server.js";
   }
 
   scripts["archon:graphify:build"] = "graphify . --wiki";

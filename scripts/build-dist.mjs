@@ -70,6 +70,17 @@ function rewriteTsSpecifiers(code) {
 }
 
 // ---------------------------------------------------------------------------
+// Files to exclude from the compiled package.
+// These are dead code in the bin-router world: the compiled bin routes admin
+// commands to dist/admin.js (from src/admin.ts), so src/admin/archon.ts (the
+// old TS CLI shim) is never invoked by the bin. Excluding it removes a source
+// of "--experimental-strip-types" functional usage from the shipped dist.
+// ---------------------------------------------------------------------------
+const SKIP_RELATIVE = new Set([
+  "admin/archon.ts", // superseded by dist/cli/archon-bin.js + dist/admin.js
+]);
+
+// ---------------------------------------------------------------------------
 // Step 1: Transpile src/**/*.ts → dist/**/*.js
 // ---------------------------------------------------------------------------
 
@@ -78,6 +89,8 @@ let errorCount = 0;
 
 walkDir(srcDir, (filePath) => {
   if (!filePath.endsWith(".ts")) return;
+  const relForSkip = path.relative(srcDir, filePath).replace(/\\/g, "/");
+  if (SKIP_RELATIVE.has(relForSkip)) return;
 
   const relative = path.relative(srcDir, filePath); // e.g. admin/db.ts
   const outRelative = relative.replace(/\.ts$/, ".js");
