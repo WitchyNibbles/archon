@@ -478,9 +478,15 @@ test("ci workflow routes the release posture through the release overlay gate", 
   assert.match(ciWorkflow, /- run: npm run check:coverage/);
   assert.match(ciWorkflow, /needs:[\s\S]*unit-tests/);
   // P1 install hardening: pack-install smoke job must be in required-checks needs
-  // so removing it breaks CI immediately rather than silently.
-  assert.match(ciWorkflow, /needs:[\s\S]*pack-install/,
-    "required-checks must gate on pack-install so removing the job fails CI");
+  // so removing it breaks CI immediately rather than silently. Anchor to the
+  // required-checks needs LIST ITEM ("- pack-install"), not a bare substring — the
+  // env block also references `needs.pack-install.result` (dot form), which a greedy
+  // /needs:[\s\S]*pack-install/ would false-match even after the job was removed.
+  assert.match(
+    ciWorkflow,
+    /required-checks:[\s\S]*?\n\s+needs:(?:\n\s+- [\w-]+)*\n\s+- pack-install\b/,
+    "required-checks must gate on pack-install (as a needs list item) so removing the job fails CI"
+  );
 });
 
 test("README frames archon as an opt-in overlay with production-oriented package checks", async () => {
