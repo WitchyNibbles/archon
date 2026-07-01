@@ -4,12 +4,21 @@ Use task-type quality gates in addition to the generic review trio.
 
 ## Global rules
 
+- the no-buts completion bar applies to every task: no work is done while any
+  review finding — CRITICAL, HIGH, MEDIUM, or LOW — is open; each is resolved or
+  carries an explicit, recorded, defensible justification (see `review-gate-policy.md`)
+- the solution must be the best durable fit for the user's goal; a low-cost
+  shortcut taken where a better long-term solution was available is a blocking
+  quality finding, not an acceptable trade-off
+- acceptance criteria must be sharp and verifiable and must sum to the whole goal —
+  there must be no gap between "every task passed" and "the goal is achieved"
 - all substantive work still requires `reviewer`, `security_reviewer`, and `qa_engineer`
 - `specialist_verified` tasks must name at least one required specialist role
 - the task packet must list the relevant quality gates explicitly
 - handoffs and review gates must cite evidence for the claimed specialist execution and quality checks
 - refactors and rewrites must preserve intended behavior and include regression evidence for relevant good-path and bad-path cases
-- discovered `CRITICAL` or `HIGH` defects in touched scope must be fixed or carried as explicit blockers before completion
+- discovered defects in touched scope must be fixed, or carried as an explicit,
+  recorded blocker with an owner — never silently left; `CRITICAL`/`HIGH` block completion outright
 
 ## Gate guidance
 
