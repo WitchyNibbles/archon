@@ -11,13 +11,13 @@
  *  (f) .env.example sync: every schema key that has a non-trivial default or
  *      format constraint is documented in .env.example.
  */
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { validateArchonConfig } from "../src/config/validate.ts";
+import { validateArchonConfig, assertValidArchonConfig } from "../src/config/validate.ts";
 import { archonConfigSchema } from "../src/config/schema.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -473,4 +473,218 @@ test("ARCHON_RUNTIME_MODE rejects an unknown value", () => {
   assert.ok(!result.ok);
   if (result.ok) return;
   assert.ok(result.errors.join("\n").includes("ARCHON_RUNTIME_MODE"));
+});
+
+// ---------------------------------------------------------------------------
+// (e) additional defaults: RUNTIME_MODE / RUNTIME_PROFILE / DEBATE_GATE  (LOW-4)
+// ---------------------------------------------------------------------------
+
+test("(e) ARCHON_RUNTIME_MODE defaults to 'auto' when absent", () => {
+  const result = validateArchonConfig({});
+  assert.ok(result.ok, `Unexpected errors: ${!result.ok ? result.errors.join(", ") : ""}`);
+  if (!result.ok) return;
+  assert.equal(result.config.ARCHON_RUNTIME_MODE, "auto");
+});
+
+test("(e) ARCHON_RUNTIME_PROFILE defaults to 'local-docker' when absent", () => {
+  const result = validateArchonConfig({});
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  assert.equal(result.config.ARCHON_RUNTIME_PROFILE, "local-docker");
+});
+
+test("(e) ARCHON_DEBATE_GATE defaults to 'enabled' when absent", () => {
+  const result = validateArchonConfig({});
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  assert.equal(result.config.ARCHON_DEBATE_GATE, "enabled");
+});
+
+// ---------------------------------------------------------------------------
+// PCT boundary values accepted  (LOW-4)
+// ---------------------------------------------------------------------------
+
+test("PCT boundary: 0 and 100 are both accepted", () => {
+  const result = validateArchonConfig({
+    ARCHON_CONTEXT_WARNING_PCT: "0",
+    ARCHON_CONTEXT_HANDOFF_PCT: "100",
+    ARCHON_CONTEXT_HARD_STOP_PCT: "100",
+  });
+  assert.ok(result.ok, `Unexpected errors: ${!result.ok ? result.errors.join(", ") : ""}`);
+  if (!result.ok) return;
+  assert.equal(result.config.ARCHON_CONTEXT_WARNING_PCT, 0);
+  assert.equal(result.config.ARCHON_CONTEXT_HANDOFF_PCT, 100);
+});
+
+test("PCT boundary: value > 100 is rejected", () => {
+  const result = validateArchonConfig({ ARCHON_CONTEXT_WARNING_PCT: "101" });
+  assert.ok(!result.ok);
+  if (result.ok) return;
+  assert.ok(result.errors.join("\n").includes("ARCHON_CONTEXT_WARNING_PCT"));
+});
+
+test("PCT boundary: negative value is rejected", () => {
+  const result = validateArchonConfig({ ARCHON_CONTEXT_HANDOFF_PCT: "-1" });
+  assert.ok(!result.ok);
+  if (result.ok) return;
+  assert.ok(result.errors.join("\n").includes("ARCHON_CONTEXT_HANDOFF_PCT"));
+});
+
+// ---------------------------------------------------------------------------
+// Port boundary values  (LOW-4)
+// ---------------------------------------------------------------------------
+
+test("Port boundaries: 1 and 65535 are both accepted", () => {
+  const result = validateArchonConfig({
+    ARCHON_MCP_PORT: "1",
+    ARCHON_UI_PORT: "65535",
+  });
+  assert.ok(result.ok, `Unexpected errors: ${!result.ok ? result.errors.join(", ") : ""}`);
+  if (!result.ok) return;
+  assert.equal(result.config.ARCHON_MCP_PORT, 1);
+  assert.equal(result.config.ARCHON_UI_PORT, 65535);
+});
+
+test("Port boundary: 0 is rejected (below range)", () => {
+  const result = validateArchonConfig({ ARCHON_MCP_PORT: "0" });
+  assert.ok(!result.ok);
+  if (result.ok) return;
+  assert.ok(result.errors.join("\n").includes("ARCHON_MCP_PORT"));
+});
+
+test("Port boundary: 65536 is rejected (above range)", () => {
+  const result = validateArchonConfig({ ARCHON_UI_PORT: "65536" });
+  assert.ok(!result.ok);
+  if (result.ok) return;
+  assert.ok(result.errors.join("\n").includes("ARCHON_UI_PORT"));
+});
+
+// ---------------------------------------------------------------------------
+// Float acceptance for PCT fields  (LOW-4)
+// ---------------------------------------------------------------------------
+
+test("PCT fields accept float strings (context-budget.ts uses parseFloat)", () => {
+  const result = validateArchonConfig({
+    ARCHON_CONTEXT_WARNING_PCT: "55.5",
+    ARCHON_CONTEXT_HANDOFF_PCT: "70.25",
+    ARCHON_CONTEXT_HARD_STOP_PCT: "80.0",
+  });
+  assert.ok(result.ok, `Unexpected errors: ${!result.ok ? result.errors.join(", ") : ""}`);
+  if (!result.ok) return;
+  assert.equal(result.config.ARCHON_CONTEXT_WARNING_PCT, 55.5);
+  assert.equal(result.config.ARCHON_CONTEXT_HANDOFF_PCT, 70.25);
+});
+
+test("ARCHON_MAX_RESPAWNS_PER_TASK rejects float strings (integer-only field)", () => {
+  // respawn-budget.ts uses Number.isInteger, so we enforce integer-only here.
+  const result = validateArchonConfig({ ARCHON_MAX_RESPAWNS_PER_TASK: "3.5" });
+  assert.ok(!result.ok);
+  if (result.ok) return;
+  assert.ok(result.errors.join("\n").includes("ARCHON_MAX_RESPAWNS_PER_TASK"));
+});
+
+// ---------------------------------------------------------------------------
+// ARCHON_GRAFANA_URL scheme restriction  (LOW-4)
+// ---------------------------------------------------------------------------
+
+test("ARCHON_GRAFANA_URL accepts an http:// URL", () => {
+  const result = validateArchonConfig({
+    ARCHON_GRAFANA_URL: "http://grafana.internal:3000",
+  });
+  assert.ok(result.ok, `Unexpected errors: ${!result.ok ? result.errors.join(", ") : ""}`);
+  if (!result.ok) return;
+  assert.equal(result.config.ARCHON_GRAFANA_URL, "http://grafana.internal:3000");
+});
+
+test("ARCHON_GRAFANA_URL rejects an ftp:// URL", () => {
+  const result = validateArchonConfig({ ARCHON_GRAFANA_URL: "ftp://files.example.com" });
+  assert.ok(!result.ok);
+  if (result.ok) return;
+  assert.ok(result.errors.join("\n").includes("ARCHON_GRAFANA_URL"));
+});
+
+// ---------------------------------------------------------------------------
+// Valid ARCHON_RUNTIME_MODE enum values  (LOW-4)
+// ---------------------------------------------------------------------------
+
+test("ARCHON_RUNTIME_MODE accepts known enum values", () => {
+  for (const mode of ["auto", "docker", "native", "managed"] as const) {
+    const result = validateArchonConfig({ ARCHON_RUNTIME_MODE: mode });
+    assert.ok(result.ok, `Expected '${mode}' to be accepted; errors: ${!result.ok ? result.errors.join(", ") : ""}`);
+    if (!result.ok) continue;
+    assert.equal(result.config.ARCHON_RUNTIME_MODE, mode);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Regression: default-keyed required var not spuriously flagged  (MEDIUM-1)
+// ---------------------------------------------------------------------------
+
+test("(regression) bad URL + required ARCHON_WORKSPACE_SLUG: no spurious workspace error", () => {
+  // ARCHON_WORKSPACE_SLUG has a schema default of "default".  A parse failure
+  // triggered by an unrelated bad URL must NOT also flag WORKSPACE_SLUG absent.
+  const result = validateArchonConfig(
+    { ARCHON_GRAFANA_URL: "ftp://bad-scheme" },
+    { required: ["ARCHON_WORKSPACE_SLUG"] }
+  );
+  // Grafana URL format error expected, but NOT a missing-workspace-slug error
+  if (!result.ok) {
+    const allErrors = result.errors.join("\n");
+    assert.ok(
+      !allErrors.includes("ARCHON_WORKSPACE_SLUG"),
+      `Spurious WORKSPACE_SLUG error found in:\n${allErrors}`
+    );
+    // Grafana URL error should be present
+    assert.ok(allErrors.includes("ARCHON_GRAFANA_URL"), `Expected GRAFANA_URL error in:\n${allErrors}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// assertValidArchonConfig: process.exit behaviour  (MEDIUM-2)
+// ---------------------------------------------------------------------------
+
+test("assertValidArchonConfig: calls process.exit(1) and writes to stderr on invalid config", () => {
+  const stderrChunks: string[] = [];
+  const stderrWrite = mock.method(process.stderr, "write", (chunk: unknown) => {
+    stderrChunks.push(String(chunk));
+    return true;
+  });
+  const exitCalled: number[] = [];
+  const processExit = mock.method(process, "exit", (code?: number) => {
+    exitCalled.push(code ?? 0);
+    // Do NOT actually exit — just record the call.
+  });
+
+  try {
+    const result = validateArchonConfig({}, { required: ["ARCHON_CORE_DATABASE_URL"] });
+    // assertValidArchonConfig should call process.exit(1) for a failure result.
+    assertValidArchonConfig(result);
+  } finally {
+    stderrWrite.mock.restore();
+    processExit.mock.restore();
+  }
+
+  // stderr must have received at least one write containing the error
+  const allStderr = stderrChunks.join("");
+  assert.ok(allStderr.includes("ARCHON_CORE_DATABASE_URL"), `stderr missing field name:\n${allStderr}`);
+  assert.ok(allStderr.includes("configuration error") || allStderr.includes("archon"), `stderr missing header:\n${allStderr}`);
+  // process.exit(1) must have been called exactly once
+  assert.equal(exitCalled.length, 1, "Expected process.exit to be called once");
+  assert.equal(exitCalled[0], 1, "Expected process.exit(1)");
+});
+
+test("assertValidArchonConfig: does NOT call process.exit on a valid config", () => {
+  const exitCalled: number[] = [];
+  const processExit = mock.method(process, "exit", (code?: number) => {
+    exitCalled.push(code ?? 0);
+  });
+
+  try {
+    const result = validateArchonConfig({ ARCHON_CORE_DATABASE_URL: "postgresql://u:p@h:5432/db" });
+    assertValidArchonConfig(result); // should not throw or exit
+  } finally {
+    processExit.mock.restore();
+  }
+
+  assert.equal(exitCalled.length, 0, "process.exit should NOT have been called for a valid config");
 });

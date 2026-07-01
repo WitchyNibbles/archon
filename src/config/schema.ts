@@ -175,20 +175,27 @@ export const archonConfigSchema = z.object({
   /**
    * Context-window warning threshold (0–100 %).
    * The daemon logs a warning when usage reaches this level. Default: 60.
+   *
+   * Note: the runtime consumer (context-budget.ts resolveArchonContextPolicy)
+   * reads this via parseFloat and accepts floating-point values, so the schema
+   * allows non-integer values to avoid a false mismatch.  Values of 0 are
+   * schema-valid but the runtime falls back to the default (treats 0 as absent).
    */
-  ARCHON_CONTEXT_WARNING_PCT: defInt(60, z.number().int().min(0).max(100)),
+  ARCHON_CONTEXT_WARNING_PCT: defInt(60, z.number().min(0).max(100)),
 
   /**
    * Context-window handoff threshold (0–100 %).
    * The daemon transitions to handoff_required at this level. Default: 70.
+   * (Float-compatible for alignment with runtime parseFloat coercion.)
    */
-  ARCHON_CONTEXT_HANDOFF_PCT: defInt(70, z.number().int().min(0).max(100)),
+  ARCHON_CONTEXT_HANDOFF_PCT: defInt(70, z.number().min(0).max(100)),
 
   /**
    * Context-window hard-stop threshold (0–100 %).
    * The daemon triggers an immediate reset at this level. Default: 80.
+   * (Float-compatible for alignment with runtime parseFloat coercion.)
    */
-  ARCHON_CONTEXT_HARD_STOP_PCT: defInt(80, z.number().int().min(0).max(100)),
+  ARCHON_CONTEXT_HARD_STOP_PCT: defInt(80, z.number().min(0).max(100)),
 
   /**
    * Context monitor mode.
@@ -258,10 +265,23 @@ export const archonConfigSchema = z.object({
   // 8. GRAFANA (optional observability integration)
   // -------------------------------------------------------------------------
 
-  /** Grafana instance base URL (e.g. https://grafana.example.com). Must be https:// or http://. */
+  /**
+   * Grafana instance base URL (e.g. https://grafana.example.com).
+   * Must be an http:// or https:// URL (ftp://, file:// etc. are rejected).
+   */
   ARCHON_GRAFANA_URL: z.preprocess(
     ne,
-    z.string().url().optional()
+    z
+      .string()
+      .url()
+      .refine(
+        (v) => {
+          const proto = new URL(v).protocol.replace(/:$/, "");
+          return proto === "http" || proto === "https";
+        },
+        { message: "must be an http:// or https:// URL" }
+      )
+      .optional()
   ) as z.ZodType<string | undefined>,
 
   /** Grafana service-account token. */

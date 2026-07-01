@@ -75,7 +75,15 @@ test("continueSessionCommand: no active task → prints clear message and exits 
     const result = spawnSync(
       process.execPath,
       ["--experimental-strip-types", path.join(repoRoot, "src/admin.ts"), "continue-session"],
-      { cwd: tmpDir, encoding: "utf8", timeout: 10_000 }
+      {
+        cwd: tmpDir,
+        encoding: "utf8",
+        timeout: 10_000,
+        // Provide a syntactically-valid URL so the startup config validator passes.
+        // continueSessionCommand exits before any DB access when no .archon/ACTIVE
+        // exists, so the DB does not need to be reachable.
+        env: { ...process.env, ARCHON_CORE_DATABASE_URL: "postgresql://u:p@127.0.0.1:9999/archon-test" }
+      }
     );
     const output = (result.stdout ?? "") + (result.stderr ?? "");
     assert.ok(

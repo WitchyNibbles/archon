@@ -179,7 +179,9 @@ function runAdmin(args: string[]): { status: number | null; stdout: string; stde
     {
       encoding: "utf8",
       timeout: 10_000,
-      env: { ...process.env, ARCHON_CORE_DATABASE_URL: "" }
+      // Provide a syntactically-valid URL so the startup config validator passes.
+      // The DB itself does not need to be reachable for argument-validation tests.
+      env: { ...process.env, ARCHON_CORE_DATABASE_URL: "postgresql://u:p@127.0.0.1:9999/archon-test" }
     }
   );
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
