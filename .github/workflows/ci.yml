@@ -39,6 +39,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      # build:dist compiles src/**/*.ts → dist/**/*.js (esbuild). verify-release-overlay
+      # runs the full suite, including tests that assert `npm pack --dry-run` ships a
+      # populated dist/ — they hard-fail unless dist/ exists first (same reason unit-tests
+      # builds dist below).
+      - run: npm run build:dist
       - run: npm run verify:release-overlay
 
   live-migrations:
@@ -121,6 +126,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # build:dist compiles src/**/*.ts → dist/**/*.js (esbuild). Tests that run
+      # npm pack --dry-run must see a populated dist/ to make non-vacuous assertions.
+      - run: npm run build:dist
       # Runs the full suite under c8 and enforces the coverage ratchet floor
       # (package.json "c8" key). Fails on test failure OR coverage regression.
       - run: npm run check:coverage
@@ -171,7 +179,7 @@ jobs:
           # Invoke the compiled bin entry directly (dist/cli/archon-bin.js is the
           # bin target) so the smoke test is identical to the windows leg and does
           # not depend on the npm-generated .bin shim.
-          BIN="./node_modules/archon/dist/cli/archon-bin.js"
+          BIN="./node_modules/@witchynibbles/archon/dist/cli/archon-bin.js"
 
           # archon --help must exit 0
           node "$BIN" --help
@@ -204,9 +212,9 @@ jobs:
           # lifecycle hooks. The inspection logic lives in scripts/ci/*.mjs (shared
           # verbatim with the windows leg) so the rules live in ONE place. $GITHUB_WORKSPACE
           # is the repo checkout; the arg is the installed package under the temp dir.
-          node "$GITHUB_WORKSPACE/scripts/ci/assert-dist-clean.mjs" "$INSTALL_DIR/node_modules/archon/dist"
-          node "$GITHUB_WORKSPACE/scripts/ci/assert-scripts-clean.mjs" "$INSTALL_DIR/node_modules/archon/scripts"
-          node "$GITHUB_WORKSPACE/scripts/ci/assert-no-lifecycle-hooks.mjs" "$INSTALL_DIR/node_modules/archon/package.json"
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-dist-clean.mjs" "$INSTALL_DIR/node_modules/@witchynibbles/archon/dist"
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-scripts-clean.mjs" "$INSTALL_DIR/node_modules/@witchynibbles/archon/scripts"
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-no-lifecycle-hooks.mjs" "$INSTALL_DIR/node_modules/@witchynibbles/archon/package.json"
 
       # Pack → install into a clean temp dir → run smoke checks (windows)
       # Inspection logic is shared with the unix leg via scripts/ci/*.mjs (no inline
@@ -233,7 +241,7 @@ jobs:
           # shim is an extensionless POSIX script on Windows that `node` cannot
           # execute; dist/cli/archon-bin.js is the bin target and runs identically
           # on every platform. Node accepts forward slashes on Windows.
-          $bin = "node_modules/archon/dist/cli/archon-bin.js"
+          $bin = "node_modules/@witchynibbles/archon/dist/cli/archon-bin.js"
 
           # archon --help must exit 0
           node $bin --help
@@ -273,11 +281,11 @@ jobs:
           # (single source of truth). Node accepts forward slashes on Windows, so
           # $env:GITHUB_WORKSPACE composes cleanly. Each check must exit 0.
           $ci = "$env:GITHUB_WORKSPACE/scripts/ci"
-          node "$ci/assert-dist-clean.mjs" (Join-Path $installDir "node_modules\archon\dist")
+          node "$ci/assert-dist-clean.mjs" (Join-Path $installDir "node_modules\@witchynibbles\archon\dist")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node "$ci/assert-scripts-clean.mjs" (Join-Path $installDir "node_modules\archon\scripts")
+          node "$ci/assert-scripts-clean.mjs" (Join-Path $installDir "node_modules\@witchynibbles\archon\scripts")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node "$ci/assert-no-lifecycle-hooks.mjs" (Join-Path $installDir "node_modules\archon\package.json")
+          node "$ci/assert-no-lifecycle-hooks.mjs" (Join-Path $installDir "node_modules\@witchynibbles\archon\package.json")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           Pop-Location

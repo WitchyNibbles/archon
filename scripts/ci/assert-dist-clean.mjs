@@ -10,7 +10,7 @@
 // Fails (exit 1) when a shipped .js file contains:
 //   1. "--experimental-strip-types" adjacent to "node_modules" — the specific bug
 //      pattern P1 fixed (installer writing old-form scripts that invoke archon via
-//      node --experimental-strip-types ./node_modules/archon/src/...). Plain string
+//      node --experimental-strip-types pointing at installed source). Plain string
 //      literals in usage messages / consumer-local .ts templates are fine.
 //   2. a relative ".ts" import specifier — confirms the esbuild rewrite ran.
 

@@ -102,9 +102,9 @@ import {
   executeReportCommandFromArgs,
   executeSeedModernizationProofCommandFromArgs,
   executeStatusCommandFromArgs
-} from "./node_modules/archon/src/admin.ts";
-import { createReviewActionContextResolver } from "./node_modules/archon/src/core/review-context.ts";
-import { ArchonCoreService, MemoryStore } from "./node_modules/archon/src/index.ts";
+} from "./node_modules/@witchynibbles/archon/dist/admin.js";
+import { createReviewActionContextResolver } from "./node_modules/@witchynibbles/archon/dist/core/review-context.js";
+import { ArchonCoreService, MemoryStore } from "./node_modules/@witchynibbles/archon/dist/index.js";
 
 const [, , workspaceSlug, projectSlug, taskId] = process.argv;
 const cwd = process.cwd();

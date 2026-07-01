@@ -266,7 +266,7 @@ export function archonMcpConfigFragment(): string {
     mcpServers: {
       archon: {
         command: "node",
-        args: ["./node_modules/archon/dist/cli/archon-bin.js", "mcp"]
+        args: ["./node_modules/@witchynibbles/archon/dist/cli/archon-bin.js", "mcp"]
       }
     }
   }, null, 2);
@@ -277,7 +277,7 @@ export function grafanaMcpConfigFragment(): string {
     mcpServers: {
       grafana: {
         command: "node",
-        args: ["./node_modules/archon/dist/grafana/mcp-server.js"]
+        args: ["./node_modules/@witchynibbles/archon/dist/grafana/mcp-server.js"]
       }
     }
   }, null, 2);
@@ -483,7 +483,7 @@ export function mergePackageJson(
   scripts["archon:export-docs"] = "archon export-docs";
   // autopilot-status is a standalone script not routed through the bin router
   scripts["archon:autopilot-status"] =
-    "node ./node_modules/archon/dist/archon/autopilot-status.js";
+    "node ./node_modules/@witchynibbles/archon/dist/archon/autopilot-status.js";
   scripts["archon:github-dispatch"] = "archon github-dispatch --target .";
   scripts["archon:mcp"] = "archon mcp";
   scripts["archon:scaffold-workflow"] = "archon scaffold-workflow --target .";
@@ -491,34 +491,37 @@ export function mergePackageJson(
   scripts["archon:seed-happy-path-fixture"] = "archon seed-happy-path-fixture --target .";
   scripts["archon:check:happy-path"] = "bash scripts/check-archon-happy-path.sh";
   // check-archon-workflow.ts is a consumer-owned TypeScript file installed in
-  // scripts/ (not in node_modules/archon/src/) — --experimental-strip-types here
+  // scripts/ (not in node_modules/@witchynibbles/archon/src/) — --experimental-strip-types here
   // is for the consumer's own local TS helper, not archon source.
   scripts["archon:check-workflow"] = "node --experimental-strip-types scripts/check-archon-workflow.ts";
   scripts["archon:verify:migrations:live"] = "archon verify-live-migrations";
   scripts["archon:verify:review-identity"] = "archon verify-review-identity";
-  // verify-git-guard and setup-* are standalone scripts not in the bin router
+  // verify-git-guard and setup-* are standalone scripts not in the bin router.
+  // They reference the scoped package install path (@witchynibbles/archon) directly
+  // because they are not sub-commands of the main bin router and are invoked outside
+  // npm's PATH-prepend mechanism (e.g. from git hooks and shell scripts).
   scripts["archon:verify:git-guard"] =
-    "node ./node_modules/archon/dist/install/verify-git-guard.js";
+    "node ./node_modules/@witchynibbles/archon/dist/install/verify-git-guard.js";
   scripts["archon:record-review"] = "archon record-review --input .archon/review-action.json";
   scripts["archon:setup:git-guard"] =
-    "node ./node_modules/archon/dist/install/setup-git-guard.js";
-  scripts["archon:setup:local"] = "node ./node_modules/archon/dist/install/setup-local.js";
+    "node ./node_modules/@witchynibbles/archon/dist/install/setup-git-guard.js";
+  scripts["archon:setup:local"] = "node ./node_modules/@witchynibbles/archon/dist/install/setup-local.js";
   scripts["archon:setup:playwright"] =
-    "node ./node_modules/archon/dist/install/setup-playwright.js";
+    "node ./node_modules/@witchynibbles/archon/dist/install/setup-playwright.js";
   scripts["archon:verify:playwright"] =
-    "node ./node_modules/archon/dist/install/setup-playwright.js --verify";
+    "node ./node_modules/@witchynibbles/archon/dist/install/setup-playwright.js --verify";
 
   if (options.withGrafana) {
     // grafana-mcp is a standalone server not routed through the bin router
     scripts["archon:grafana:mcp"] =
-      "node ./node_modules/archon/dist/grafana/mcp-server.js";
+      "node ./node_modules/@witchynibbles/archon/dist/grafana/mcp-server.js";
   }
 
   scripts["archon:graphify:build"] = "graphify . --wiki";
   scripts["archon:graphify:update"] = "graphify . --update --wiki";
   scripts["archon:graphify:report"] = "graphify . --update";
 
-  devDependencies.archon = prefixedFileDependency(dependencyPathFromTarget);
+  devDependencies["@witchynibbles/archon"] = prefixedFileDependency(dependencyPathFromTarget);
 
   packageJson.scripts = sortObjectKeys(scripts);
   packageJson.devDependencies = sortObjectKeys(devDependencies);

@@ -118,7 +118,7 @@ const installManifestVersion = 1;
 const generatedReviewIdentityAdapter = `import {
   createHeaderReviewIdentityAdapter,
   createReviewPrincipalAdapter
-} from "archon/src/index.ts";
+} from "@witchynibbles/archon";
 
 export const reviewIdentityAdapters = {
   auth_context_passthrough: createReviewPrincipalAdapter(async ({ authContext }) => {
@@ -159,13 +159,13 @@ export default createReviewPrincipalAdapter(async () => {
 
 function usage(): never {
   throw new Error(
-    "Usage: node --experimental-strip-types src/install/cli.ts --dry-run [--with-grafana] [--with-obsidian] --target <path> | <path>\n" +
-      "   or: node --experimental-strip-types src/install/cli.ts init (--apply | --dry-run) [--with-grafana] [--with-obsidian] --target <path> | <path>\n" +
-      "   or: node --experimental-strip-types src/install/cli.ts upgrade (--apply | --dry-run) [--with-grafana] [--with-obsidian] --target <path> | <path>\n" +
-      "   or: node --experimental-strip-types src/install/cli.ts verify --target <path> | <path>\n" +
-      "   or: node --experimental-strip-types src/install/cli.ts scaffold-workflow --target <path> --task-id <task-id> [--force] [--force-active]\n" +
-      "   or: node --experimental-strip-types src/install/cli.ts seed-happy-path-fixture --target <path> --task-id fixture-<name> [--force]\n" +
-      "   or: node --experimental-strip-types src/install/cli.ts upgrade-reasoning-workflow --target <path> --task-id <task-id> [--mode dual|strict] [--force]"
+    "Usage: archon --dry-run [--with-grafana] [--with-obsidian] --target <path> | <path>\n" +
+      "   or: archon init (--apply | --dry-run) [--with-grafana] [--with-obsidian] --target <path> | <path>\n" +
+      "   or: archon upgrade (--apply | --dry-run) [--with-grafana] [--with-obsidian] --target <path> | <path>\n" +
+      "   or: archon verify --target <path> | <path>\n" +
+      "   or: archon scaffold-workflow --target <path> --task-id <task-id> [--force] [--force-active]\n" +
+      "   or: archon seed-happy-path-fixture --target <path> --task-id fixture-<name> [--force]\n" +
+      "   or: archon upgrade-reasoning-workflow --target <path> --task-id <task-id> [--mode dual|strict] [--force]"
   );
 }
 
@@ -2251,7 +2251,7 @@ export async function scaffoldWorkflowArtifacts(options: WorkflowScaffoldOptions
     nextSteps: [
       "Fill in the brief and task packet with real request, scope, and verification details.",
       "Run specialists and replace pending review skeletons with real gate output.",
-      `Run node --experimental-strip-types scripts/check-archon-workflow.ts --task-id ${options.taskId} after required reviews pass.`,
+      `Run npm run archon:check-workflow -- --task-id ${options.taskId} after required reviews pass.`,
       `Use npm run archon:check:happy-path -- --task-id ${options.taskId} only after the workflow is review-complete.`
     ]
   };
@@ -2341,7 +2341,7 @@ export async function upgradeReasoningWorkflowArtifacts(options: {
       nextSteps: [
         "Task already contains reasoning hardening sections.",
         `If you want to rewrite the task packet in ${options.mode} mode anyway, rerun with --force.`,
-        `Run node --experimental-strip-types scripts/check-archon-workflow.ts --task-id ${options.taskId} after updating the content.`
+        `Run npm run archon:check-workflow -- --task-id ${options.taskId} after updating the content.`
       ]
     };
   }
@@ -2360,7 +2360,7 @@ export async function upgradeReasoningWorkflowArtifacts(options: {
     nextSteps: [
       `Fill the backfilled reasoning attempt, verification, and verdict sections with real evidence for ${options.taskId}.`,
       `If this task should hard-block on reasoning quality, keep mode \`${options.mode}\` and add passed critic verification plus a supported verdict.`,
-      `Run node --experimental-strip-types scripts/check-archon-workflow.ts --task-id ${options.taskId} after the upgraded packet is complete.`
+      `Run npm run archon:check-workflow -- --task-id ${options.taskId} after the upgraded packet is complete.`
     ]
   };
 }

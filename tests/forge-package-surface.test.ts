@@ -2,12 +2,16 @@
  * Tests for CC-14: npm pack --dry-run content assertions.
  *
  * Asserts that:
- *   - `src/forge/` is present in the packed file list (the forge ships to consumers).
+ *   - `dist/forge/` is present in the packed file list (the forge ships to consumers as
+ *     compiled JS via dist/**).  P1 removed raw src/*.ts from files[]; forge now ships
+ *     compiled.
  *   - `web/` is absent from the packed file list (R2-C: web toolchain boundary preserved).
+ *   - `src/` is absent from the packed file list (P1 invariant: no raw TypeScript source).
  *
- * Both assertions are non-vacuous:
- *   - The forge assertion fails if `src/forge/` is removed from `package.json` `files[]`.
- *   - The web assertion fails if `web/**` is added to `package.json` `files[]`.
+ * All assertions are non-vacuous:
+ *   - The dist/forge/ assertion fails if dist/ is removed from package.json files[].
+ *   - The web assertion fails if web/** is added to package.json files[].
+ *   - The src/ assertion fails if any src/**\/*.ts entry is re-added to files[].
  *
  * This test runs `npm pack --dry-run --json` in the repo root via `child_process`
  * so it reflects the real package content. It is intentionally an integration-style
@@ -70,13 +74,14 @@ describe("npm pack surface (CC-14)", () => {
     );
   });
 
-  it("packed file list CONTAINS at least one src/forge/ entry (forge ships to consumers)", () => {
-    // Non-vacuous: this FAILS if src/forge/ is removed from package.json files[].
-    const forgeEntries = packedPaths.filter((p) => p.startsWith("src/forge/"));
+  it("packed file list CONTAINS at least one dist/forge/ entry (forge ships compiled to consumers)", () => {
+    // Non-vacuous: this FAILS if dist/ is removed from package.json files[].
+    // P1: forge ships as compiled JS under dist/forge/ (not raw src/forge/*.ts).
+    const forgeEntries = packedPaths.filter((p) => p.startsWith("dist/forge/"));
     assert.ok(
       forgeEntries.length > 0,
-      `Expected src/forge/ entries in packed file list but found none. ` +
-        `Add "src/forge/" to package.json files[] to fix CC-14. ` +
+      `Expected dist/forge/ entries in packed file list but found none. ` +
+        `Run 'npm run build:dist' and ensure "dist/**" is in package.json files[] (CC-14). ` +
         `Full file list sample (first 20): ${packedPaths.slice(0, 20).join(", ")}`
     );
   });
@@ -92,19 +97,31 @@ describe("npm pack surface (CC-14)", () => {
     );
   });
 
-  it("src/forge/ entries include key published modules (non-vacuous membership check)", () => {
-    // Confirm the forge entry covers real modules, not just a .gitkeep placeholder.
+  it("packed file list contains NOTHING under src/ (P1: no raw TypeScript source shipped)", () => {
+    // Non-vacuous: this FAILS if any src/**/*.ts entry is re-added to package.json files[].
+    // Consumers get compiled dist/ only — shipping raw .ts would expose the strip-types dep.
+    const srcEntries = packedPaths.filter((p) => p.startsWith("src/"));
+    assert.deepEqual(
+      srcEntries,
+      [],
+      `Packed file list must contain NOTHING under src/ (P1 invariant). ` +
+        `Found: ${srcEntries.join(", ")}`
+    );
+  });
+
+  it("dist/forge/ entries include key published modules (non-vacuous membership check)", () => {
+    // Confirm the compiled forge covers real modules, not just placeholders.
     // This guard makes the test fail if only an empty skeleton was shipped.
     const expectedModules = [
-      "src/forge/constraints-manifest.ts",
-      "src/forge/repo-path.ts",
-      "src/forge/forge-pipeline.ts",
+      "dist/forge/constraints-manifest.js",
+      "dist/forge/repo-path.js",
+      "dist/forge/forge-pipeline.js",
     ];
     for (const mod of expectedModules) {
       assert.ok(
         packedPaths.includes(mod),
         `Expected "${mod}" in packed file list but it was absent. ` +
-          `Forge pack surface may be incomplete. forge entries: ${packedPaths.filter((p) => p.startsWith("src/forge/")).join(", ")}`
+          `Run 'npm run build:dist' to compile forge modules. dist/forge/ entries: ${packedPaths.filter((p) => p.startsWith("dist/forge/")).join(", ")}`
       );
     }
   });
