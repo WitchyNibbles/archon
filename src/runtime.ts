@@ -16,7 +16,7 @@ import {
 import {
   probeRepoContextProfile
 } from "./runtime/repo-context-profile.ts";
-import { withClient } from "./admin/db.ts";
+import { resolveDatabaseUrl, withClient } from "./admin/db.ts";
 import {
   buildSslGuidance,
   isSslError,
@@ -24,6 +24,12 @@ import {
   scrubPgCredentials,
   validateDatabaseUrl
 } from "./admin/db-error-scrub.ts";
+import {
+  type DbQueryFn,
+  checkMigrationsCurrent,
+  checkPgvector,
+  repairPgvectorExtension
+} from "./admin/db-preflight.ts";
 
 
 
@@ -160,7 +166,7 @@ export async function verifySetup() {
   }
 
   // Validate the database URL is parseable before attempting connection.
-  const dbUrl = process.env.ARCHON_CORE_DATABASE_URL;
+  const dbUrl = resolveDatabaseUrl(process.env);
   if (dbUrl) {
     const urlCheck = validateDatabaseUrl(dbUrl);
     if (!urlCheck.valid) {
@@ -383,6 +389,18 @@ export interface ExecuteDoctorCommandOptions extends ExecuteStatusCommandOptions
   ) => Promise<RuntimeProjectRegistrationRecord | undefined>;
   pathExists?: ((candidatePath: string) => Promise<boolean>) | undefined;
   inspectGraphify?: (() => Promise<GraphifyStatusObservation>) | undefined;
+  /**
+   * DB-level preflight: checks whether the pgvector extension is enabled.
+   * Injected by doctorCommand (closes over the pg client); optional so
+   * existing callers and tests that do not need it are unaffected.
+   */
+  checkPgvector?: (() => Promise<DoctorCheckObservation>) | undefined;
+  /**
+   * DB-level preflight: checks whether all required migrations are applied.
+   * Injected by doctorCommand (closes over the pg client); optional so
+   * existing callers and tests that do not need it are unaffected.
+   */
+  checkMigrations?: (() => Promise<DoctorCheckObservation>) | undefined;
 }
 
 
@@ -421,6 +439,10 @@ export interface DoctorCommandReport {
     repoPath: DoctorCheckObservation;
     dataRoot: DoctorCheckObservation;
     reviewIdentity: DoctorCheckObservation;
+    /** DB-level preflight: pgvector extension present and enabled. Added in P2. */
+    pgvector?: DoctorCheckObservation | undefined;
+    /** DB-level preflight: all required migrations applied. Added in P2. */
+    migrations?: DoctorCheckObservation | undefined;
   };
   blockers: string[];
   advisories: string[];
@@ -508,7 +530,13 @@ export function isRuntimeExecutionPreflightConnectionError(error: unknown): bool
     /\bENETUNREACH\b/i.test(message) ||
     /\bEADDRNOTAVAIL\b/i.test(message) ||
     /\bConnection terminated unexpectedly\b/i.test(message) ||
-    /\bconnect\b.*\brefused\b/i.test(message)
+    /\bconnect\b.*\brefused\b/i.test(message) ||
+    // pg authentication failures: "password authentication failed",
+    // "role \"<name>\" does not exist", etc. — scrubPgError already
+    // strips the username so we match on the stable surrounding text.
+    /password\s+authentication\s+failed/i.test(message) ||
+    /\bwrong\s+password\b/i.test(message) ||
+    /\brole\b.*\bdoes\s+not\s+exist\b/i.test(message)
   );
 }
 
@@ -539,7 +567,7 @@ export function buildRuntimeExecutionConnectionFailure(
 
   // SSL errors: provide targeted sslmode guidance.
   if (isSslError(error)) {
-    const dbUrl = currentDatabaseUrl ?? process.env.ARCHON_CORE_DATABASE_URL ?? "";
+    const dbUrl = currentDatabaseUrl ?? resolveDatabaseUrl(process.env) ?? "";
     nextActions.unshift(buildSslGuidance(dbUrl));
   }
 
@@ -1055,17 +1083,28 @@ export async function executeDoctorCommandFromArgs(
       : reviewIdentity.notes[0] ?? "review identity is not live-trust ready"
   };
 
+  // --- DB-level preflight checks (P2: pgvector + migrations) ---
+  // These are optional — only run when injected by doctorCommand (which closes
+  // over the live pg client).  Existing callers that do not inject them continue
+  // to work unchanged: the fields are simply absent from the report.
+  const pgvectorCheck = options.checkPgvector ? await options.checkPgvector() : undefined;
+  const migrationsCheck = options.checkMigrations ? await options.checkMigrations() : undefined;
+
   const checks = {
     registration: registrationCheck,
     repoPath: repoPathCheck,
     dataRoot: dataRootCheck,
-    reviewIdentity: reviewIdentityCheck
+    reviewIdentity: reviewIdentityCheck,
+    ...(pgvectorCheck !== undefined ? { pgvector: pgvectorCheck } : {}),
+    ...(migrationsCheck !== undefined ? { migrations: migrationsCheck } : {})
   };
 
   const blockers = [
     registrationCheck,
     repoPathCheck,
-    dataRootCheck
+    dataRootCheck,
+    ...(pgvectorCheck && !pgvectorCheck.ok ? [pgvectorCheck] : []),
+    ...(migrationsCheck && !migrationsCheck.ok ? [migrationsCheck] : [])
   ]
     .filter((check) => !check.ok)
     .map((check) => check.summary);
@@ -1704,7 +1743,9 @@ export function handleDoctorCommandError(error: unknown, dbUrl: string | undefin
 
 export async function doctorCommand(args: readonly string[]) {
   // --- URL parse preflight (before any DB connection attempt) ---
-  const dbUrl = process.env.ARCHON_CORE_DATABASE_URL;
+  // Resolve whichever URL will actually be used (explicit ARCHON_CORE_DATABASE_URL
+  // wins; ARCHON_POSTGRES_* compose a URL as docker-compose convenience fallback).
+  const dbUrl = resolveDatabaseUrl(process.env);
   if (dbUrl) {
     const urlCheck = validateDatabaseUrl(dbUrl);
     if (!urlCheck.valid) {
@@ -1726,11 +1767,39 @@ export async function doctorCommand(args: readonly string[]) {
     }
   }
 
+  // Shared helper: wraps a pg client as the injectable DbQueryFn interface so
+  // db-preflight functions can be tested without touching this wiring.
+  function buildQueryFn(client: { query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }> }): DbQueryFn {
+    return async (sql, params) => {
+      const result = await client.query(sql, params ? [...params] : undefined);
+      return { rows: result.rows as Record<string, unknown>[] };
+    };
+  }
+
   if (hasCommandFlag(args, "--repair")) {
     try {
       await withClient(async (client) => {
+        const queryFn = buildQueryFn(client);
         const store = new PostgresStore(client);
         const service = new ArchonCoreService(store);
+
+        // --- DB-level preflight repairs (run before project-level repair) ---
+        // Migrations repair: migrate() is idempotent — safe to run even when
+        // already current.  Uses its own withClient connection internally.
+        try {
+          await migrate();
+        } catch {
+          // Ignore: if migrate() fails (e.g. DB not yet set up), the repair
+          // result from executeDoctorRepairCommandFromArgs will surface it.
+        }
+
+        // pgvector repair: only attempt when pgvector is not yet enabled.
+        // repairPgvectorExtension never throws — it returns guidance on failure.
+        const pgvectorStatus = await checkPgvector(queryFn);
+        if (!pgvectorStatus.ok) {
+          await repairPgvectorExtension(queryFn);
+        }
+
         const result = await executeDoctorRepairCommandFromArgs(args, {
           cwd: process.cwd(),
           env: process.env,
@@ -1760,6 +1829,22 @@ export async function doctorCommand(args: readonly string[]) {
           },
           getProjectRuntimeRegistration(projectId) {
             return store.getProjectRuntimeRegistration(projectId);
+          },
+          checkPgvector: async () => {
+            const r = await checkPgvector(queryFn);
+            return {
+              authorityLabel: "runtime_authoritative" as const,
+              ok: r.ok,
+              summary: r.message
+            };
+          },
+          checkMigrations: async () => {
+            const r = await checkMigrationsCurrent(queryFn);
+            return {
+              authorityLabel: "runtime_authoritative" as const,
+              ok: r.ok,
+              summary: r.message
+            };
           }
         });
         console.log(JSON.stringify(result));
@@ -1774,6 +1859,7 @@ export async function doctorCommand(args: readonly string[]) {
 
   try {
     await withClient(async (client) => {
+      const queryFn = buildQueryFn(client);
       const store = new PostgresStore(client);
       const service = new ArchonCoreService(store);
       const report = await executeDoctorCommandFromArgs(args, {
@@ -1790,6 +1876,22 @@ export async function doctorCommand(args: readonly string[]) {
         },
         getProjectRuntimeRegistration(projectId) {
           return store.getProjectRuntimeRegistration(projectId);
+        },
+        checkPgvector: async () => {
+          const r = await checkPgvector(queryFn);
+          return {
+            authorityLabel: "runtime_authoritative" as const,
+            ok: r.ok,
+            summary: r.message
+          };
+        },
+        checkMigrations: async () => {
+          const r = await checkMigrationsCurrent(queryFn);
+          return {
+            authorityLabel: "runtime_authoritative" as const,
+            ok: r.ok,
+            summary: r.message
+          };
         }
       });
       console.log(JSON.stringify(report));
