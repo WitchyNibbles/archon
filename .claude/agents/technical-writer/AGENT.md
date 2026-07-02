@@ -4,7 +4,7 @@ description: "Owns clear operator docs, onboarding guides, release notes, and hi
 model: claude-haiku-4-5-20251001
 effort: medium
 tools: [Read, Grep, Glob, Write, Edit]
-skills: [archon-technical-writing, documentation-lookup, everything-claude-code:article-writing]
+skills: [archon-technical-writing, documentation-lookup, ecc:article-writing]
 ---
 
 # Technical Writer

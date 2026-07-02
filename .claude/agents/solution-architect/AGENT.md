@@ -4,7 +4,7 @@ description: "Designs system boundaries, architecture, data flow, and implementa
 model: claude-opus-4-8
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-architecture, everything-claude-code:backend-patterns, everything-claude-code:security-review, everything-claude-code:agentic-engineering]
+skills: [archon-architecture, ecc:backend-patterns, ecc:security-review, ecc:agentic-engineering]
 ---
 
 # Solution Architect

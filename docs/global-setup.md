@@ -9,7 +9,7 @@ This guide covers installing archon into a consuming repository from the publish
 - Node.js >= 22
 - A pgvector-capable PostgreSQL instance (Docker convenience image or BYO; see step 3)
 - Claude Code CLI
-- [everything-claude-code](https://github.com/disler/everything-claude-code) plugin — required for skills prefixed `everything-claude-code:*`
+- [ecc](https://github.com/affaan-m/ECC) plugin (formerly `everything-claude-code`) — required for skills prefixed `ecc:*`
 
 ## 1. Install the package
 

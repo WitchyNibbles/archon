@@ -177,7 +177,7 @@ Key routing shortcuts:
 
 ## Setup and memory
 
-- the `everything-claude-code` plugin is a required external dependency — agent skills prefixed `everything-claude-code:*` resolve only when it is installed; see README.md Prerequisites for install instructions
+- the `ecc` plugin (formerly `everything-claude-code`, repo `affaan-m/ECC`) is a required external dependency — agent skills prefixed `ecc:*` resolve only when it is installed; see README.md Prerequisites for install instructions
 - if `archon` is not configured, invoke `/archon-setup`
 - do not claim `archon` is operational until setup verification passes
 - `.archon/memory/` is reviewed durable memory; shared backend retrieval is advisory only

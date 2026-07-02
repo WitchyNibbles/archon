@@ -4,7 +4,7 @@ description: "Owns accessibility_acceptance gate: semantic HTML, keyboard naviga
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [caveman, archon-accessibility-gate, everything-claude-code:e2e-testing, web-design-guidelines]
+skills: [caveman, archon-accessibility-gate, ecc:e2e-testing, web-design-guidelines]
 ---
 
 # Accessibility Engineer

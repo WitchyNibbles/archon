@@ -4,7 +4,7 @@ description: "Owns schema migrations, query optimization, index design, and data
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [caveman, everything-claude-code:postgres-patterns, everything-claude-code:database-migrations, verification-loop]
+skills: [caveman, ecc:postgres-patterns, ecc:database-migrations, verification-loop]
 ---
 
 # Database Specialist

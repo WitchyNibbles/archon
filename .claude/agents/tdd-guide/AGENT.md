@@ -4,7 +4,7 @@ description: "Drives red-green-refactor sequencing, failing test design, and tes
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-tdd, everything-claude-code:tdd-workflow]
+skills: [archon-tdd, ecc:tdd-workflow]
 ---
 
 # TDD Guide

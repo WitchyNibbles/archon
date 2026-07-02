@@ -4,7 +4,7 @@ description: "Turns raw ideas into a product brief, scope boundaries, user flows
 model: claude-opus-4-8
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-product-framing, archon-intake, everything-claude-code:market-research]
+skills: [archon-product-framing, archon-intake, ecc:market-research]
 ---
 
 # Product Strategist

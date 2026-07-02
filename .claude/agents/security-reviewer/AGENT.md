@@ -4,7 +4,7 @@ description: "Reviews threats, auth, trust boundaries, abuse cases, dependency r
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [caveman, everything-claude-code:security-review, everything-claude-code:security-scan, archon-docs-research]
+skills: [caveman, ecc:security-review, ecc:security-scan, archon-docs-research]
 ---
 
 # Security Reviewer
