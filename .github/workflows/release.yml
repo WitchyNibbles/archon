@@ -27,6 +27,7 @@ env:
 
 jobs:
   publish:
+    environment: npm-publish  # Operator: configure this environment in GitHub Settings → Environments
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -70,7 +71,18 @@ jobs:
       # scoped packages (@witchynibbles/archon) on a first publish or without a
       # pre-existing public access setting.  NODE_AUTH_TOKEN is set from the
       # NPM_TOKEN repo secret and is never logged.
+      #
+      # Pre-release detection: if the git tag contains a hyphen (e.g. v0.2.0-rc1),
+      # publish under the "next" dist-tag instead of "latest" so unversioned consumers
+      # (npm install @witchynibbles/archon) are never silently upgraded to a pre-release.
       - name: Publish to npm
-        run: npm publish --access public --ignore-scripts
+        run: |
+          GIT_TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "$GIT_TAG" =~ - ]]; then
+            DIST_TAG="next"
+          else
+            DIST_TAG="latest"
+          fi
+          npm publish --access public --ignore-scripts --tag "$DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
