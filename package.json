@@ -154,7 +154,7 @@
     "prepublishOnly": "npm run build:dist && npm run build:types",
     "dev": "tsx watch src/admin.ts",
     "archon": "node --experimental-strip-types src/admin/archon.ts",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts tests/install/*.test.ts",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",
     "check:quality": "tsc --noEmit && npm test",
