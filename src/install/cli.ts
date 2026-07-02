@@ -720,6 +720,11 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
       overwriteManaged: true
     },
     {
+      source: path.join(sourceRoot, "scripts/check-archon-install-live.sh"),
+      target: "scripts/check-archon-install-live.sh",
+      overwriteManaged: true
+    },
+    {
       source: path.join(sourceRoot, "scripts/check-archon-branch-name.sh"),
       target: "scripts/check-archon-branch-name.sh",
       overwriteManaged: true
@@ -1498,6 +1503,30 @@ export async function verifyArchonInstall(options: InstallOptions): Promise<Veri
   };
 }
 
+/**
+ * LOW-8 fix: maps a managed file's target path to the appropriate capability
+ * name from the CAPABILITY_REGISTRY (S2). Previously all L0 probes used the
+ * generic "managed-files" capability, which obscured which capability was
+ * actually affected by a file drift. Now each file maps to a specific
+ * capability so the report can surface "agents drifted" vs "rules drifted".
+ *
+ * Exported for unit testing (tests/install/capability-engine.test.ts LOW-8 assertions).
+ */
+export function managedFileCapability(targetPath: string): string {
+  if (targetPath.startsWith(".claude/agents/")) return "agents";
+  if (targetPath.startsWith(".claude/skills/")) return "skills";
+  if (targetPath.startsWith(".claude/hooks/") || targetPath === ".claude/settings.json") return "hooks";
+  if (targetPath.startsWith(".archon/rules/")) return "rules";
+  if (targetPath.startsWith(".archon/templates/")) return "workflow-scaffold";
+  if (targetPath.startsWith(".archon/playwright/")) return "playwright-browsers";
+  if (targetPath.startsWith(".githooks/")) return "git-guard";
+  if (targetPath.startsWith("plugins/archon/")) return "mcp-archon";
+  if (targetPath === ".mcp.json") return "mcp-archon";
+  if (targetPath === "AGENTS.md") return "agents";
+  // Fallback for files not yet mapped to a specific capability
+  return "managed-files";
+}
+
 /** Runs L0 + L1 + L2/L3 placeholder probes; returns assembled CapabilityReport for verify. */
 async function runVerifyCapabilityEngine(
   sourceRoot: string,
@@ -1512,12 +1541,14 @@ async function runVerifyCapabilityEngine(
   const l0Probes: ProbeResult[] = [];
   for (const entry of planEntries) {
     const resolved = await resolvePlanEntry(entry, targetRoot);
+    // LOW-8: use per-capability naming instead of the generic "managed-files" sentinel
+    const capability = managedFileCapability(entry.target);
     if (resolved.invalidReason) {
-      l0Probes.push({ capability: "managed-files", layer: "L0", status: "blocked", code: "managed-file-invalid", detail: `Managed path issue: ${entry.target} (${resolved.invalidReason})`, remediation: "Run 'archon upgrade --apply' to restore managed files." });
+      l0Probes.push({ capability, layer: "L0", status: "blocked", code: "managed-file-invalid", detail: `Managed path issue: ${entry.target} (${resolved.invalidReason})`, remediation: "Run 'archon upgrade --apply' to restore managed files." });
       continue;
     }
     const readFn: ReadFileFn = async (_p) => resolved.currentContent;
-    l0Probes.push(await probeManagedFile(readFn, { capability: "managed-files", code: "managed-file", relativePath: entry.target, absolutePath: resolved.absolutePath, desiredContent: resolved.desiredContent }));
+    l0Probes.push(await probeManagedFile(readFn, { capability, code: "managed-file", relativePath: entry.target, absolutePath: resolved.absolutePath, desiredContent: resolved.desiredContent }));
   }
 
   const fsReadFn: ReadFileFn = async (p) => { try { return await readFile(p, "utf8"); } catch { return undefined; } };

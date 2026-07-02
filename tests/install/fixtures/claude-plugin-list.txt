@@ -1,0 +1,11 @@
+Installed plugins:
+
+  ❯ everything-claude-code@everything-claude-code
+    Version: 1.8.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ superpowers@claude-plugins-official
+    Version: 5.0.2
+    Scope: local
+    Status: ✘ disabled

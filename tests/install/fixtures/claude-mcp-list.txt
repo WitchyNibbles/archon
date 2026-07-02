@@ -1,0 +1,5 @@
+Checking MCP server health…
+
+example-cloud-service: https://example.com/mcp/v1 - ✔ Connected
+example-calendar-service: https://calendar.example.com/mcp/v1 - ✔ Connected
+archon: node --experimental-strip-types src/mcp/server.ts - ✔ Connected
