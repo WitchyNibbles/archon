@@ -148,6 +148,21 @@ test("mergePackageJson(): devDependencies key is @witchynibbles/archon (scoped)"
   );
 });
 
+// Bug B regression (S2 live-run): when init runs from an installed package,
+// path.relative() yields "node_modules/@witchynibbles/archon" (no "./" prefix).
+// Writing that back as a file: devDependency creates a circular reference that
+// breaks `npm install` in the consumer. The guard must skip the devDependency.
+test("mergePackageJson(): skips file: devDependency when source resolves inside node_modules", () => {
+  const output = JSON.parse(mergePackageJson(undefined, "node_modules/@witchynibbles/archon")) as {
+    devDependencies?: Record<string, string>;
+  };
+  assert.equal(
+    output.devDependencies?.["@witchynibbles/archon"],
+    undefined,
+    "mergePackageJson() must not write a circular file:./node_modules devDependency when installed from the package"
+  );
+});
+
 test("archonMcpConfigFragment(): uses scoped @witchynibbles/archon install path", () => {
   const config = JSON.parse(archonMcpConfigFragment()) as {
     mcpServers?: { archon?: { args?: string[] } };
