@@ -3,6 +3,24 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Opt-in overlay for archon's shared-core orchestration.",
+  "keywords": [
+    "claude-code",
+    "ai-agents",
+    "workflow-automation",
+    "orchestration",
+    "review-gates",
+    "task-management",
+    "postgresql",
+    "mcp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WitchyNibbles/archon.git"
+  },
+  "homepage": "https://github.com/WitchyNibbles/archon#readme",
+  "bugs": {
+    "url": "https://github.com/WitchyNibbles/archon/issues"
+  },
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -106,6 +124,7 @@
     "docs/archon-agent-team.md",
     "docs/forge-operator-runbook.md",
     "docs/global-setup.md",
+    "docs/agent-install-runbook.md",
     "scripts/archon-session-start.sh",
     "scripts/check-archon-branch-name.sh",
     "scripts/check-archon-commit-msg.sh",

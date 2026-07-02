@@ -290,6 +290,31 @@ jobs:
 
           Pop-Location
 
+  # P5 publish guard: verify the package is in a publishable state on every PR.
+  # Complements pack-install (which proves tarball install + smoke) by validating
+  # npm registry metadata (name, version, access, files list) via --dry-run.
+  # Runs build:dist + build:types explicitly so the dist/ is populated before the
+  # dry-run; --ignore-scripts prevents prepublishOnly from running a second build.
+  publish-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Build dist and types
+        run: npm run build:dist && npm run build:types
+      - name: Verify package is publishable (dry-run)
+        run: npm publish --dry-run --ignore-scripts --access public
+
   required-checks:
     if: ${{ always() }}
     needs:
@@ -298,6 +323,7 @@ jobs:
       - lint
       - unit-tests
       - pack-install
+      - publish-dry-run
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -309,15 +335,18 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           PACK_INSTALL_RESULT: ${{ needs.pack-install.result }}
+          PUBLISH_DRY_RUN_RESULT: ${{ needs.publish-dry-run.result }}
         run: |
           echo "release-overlay: ${RELEASE_OVERLAY_RESULT}"
           echo "live-migrations: ${LIVE_MIGRATIONS_RESULT}"
           echo "lint: ${LINT_RESULT}"
           echo "unit-tests: ${UNIT_TESTS_RESULT}"
           echo "pack-install: ${PACK_INSTALL_RESULT}"
+          echo "publish-dry-run: ${PUBLISH_DRY_RUN_RESULT}"
 
           test "${RELEASE_OVERLAY_RESULT}" = "success"
           test "${LIVE_MIGRATIONS_RESULT}" = "success"
           test "${LINT_RESULT}" = "success"
           test "${UNIT_TESTS_RESULT}" = "success"
           test "${PACK_INSTALL_RESULT}" = "success"
+          test "${PUBLISH_DRY_RUN_RESULT}" = "success"

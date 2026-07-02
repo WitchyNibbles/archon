@@ -8,7 +8,7 @@
 
 ## Overview
 
-This runbook installs archon from source into a consumer repository without human intervention. Each step includes:
+This runbook installs @witchynibbles/archon from npm into a consumer repository without human intervention. Each step includes:
 - **Command:** the exact bash/npm invocation
 - **Expected output/signal:** success criteria
 - **Idempotency note:** safe to re-run
@@ -23,9 +23,9 @@ The runbook terminates with a **Definition of Healthy** gate that proves the ins
 ```
 1. Preflight checks (Node, Docker, everything-claude-code plugin)
    ↓
-2. Run installer (init --apply) from archon source
+2. Run installer: npx archon init --apply --target . (from consumer root)
    ↓
-3. cd to consumer && npm install (MANDATORY: populates node_modules/@witchynibbles/archon)
+3. npm install in consumer (MANDATORY: populates node_modules/@witchynibbles/archon)
    ↓
 4. Configure .env (from .env.archon.example template)
    ↓
@@ -80,7 +80,7 @@ docker ps -q --filter "name=archon-postgres" 2>/dev/null | head -1 | wc -l | gre
 **Fallback check (if Docker used):** After installing archon, the bootstrap script will start postgres automatically. If postgres start fails during bootstrap (step 5), re-run:
 ```bash
 cd /path/to/consumer
-bash scripts/archon-setup.sh
+bash scripts/setup-archon.sh
 ```
 
 ---
@@ -124,34 +124,32 @@ claude code --version 2>/dev/null | head -1 || echo "claude code not found"
 
 ## Part 2: Run the Installer and npm install
 
-The installer must run from the archon SOURCE repo. After installation, you must run `npm install` in the consumer to populate `node_modules/@witchynibbles/archon` (@witchynibbles/archon is a file: devDependency). Without this step, `npm run archon:*` commands will fail with "Cannot find module .../node_modules/@witchynibbles/archon/...".
+The `npx archon init` command is the primary install path for published-package consumers. After installation, you must run `npm install` in the consumer to populate `node_modules/@witchynibbles/archon`. Without this step, `npm run archon:*` commands will fail with "Cannot find module .../node_modules/@witchynibbles/archon/...".
 
-### 2.1. Run Installer (from archon source)
+### 2.1. Run Installer
 
 The installer requires exactly one of `--apply` or `--dry-run`. A bare `--target` without either flag will error.
 
-**Equivalent forms (both correct):**
+**Primary form (published-package consumers):**
+```bash
+cd /path/to/consumer
+npx archon init --apply --target .
+```
 
-**Form 1: Via helper script (simplest)**
+**Alternative: Via helper script (only if you have the archon source repo checked out)**
 ```bash
 cd /path/to/archon
 bash scripts/install-archon.sh /path/to/consumer
 ```
 
-**Form 2: Direct invocation (explicit)**
-```bash
-cd /path/to/archon
-node --experimental-strip-types src/install/cli.ts init --apply --target /path/to/consumer
-```
-
 **With optional flags (e.g., to include Grafana MCP wiring):**
 ```bash
-bash scripts/install-archon.sh /path/to/consumer --with-grafana
+npx archon init --apply --target . --with-grafana
 ```
 
 **To preview changes before applying (dry-run):**
 ```bash
-node --experimental-strip-types src/install/cli.ts init --dry-run --target /path/to/consumer
+npx archon init --dry-run --target .
 ```
 
 **Expected output (apply mode):** JSON summary showing:
@@ -166,7 +164,7 @@ node --experimental-strip-types src/install/cli.ts init --dry-run --target /path
 **On-failure:**
 - If conflicts reported: Review `.archon/install-backups/` and resolve before re-running.
 - If permission denied: Ensure write access to consumer root.
-- If module not found: Archon source may be corrupted. Verify `src/install/cli.ts` exists.
+- If module not found: Verify the package is installed: `npm ls @witchynibbles/archon`. If missing, re-run `npm install -D @witchynibbles/archon`.
 - If error "Mutating installs require 'init --apply'": Your script is outdated. Use `bash scripts/install-archon.sh` (which has been fixed) or add `init --apply` to the direct invocation.
 
 **Idempotency:** Safe to re-run; merge logic is additive. Updated files backed up to `.archon/install-backups/<timestamp>/`.
@@ -201,18 +199,18 @@ npm install
 
 ### 2.3. Configure .env (MANDATORY)
 
-The installer copies `.env.archon.example` to the consumer. You MUST configure required variables in `.env` before bootstrap. The consumer's `scripts/archon-setup.sh` now auto-creates `.env` from `.env.archon.example` when `.env` does not already exist, so running `bash scripts/archon-setup.sh` (or the bootstrap path) will handle the copy automatically. Explicitly copying it yourself first is still the recommended deterministic action (belt-and-suspenders), but it is no longer the only way to get `.env`.
+The installer copies `.env.archon.example` to the consumer. You MUST configure required variables in `.env.archon` before bootstrap. The installer copies `.env.archon.example` to the consumer root. Copy it to `.env.archon` and set required variables before bootstrap.
 
 **Command:**
 ```bash
 cd /path/to/consumer
-cp .env.archon.example .env
+cp .env.archon.example .env.archon
 ```
 
-**Edit `.env` and set these required values:**
+**Edit `.env.archon` and set these required values:**
 
 ```bash
-ARCHON_CORE_DATABASE_URL="postgresql://archon:CHOOSE_A_PASSWORD@127.0.0.1:5432/archon"
+ARCHON_CORE_DATABASE_URL="postgresql://archon:CHOOSE_A_PASSWORD@127.0.0.1:5533/archon"
 ARCHON_POSTGRES_PASSWORD="CHOOSE_A_PASSWORD"
 ARCHON_WORKSPACE_SLUG="default"
 ARCHON_PROJECT_SLUG="<consumer_repo_name>"
@@ -229,7 +227,7 @@ Replace:
 
 **Success signal:** File exists with all ARCHON_* variables set to non-empty values.
 
-**Failure action:** If any variable is missing or set to placeholder, bootstrap (Part 3) will error at the postgres password guard with "ARCHON_POSTGRES_PASSWORD must be set to a non-default local password". Fix and retry.
+**Failure action:** If any variable is missing or set to placeholder, bootstrap (Part 3) will error. Fix in `.env.archon` and retry.
 
 ---
 
@@ -611,36 +609,36 @@ At this point, the consumer repo has a healthy archon install with an active tas
 | "everything-claude-code:*" skills not found in Claude Code | Plugin not installed. | Install the everything-claude-code plugin. Restart Claude Code. Retry. |
 | "role does not exist" during migrations | Postgres role/database not created. | Postgres container not fully initialized. Re-run `npm run archon:setup:local` (Part 3.1). Wait 30 seconds. Retry migrations. |
 | `npm run archon:*` script not found | Consumer package.json does not have archon scripts merged. | Re-run installer (Part 2.1). Then re-run `npm install` (Part 2.2). |
-| `scripts/archon-setup.sh` not found | Installer did not copy scripts. | Re-run installer (Part 2.1). |
+| `scripts/setup-archon.sh` not found | Installer did not copy scripts. | Re-run installer (Part 2.1). |
 
 ---
 
 ## Updating Archon
 
-To upgrade archon in a consumer repo after a new version is released:
+To upgrade archon in a consumer repo after a new version is published:
 
-**Command (from archon source):**
+**Command (in the consumer repo):**
 ```bash
-cd /path/to/archon
-git pull origin main
+# 1. Bump the version in package.json to the new release, then:
 npm install
 
-cd /path/to/consumer
-node /path/to/archon/dist/cli/archon-bin.js upgrade --apply --target .
+# 2. Re-run the init overlay merge to pull in updated agents/skills/hooks
+npx archon init --apply --target .
+
+# 3. Re-install so the updated wired scripts are resolved
+npm install
+
+# 4. Apply any new migrations and verify
+npm run archon:migrate
+npx archon doctor
+npm run archon:verify:setup
 ```
 
 **Expected output:** JSON summary showing updated managed files. No conflicts.
 
-**Success signal:** Exit code 0; `"writesPerformed": true`.
+**Success signal:** Exit code 0 for each command; `archon doctor` reports no blockers.
 
-**Post-upgrade (in the consumer):**
-```bash
-npm install
-npm run archon:migrate
-npm run archon:verify:setup
-```
-
-**Idempotency:** Safe to re-run. Existing files backed up before update.
+**Idempotency:** Safe to re-run. Existing managed files are backed up to `.archon/install-backups/<timestamp>/` before being replaced.
 
 ---
 

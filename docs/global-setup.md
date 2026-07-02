@@ -1,51 +1,146 @@
 # Global Setup — Installing Archon into a Project
 
-This guide covers installing archon into a consuming repository. The archon repo itself is a development dependency; consuming projects receive the overlay files (agents, skills, hooks, scripts, templates) via the installer.
+This guide covers installing archon into a consuming repository from the published npm package.
 
 **For agents:** See [`docs/agent-install-runbook.md`](agent-install-runbook.md) for a deterministic, idempotent runbook that agents can follow end-to-end without human intervention.
 
 ## Prerequisites
 
-- Node.js ≥ 22
-- Docker (for PostgreSQL)
+- Node.js >= 22
+- A pgvector-capable PostgreSQL instance (Docker convenience image or BYO; see step 3)
 - Claude Code CLI
+- [everything-claude-code](https://github.com/disler/everything-claude-code) plugin — required for skills prefixed `everything-claude-code:*`
 
-## 1. Clone and build archon
+## 1. Install the package
+
+Add archon as a dev dependency in the consuming repository:
 
 ```bash
-git clone https://github.com/WitchyNibbles/archon.git
-cd archon
+npm install -D @witchynibbles/archon
+```
+
+Pin to the exact version in `package.json` to avoid unexpected overlay changes on `npm update`:
+
+```json
+"devDependencies": {
+  "@witchynibbles/archon": "0.1.0"
+}
+```
+
+## 2. Run the guided installer
+
+From inside the consuming repository root:
+
+```bash
+npx archon init --apply --target .
+```
+
+This merges archon's `.claude/` overlay (agents, skills, hooks, settings), writes `CLAUDE.md`, creates the `.archon/work/` state directories, and copies `.env.archon.example` as the env template. The merge is additive and idempotent — safe to re-run after upgrading the package.
+
+To preview what will change without writing anything:
+
+```bash
+npx archon init --dry-run --target .
+```
+
+After init, install dependencies so the newly merged npm scripts resolve:
+
+```bash
 npm install
 ```
 
-## 2. Configure the environment
+### Verifying installer output
+
+Confirm the key overlay files are present:
 
 ```bash
-cp .env.example .env
-# Edit .env and fill in the ARCHON_* variables
+test -f CLAUDE.md && echo "CLAUDE.md: OK" || echo "CLAUDE.md: MISSING"
+test -f .claude/settings.json && echo "settings.json: OK" || echo "settings.json: MISSING"
+test -d .archon/work && echo ".archon/work: OK" || echo ".archon/work: MISSING"
+test -f .env.archon.example && echo ".env.archon.example: OK" || echo ".env.archon.example: MISSING"
 ```
 
-Key variables:
+All four should print `OK`.
+
+## 3. Configure the environment
+
+Copy the env template and set the required variables:
 
 ```bash
-# Docker mode (default) — port 5533 is the host-side port docker-compose maps to
-# the container's Postgres port 5432.  Use 5533 unless you have a port conflict.
-ARCHON_CORE_DATABASE_URL=postgresql://archon:CHANGEME_SET_A_STRONG_PASSWORD@127.0.0.1:5533/archon
+cp .env.archon.example .env.archon
+```
+
+Edit `.env.archon`. The minimum required variables are:
+
+```bash
+# PostgreSQL connection string (see DB Setup below)
+ARCHON_CORE_DATABASE_URL=postgresql://archon:CHOOSE_A_PASSWORD@127.0.0.1:5533/archon
+
+# Workspace and project identifiers
+ARCHON_WORKSPACE_SLUG=default
+ARCHON_PROJECT_SLUG=<your-repo-slug>
+ARCHON_PROJECT_NAME=<Your Project Name>
+ARCHON_PROJECT_REPO_PATH=/absolute/path/to/your/project
+
+# Runtime mode
 ARCHON_RUNTIME_MODE=auto
 ARCHON_RUNTIME_PROFILE=local-docker
 ```
 
-If the password contains special characters (`@`, `/`, `?`, `#`, etc.), **percent-encode**
-them in the URL (e.g. `@` → `%40`, `#` → `%23`, `/` → `%2F`).
+The runtime loader checks `.env.archon` first, then `.env`. In consuming projects, use `.env.archon` so archon-specific variables do not collide with the project's own `.env`.
+
+If the DB password contains special characters (`@`, `/`, `?`, `#`, etc.), percent-encode them in the URL (e.g. `@` → `%40`, `#` → `%23`, `/` → `%2F`).
+
+### Runtime mode note
+
+| Mode | When | Behavior |
+|---|---|---|
+| **Full runtime** | `ARCHON_CORE_DATABASE_URL` set and Postgres reachable | Postgres is the workflow completion authority. `workflow-proof`, runtime review gates, and run history are available. |
+| **Local-only** | `ARCHON_CORE_DATABASE_URL` unset (commented out) | Agent workflow runs from local `.archon/` state. Postgres-backed runtime proof is unavailable; everything else works. |
+
+## 4. Set up PostgreSQL
+
+Archon requires a PostgreSQL instance with the `vector` (pgvector) extension.
+
+### Option A — Docker convenience (recommended for local dev)
+
+The package ships `docker-compose.yml`. The wired npm script starts Postgres:
+
+```bash
+npm run archon:setup:local
+```
+
+This starts a `pgvector/pgvector:0.8.2-pg18` container on port `5533` (host) → `5432` (container). The `ARCHON_POSTGRES_PASSWORD` variable in `.env.archon` must be set to a non-default value before the container will start.
+
+To stop the container without losing data:
+
+```bash
+docker compose -f node_modules/@witchynibbles/archon/docker-compose.yml down
+```
+
+Full teardown (removes the data volume — DATA LOSS):
+
+```bash
+docker compose -f node_modules/@witchynibbles/archon/docker-compose.yml down -v
+```
+
+After a full teardown, re-run `npm run archon:setup:local && npm run archon:migrate && npm run archon:bootstrap`.
+
+### Option B — Bring your own Postgres
+
+Set `ARCHON_CORE_DATABASE_URL` to any pgvector-capable Postgres. The DB must have the `vector` extension enabled:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+Managed providers that support pgvector: Supabase, Neon, Railway, Google AlloyDB, Amazon Aurora. For SSL-required managed providers, append `?sslmode=require` to the URL.
 
 ### Migrating from `ARCHON_POSTGRES_*` variables
 
-Earlier versions of archon accepted individual `ARCHON_POSTGRES_USER`, `ARCHON_POSTGRES_PASSWORD`,
-`ARCHON_POSTGRES_HOST`, `ARCHON_POSTGRES_PORT`, and `ARCHON_POSTGRES_DB` variables and composed
-the URL internally.  The current version uses **`ARCHON_CORE_DATABASE_URL` only** as the
-single source of truth.
+Earlier versions accepted individual `ARCHON_POSTGRES_USER`, `ARCHON_POSTGRES_PASSWORD`, `ARCHON_POSTGRES_HOST`, `ARCHON_POSTGRES_PORT`, and `ARCHON_POSTGRES_DB` variables. The current version uses `ARCHON_CORE_DATABASE_URL` as the single source of truth.
 
-To migrate, compose the URL manually:
+To migrate, compose the URL:
 
 ```bash
 # Old variables
@@ -54,117 +149,125 @@ ARCHON_POSTGRES_PASSWORD=mypassword
 ARCHON_POSTGRES_PORT=5533
 ARCHON_POSTGRES_DB=archon
 
-# New single variable (replace values accordingly)
+# New single variable
 ARCHON_CORE_DATABASE_URL=postgres://archon:mypassword@127.0.0.1:5533/archon
 ```
 
-The `ARCHON_POSTGRES_*` variables are still used by the Docker Compose convenience script
-(`scripts/setup-archon.sh`) to compose `ARCHON_CORE_DATABASE_URL` when the URL is not
-already set.  They have no other effect on the runtime.
+The `ARCHON_POSTGRES_*` variables are still consumed by the Docker Compose file (which uses them to configure the container). They have no other effect on the runtime.
 
-## 3. Start backing stores
+## 5. Run migrations and verify
 
-```bash
-npm run setup:local   # Spins up PostgreSQL via Docker (port 5533 by default)
-npm run migrate       # Runs database migrations
-npm run doctor        # Verifies the full configuration
-```
-
-## 4. Stopping and tearing down Postgres
+Apply the database schema and run the doctor check:
 
 ```bash
-# Stop the container, keep data volume intact:
-docker compose down
-
-# Full teardown — removes the archon-postgres-data volume (DATA LOSS):
-docker compose down -v
+npm run archon:migrate    # Applies all pending migrations
+npx archon doctor         # Verifies: reachable, pgvector enabled, migrations current
 ```
 
-Use `down -v` only when you want a clean slate (e.g. resetting a corrupted schema).
-After a full teardown, re-run `npm run setup:local && npm run migrate && npm run bootstrap`.
-
-## 5. Install archon into a target project
+Pass `--repair` to apply pending migrations automatically if the doctor reports them missing:
 
 ```bash
-# From the archon repo root:
-bash scripts/install-archon.sh /path/to/your/project
-
-# Or using npm:
-npm run install:project -- --target /path/to/your/project
+npx archon doctor --repair
 ```
 
-The installer merges archon's `.claude/` overlay (agents, skills, hooks, settings) into the target project, sets up `.archon/` work directories, and writes the `CLAUDE.md` operating rules entrypoint.
+The doctor check validates:
+- Postgres is reachable at `ARCHON_CORE_DATABASE_URL`
+- The `vector` extension is enabled in the target database
+- All required migrations are applied
+
+A fully passing doctor output looks like:
+
+```json
+{
+  "ok": true,
+  "checks": {
+    "pgvector": { "ok": true, "summary": "pgvector is enabled" },
+    "migrations": { "ok": true, "summary": "all required migrations are applied" }
+  },
+  "blockers": []
+}
+```
 
 ## 6. Bootstrap workflow state
 
-In the target project:
+Initialize archon's task queue and run state in the database:
 
 ```bash
-npm run bootstrap     # Initialises the active run and task queue
-npm run status        # Confirms workflow state is live
+npm run archon:bootstrap    # Creates or reuses the active run
+npm run archon:status       # Confirms workflow state is live
 ```
 
-## 7. Start the MCP server (optional)
+Bootstrap is idempotent — safe to re-run. Existing run state is detected and reused.
+
+## 7. Register the first task
+
+The managed-path guard blocks control-layer writes until a task is active. Register an initial task to unblock:
 
 ```bash
-npm run mcp           # Exposes archon tools to Claude Code
+npm run archon -- init-task \
+  --id "bootstrap-init" \
+  --title "Post-install bootstrap configuration" \
+  --goal "Complete post-install setup and verification" \
+  --owner-role "planner" \
+  --scope "src/,docs/,.env.local,.archon/work/" \
+  --allow-managed-scope
+```
+
+Verify it is active:
+
+```bash
+npm run archon:status
+```
+
+## 8. Start the MCP server (optional)
+
+Expose archon tools to Claude Code:
+
+```bash
+npm run archon:mcp
 ```
 
 Add the MCP server to your Claude Code config so `archon_status`, `archon_ops`, and related tools are available in every session.
 
-## 8. Verify the install
+## 9. Verify the install
 
 ```bash
-npm run check:workflow    # Verifies the workflow contract is intact
-npm run check:happy-path  # Runs the install smoke test
+npm run archon:verify:setup    # Full install verification
+npm run archon:check:happy-path    # Smoke test
 ```
 
 ## Updating archon
 
-Pull the latest archon source, then re-run the installer against your project. The merge logic is additive and safe to re-apply.
+After upgrading the package version in `package.json`:
 
 ```bash
-cd /path/to/archon
-git pull
-npm run install:project -- --target /path/to/your/project
+npm install
+npx archon init --apply --target .    # Merge updated overlay assets
+npm install                            # Re-install to pick up new scripts
+npm run archon:migrate                 # Apply any new migrations
+npx archon doctor                      # Confirm healthy
 ```
 
-## Migration notes
+The `init --apply` merge is additive — updated managed files are backed up to `.archon/install-backups/<timestamp>/` before being replaced.
 
-### Schema migrations
+## Schema migrations
 
-Migrations are applied by `npm run migrate` (`src/runtime.ts: migrate()`).  Each migration
-is an SQL file in `src/sql/migrations/` named `NNN_description.sql`.  Migrations are
-idempotent by design — each file uses `IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`,
-`DO $$ … IF NOT EXISTS $$`, or similar guards so that re-running them does not error.
+Migrations are applied by `npm run archon:migrate`. Each migration is an SQL file in the package's `dist/sql/migrations/` directory, named `NNN_description.sql`. Migrations are idempotent — each uses `IF NOT EXISTS` or similar guards so re-running them does not error.
 
-**Numbering gaps** — the migration sequence has deliberate gaps at 005–007 and 015 (those
-numbers were reserved for work that was ultimately merged into adjacent migrations).  The
-migration runner does not validate sequence continuity; gaps are silently skipped and are
-not an error.  Operators should not be alarmed by these gaps.
+**Rollback** — there are no down-migrations. The recommended rollback for a bad schema change is:
 
-**Rollback** — there are no down-migrations. The recommended rollback for a bad schema
-change is:
 1. Restore from a Postgres dump taken before the migration (`pg_dump` / `pg_restore`).
-2. Or, for development environments, `docker compose down -v && npm run setup:local &&
-   npm run migrate` to rebuild from scratch.
+2. For dev environments: `docker compose down -v && npm run archon:setup:local && npm run archon:migrate` to rebuild from scratch.
 
-Production operators should take a database snapshot before running `npm run migrate`.
+Production operators should take a database snapshot before running `npm run archon:migrate`.
 
 ## Troubleshooting
 
-- **`npm run doctor` outputs `SSL connection error`** — append `?sslmode=require` or
-  `?sslmode=disable` to `ARCHON_CORE_DATABASE_URL` depending on whether your server
-  requires TLS.  See the doctor output for specific guidance.
-- **`npm run doctor` outputs `pgvector is installed but not enabled`** — connect as a
-  superuser and run `CREATE EXTENSION vector;` in the target database.
-- **`npm run doctor` outputs `pgvector is not installed`** — install the pgvector package
-  on your server (`apt install postgresql-16-pgvector`) or use a pgvector-capable Docker
-  image (`pgvector/pgvector:0.8.2-pg18`).
-- **`ARCHON_CORE_DATABASE_URL` is not a valid URL** — ensure special characters in the
-  password are percent-encoded (`@` → `%40`, `#` → `%23`, `/` → `%2F`).
-- **`npm run doctor` fails** — check that Docker is running and `.env` has the correct
-  `ARCHON_CORE_DATABASE_URL` (default port for Docker is **5533**, not 5432).
-- **Hook errors on session start** — confirm `.claude/hooks/` scripts are executable
-  (`chmod +x .claude/hooks/*.mjs`).
-- **Workflow state missing** — run `npm run bootstrap` in the consuming project.
+- **`archon doctor` reports `SSL connection error`** — append `?sslmode=require` or `?sslmode=disable` to `ARCHON_CORE_DATABASE_URL` depending on your server's TLS requirements.
+- **`archon doctor` reports `pgvector is not enabled`** — connect as a superuser and run `CREATE EXTENSION vector;` in the target database.
+- **`archon doctor` reports `pgvector is not installed`** — install pgvector on your server (`apt install postgresql-16-pgvector`) or switch to a pgvector-capable image (`pgvector/pgvector:0.8.2-pg18`).
+- **`ARCHON_CORE_DATABASE_URL` is not a valid URL** — ensure special characters in the password are percent-encoded (`@` → `%40`, `#` → `%23`, `/` → `%2F`).
+- **`archon doctor` fails** — check Docker is running and `.env.archon` has the correct `ARCHON_CORE_DATABASE_URL`. Default port for the Docker convenience image is `5533`.
+- **Hook errors on session start** — confirm `.claude/hooks/` scripts are executable (`chmod +x .claude/hooks/*.mjs`).
+- **Workflow state missing** — run `npm run archon:bootstrap` in the consuming project.
+- **`npm run archon:*` script not found** — re-run `npx archon init --apply --target .` then `npm install`.
