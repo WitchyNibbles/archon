@@ -33,6 +33,7 @@ import {
   C4_INVENTORY,
 } from "../../src/install/capability/registry.ts";
 import type { ProbeResult } from "../../src/install/capability/types.ts";
+import { managedFileCapability } from "../../src/install/cli.ts";
 
 // ---------------------------------------------------------------------------
 // Helper stubs
@@ -286,6 +287,36 @@ test("assembleCapabilityReport: skipped probe never crashes and produces advisor
   assert.equal(report.blockers.length, 0);
 });
 
+test("assembleCapabilityReport: skipped probe with remediation surfaces in nextActions (LOW-7)", () => {
+  // S1 accepted LOW: assert that skipped probes with non-empty remediation add
+  // to nextActions so operators know what manual step to take when a tool is absent.
+  const remediation = "Run: npm run archon:setup:playwright";
+  const probes: ProbeResult[] = [
+    {
+      capability: "playwright-browsers",
+      layer: "L2",
+      status: "skipped",
+      code: "playwright-browsers-placeholder",
+      detail: "Playwright browser check not yet implemented",
+      remediation,
+    },
+  ];
+  const report = assembleCapabilityReport(probes, "verify");
+  assert.equal(report.ok, true, "skipped probe must not block");
+  assert.ok(
+    report.nextActions.includes(remediation),
+    `nextActions must include the skipped probe's remediation: ${remediation}`
+  );
+});
+
+test("assembleCapabilityReport: skipped probe with empty remediation does NOT add to nextActions", () => {
+  const probes: ProbeResult[] = [
+    { capability: "ecc-plugin", layer: "L2", status: "skipped", code: "x", detail: "skipped", remediation: "" },
+  ];
+  const report = assembleCapabilityReport(probes, "verify");
+  assert.equal(report.nextActions.length, 0, "empty remediation must not add to nextActions");
+});
+
 test("assembleCapabilityReport: L3 blocked is advisory in verify context", () => {
   const probes: ProbeResult[] = [
     { capability: "doctor", layer: "L3", status: "blocked", code: "db-down", detail: "DB unreachable", remediation: "fix DB" },
@@ -421,4 +452,51 @@ test("MEDIUM-5 / #140 class: mcp-archon probe blocked when fragment is in settin
   assert.equal(result.capability, "mcp-archon");
   // Code must distinguish file-missing from other failures
   assert.equal(result.code, "mcp-archon-file-missing", "code should be file-missing when .mcp.json is absent");
+});
+
+// ---------------------------------------------------------------------------
+// LOW-8: per-capability naming for L0 probes (S2 fix)
+// ---------------------------------------------------------------------------
+
+test("LOW-8: managedFileCapability maps .claude/agents/ files to 'agents'", () => {
+  assert.equal(managedFileCapability(".claude/agents/planner/AGENT.md"), "agents");
+  assert.equal(managedFileCapability(".claude/agents/reviewer/AGENT.md"), "agents");
+  assert.equal(managedFileCapability("AGENTS.md"), "agents");
+});
+
+test("LOW-8: managedFileCapability maps .claude/skills/ files to 'skills'", () => {
+  assert.equal(managedFileCapability(".claude/skills/archon-execution/SKILL.md"), "skills");
+  assert.equal(managedFileCapability(".claude/skills/archon-intake/SKILL.md"), "skills");
+});
+
+test("LOW-8: managedFileCapability maps .claude/hooks/ files to 'hooks'", () => {
+  assert.equal(managedFileCapability(".claude/hooks/archon-pre-tool.mjs"), "hooks");
+  assert.equal(managedFileCapability(".claude/hooks/archon-stop.mjs"), "hooks");
+  assert.equal(managedFileCapability(".claude/settings.json"), "hooks");
+});
+
+test("LOW-8: managedFileCapability maps .archon/rules/ to 'rules'", () => {
+  assert.equal(managedFileCapability(".archon/rules/review-gate-policy.md"), "rules");
+});
+
+test("LOW-8: managedFileCapability maps .archon/templates/ to 'workflow-scaffold'", () => {
+  assert.equal(managedFileCapability(".archon/templates/review-identity-adapter.fixture.json"), "workflow-scaffold");
+});
+
+test("LOW-8: managedFileCapability maps .githooks/ files to 'git-guard'", () => {
+  assert.equal(managedFileCapability(".githooks/commit-msg"), "git-guard");
+});
+
+test("LOW-8: managedFileCapability maps .mcp.json and plugins/archon/ to 'mcp-archon'", () => {
+  assert.equal(managedFileCapability(".mcp.json"), "mcp-archon");
+  assert.equal(managedFileCapability("plugins/archon/index.js"), "mcp-archon");
+});
+
+test("LOW-8: managedFileCapability falls back to 'managed-files' for unmapped paths", () => {
+  assert.equal(managedFileCapability("some-other-file.txt"), "managed-files");
+  assert.equal(managedFileCapability("package.json"), "managed-files");
+});
+
+test("LOW-8: managedFileCapability maps .archon/playwright/ to 'playwright-browsers'", () => {
+  assert.equal(managedFileCapability(".archon/playwright/playwright.config.ts"), "playwright-browsers");
 });

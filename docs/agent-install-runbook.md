@@ -660,6 +660,43 @@ The following items could not be fully verified and are marked for future review
 
 ---
 
+## Operator Diagnostics: doctor vs live-check
+
+Two commands provide different levels of install verification. Use the right one for the situation.
+
+### `npm run archon:doctor`
+
+**When:** After install, after upgrade, or when something seems wrong at runtime.
+
+Runs database-level preflight (pgvector, migrations), MCP connection check (L3 via `claude mcp list`), hook executable dry-run, external prereqs (claude CLI present, node_modules, adapter stub), and DB probes. Requires: DB configured (`ARCHON_CORE_DATABASE_URL`), project bootstrapped.
+
+Output: JSON `{ ok, blockers, advisories, nextActions, reason }`. Non-zero `blockers` = action required.
+
+```bash
+npm run archon:doctor
+```
+
+### `bash scripts/check-archon-install-live.sh`
+
+**When:** Before any archon release, or as release-readiness evidence for the install capability.
+
+Runs L1 verify (config parse) THEN L2/L3 doctor probes. Designed for operator machines with `claude` present and DB configured. Cannot run in headless CI (no claude IDE, no DB).
+
+**Accepted gap (C10):** L2/L3 capability probes (MCP Connected, hook executable, claude CLI present, playwright browsers) are only checked when doctor or live-check runs — they are NOT part of the automated CI gate. The live-check script is the named mitigation: run it before each release as release-readiness install evidence.
+
+```bash
+bash scripts/check-archon-install-live.sh
+# or specify a different consumer repo root:
+bash scripts/check-archon-install-live.sh --repo-root /path/to/consumer/repo
+```
+
+**Expected output** on a healthy machine:
+- L1 verify: OK
+- doctor: OK (or OK with advisories for things like adapter-stub not yet replaced)
+- Exit 0
+
+---
+
 ## Summary
 
 An agent following this runbook end-to-end will produce a healthy archon install in a consumer repo with:

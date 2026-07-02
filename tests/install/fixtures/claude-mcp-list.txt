@@ -1,0 +1,5 @@
+Checking MCP server health…
+
+claude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - ✔ Connected
+claude.ai Google Calendar: https://calendarmcp.googleapis.com/mcp/v1 - ✔ Connected
+archon: node --experimental-strip-types src/mcp/server.ts - ✔ Connected
