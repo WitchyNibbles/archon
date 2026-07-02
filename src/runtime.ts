@@ -1,5 +1,6 @@
 // Runtime state, migrations, bootstrap/doctor, preflight, repo context, integrity repair.
 // Extracted verbatim from src/admin.ts (P8-T1 split). MOVE ONLY — no logic changes.
+import { spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -66,6 +67,15 @@ import { resolveRepoMarkdownTargetRoot } from "./memory.ts";
 import { inspectReviewIdentityStatus } from "./review.ts";
 import { runSpawnedCommand } from "./daemon.ts";
 import type { ExecuteLoopCommandOptions } from "./daemon.ts";
+import {
+  runL2Probes,
+  type SpawnFn,
+} from "./install/capability/probes-external.ts";
+import {
+  runL3Probes,
+} from "./admin/capability-probes-runtime.ts";
+import { assembleCapabilityReport } from "./install/capability/report.ts";
+import type { ReadFileFn } from "./install/capability/probes-file.ts";
 
 export type PostgresStoreClient = ConstructorParameters<typeof PostgresStore>[0];
 
@@ -1703,6 +1713,92 @@ export async function executeRuntimeExecutionPreflight(
 }
 
 
+// ---------------------------------------------------------------------------
+// S2: capability probe helpers for doctorCommand
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a SpawnFn (council C7: shell=false, array args, hardcoded commands)
+ * that captures stdout/stderr for capability probes.
+ *
+ * stdin is set to "ignore" (equivalent to /dev/null) so hook dry-run probes
+ * receive empty input — the hooks' readHookPayload() treats empty stdin as {}
+ * and exits 0, making this a safe no-op (U2 retirement).
+ */
+function createCapabilitySpawnFn(): SpawnFn {
+  return (command: string, args: readonly string[], stdinData?: string) =>
+    new Promise<{ exitCode: number | null; stdout: string; stderr: string }>(
+      (resolve, reject) => {
+        const child = spawn(command, [...args], {
+          // C7: shell:false — never interpolated through a shell
+          shell: false,
+          // When stdin data is provided, use a pipe; otherwise /dev/null (ignore).
+          stdio: [stdinData !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+        });
+
+        let stdout = "";
+        let stderr = "";
+
+        child.stdout?.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8");
+        });
+        child.stderr?.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString("utf8");
+        });
+
+        child.on("error", (err) => {
+          reject(err);
+        });
+
+        child.on("exit", (code) => {
+          resolve({ exitCode: code, stdout, stderr });
+        });
+
+        if (stdinData !== undefined && child.stdin) {
+          child.stdin.write(stdinData, "utf8");
+          child.stdin.end();
+        }
+      }
+    );
+}
+
+/**
+ * Creates a ReadFileFn that reads from the real filesystem.
+ * Returns undefined for missing files (never throws on ENOENT).
+ */
+function createCapabilityReadFileFn(): ReadFileFn {
+  return async (absolutePath: string) => {
+    try {
+      return await readFile(absolutePath, "utf8");
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+/**
+ * Runs L2+L3 capability probes for the doctor command and returns the assembled
+ * capability report in "doctor" context (L2/L3 blocking when equipped).
+ *
+ * Called from the success path of doctorCommand; results are merged into the
+ * existing DoctorCommandReport to extend it with L2/L3 capability evidence.
+ */
+async function runDoctorCapabilityProbes(
+  queryFn: DbQueryFn,
+  targetRoot: string
+): Promise<ReturnType<typeof assembleCapabilityReport>> {
+  const spawnFn = createCapabilitySpawnFn();
+  const readFileFn = createCapabilityReadFileFn();
+
+  const [l2Probes, l3Probes] = await Promise.all([
+    runL2Probes(spawnFn, readFileFn, targetRoot),
+    runL3Probes(spawnFn, targetRoot, queryFn),
+  ]);
+
+  const allProbes = [...l2Probes, ...l3Probes];
+  return assembleCapabilityReport(allProbes, "doctor");
+}
+
 /**
  * Emits a structured JSON error report to stdout and sets process.exitCode = 1.
  * Used by doctorCommand to keep the output format consistent even on connection
@@ -1894,7 +1990,20 @@ export async function doctorCommand(args: readonly string[]) {
           };
         }
       });
-      console.log(JSON.stringify(report));
+
+      // S2: Run L2/L3 capability probes and merge results into the doctor report.
+      // The report assembler uses "doctor" context — L2/L3 failures are blocking
+      // (not advisory) when the machine has claude + DB (the equipped machine path).
+      const capReport = await runDoctorCapabilityProbes(queryFn, process.cwd());
+
+      console.log(JSON.stringify({
+        ...report,
+        ok: report.ok && capReport.ok,
+        blockers: [...report.blockers, ...capReport.blockers],
+        advisories: [...report.advisories, ...capReport.advisories],
+        nextActions: capReport.nextActions,
+        reason: capReport.reason,
+      }));
     });
   } catch (error) {
     // Same narrowing: only absorb connection errors; re-throw everything else.
