@@ -75,6 +75,11 @@ export function assembleCapabilityReport(
       if (detail) {
         advisories.push(`${summary} (skipped)`);
       }
+      // LOW-7: surface skipped remediation in nextActions so operators know
+      // what manual step to take when a probe is skipped (tool absent / placeholder).
+      if (remediation) {
+        nextActionsSet.add(remediation);
+      }
       continue;
     }
 
@@ -91,6 +96,10 @@ export function assembleCapabilityReport(
     }
   }
 
+  // LOW-7: surface non-empty remediation from skipped probes so operators
+  // know what to do even when a probe is skipped (tool absent / placeholder).
+  // (Skipped probes have already been accumulated above; this pass adds their
+  //  remediation to nextActions if it is non-empty.)
   const nextActions = [...nextActionsSet];
   const ok = blockers.length === 0;
   const reason =
@@ -100,13 +109,22 @@ export function assembleCapabilityReport(
         : `All required capabilities are operational; ${advisories.length} advisory item(s).`
       : `${blockers.length} blocking issue(s): ${blockers.slice(0, 2).join("; ")}${blockers.length > 2 ? " …" : ""}`;
 
+  // HIGH-2 / C8: scrub detail+remediation on every probe before including in
+  // the return value.  The per-probe scrub here complements the scrub applied
+  // to blockers/advisories/nextActions above (defence-in-depth).
+  const scrubbedProbes: ProbeResult[] = probes.map((p) => ({
+    ...p,
+    detail: scrubPgCredentials(p.detail),
+    remediation: scrubPgCredentials(p.remediation),
+  }));
+
   return {
     ok,
     blockers,
     advisories,
     nextActions,
     reason,
-    probes,
+    probes: scrubbedProbes,
   };
 }
 

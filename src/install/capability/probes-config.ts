@@ -40,10 +40,12 @@ async function readJson(
 
 /**
  * Minimal .env.archon parser: extracts a single key=value line.
- * Handles quoted values (double or single) and inline # comments.
- * Returns undefined if the key is not present.
+ * Handles quoted values (double or single), export-prefixed keys, and inline # comments.
+ * Returns undefined if the key is not present or has an empty value.
+ *
+ * Exported for direct unit testing (MEDIUM-4).
  */
-function extractEnvValue(content: string, key: string): string | undefined {
+export function extractEnvValue(content: string, key: string): string | undefined {
   for (const line of content.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) {
@@ -77,27 +79,36 @@ function extractEnvValue(content: string, key: string): string | undefined {
 // L1 probes
 // ---------------------------------------------------------------------------
 
+interface McpServerProbeOptions {
+  readonly capability: string;
+  readonly serverKey: string;
+  readonly codePrefix: string;
+}
+
 /**
- * L1 probe: asserts .mcp.json parses and contains mcpServers.archon.
+ * MEDIUM-3: Parameterised MCP server probe factory.
+ * Asserts .mcp.json parses and contains mcpServers[serverKey].
  *
- * This probe directly catches the #140 class: if the installer writes the
- * archon MCP server fragment to the wrong file (e.g. .claude/settings.json),
- * .mcp.json will not have mcpServers.archon and this probe returns blocked.
+ * Directly catches the #140 class: a fragment written to the wrong file
+ * (e.g. .claude/settings.json) leaves .mcp.json without the expected key
+ * and this probe returns blocked regardless of where the fragment landed.
  */
-export async function probeMcpJsonArchon(
+async function probeMcpServer(
   readFn: ReadFileFn,
-  targetRoot: string
+  targetRoot: string,
+  opts: McpServerProbeOptions
 ): Promise<ProbeResult> {
+  const { capability, serverKey, codePrefix } = opts;
   const mcpPath = path.join(targetRoot, ".mcp.json");
   let parsed: Record<string, unknown> | undefined;
   try {
     parsed = await readJson(readFn, mcpPath);
   } catch {
     return {
-      capability: "mcp-archon",
+      capability,
       layer: "L1",
       status: "blocked",
-      code: "mcp-archon-parse-error",
+      code: `${codePrefix}-parse-error`,
       detail: ".mcp.json exists but could not be parsed as JSON.",
       remediation: "Run 'archon upgrade --apply' to restore .mcp.json.",
     };
@@ -105,51 +116,62 @@ export async function probeMcpJsonArchon(
 
   if (parsed === undefined) {
     return {
-      capability: "mcp-archon",
+      capability,
       layer: "L1",
       status: "blocked",
-      code: "mcp-archon-file-missing",
-      detail: ".mcp.json is missing — archon MCP server cannot be registered.",
+      code: `${codePrefix}-file-missing`,
+      detail: `.mcp.json is missing — ${serverKey} MCP server cannot be registered.`,
       remediation: "Run 'archon init --apply' or 'archon upgrade --apply' to create .mcp.json.",
     };
   }
 
   const mcpServers = parsed.mcpServers;
-  if (
-    !mcpServers ||
-    typeof mcpServers !== "object" ||
-    Array.isArray(mcpServers)
-  ) {
+  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
     return {
-      capability: "mcp-archon",
+      capability,
       layer: "L1",
       status: "blocked",
-      code: "mcp-archon-no-servers",
+      code: `${codePrefix}-no-servers`,
       detail: ".mcp.json exists but has no mcpServers object.",
-      remediation: "Run 'archon upgrade --apply' to merge the archon MCP server entry.",
+      remediation: `Run 'archon upgrade --apply' to merge the ${serverKey} MCP server entry.`,
     };
   }
 
   const servers = mcpServers as Record<string, unknown>;
-  if (!servers.archon) {
+  if (!servers[serverKey]) {
     return {
-      capability: "mcp-archon",
+      capability,
       layer: "L1",
       status: "blocked",
-      code: "mcp-archon-absent",
-      detail: ".mcp.json does not contain mcpServers.archon — archon MCP server is not registered.",
-      remediation: "Run 'archon upgrade --apply' to merge the archon MCP server entry into .mcp.json.",
+      code: `${codePrefix}-absent`,
+      detail: `.mcp.json does not contain mcpServers.${serverKey} — ${serverKey} MCP server is not registered.`,
+      remediation: `Run 'archon upgrade --apply' to merge the ${serverKey} MCP server entry into .mcp.json.`,
     };
   }
 
   return {
-    capability: "mcp-archon",
+    capability,
     layer: "L1",
     status: "ok",
-    code: "mcp-archon-present",
-    detail: "mcpServers.archon is registered in .mcp.json.",
+    code: `${codePrefix}-present`,
+    detail: `mcpServers.${serverKey} is registered in .mcp.json.`,
     remediation: "",
   };
+}
+
+/**
+ * L1 probe: asserts .mcp.json parses and contains mcpServers.archon.
+ * Catches the #140 class — see probeMcpServer doc above.
+ */
+export async function probeMcpJsonArchon(
+  readFn: ReadFileFn,
+  targetRoot: string
+): Promise<ProbeResult> {
+  return probeMcpServer(readFn, targetRoot, {
+    capability: "mcp-archon",
+    serverKey: "archon",
+    codePrefix: "mcp-archon",
+  });
 }
 
 /**
@@ -159,70 +181,11 @@ export async function probeMcpJsonPlaywright(
   readFn: ReadFileFn,
   targetRoot: string
 ): Promise<ProbeResult> {
-  const mcpPath = path.join(targetRoot, ".mcp.json");
-  let parsed: Record<string, unknown> | undefined;
-  try {
-    parsed = await readJson(readFn, mcpPath);
-  } catch {
-    return {
-      capability: "mcp-playwright",
-      layer: "L1",
-      status: "blocked",
-      code: "mcp-playwright-parse-error",
-      detail: ".mcp.json exists but could not be parsed as JSON.",
-      remediation: "Run 'archon upgrade --apply' to restore .mcp.json.",
-    };
-  }
-
-  if (parsed === undefined) {
-    return {
-      capability: "mcp-playwright",
-      layer: "L1",
-      status: "blocked",
-      code: "mcp-playwright-file-missing",
-      detail: ".mcp.json is missing — playwright MCP server cannot be registered.",
-      remediation: "Run 'archon init --apply' or 'archon upgrade --apply' to create .mcp.json.",
-    };
-  }
-
-  const mcpServers = parsed.mcpServers;
-  if (
-    !mcpServers ||
-    typeof mcpServers !== "object" ||
-    Array.isArray(mcpServers)
-  ) {
-    return {
-      capability: "mcp-playwright",
-      layer: "L1",
-      status: "blocked",
-      code: "mcp-playwright-no-servers",
-      detail: ".mcp.json exists but has no mcpServers object.",
-      remediation: "Run 'archon upgrade --apply' to merge the playwright MCP server entry.",
-    };
-  }
-
-  const servers = mcpServers as Record<string, unknown>;
-  if (!servers.playwright) {
-    return {
-      capability: "mcp-playwright",
-      layer: "L1",
-      status: "blocked",
-      code: "mcp-playwright-absent",
-      detail:
-        ".mcp.json does not contain mcpServers.playwright — playwright MCP server is not registered.",
-      remediation:
-        "Run 'archon upgrade --apply' to merge the playwright MCP server entry into .mcp.json.",
-    };
-  }
-
-  return {
+  return probeMcpServer(readFn, targetRoot, {
     capability: "mcp-playwright",
-    layer: "L1",
-    status: "ok",
-    code: "mcp-playwright-present",
-    detail: "mcpServers.playwright is registered in .mcp.json.",
-    remediation: "",
-  };
+    serverKey: "playwright",
+    codePrefix: "mcp-playwright",
+  });
 }
 
 /** Required hook types in .claude/settings.json. */

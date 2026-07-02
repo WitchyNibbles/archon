@@ -76,18 +76,35 @@ if (!Array.isArray(report.probes)) {
   console.error("FAIL: report.probes is not an array");
   failed = true;
 } else {
-  const capabilities = new Set(report.probes.map((p) => p?.capability));
+  const probeByCapability = new Map(report.probes.map((p) => [p?.capability, p]));
 
-  if (!capabilities.has("mcp-archon")) {
+  const mcpArchon = probeByCapability.get("mcp-archon");
+  if (!mcpArchon) {
     console.error(
       "FAIL: report.probes does not contain an mcp-archon L1 probe — " +
         "this proves the #140 class would not be caught by the compiled bin"
     );
     failed = true;
+  } else if (mcpArchon.status !== "ok") {
+    // LOW-9: assert status === "ok", not just presence.
+    console.error(
+      `FAIL: mcp-archon probe status is '${mcpArchon.status}', expected 'ok' — ` +
+        "archon MCP server is not registered in .mcp.json"
+    );
+    failed = true;
   }
-  if (!capabilities.has("mcp-playwright")) {
+
+  const mcpPlaywright = probeByCapability.get("mcp-playwright");
+  if (!mcpPlaywright) {
     console.error(
       "FAIL: report.probes does not contain an mcp-playwright L1 probe"
+    );
+    failed = true;
+  } else if (mcpPlaywright.status !== "ok") {
+    // LOW-9: assert status === "ok", not just presence.
+    console.error(
+      `FAIL: mcp-playwright probe status is '${mcpPlaywright.status}', expected 'ok' — ` +
+        "playwright MCP server is not registered in .mcp.json"
     );
     failed = true;
   }

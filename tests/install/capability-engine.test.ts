@@ -22,6 +22,7 @@ import {
   probePackageMigrateScript,
   probeDatabaseUrl,
   runL1Probes,
+  extractEnvValue,
 } from "../../src/install/capability/probes-config.ts";
 import {
   assembleCapabilityReport,
@@ -219,13 +220,16 @@ test("probeDatabaseUrl: blocked when .env.archon missing", async () => {
   assert.equal(result.code, "db-url-env-missing");
 });
 
-test("probeDatabaseUrl: C8 — credential not in detail/remediation when URL invalid", async () => {
-  // A valid URL actually passes — test blocked path with a bad URL
-  const badReadFn = makeReadFn({ [`${TARGET}/.env.archon`]: "ARCHON_CORE_DATABASE_URL=not-a-url\n" });
+test("probeDatabaseUrl: C8 — credential not in detail/remediation when URL invalid (LOW-11)", async () => {
+  // LOW-11: use a credential-bearing URL so the scrub is non-vacuous.
+  const credUrl = "postgres://user:secret@host/db";
+  const badReadFn = makeReadFn({ [`${TARGET}/.env.archon`]: `ARCHON_CORE_DATABASE_URL=${credUrl}\n` });
   const result = await probeDatabaseUrl(badReadFn, TARGET);
-  assert.equal(result.status, "blocked");
-  // detail and remediation must not contain raw credential fragments
-  assert.doesNotMatch(result.detail, /not-a-url/, "detail should not echo the raw URL value");
+  // postgres://user:secret@host/db is invalid (no port, but still parseable) — may be ok or blocked
+  // The critical assertion is that "secret" never appears in any output field.
+  assert.doesNotMatch(result.detail, /secret/, "detail must not contain the raw password");
+  assert.doesNotMatch(result.remediation ?? "", /secret/, "remediation must not contain the raw password");
+  assert.doesNotMatch(result.code, /secret/, "code must not contain the raw password");
 });
 
 test("runL1Probes: returns 6 probe results, never throws", async () => {
@@ -301,7 +305,7 @@ test("assembleCapabilityReport: ok=true when no probes fail", () => {
   assert.equal(report.advisories.length, 0);
 });
 
-test("assembleCapabilityReport: C8 — scrubs credentials from detail in output", () => {
+test("assembleCapabilityReport: C8 — scrubs credentials from all report fields (MEDIUM-6)", () => {
   const probes: ProbeResult[] = [
     {
       capability: "db-migrations",
@@ -314,26 +318,107 @@ test("assembleCapabilityReport: C8 — scrubs credentials from detail in output"
     },
   ];
   const report = assembleCapabilityReport(probes, "verify");
-  // The report assembler scrubs credentials from blockers and nextActions.
+
+  // Blockers and nextActions must be scrubbed.
   for (const blocker of report.blockers) {
     assert.doesNotMatch(blocker, /admin:secret/, "credentials must be scrubbed from blockers");
   }
   for (const action of report.nextActions) {
     assert.doesNotMatch(action, /admin:secret/, "credentials must be scrubbed from nextActions");
   }
+
+  // MEDIUM-6: report.probes[*].detail and .remediation must also be scrubbed (HIGH-2 fix).
+  for (const probe of report.probes) {
+    assert.doesNotMatch(probe.detail, /admin:secret/, `probes[${probe.capability}].detail must be scrubbed`);
+    assert.doesNotMatch(probe.remediation ?? "", /admin:secret/, `probes[${probe.capability}].remediation must be scrubbed`);
+  }
+
+  // MEDIUM-6: full JSON.stringify round-trip must not contain the raw credential.
+  const serialised = JSON.stringify(report);
+  assert.doesNotMatch(serialised, /admin:secret/, "raw credential must not appear anywhere in serialised report");
 });
 
 // ---------------------------------------------------------------------------
 // L2/L3 placeholder probes
 // ---------------------------------------------------------------------------
 
-test("buildL2L3PlaceholderProbes: returns skipped probes that never block in verify", () => {
+test("buildL2L3PlaceholderProbes: returns exactly 3 skipped probes that never block in verify (LOW-10)", () => {
   const placeholders = buildL2L3PlaceholderProbes();
-  assert.ok(placeholders.length >= 2, "expected at least 2 L2/L3 placeholders");
+  // LOW-10: must be exactly 3 (ecc-plugin L2, playwright-browsers L2, doctor L3).
+  assert.equal(placeholders.length, 3, "expected exactly 3 L2/L3 placeholder probes");
   for (const probe of placeholders) {
     assert.equal(probe.status, "skipped");
     assert.ok(probe.layer === "L2" || probe.layer === "L3");
   }
   const report = assembleCapabilityReport(placeholders, "verify");
   assert.equal(report.ok, true, "L2/L3 skipped placeholders must not block verify");
+});
+
+// ---------------------------------------------------------------------------
+// MEDIUM-4: extractEnvValue direct unit tests
+// ---------------------------------------------------------------------------
+
+test("extractEnvValue: plain key=value", () => {
+  assert.equal(extractEnvValue("KEY=value\n", "KEY"), "value");
+});
+
+test("extractEnvValue: double-quoted value", () => {
+  assert.equal(extractEnvValue('KEY="hello world"\n', "KEY"), "hello world");
+});
+
+test("extractEnvValue: single-quoted value", () => {
+  assert.equal(extractEnvValue("KEY='hello world'\n", "KEY"), "hello world");
+});
+
+test("extractEnvValue: export-prefixed key", () => {
+  assert.equal(extractEnvValue("export KEY=value\n", "KEY"), "value");
+});
+
+test("extractEnvValue: inline comment stripped", () => {
+  assert.equal(extractEnvValue("KEY=value # this is a comment\n", "KEY"), "value");
+});
+
+test("extractEnvValue: returns undefined when key absent", () => {
+  assert.equal(extractEnvValue("OTHER=value\n", "KEY"), undefined);
+});
+
+test("extractEnvValue: ignores comment lines", () => {
+  const content = "# KEY=value\nKEY=real\n";
+  assert.equal(extractEnvValue(content, "KEY"), "real");
+});
+
+test("extractEnvValue: postgres URL round-trips without mutation", () => {
+  const url = "postgres://user:pass@localhost:5432/db";
+  const content = `ARCHON_CORE_DATABASE_URL=${url}\n`;
+  assert.equal(extractEnvValue(content, "ARCHON_CORE_DATABASE_URL"), url);
+});
+
+// ---------------------------------------------------------------------------
+// MEDIUM-5: canonical #140 regression test
+// ---------------------------------------------------------------------------
+
+test("MEDIUM-5 / #140 class: mcp-archon probe blocked when fragment is in settings.json but .mcp.json is absent", async () => {
+  // This is the exact failure mode of #140: the installer wrote mcpServers.archon
+  // to .claude/settings.json instead of .mcp.json. The fragment is "present somewhere"
+  // but .mcp.json is absent → the L1 probe must return blocked regardless.
+  const settingsWithArchon = JSON.stringify({
+    autoAcceptEdits: false,
+    hooks: { PreToolUse: [], PostToolUse: [], Stop: [] },
+    // Fragment that belongs in .mcp.json was written here by mistake
+    mcpServers: { archon: { command: "node", args: [".claude/mcp/archon.mjs"] } },
+  });
+  const readFn = makeReadFn({
+    // .mcp.json is ABSENT (not in the map)
+    [`${TARGET}/.claude/settings.json`]: settingsWithArchon,
+  });
+
+  const result = await probeMcpJsonArchon(readFn, TARGET);
+  assert.equal(
+    result.status,
+    "blocked",
+    "#140 regression: probe must return blocked when .mcp.json is absent, even if fragment exists in settings.json"
+  );
+  assert.equal(result.capability, "mcp-archon");
+  // Code must distinguish file-missing from other failures
+  assert.equal(result.code, "mcp-archon-file-missing", "code should be file-missing when .mcp.json is absent");
 });
