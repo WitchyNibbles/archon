@@ -65,6 +65,7 @@ const adminCommands = new Set([
   "/export-docs",
   "github-dispatch",
   "autonomous-enable",
+  "init-task",
   // NOTE: "mcp" is intentionally absent — it is handled by the dedicated
   // `command === "mcp"` branch above the adminCommands lookup, so including
   // it here would create an unreachable dead branch.
