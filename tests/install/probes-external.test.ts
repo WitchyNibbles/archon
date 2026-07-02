@@ -9,8 +9,9 @@
  *   - probeNodeModules: installed/absent
  *   - probePlaywrightBrowsers: not-a-dependency/absent/browsers-ok
  *   - probeAdapterStub: absent/unimplemented/replaced
- *   - probeEccPresent: always returns skipped (S3 stub)
- *   - runL2Probes: never throws even if individual probe throws
+ *   - probeEccPresent (S3 real): canonical/legacy/absent/claude-absent
+ *   - probeSkillRefNamespace (S3 new, C1): mismatch both directions, match, no refs
+ *   - runL2Probes: 6 probes, never throws, includes ecc-plugin + skill-ref-namespace
  *   - council C9: adapter-stub remediation states the assurance boundary
  */
 import test from "node:test";
@@ -21,10 +22,12 @@ import {
   probePlaywrightBrowsers,
   probeAdapterStub,
   probeEccPresent,
+  probeSkillRefNamespace,
   runL2Probes,
 } from "../../src/install/capability/probes-external.ts";
-import type { SpawnFn } from "../../src/install/capability/probes-external.ts";
+import type { SpawnFn, FindAgentFilesFn } from "../../src/install/capability/probes-external.ts";
 import type { ReadFileFn } from "../../src/install/capability/probes-file.ts";
+import { ECC_CANONICAL_SKILL_PREFIX, ECC_LEGACY_SKILL_PREFIX } from "../../src/install/ecc-plugin.ts";
 
 // ---------------------------------------------------------------------------
 // Stub builders
@@ -211,32 +214,226 @@ export default createReviewPrincipalAdapter(async ({ authContext }) => {
 });
 
 // ---------------------------------------------------------------------------
-// probeEccPresent (S3 stub — always skipped)
+// probeEccPresent (S3 real — dual-identity detection)
 // ---------------------------------------------------------------------------
 
-test("probeEccPresent: always returns skipped with remediation (S3 stub)", async () => {
-  const spawnFn = makeSpawnFn(0, "anything");
+const CANONICAL_PLUGIN_LIST = `Installed plugins:
+
+  ❯ ecc@ecc
+    Version: 2.0.0
+    Scope: user
+    Status: ✔ enabled
+`;
+
+const LEGACY_PLUGIN_LIST = `Installed plugins:
+
+  ❯ everything-claude-code@everything-claude-code
+    Version: 1.8.0
+    Scope: user
+    Status: ✔ enabled
+`;
+
+const EMPTY_PLUGIN_LIST = `Installed plugins:
+
+`;
+
+test("probeEccPresent: canonical ecc@ecc installed → ok with canonical code", async () => {
+  const spawnFn = makeSpawnFn(0, CANONICAL_PLUGIN_LIST);
   const result = await probeEccPresent(spawnFn);
-  assert.equal(result.status, "skipped");
+  assert.equal(result.status, "ok");
   assert.equal(result.capability, "ecc-plugin");
   assert.equal(result.layer, "L2");
-  assert.ok(result.remediation.length > 0, "S3 stub must have remediation");
+  assert.equal(result.code, "ecc-plugin-present");
+  assert.ok(result.detail.includes("ecc@ecc"), "detail must include installed identity");
+});
+
+test("probeEccPresent: legacy everything-claude-code installed → ok with legacy migration advisory", async () => {
+  const spawnFn = makeSpawnFn(0, LEGACY_PLUGIN_LIST);
+  const result = await probeEccPresent(spawnFn);
+  assert.equal(result.status, "ok", "legacy identity must be accepted as ok (not blocked)");
+  assert.equal(result.capability, "ecc-plugin");
+  assert.equal(result.code, "ecc-plugin-legacy-present");
   assert.ok(
-    result.remediation.includes("S3") || result.detail.includes("S3"),
-    "stub detail/remediation should mention S3"
+    result.detail.includes("legacy") || result.detail.includes("migration"),
+    "legacy probe must include migration advisory in detail"
+  );
+  assert.ok(result.remediation.length > 0, "legacy probe must include migration remediation");
+});
+
+test("probeEccPresent: no ECC plugin installed → blocked with install remediation", async () => {
+  const spawnFn = makeSpawnFn(0, EMPTY_PLUGIN_LIST);
+  const result = await probeEccPresent(spawnFn);
+  assert.equal(result.status, "blocked");
+  assert.equal(result.code, "ecc-plugin-absent");
+  assert.ok(
+    result.remediation.includes("install") || result.remediation.includes("ecc"),
+    "absent probe must include install remediation"
   );
 });
 
+test("probeEccPresent: claude absent (ENOENT) → skipped", async () => {
+  const spawnFn = makeSpawnFnThrowing("spawn ENOENT");
+  const result = await probeEccPresent(spawnFn);
+  assert.equal(result.status, "skipped");
+  assert.equal(result.code, "ecc-claude-absent");
+});
+
+test("probeEccPresent: plugin list exits non-zero → skipped", async () => {
+  const spawnFn = makeSpawnFn(1, "", "error");
+  const result = await probeEccPresent(spawnFn);
+  assert.equal(result.status, "skipped");
+  assert.match(result.code, /nonzero/);
+});
+
+test("probeEccPresent: spawn throws non-ENOENT → skipped", async () => {
+  const spawnFn = makeSpawnFnThrowing("unexpected crash");
+  const result = await probeEccPresent(spawnFn);
+  assert.equal(result.status, "skipped");
+});
+
 // ---------------------------------------------------------------------------
-// runL2Probes: aggregate runner never throws
+// probeSkillRefNamespace (S3 new — council C1, read-only)
 // ---------------------------------------------------------------------------
 
-test("runL2Probes: returns 5 probes and never throws even if a probe throws", async () => {
-  // Use a spawnFn that exits 0 for everything
+function makeNoAgentFiles(): FindAgentFilesFn {
+  return async () => [];
+}
+
+function makeAgentFiles(files: Record<string, string>): {
+  findFn: FindAgentFilesFn;
+  readFn: ReadFileFn;
+} {
+  const paths = Object.keys(files);
+  const findFn: FindAgentFilesFn = async () => paths;
+  const readFn: ReadFileFn = async (p) => files[p];
+  return { findFn, readFn };
+}
+
+test("probeSkillRefNamespace: no agent files → skipped", async () => {
+  const findFn = makeNoAgentFiles();
+  const readFn = makeReadFn({});
+  const result = await probeSkillRefNamespace(findFn, readFn, TARGET, ECC_CANONICAL_SKILL_PREFIX);
+  assert.equal(result.status, "skipped");
+  assert.equal(result.code, "skill-ref-no-agent-files");
+});
+
+test("probeSkillRefNamespace: agent files with no ECC refs → skipped", async () => {
+  const { findFn, readFn } = makeAgentFiles({
+    "/fake/repo/.claude/agents/test.md": "# Test agent\nUses bash:exec skill",
+  });
+  const result = await probeSkillRefNamespace(findFn, readFn, TARGET, ECC_CANONICAL_SKILL_PREFIX);
+  assert.equal(result.status, "skipped");
+  assert.equal(result.code, "skill-ref-no-ecc-refs");
+});
+
+test("probeSkillRefNamespace: canonical installed + ecc: refs → ok (match)", async () => {
+  const { findFn, readFn } = makeAgentFiles({
+    "/fake/repo/.claude/agents/my-agent.md": `# My Agent
+Uses ecc:search and ecc:write skills`,
+  });
+  const result = await probeSkillRefNamespace(
+    findFn,
+    readFn,
+    TARGET,
+    ECC_CANONICAL_SKILL_PREFIX // "ecc:"
+  );
+  assert.equal(result.status, "ok");
+  assert.equal(result.code, "skill-ref-namespace-match");
+});
+
+test("probeSkillRefNamespace: canonical installed + everything-claude-code: refs → degraded (mismatch)", async () => {
+  const { findFn, readFn } = makeAgentFiles({
+    "/fake/repo/.claude/agents/old-agent.md": `# Old Agent
+Uses everything-claude-code:search skill`,
+  });
+  const result = await probeSkillRefNamespace(
+    findFn,
+    readFn,
+    TARGET,
+    ECC_CANONICAL_SKILL_PREFIX // "ecc:" — but file uses legacy prefix
+  );
+  assert.equal(result.status, "degraded");
+  assert.equal(result.code, "skill-ref-namespace-mismatch");
+  assert.ok(result.detail.includes("1"), "detail must report count of mismatched files");
+  assert.ok(
+    result.detail.includes(ECC_LEGACY_SKILL_PREFIX),
+    "detail must name the mismatched prefix"
+  );
+  // Probe must state it is read-only (S6 owns writes)
+  assert.ok(
+    result.remediation.includes("read-only") || result.remediation.includes("S6"),
+    "remediation must mention read-only detection (S6 codemod owns writes)"
+  );
+});
+
+test("probeSkillRefNamespace: legacy installed + everything-claude-code: refs → ok (match)", async () => {
+  const { findFn, readFn } = makeAgentFiles({
+    "/fake/repo/.claude/agents/legacy-agent.md": `# Legacy Agent
+Uses everything-claude-code:search skill`,
+  });
+  const result = await probeSkillRefNamespace(
+    findFn,
+    readFn,
+    TARGET,
+    ECC_LEGACY_SKILL_PREFIX // "everything-claude-code:" — matches file refs
+  );
+  assert.equal(result.status, "ok");
+  assert.equal(result.code, "skill-ref-namespace-match");
+});
+
+test("probeSkillRefNamespace: legacy installed + ecc: refs → degraded (mismatch)", async () => {
+  const { findFn, readFn } = makeAgentFiles({
+    "/fake/repo/.claude/agents/new-agent.md": `# New Agent
+Uses ecc:search skill`,
+  });
+  const result = await probeSkillRefNamespace(
+    findFn,
+    readFn,
+    TARGET,
+    ECC_LEGACY_SKILL_PREFIX // "everything-claude-code:" — but file uses canonical prefix
+  );
+  assert.equal(result.status, "degraded");
+  assert.equal(result.code, "skill-ref-namespace-mismatch");
+  assert.ok(result.detail.includes(ECC_CANONICAL_SKILL_PREFIX), "detail must name the canonical prefix");
+});
+
+test("probeSkillRefNamespace: ECC not installed + refs found → degraded (unresolvable)", async () => {
+  const { findFn, readFn } = makeAgentFiles({
+    "/fake/repo/.claude/agents/agent.md": "Uses ecc:search skill",
+  });
+  const result = await probeSkillRefNamespace(findFn, readFn, TARGET, undefined);
+  assert.equal(result.status, "degraded");
+  assert.equal(result.code, "skill-ref-ecc-not-installed");
+  assert.ok(result.remediation.includes("--install-plugin"), "remediation must guide to install plugin");
+});
+
+test("probeSkillRefNamespace: multiple files counted correctly", async () => {
+  const { findFn, readFn } = makeAgentFiles({
+    "/fake/repo/.claude/agents/agent1.md": "Uses ecc:search skill",
+    "/fake/repo/.claude/agents/agent2.md": "Uses ecc:write skill",
+    "/fake/repo/.claude/agents/agent3.md": "Uses everything-claude-code:search skill", // mismatch
+  });
+  const result = await probeSkillRefNamespace(
+    findFn,
+    readFn,
+    TARGET,
+    ECC_CANONICAL_SKILL_PREFIX // canonical installed
+  );
+  assert.equal(result.status, "degraded");
+  // 1 file has the legacy (mismatched) prefix
+  assert.ok(result.detail.includes("1"), "1 mismatched file should be reported");
+});
+
+// ---------------------------------------------------------------------------
+// runL2Probes: aggregate runner never throws (now 6 probes)
+// ---------------------------------------------------------------------------
+
+test("runL2Probes: returns 6 probes and never throws even if a probe throws", async () => {
   const spawnFn = makeSpawnFn(0, "claude 1.0.0");
   const readFn = makeReadFn({});
-  const results = await runL2Probes(spawnFn, readFn, TARGET);
-  assert.equal(results.length, 5, "runL2Probes must return exactly 5 probes");
+  const findFn = makeNoAgentFiles();
+  const results = await runL2Probes(spawnFn, readFn, findFn, TARGET);
+  assert.equal(results.length, 6, "runL2Probes must return exactly 6 probes after S3");
   for (const r of results) {
     assert.ok(
       ["ok", "degraded", "blocked", "skipped"].includes(r.status),
@@ -247,13 +444,32 @@ test("runL2Probes: returns 5 probes and never throws even if a probe throws", as
   }
 });
 
-test("runL2Probes: ecc-present probe is always the 5th and always skipped", async () => {
+test("runL2Probes: includes both ecc-plugin and skill-ref-namespace probes", async () => {
   const spawnFn = makeSpawnFn(0, "claude 1.0.0");
   const readFn = makeReadFn({});
-  const results = await runL2Probes(spawnFn, readFn, TARGET);
+  const findFn = makeNoAgentFiles();
+  const results = await runL2Probes(spawnFn, readFn, findFn, TARGET);
+
   const eccProbe = results.find((r) => r.capability === "ecc-plugin");
-  assert.ok(eccProbe !== undefined, "ecc-plugin probe must be in the results");
-  assert.equal(eccProbe!.status, "skipped", "ecc-plugin probe must be skipped in S2");
+  assert.ok(eccProbe !== undefined, "ecc-plugin probe must be in results");
+
+  const skillRefProbe = results.find((r) => r.capability === "skill-ref-namespace");
+  assert.ok(skillRefProbe !== undefined, "skill-ref-namespace probe must be in results after S3");
+});
+
+test("runL2Probes: ecc-plugin probe result feeds skill-ref-namespace probe (no separate spawn)", async () => {
+  // With canonical ECC installed and an agent file using legacy prefix → skill-ref mismatch
+  const spawnFn = makeSpawnFn(0, CANONICAL_PLUGIN_LIST);
+  const { findFn, readFn } = makeAgentFiles({
+    "/fake/repo/.claude/agents/old.md": "Uses everything-claude-code:search",
+  });
+
+  const results = await runL2Probes(spawnFn, readFn, findFn, TARGET);
+  const eccProbe = results.find((r) => r.capability === "ecc-plugin");
+  const skillRefProbe = results.find((r) => r.capability === "skill-ref-namespace");
+
+  assert.equal(eccProbe?.code, "ecc-plugin-present");
+  assert.equal(skillRefProbe?.status, "degraded", "skill-ref must detect mismatch when canonical installed + legacy refs");
 });
 
 // ---------------------------------------------------------------------------
