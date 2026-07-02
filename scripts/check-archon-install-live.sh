@@ -149,6 +149,17 @@ printf '\n'
 
 echo '--- L2/L3: doctor (capability probes) ---'
 
+# Source .env.archon so that ARCHON_CORE_DATABASE_URL is visible to this script's
+# checks. The archon CLI already handles this via --env-file=.env.archon, but the
+# shell-level warning below needs it too.
+if [[ -f "$repo_root/.env.archon" ]]; then
+  # set -a exports all sourced vars; restore the previous state after sourcing.
+  set -a
+  # shellcheck disable=SC1090
+  source "$repo_root/.env.archon" || true
+  set +a
+fi
+
 if ! command -v claude >/dev/null 2>&1; then
   printf 'WARNING: claude CLI not found — L3 MCP and hook probes will be skipped\n'
 fi

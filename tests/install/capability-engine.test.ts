@@ -383,6 +383,29 @@ test("buildL2L3PlaceholderProbes: returns exactly 3 skipped probes that never bl
   }
   const report = assembleCapabilityReport(placeholders, "verify");
   assert.equal(report.ok, true, "L2/L3 skipped placeholders must not block verify");
+
+  // LOW-7 carry-over: each placeholder's remediation must appear in nextActions so
+  // operators know what manual step to take when a probe is skipped.
+  const eccProbe = placeholders.find((p) => p.capability === "ecc-plugin");
+  const pwProbe = placeholders.find((p) => p.capability === "playwright-browsers");
+  const doctorProbe = placeholders.find((p) => p.capability === "doctor");
+
+  assert.ok(eccProbe, "ecc-plugin placeholder must exist");
+  assert.ok(pwProbe, "playwright-browsers placeholder must exist");
+  assert.ok(doctorProbe, "doctor placeholder must exist");
+
+  assert.ok(
+    report.nextActions.some((a) => a.includes(eccProbe!.remediation)),
+    `nextActions must contain ecc-plugin remediation: "${eccProbe!.remediation}"`
+  );
+  assert.ok(
+    report.nextActions.some((a) => a.includes(pwProbe!.remediation)),
+    `nextActions must contain playwright-browsers remediation: "${pwProbe!.remediation}"`
+  );
+  assert.ok(
+    report.nextActions.some((a) => a.includes(doctorProbe!.remediation)),
+    `nextActions must contain doctor remediation: "${doctorProbe!.remediation}"`
+  );
 });
 
 // ---------------------------------------------------------------------------

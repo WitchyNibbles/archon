@@ -521,7 +521,14 @@ export function mergePackageJson(
   scripts["archon:graphify:update"] = "graphify . --update --wiki";
   scripts["archon:graphify:report"] = "graphify . --update";
 
-  devDependencies["@witchynibbles/archon"] = prefixedFileDependency(dependencyPathFromTarget);
+  // Only add a file: devDependency when the path is NOT inside node_modules.
+  // When running from an installed package (sourceRoot = node_modules/...),
+  // the relative path starts with "node_modules/" — adding a file: reference
+  // back to node_modules creates a circular devDependency that breaks npm install.
+  // In that case, the package is already a real dependency; skip the devDep.
+  if (!dependencyPathFromTarget.startsWith("node_modules")) {
+    devDependencies["@witchynibbles/archon"] = prefixedFileDependency(dependencyPathFromTarget);
+  }
 
   packageJson.scripts = sortObjectKeys(scripts);
   packageJson.devDependencies = sortObjectKeys(devDependencies);

@@ -132,6 +132,7 @@
     "scripts/check-archon-happy-path.sh",
     "scripts/check-archon-workflow.ts",
     "scripts/check-archon-workflow-live.sh",
+    "scripts/check-archon-install-live.sh",
     "scripts/check-quality.sh",
     "scripts/install-archon.ps1",
     "scripts/install-archon.sh",

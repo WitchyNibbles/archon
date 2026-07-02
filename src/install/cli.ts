@@ -720,6 +720,11 @@ async function buildManifest(sourceRoot: string): Promise<InstallFile[]> {
       overwriteManaged: true
     },
     {
+      source: path.join(sourceRoot, "scripts/check-archon-install-live.sh"),
+      target: "scripts/check-archon-install-live.sh",
+      overwriteManaged: true
+    },
+    {
       source: path.join(sourceRoot, "scripts/check-archon-branch-name.sh"),
       target: "scripts/check-archon-branch-name.sh",
       overwriteManaged: true
