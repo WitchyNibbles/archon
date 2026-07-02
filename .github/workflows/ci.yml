@@ -208,6 +208,15 @@ jobs:
           # windows leg) — no inline heredoc in the YAML block.
           node "$GITHUB_WORKSPACE/scripts/ci/assert-init-applied.mjs" "$INIT_DIR/package.json" "$DOCKER_SENTINEL"
 
+          # S1 capability engine / verify --json (D-C11 BOTH: CI compiled-bin leg).
+          # Proves the compiled bin runs the L1 engine and finds mcp-archon + playwright.
+          # This catches the #140 class in the SHIPPED tarball (not just unit tests).
+          # HIGH-1: init --apply does not create .env.archon (DB is BYO); seed a stub
+          # so probeDatabaseUrl returns ok and verify --json exits 0 on the happy path.
+          printf 'ARCHON_CORE_DATABASE_URL=postgres://archon:archon@localhost:5432/archon\n' > "$INIT_DIR/.env.archon"
+          node "$BIN" verify --json --target "$INIT_DIR" > "$INIT_DIR/verify-json-output.json"
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-verify-json.mjs" "$INIT_DIR"
+
           # Assert dist tree cleanliness, shipped-script cleanliness, and no install
           # lifecycle hooks. The inspection logic lives in scripts/ci/*.mjs (shared
           # verbatim with the windows leg) so the rules live in ONE place. $GITHUB_WORKSPACE
@@ -275,6 +284,16 @@ jobs:
           # Assertions live in scripts/ci/assert-init-applied.mjs (shared with the
           # unix leg) — single source of truth, no inline here-string in the YAML.
           node "$env:GITHUB_WORKSPACE/scripts/ci/assert-init-applied.mjs" (Join-Path $initDir "package.json") $dockerSentinel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # S1 capability engine / verify --json (D-C11 BOTH: CI compiled-bin leg).
+          # HIGH-1: init --apply does not create .env.archon (DB is BYO); seed a stub
+          # so probeDatabaseUrl returns ok and verify --json exits 0 on the happy path.
+          Set-Content -Path (Join-Path $initDir ".env.archon") -Value "ARCHON_CORE_DATABASE_URL=postgres://archon:archon@localhost:5432/archon" -Encoding utf8
+          $verifyJsonOutput = Join-Path $initDir "verify-json-output.json"
+          node $bin verify --json --target $initDir | Out-File -FilePath $verifyJsonOutput -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { Write-Error "verify --json exited with unexpected code $LASTEXITCODE"; exit 1 }
+          node "$env:GITHUB_WORKSPACE/scripts/ci/assert-verify-json.mjs" $initDir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Dist/scripts/package inspection. Same scripts/ci/*.mjs the unix leg runs

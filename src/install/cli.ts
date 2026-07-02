@@ -28,6 +28,12 @@ import type {
   WorkflowScaffoldOptions,
   WorkflowScaffoldSummary
 } from "./types.ts";
+import { buildNextSteps } from "./next-steps.ts";
+import { probeManagedFile } from "./capability/probes-file.ts";
+import type { ReadFileFn } from "./capability/probes-file.ts";
+import { runL1Probes } from "./capability/probes-config.ts";
+import { assembleCapabilityReport, buildL2L3PlaceholderProbes } from "./capability/report.ts";
+import type { CapabilityReport, ProbeResult } from "./capability/types.ts";
 
 interface InstallFile {
   source: string;
@@ -81,6 +87,8 @@ interface ParsedInstallCommand {
 interface ParsedVerifyCommand {
   command: "verify";
   targetArg: string;
+  /** When true, emit the engine CapabilityReport as JSON instead of the text summary. */
+  json: boolean;
 }
 
 interface ParsedScaffoldCommand {
@@ -168,77 +176,6 @@ function usage(): never {
       "   or: archon seed-happy-path-fixture --target <path> --task-id fixture-<name> [--force]\n" +
       "   or: archon upgrade-reasoning-workflow --target <path> --task-id <task-id> [--mode dual|strict] [--force]"
   );
-}
-
-function buildNextSteps(
-  command: "init" | "upgrade",
-  mode: InstallMode,
-  options: {
-    withGrafana: boolean;
-    withObsidian: boolean;
-  }
-): string[] {
-  if (command === "upgrade") {
-    if (mode === "dry-run") {
-      return [
-        "Review the planned upgrade changes, conflicts, and orphans.",
-        "Resolve any conflicts before applying the upgrade.",
-        "Rerun in apply mode to write the planned managed-file updates.",
-        "Run verify after the upgrade to confirm the managed surface is clean.",
-        options.withGrafana
-          ? "If you want Grafana-backed logs, set ARCHON_GRAFANA_URL plus auth in .env.archon, then use the grafana MCP tools from Codex."
-          : "Optional: rerun upgrade with --with-grafana to install the Grafana MCP server wiring for log-backed debugging and research.",
-        options.withObsidian
-          ? "After apply, set ARCHON_OBSIDIAN_VAULT_PATH and DEVGOD_OBSIDIAN_ENABLED=true in .env.archon to enable Obsidian export and mcpvault tools."
-          : "Optional: rerun upgrade with --with-obsidian to install mcpvault MCP wiring for Obsidian knowledge-base integration.",
-        "After apply, run npm run archon:setup:git-guard and npm run archon:verify:git-guard."
-      ];
-    }
-
-    return [
-      "Review any backups under .archon/install-backups/ if you changed managed files locally.",
-      "Run verify to confirm the managed surface is clean.",
-      options.withGrafana
-        ? "Fill in ARCHON_GRAFANA_URL plus auth and datasource settings in .env.archon before using Grafana-backed log tools."
-        : "Optional: rerun upgrade with --with-grafana to install the Grafana MCP server wiring for log-backed debugging and research.",
-      options.withObsidian
-        ? "Set ARCHON_OBSIDIAN_VAULT_PATH and DEVGOD_OBSIDIAN_ENABLED=true in .env.archon before using the Obsidian export and mcpvault tools."
-        : "Optional: rerun upgrade with --with-obsidian to install mcpvault MCP wiring for Obsidian knowledge-base integration.",
-      "Run npm run archon:setup:git-guard and npm run archon:verify:git-guard.",
-      "Resolve any reported orphans manually if the current package no longer manages them."
-    ];
-  }
-
-  if (mode === "dry-run") {
-      return [
-        "Review the planned file changes.",
-        "Rerun in apply mode to write changes.",
-        "After apply, run npm install in the target project.",
-        "After npm install, run npm run archon:setup:git-guard and npm run archon:verify:git-guard.",
-        "If you want the shipped local runtime bootstrap path, run npm run archon:setup:local.",
-        options.withGrafana
-          ? "If you want Grafana-backed logs, set ARCHON_GRAFANA_URL plus auth and datasource settings in .env.archon after apply."
-          : "Optional: rerun init with --with-grafana to add Grafana MCP wiring for log-backed debugging and research.",
-        options.withObsidian
-          ? "If you want Obsidian export and mcpvault, set ARCHON_OBSIDIAN_VAULT_PATH and DEVGOD_OBSIDIAN_ENABLED=true in .env.archon after apply."
-          : "Optional: rerun init with --with-obsidian to add mcpvault MCP wiring for Obsidian knowledge-base integration.",
-        "Implement archon/review-identity-adapter.ts before trusting review actions or running npm run archon:record-review."
-      ];
-  }
-
-  return [
-    "cd into the target project",
-    "npm install",
-    "Run npm run archon:setup:git-guard and npm run archon:verify:git-guard.",
-    "If you want the shipped local runtime bootstrap path, run npm run archon:setup:local.",
-    options.withGrafana
-      ? "Fill in ARCHON_GRAFANA_URL plus auth and datasource settings in .env.archon before using the Grafana MCP tools."
-      : "Optional: rerun init with --with-grafana to add Grafana MCP wiring for log-backed debugging and research.",
-    options.withObsidian
-      ? "Set ARCHON_OBSIDIAN_VAULT_PATH and DEVGOD_OBSIDIAN_ENABLED=true in .env.archon to use Obsidian export and mcpvault knowledge-base tools."
-      : "Optional: rerun init with --with-obsidian to add mcpvault MCP wiring for Obsidian knowledge-base integration.",
-    "Implement archon/review-identity-adapter.ts, run npm run archon:verify:review-identity, then use npm run archon:record-review for live review actions."
-  ];
 }
 
 async function ensureDirectory(filePath: string): Promise<void> {
@@ -1131,9 +1068,11 @@ export function parseCliArgs(rawArgs: string[]): ParsedCliArgs {
       throw new Error("verify does not support --apply, --dry-run, or --with-grafana.");
     }
 
+    const json = commandArgs.includes("--json");
     return {
       command: "verify",
-      targetArg: resolveCliTarget(commandArgs)
+      targetArg: resolveCliTarget(commandArgs, new Set(["--json"])),
+      json
     };
   }
 
@@ -1526,18 +1465,16 @@ export async function verifyArchonInstall(options: InstallOptions): Promise<Veri
   const modified: string[] = [];
   for (const entry of planEntries) {
     const resolved = await resolvePlanEntry(entry, targetRoot);
-    if (resolved.invalidReason) {
-      modified.push(entry.target);
-      continue;
-    }
-
-    if (!resolved.currentExists) {
-      missing.push(entry.target);
-      continue;
-    }
-
-    if (resolved.currentContent !== resolved.desiredContent) {
-      modified.push(entry.target);
+    if (resolved.invalidReason) { modified.push(entry.target); continue; }
+    // Use pre-read content — avoids a double fs read. Probe owns the comparison logic.
+    const readFn: ReadFileFn = async (_p) => resolved.currentContent;
+    const probe = await probeManagedFile(readFn, {
+      capability: "managed-files", code: "managed-file",
+      relativePath: entry.target, absolutePath: resolved.absolutePath,
+      desiredContent: resolved.desiredContent,
+    });
+    if (probe.status !== "ok") {
+      (probe.code.endsWith("-missing") ? missing : modified).push(entry.target);
     }
   }
 
@@ -1559,6 +1496,33 @@ export async function verifyArchonInstall(options: InstallOptions): Promise<Veri
     modified,
     orphans: orphans.sort((left, right) => left.localeCompare(right))
   };
+}
+
+/** Runs L0 + L1 + L2/L3 placeholder probes; returns assembled CapabilityReport for verify. */
+async function runVerifyCapabilityEngine(
+  sourceRoot: string,
+  targetRoot: string
+): Promise<CapabilityReport> {
+  const withGrafana = await detectInstalledGrafana(targetRoot);
+  const withObsidian = await detectInstalledObsidian(targetRoot);
+  const obsidianVaultPath = withObsidian ? await readObsidianVaultPath(targetRoot) : undefined;
+  const planEntries = (await buildInstallPlan(sourceRoot, { withGrafana, withObsidian, obsidianVaultPath }))
+    .filter((e) => e.mode === "managed");
+
+  const l0Probes: ProbeResult[] = [];
+  for (const entry of planEntries) {
+    const resolved = await resolvePlanEntry(entry, targetRoot);
+    if (resolved.invalidReason) {
+      l0Probes.push({ capability: "managed-files", layer: "L0", status: "blocked", code: "managed-file-invalid", detail: `Managed path issue: ${entry.target} (${resolved.invalidReason})`, remediation: "Run 'archon upgrade --apply' to restore managed files." });
+      continue;
+    }
+    const readFn: ReadFileFn = async (_p) => resolved.currentContent;
+    l0Probes.push(await probeManagedFile(readFn, { capability: "managed-files", code: "managed-file", relativePath: entry.target, absolutePath: resolved.absolutePath, desiredContent: resolved.desiredContent }));
+  }
+
+  const fsReadFn: ReadFileFn = async (p) => { try { return await readFile(p, "utf8"); } catch { return undefined; } };
+  const allProbes: readonly ProbeResult[] = [...l0Probes, ...await runL1Probes(fsReadFn, targetRoot), ...buildL2L3PlaceholderProbes()];
+  return assembleCapabilityReport(allProbes, "verify");
 }
 
 function printInstallSummary(command: "init" | "upgrade", targetRoot: string, summary: InstallSummary): void {
@@ -2419,6 +2383,17 @@ async function main() {
   }
 
   if (parsedArgs.command === "verify") {
+    if (parsedArgs.json) {
+      // --json: emit engine CapabilityReport; no text output (C2).
+      const report = await runVerifyCapabilityEngine(sourceRoot, targetRoot);
+      console.log(JSON.stringify(report));
+      if (!report.ok) {
+        process.exitCode = 1;
+      }
+      return;
+    }
+
+    // Default text path: unchanged behavior (backward-compatible).
     const summary = await verifyArchonInstall({
       sourceRoot,
       targetRoot
