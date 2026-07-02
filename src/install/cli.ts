@@ -13,6 +13,7 @@ import {
   mergeDotClaudeMd,
   mergeClaudeSettings,
   mergeGitignore,
+  mergeMcpJson,
   mergePackageJson,
   stripArchonFromMcpJson
 } from "./merge.ts";
@@ -861,14 +862,17 @@ async function buildInstallPlan(
   }
 
   const sourceConfig = await readFile(path.join(sourceRoot, ".claude/settings.json"), "utf8");
-  const baseCodexConfigSource = stripArchonFromMcpJson(sourceConfig);
-  let codexConfigSource = mergeClaudeSettings(baseCodexConfigSource, archonMcpConfigFragment());
-  codexConfigSource = mergeClaudeSettings(codexConfigSource, playwrightMcpConfigFragment());
+  const cleanedSettingsSource = stripArchonFromMcpJson(sourceConfig);
+
+  // MCP servers belong in .mcp.json, not .claude/settings.json — Claude Code
+  // reads project-scope MCP registrations from .mcp.json only.
+  let mcpConfigSource = mergeMcpJson(undefined, archonMcpConfigFragment());
+  mcpConfigSource = mergeMcpJson(mcpConfigSource, playwrightMcpConfigFragment());
   if (options.withGrafana) {
-    codexConfigSource = mergeClaudeSettings(codexConfigSource, grafanaMcpConfigFragment());
+    mcpConfigSource = mergeMcpJson(mcpConfigSource, grafanaMcpConfigFragment());
   }
   if (options.withObsidian) {
-    codexConfigSource = mergeClaudeSettings(codexConfigSource, obsidianMcpConfigFragment(options.obsidianVaultPath));
+    mcpConfigSource = mergeMcpJson(mcpConfigSource, obsidianMcpConfigFragment(options.obsidianVaultPath));
   }
   const setupScriptSh = await readFile(path.join(sourceRoot, "scripts/setup-archon.sh"), "utf8");
   const setupScriptPs1 = await readFile(path.join(sourceRoot, "scripts/setup-archon.ps1"), "utf8");
@@ -879,7 +883,14 @@ async function buildInstallPlan(
       mode: "managed",
       strategy: "merge",
       resolveDesiredContent: async (_targetRoot, currentContent) =>
-        mergeClaudeSettings(currentContent, codexConfigSource)
+        mergeClaudeSettings(currentContent, cleanedSettingsSource)
+    },
+    {
+      target: ".mcp.json",
+      mode: "managed",
+      strategy: "merge",
+      resolveDesiredContent: async (_targetRoot, currentContent) =>
+        mergeMcpJson(currentContent, mcpConfigSource)
     },
     {
       target: ".claude.md",
@@ -950,8 +961,8 @@ async function detectInstalledGrafana(targetRoot: string): Promise<boolean> {
 }
 
 async function detectInstalledObsidian(targetRoot: string): Promise<boolean> {
-  const codexConfig = await readFileIfExists(path.join(targetRoot, ".claude/settings.json"));
-  return Boolean(codexConfig?.includes('"obsidian"') && codexConfig.includes("mcpvault"));
+  const mcpConfig = await readFileIfExists(path.join(targetRoot, ".mcp.json"));
+  return Boolean(mcpConfig?.includes('"obsidian"') && mcpConfig.includes("mcpvault"));
 }
 
 async function backupExistingFile(

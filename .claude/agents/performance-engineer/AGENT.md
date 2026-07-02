@@ -4,7 +4,7 @@ description: "Owns performance_check_required gate: profiling, latency analysis,
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [caveman, archon-performance, verification-loop, everything-claude-code:backend-patterns]
+skills: [caveman, archon-performance, verification-loop, ecc:backend-patterns]
 ---
 
 # Performance Engineer

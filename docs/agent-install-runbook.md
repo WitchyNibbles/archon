@@ -21,7 +21,7 @@ The runbook terminates with a **Definition of Healthy** gate that proves the ins
 ## Abbreviated Setup Flowchart
 
 ```
-1. Preflight checks (Node, Docker, everything-claude-code plugin)
+1. Preflight checks (Node, Docker, ecc plugin)
    ↓
 2. Run installer: npx archon init --apply --target . (from consumer root)
    ↓
@@ -105,9 +105,9 @@ psql "postgresql://localhost:5432/postgres" -c "select 1" 2>&1 | grep -E "(1|err
 
 ---
 
-### 1.4. Claude Code CLI + everything-claude-code Plugin
+### 1.4. Claude Code CLI + ecc Plugin
 
-The `everything-claude-code` plugin is a **required external dependency**. Skills prefixed `everything-claude-code:*` will not resolve without it.
+The `ecc` plugin (formerly `everything-claude-code`, repo `affaan-m/ECC`) is a **required external dependency**. Skills prefixed `ecc:*` will not resolve without it.
 
 **Command:**
 ```bash
@@ -606,7 +606,7 @@ At this point, the consumer repo has a healthy archon install with an active tas
 | "write to X is outside active task write scope" | Task scope too narrow for the write. | Edit `.archon/ACTIVE` (TASK.md) and expand the `## Allowed write scope` to include the path; or register a new task with broader scope (Part 5). |
 | "archon runtime is offline: postgres is configured but unreachable" | Postgres configured but not running. | Run `npm run archon:setup:local` (Part 3.1). Wait 10–30 seconds. Retry archon commands. |
 | "ARCHON_PROJECT_SLUG is required" when running init-task or runtime commands | Environment variable not set. | Set: `export ARCHON_PROJECT_SLUG="$(basename "$(pwd)")"`; retry. Or add to `.env`. |
-| "everything-claude-code:*" skills not found in Claude Code | Plugin not installed. | Install the everything-claude-code plugin. Restart Claude Code. Retry. |
+| "ecc:*" skills not found in Claude Code | Plugin not installed. | Run `claude plugin marketplace add affaan-m/everything-claude-code && claude plugin install ecc@ecc`. Restart Claude Code. Retry. |
 | "role does not exist" during migrations | Postgres role/database not created. | Postgres container not fully initialized. Re-run `npm run archon:setup:local` (Part 3.1). Wait 30 seconds. Retry migrations. |
 | `npm run archon:*` script not found | Consumer package.json does not have archon scripts merged. | Re-run installer (Part 2.1). Then re-run `npm install` (Part 2.2). |
 | `scripts/setup-archon.sh` not found | Installer did not copy scripts. | Re-run installer (Part 2.1). |

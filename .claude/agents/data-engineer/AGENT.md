@@ -4,7 +4,7 @@ description: "Designs and implements data pipelines, schemas, transformations, a
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [caveman, everything-claude-code:backend-patterns, everything-claude-code:postgres-patterns, everything-claude-code:database-migrations, verification-loop]
+skills: [caveman, ecc:backend-patterns, ecc:postgres-patterns, ecc:database-migrations, verification-loop]
 ---
 
 # Data Engineer

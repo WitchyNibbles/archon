@@ -4,7 +4,7 @@ description: "Investigates user flows, evidence of friction, and experience-qual
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-ux-research, archon-frontend-taste, everything-claude-code:market-research]
+skills: [archon-ux-research, archon-frontend-taste, ecc:market-research]
 ---
 
 # UX Researcher

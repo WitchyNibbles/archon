@@ -710,7 +710,7 @@ test("installDevgodIntoProject ships Playwright MCP configs and setup wiring", a
 
     await installDevgodIntoProject({ sourceRoot, targetRoot });
 
-    const codexConfig = await readFile(path.join(targetRoot, ".claude", "settings.json"), "utf8");
+    const mcpConfig = await readFile(path.join(targetRoot, ".mcp.json"), "utf8");
     const packageJson = JSON.parse(await readFile(path.join(targetRoot, "package.json"), "utf8")) as {
       scripts?: Record<string, string>;
     };
@@ -721,9 +721,9 @@ test("installDevgodIntoProject ships Playwright MCP configs and setup wiring", a
       "utf8"
     );
 
-    // archon uses JSON settings: mcpServers key instead of TOML [mcp_servers.*]
-    assert.match(codexConfig, /"playwright"/);
-    assert.match(codexConfig, /"playwright_vision"/);
+    // MCP server registrations live in .mcp.json: mcpServers key instead of TOML [mcp_servers.*]
+    assert.match(mcpConfig, /"playwright"/);
+    assert.match(mcpConfig, /"playwright_vision"/);
     assert.equal(
       packageJson.scripts?.["archon:setup:playwright"],
       "node ./node_modules/@witchynibbles/archon/dist/install/setup-playwright.js"
@@ -973,7 +973,7 @@ test("installDevgodIntoProject opt-in Grafana setup adds MCP config, env guidanc
     const packageJson = JSON.parse(await readFile(path.join(targetRoot, "package.json"), "utf8")) as {
       scripts: Record<string, string>;
     };
-    const codexConfig = await readFile(path.join(targetRoot, ".claude", "settings.json"), "utf8");
+    const mcpConfig = await readFile(path.join(targetRoot, ".mcp.json"), "utf8");
     const envExample = await readFile(path.join(targetRoot, ".env.archon.example"), "utf8");
 
     assert.equal(
@@ -981,8 +981,8 @@ test("installDevgodIntoProject opt-in Grafana setup adds MCP config, env guidanc
       "node ./node_modules/@witchynibbles/archon/dist/grafana/mcp-server.js"
     );
     // archon uses JSON settings (not TOML), check JSON patterns
-    assert.match(codexConfig, /"grafana"/);
-    assert.match(codexConfig, /dist\/grafana\/mcp-server\.js/);
+    assert.match(mcpConfig, /"grafana"/);
+    assert.match(mcpConfig, /dist\/grafana\/mcp-server\.js/);
     assert.match(envExample, /ARCHON_GRAFANA_URL=/);
     assert.match(envExample, /ARCHON_GRAFANA_LOGS_DATASOURCE_UID=/);
     assert.match(summary.nextSteps.join("\n"), /ARCHON_GRAFANA_URL/);
@@ -1057,14 +1057,14 @@ test("installDevgodIntoProject auto-detects configured Grafana env and adds MCP 
     const packageJson = JSON.parse(await readFile(path.join(targetRoot, "package.json"), "utf8")) as {
       scripts: Record<string, string>;
     };
-    const codexConfig = await readFile(path.join(targetRoot, ".claude", "settings.json"), "utf8");
+    const mcpConfig = await readFile(path.join(targetRoot, ".mcp.json"), "utf8");
 
     assert.equal(
       packageJson.scripts["archon:grafana:mcp"],
       "node ./node_modules/@witchynibbles/archon/dist/grafana/mcp-server.js"
     );
     // archon uses JSON settings (not TOML)
-    assert.match(codexConfig, /"grafana"/);
+    assert.match(mcpConfig, /"grafana"/);
   } finally {
     await rm(targetRoot, { recursive: true, force: true });
   }

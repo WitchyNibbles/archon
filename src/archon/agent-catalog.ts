@@ -94,7 +94,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-planning", "archon-intake", "everything-claude-code:planner"],
+    defaultSkillIds: ["archon-planning", "archon-intake"],
     retrievalGuidance: ["approved memory", "reviewed briefs", "reviewed plans", "repo rules"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -150,7 +150,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-product-framing", "archon-intake", "everything-claude-code:market-research"],
+    defaultSkillIds: ["archon-product-framing", "archon-intake", "ecc:market-research"],
     retrievalGuidance: ["approved briefs", "approved memory", "repo rules", "cited external research"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -206,7 +206,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-architecture", "everything-claude-code:backend-patterns", "everything-claude-code:security-review", "everything-claude-code:agentic-engineering"],
+    defaultSkillIds: ["archon-architecture", "ecc:backend-patterns", "ecc:security-review", "ecc:agentic-engineering"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "architecture notes"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -262,7 +262,7 @@ export const agentCatalog = {
     effort: "medium",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-docs-research", "documentation-lookup", "everything-claude-code:search-first"],
+    defaultSkillIds: ["archon-docs-research", "documentation-lookup", "ecc:search-first"],
     retrievalGuidance: ["approved memory", "repo rules", "approved briefs", "local technical notes"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -318,7 +318,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-execution", "everything-claude-code:backend-patterns", "everything-claude-code:api-design", "everything-claude-code:tdd-workflow"],
+    defaultSkillIds: ["archon-execution", "ecc:backend-patterns", "ecc:api-design", "ecc:tdd-workflow"],
     retrievalGuidance: ["approved memory", "repo rules", "runbooks", "reviewed retrieval notes"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -374,7 +374,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-frontend-taste", "archon-design-system", "everything-claude-code:frontend-patterns", "web-design-guidelines"],
+    defaultSkillIds: ["archon-frontend-taste", "archon-design-system", "ecc:frontend-patterns", "web-design-guidelines"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "reviewed UI artifacts"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -501,7 +501,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-infra-ops", "archon-setup", "archon-release-readiness", "everything-claude-code:deployment-patterns", "everything-claude-code:docker-patterns"],
+    defaultSkillIds: ["archon-infra-ops", "archon-setup", "archon-release-readiness", "ecc:deployment-patterns", "ecc:docker-patterns"],
     retrievalGuidance: ["approved memory", "repo rules", "setup notes", "runbooks", "incident learnings"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -638,7 +638,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "everything-claude-code:security-review", "everything-claude-code:security-scan", "archon-docs-research"],
+    defaultSkillIds: ["caveman", "ecc:security-review", "ecc:security-scan", "archon-docs-research"],
     retrievalGuidance: ["approved memory", "repo rules", "incident notes", "review artifacts"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -697,7 +697,7 @@ export const agentCatalog = {
     defaultSkillIds: [
       "archon-qa-verification",
       "archon-accessibility-gate",
-      "everything-claude-code:e2e-testing",
+      "ecc:e2e-testing",
       "verification-loop"
     ],
     retrievalGuidance: ["approved memory", "repo rules", "review gates", "eval artifacts"],
@@ -755,7 +755,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-tdd", "everything-claude-code:tdd-workflow"],
+    defaultSkillIds: ["archon-tdd", "ecc:tdd-workflow"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "task packets", "verification artifacts"]
   },
   "e2e-runner": {
@@ -769,7 +769,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-e2e", "everything-claude-code:e2e-testing", "anthropic-webapp-testing"],
+    defaultSkillIds: ["archon-e2e", "ecc:e2e-testing", "anthropic-webapp-testing"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "setup notes", "test artifacts"]
   },
   "release-readiness": {
@@ -797,7 +797,7 @@ export const agentCatalog = {
     effort: "medium",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-memory", "everything-claude-code:strategic-compact"],
+    defaultSkillIds: ["archon-memory", "ecc:strategic-compact"],
     retrievalGuidance: ["all reviewed project artifacts"]
   },
   eval_engineer: {
@@ -811,7 +811,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "claude-api", "archon-eval-engineering", "archon-skill-evals", "everything-claude-code:eval-harness"],
+    defaultSkillIds: ["caveman", "claude-api", "archon-eval-engineering", "archon-skill-evals", "ecc:eval-harness"],
     retrievalGuidance: ["approved memory", "repo rules", "eval artifacts", "reviewed plans", "test artifacts"]
   },
   technical_writer: {
@@ -825,7 +825,7 @@ export const agentCatalog = {
     effort: "medium",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-technical-writing", "documentation-lookup", "everything-claude-code:article-writing"],
+    defaultSkillIds: ["archon-technical-writing", "documentation-lookup", "ecc:article-writing"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "reviewed technical notes", "release notes"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -881,7 +881,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "claude-api", "archon-agent-runtime", "anthropic-mcp-builder", "mcp-server-patterns", "verification-loop", "everything-claude-code:agentic-engineering", "everything-claude-code:continuous-agent-loop"],
+    defaultSkillIds: ["caveman", "claude-api", "archon-agent-runtime", "anthropic-mcp-builder", "mcp-server-patterns", "verification-loop", "ecc:agentic-engineering", "ecc:continuous-agent-loop"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "runtime traces", "tooling integration notes"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -937,7 +937,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-frontend-taste", "archon-design-system", "everything-claude-code:frontend-patterns", "everything-claude-code:e2e-testing"],
+    defaultSkillIds: ["archon-frontend-taste", "archon-design-system", "ecc:frontend-patterns", "ecc:e2e-testing"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "reviewed UI artifacts", "test artifacts"]
   },
   ml_engineer: {
@@ -965,7 +965,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "everything-claude-code:backend-patterns", "everything-claude-code:postgres-patterns", "everything-claude-code:database-migrations", "verification-loop"],
+    defaultSkillIds: ["caveman", "ecc:backend-patterns", "ecc:postgres-patterns", "ecc:database-migrations", "verification-loop"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "schema notes", "runbooks"]
   },
   ux_researcher: {
@@ -979,7 +979,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-ux-research", "archon-frontend-taste", "everything-claude-code:market-research"],
+    defaultSkillIds: ["archon-ux-research", "archon-frontend-taste", "ecc:market-research"],
     retrievalGuidance: ["approved briefs", "approved memory", "repo rules", "reviewed plans", "reviewed UI artifacts"]
   },
   product_analyst: {
@@ -993,7 +993,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-product-analysis", "everything-claude-code:market-research"],
+    defaultSkillIds: ["archon-product-analysis", "ecc:market-research"],
     retrievalGuidance: ["approved briefs", "approved memory", "repo rules", "reviewed plans", "eval artifacts"]
   },
   compliance_reviewer: {
@@ -1007,7 +1007,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "archon-compliance-review", "everything-claude-code:security-review", "documentation-lookup"],
+    defaultSkillIds: ["caveman", "archon-compliance-review", "ecc:security-review", "documentation-lookup"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "incident notes", "audit artifacts"]
   },
   accessibility_engineer: {
@@ -1021,7 +1021,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "archon-accessibility-gate", "everything-claude-code:e2e-testing", "web-design-guidelines"],
+    defaultSkillIds: ["caveman", "archon-accessibility-gate", "ecc:e2e-testing", "web-design-guidelines"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "test artifacts", "reviewed UI artifacts"]
   },
   database_specialist: {
@@ -1035,7 +1035,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "everything-claude-code:postgres-patterns", "everything-claude-code:database-migrations", "verification-loop"],
+    defaultSkillIds: ["caveman", "ecc:postgres-patterns", "ecc:database-migrations", "verification-loop"],
     retrievalGuidance: ["approved memory", "repo rules", "schema notes", "reviewed plans", "migration artifacts"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -1091,7 +1091,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "everything-claude-code:backend-patterns"],
+    defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "ecc:backend-patterns"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "benchmark artifacts", "profiling notes"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -1147,7 +1147,7 @@ export const agentCatalog = {
     effort: "medium",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-context-retrieval", "archon-memory", "everything-claude-code:search-first", "everything-claude-code:iterative-retrieval"],
+    defaultSkillIds: ["archon-context-retrieval", "archon-memory", "ecc:search-first", "ecc:iterative-retrieval"],
     retrievalGuidance: ["all retrieval layers", ".archon/memory/", "Postgres runtime records", "Obsidian vault", "graphify knowledge graph"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -1203,7 +1203,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "everything-claude-code:backend-patterns"],
+    defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "ecc:backend-patterns"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "runbooks", "benchmark artifacts", "Grafana config at src/grafana/"]
   },
   review_orchestrator: {

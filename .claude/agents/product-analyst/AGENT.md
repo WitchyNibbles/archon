@@ -4,7 +4,7 @@ description: "Analyzes product signals, metrics, evidence quality, and decision-
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-product-analysis, everything-claude-code:market-research]
+skills: [archon-product-analysis, ecc:market-research]
 ---
 
 # Product Analyst

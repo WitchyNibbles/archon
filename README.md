@@ -194,7 +194,7 @@ Skills live in `.claude/skills/`. Each `SKILL.md` declares its trigger, output c
 - Node.js >= 22
 - A pgvector-capable PostgreSQL instance (see DB Setup below)
 - Claude Code CLI
-- [everything-claude-code](https://github.com/disler/everything-claude-code) plugin — required for skills prefixed `everything-claude-code:*`. Install it as a Claude Code plugin before using agent roles that reference those skills.
+- [ecc](https://github.com/affaan-m/ECC) plugin (formerly `everything-claude-code`) — required for skills prefixed `ecc:*`. Add the marketplace with `claude plugin marketplace add affaan-m/everything-claude-code` (the old repo name still redirects), then `claude plugin install ecc@ecc` before using agent roles that reference those skills.
 
 ### Install
 

@@ -4,7 +4,7 @@ description: "Assembles retrieval context for agents: queries Qdrant, .archon/me
 model: claude-haiku-4-5-20251001
 effort: medium
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-context-retrieval, archon-memory, everything-claude-code:search-first, everything-claude-code:iterative-retrieval]
+skills: [archon-context-retrieval, archon-memory, ecc:search-first, ecc:iterative-retrieval]
 ---
 
 # Context Manager

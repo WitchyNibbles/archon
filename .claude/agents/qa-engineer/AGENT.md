@@ -4,7 +4,7 @@ description: "Finds regressions, missing tests, flaky behavior, acceptance gaps,
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [archon-qa-verification, archon-accessibility-gate, everything-claude-code:e2e-testing, verification-loop]
+skills: [archon-qa-verification, archon-accessibility-gate, ecc:e2e-testing, verification-loop]
 ---
 
 # QA Engineer

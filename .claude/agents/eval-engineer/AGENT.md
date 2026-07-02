@@ -4,7 +4,7 @@ description: "Builds and reviews benchmarks, graders, datasets, regression evide
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [caveman, claude-api, archon-eval-engineering, archon-skill-evals, everything-claude-code:eval-harness]
+skills: [caveman, claude-api, archon-eval-engineering, archon-skill-evals, ecc:eval-harness]
 ---
 
 # Eval Engineer
