@@ -69,6 +69,7 @@ import { runSpawnedCommand } from "./daemon.ts";
 import type { ExecuteLoopCommandOptions } from "./daemon.ts";
 import {
   runL2Probes,
+  createFindAgentFilesFn,
   type SpawnFn,
 } from "./install/capability/probes-external.ts";
 import {
@@ -1789,9 +1790,10 @@ async function runDoctorCapabilityProbes(
 ): Promise<ReturnType<typeof assembleCapabilityReport>> {
   const spawnFn = createCapabilitySpawnFn();
   const readFileFn = createCapabilityReadFileFn();
+  const findAgentFilesFn = createFindAgentFilesFn();
 
   const [l2Probes, l3Probes] = await Promise.all([
-    runL2Probes(spawnFn, readFileFn, targetRoot),
+    runL2Probes(spawnFn, readFileFn, findAgentFilesFn, targetRoot),
     runL3Probes(spawnFn, targetRoot, queryFn),
   ]);
 
