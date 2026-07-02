@@ -75,7 +75,7 @@ Invoke it as the wired consumer script:
 
 ```bash
 npm run archon:daemon
-# == node --experimental-strip-types ./node_modules/archon/src/admin/archon.ts daemon --format text
+# == node ./node_modules/@witchynibbles/archon/dist/cli/archon-bin.js daemon --format text
 ```
 
 ### systemd (Linux)

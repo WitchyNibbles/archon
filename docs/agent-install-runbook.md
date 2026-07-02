@@ -138,20 +138,22 @@ cd /path/to/archon
 bash scripts/install-archon.sh /path/to/consumer
 ```
 
-**Form 2: Direct invocation (explicit)**
+**Form 2: Direct invocation via compiled bin (explicit)**
 ```bash
-cd /path/to/archon
-node --experimental-strip-types src/install/cli.ts init --apply --target /path/to/consumer
+cd /path/to/consumer
+npx archon init --apply --target .
+# or, if invoking from the archon source repo:
+node /path/to/archon/dist/cli/archon-bin.js init --apply --target /path/to/consumer
 ```
 
 **With optional flags (e.g., to include Grafana MCP wiring):**
 ```bash
-bash scripts/install-archon.sh /path/to/consumer --with-grafana
+npx archon init --apply --target . --with-grafana
 ```
 
 **To preview changes before applying (dry-run):**
 ```bash
-node --experimental-strip-types src/install/cli.ts init --dry-run --target /path/to/consumer
+npx archon init --dry-run --target .
 ```
 
 **Expected output (apply mode):** JSON summary showing:
@@ -617,30 +619,30 @@ At this point, the consumer repo has a healthy archon install with an active tas
 
 ## Updating Archon
 
-To upgrade archon in a consumer repo after a new version is released:
+To upgrade archon in a consumer repo after a new version is published:
 
-**Command (from archon source):**
+**Command (in the consumer repo):**
 ```bash
-cd /path/to/archon
-git pull origin main
+# 1. Bump the version in package.json to the new release, then:
 npm install
 
-cd /path/to/consumer
-node /path/to/archon/dist/cli/archon-bin.js upgrade --apply --target .
+# 2. Re-run the init overlay merge to pull in updated agents/skills/hooks
+npx archon init --apply --target .
+
+# 3. Re-install so the updated wired scripts are resolved
+npm install
+
+# 4. Apply any new migrations and verify
+npm run archon:migrate
+npx archon doctor
+npm run archon:verify:setup
 ```
 
 **Expected output:** JSON summary showing updated managed files. No conflicts.
 
-**Success signal:** Exit code 0; `"writesPerformed": true`.
+**Success signal:** Exit code 0 for each command; `archon doctor` reports no blockers.
 
-**Post-upgrade (in the consumer):**
-```bash
-npm install
-npm run archon:migrate
-npm run archon:verify:setup
-```
-
-**Idempotency:** Safe to re-run. Existing files backed up before update.
+**Idempotency:** Safe to re-run. Existing managed files are backed up to `.archon/install-backups/<timestamp>/` before being replaced.
 
 ---
 
