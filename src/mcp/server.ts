@@ -1,4 +1,5 @@
 import process from "node:process";
+import { isMainModule } from "../shared/is-main-module.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -137,7 +138,7 @@ export async function startArchonMcpServer(): Promise<void> {
   // client stays alive for duration of process
 }
 
-if (process.argv[1] && process.argv[1].endsWith("src/mcp/server.ts")) {
+if (isMainModule(import.meta.url)) {
   startArchonMcpServer().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);
