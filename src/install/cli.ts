@@ -53,8 +53,7 @@ import {
   buildHappyPathFixtureReview,
 } from "./scaffold-templates.ts";
 import {
-  detectRepairNeeds,
-  executeRepairs,
+  maybeRunConsumerRepairPhase,
   createDefaultRepairFns,
 } from "./consumer-repair.ts";
 import type { RepairReport } from "./consumer-repair.ts";
@@ -2161,25 +2160,14 @@ async function main() {
   const withObsidian = parsedArgs.withObsidian ?? false;
 
   // S5 consumer repair: detect + backup + repair BEFORE the managed-file pass.
+  // Delegates to maybeRunConsumerRepairPhase (exported for testability).
   // Only runs for upgrade --apply (not dry-run, not init).
-  // Repairs: stale .claude/settings.json mcpServers entries (C12 backup),
-  //          stuck migration-report.json status "planned" (C12 backup).
-  // Non-destructive creation (missing .mcp.json, missing manifest) is left to
-  // the managed-file upgrade pass to avoid manifest-hash conflicts.
-  let repairReport: RepairReport | undefined;
-  if (parsedArgs.command === "upgrade" && !parsedArgs.dryRun) {
-    const repairTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const repairActions = await detectRepairNeeds(
-      targetRoot,
-      createDefaultRepairFns().readFile
-    );
-    repairReport = await executeRepairs(
-      targetRoot,
-      repairActions,
-      repairTimestamp,
-      createDefaultRepairFns()
-    );
-  }
+  const repairReport: RepairReport | undefined = await maybeRunConsumerRepairPhase(
+    parsedArgs.command,
+    parsedArgs.dryRun,
+    targetRoot,
+    createDefaultRepairFns()
+  );
 
   const summary = parsedArgs.command === "init"
     ? await installArchonIntoProject({

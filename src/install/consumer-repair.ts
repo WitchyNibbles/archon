@@ -17,6 +17,14 @@
  *
  * All file-system effects are injected via RepairFns so tests run without
  * touching the real filesystem.
+ *
+ * Strip policy (finding #3 gate condition):
+ *   STRIP:  server name in ARCHON_MANAGED_SERVER_NAMES AND entry has the
+ *           definitive archon origin marker ("node_modules/archon/src/" in any arg).
+ *   WARN:   server name in ARCHON_MANAGED_SERVER_NAMES AND entry matched ONLY by
+ *           ambiguous patterns (@latest / --yes) but NOT the definitive path marker.
+ *           These are NOT auto-stripped to avoid silently removing a consumer's own
+ *           non-archon entry that happens to share a managed server name.
  */
 import path from "node:path";
 import {
@@ -30,10 +38,19 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
-/** Describes a single stale archon-managed entry in .claude/settings.json mcpServers. */
+/**
+ * Describes a single stale archon-managed entry in .claude/settings.json mcpServers.
+ *
+ * `definitive` distinguishes two detection classes:
+ *   true  — entry carries the unambiguous archon origin marker
+ *           ("node_modules/archon/src/" path) → auto-stripped by executeRepairs.
+ *   false — entry matched only ambiguous patterns (@latest / --yes) without the
+ *           definitive path → surfaced as an operator warning; NOT auto-stripped.
+ */
 export interface StaleSettingsMcpEntry {
   readonly serverName: string;
   readonly reason: string;
+  readonly definitive: boolean;
 }
 
 /**
@@ -60,16 +77,25 @@ export interface RepairedAction {
   readonly backupPath: string | undefined;
 }
 
+/** Per-action failure recorded when an individual action throws during executeRepairs. */
+export interface RepairFailure {
+  readonly kind: RepairActionKind;
+  readonly error: string;
+}
+
 /**
  * Summary of what detectRepairNeeds + executeRepairs found and did.
  *
  * - `detected`: all actions returned by detectRepairNeeds
  * - `repaired`: actions that executeRepairs applied (with C12 backup evidence)
  * - `notAutoRepaired`: detected but NOT handled by consumer-repair.ts
- *     (either handled by the upgrade managed-file pass or require human action)
+ *     (either handled by the upgrade managed-file pass, require human action,
+ *     or are ambiguous non-definitive entries that need operator review)
  * - `backupPaths`: all C12 backup file paths, for verification
  * - `skillRefAdvisoryActive`: true when the consumer likely has stale
- *     everything-claude-code:* skill refs; operator should run --migrate-skill-refs (S6)
+ *     everything-claude-code:* skill refs (inferred from stale settings.json entries)
+ * - `failures`: per-action errors; non-empty when any action threw (remaining actions still ran)
+ * - `ok`: false when any failure recorded
  */
 export interface RepairReport {
   readonly detected: readonly RepairAction[];
@@ -77,6 +103,8 @@ export interface RepairReport {
   readonly notAutoRepaired: readonly string[];
   readonly backupPaths: readonly string[];
   readonly skillRefAdvisoryActive: boolean;
+  readonly failures: readonly RepairFailure[];
+  readonly ok: boolean;
 }
 
 /**
@@ -101,9 +129,9 @@ export interface RepairFns {
 
 /**
  * Archon-managed MCP server names.
- * Entries for these names in .claude/settings.json mcpServers are stale when
- * they contain OLD patterns (pre-@witchynibbles/archon paths, @latest, --yes).
- * Correct location after #140: .mcp.json.
+ * Entries for these names in .claude/settings.json mcpServers are candidates for
+ * stale detection. Auto-stripping requires the definitive archon marker
+ * (node_modules/archon/src/ path). Correct location after #140: .mcp.json.
  */
 const ARCHON_MANAGED_SERVER_NAMES: ReadonlySet<string> = new Set([
   "archon",
@@ -133,22 +161,27 @@ function extractStringArgs(entry: unknown): string[] {
 }
 
 /**
- * Returns a human-readable reason string if the entry is a stale archon-managed
- * MCP server config, or undefined if it is unknown / already current.
+ * Returns stale reason + definitiveness, or undefined if no stale markers.
  *
- * Stale markers:
- *   - "node_modules/archon/src/" in any arg (pre-@witchynibbles/archon path)
- *   - "@latest" substring in any arg (unpinned; disallowed post-#140)
- *   - "--yes" as a standalone arg (auto-confirm; disallowed post-#140)
+ * Strip policy:
+ *   definitive=true  → entry has "node_modules/archon/src/" (unambiguous archon origin)
+ *                       → safe to auto-strip
+ *   definitive=false → entry matched only @latest / --yes (ambiguous patterns)
+ *                       → surfaced as warning; NOT auto-stripped
  */
-function getStaleReason(serverName: string, entry: unknown): string | undefined {
+function getStaleReason(
+  serverName: string,
+  entry: unknown
+): { reason: string; definitive: boolean } | undefined {
   if (!ARCHON_MANAGED_SERVER_NAMES.has(serverName)) return undefined;
 
   const args = extractStringArgs(entry);
   const reasons: string[] = [];
+  let hasDefinitiveMarker = false;
 
   if (args.some((a) => a.includes("node_modules/archon/src/"))) {
     reasons.push("unscoped node_modules/archon/src path (pre-@witchynibbles/archon)");
+    hasDefinitiveMarker = true;
   }
   if (args.some((a) => a.includes("@latest"))) {
     reasons.push("@latest form (unpinned, disallowed)");
@@ -157,7 +190,9 @@ function getStaleReason(serverName: string, entry: unknown): string | undefined 
     reasons.push("--yes flag (auto-confirm, disallowed)");
   }
 
-  return reasons.length > 0 ? reasons.join("; ") : undefined;
+  if (reasons.length === 0) return undefined;
+
+  return { reason: reasons.join("; "), definitive: hasDefinitiveMarker };
 }
 
 function detectStaleMcpEntries(settingsJson: string): StaleSettingsMcpEntry[] {
@@ -176,9 +211,9 @@ function detectStaleMcpEntries(settingsJson: string): StaleSettingsMcpEntry[] {
   for (const [serverName, entry] of Object.entries(
     mcpServers as Record<string, unknown>
   )) {
-    const reason = getStaleReason(serverName, entry);
-    if (reason) {
-      staleEntries.push({ serverName, reason });
+    const result = getStaleReason(serverName, entry);
+    if (result) {
+      staleEntries.push({ serverName, reason: result.reason, definitive: result.definitive });
     }
   }
   return staleEntries;
@@ -286,8 +321,9 @@ async function backupFile(
  * Strips stale archon-managed entries from .claude/settings.json mcpServers,
  * leaving user-managed entries (e.g. gitnexus) untouched.
  *
- * If mcpServers becomes empty after stripping, the key is removed entirely.
- * Returns the updated JSON string, or the original on parse failure (safe no-op).
+ * Only removes entries whose names are in `staleNames` (caller passes only the
+ * definitive entries). If mcpServers becomes empty after stripping, the key is
+ * removed entirely. Returns the updated JSON string, or the original on parse failure.
  */
 export function stripStaleMcpEntriesFromSettings(
   settingsJson: string,
@@ -373,13 +409,18 @@ export function advanceMigrationReportStatus(
  * Applies the repair actions returned by detectRepairNeeds.
  *
  * Repairs applied here (C12 backup before every mutation):
- *   - stale-settings-mcp-entries → backup .claude/settings.json → strip stale entries
+ *   - stale-settings-mcp-entries → backup .claude/settings.json → strip DEFINITIVE entries
+ *     Non-definitive (ambiguous @latest/--yes) entries are warned, not stripped.
  *   - stuck-migration-report → backup migration-report.json → advance to "upgrade-applied"
  *
  * NOT auto-repaired (see notAutoRepaired in the returned report):
  *   - missing-mcp-json → created by the managed-file upgrade pass
  *   - missing-manifest → backfilled by loadInstallManifestOrBackfill in the upgrade pass
  *   - legacy-workflow-scripts → requires human migration to .ts form
+ *
+ * Per-action error isolation: each action is wrapped in try/catch.
+ * A failing action is recorded in `failures`; remaining actions still run.
+ * `report.ok` is false when any failures are present.
  *
  * All applied repairs are idempotent: re-running with the same detected actions
  * on an already-healed repo produces zero writes and zero backups.
@@ -398,6 +439,7 @@ export async function executeRepairs(
   const repaired: RepairedAction[] = [];
   const notAutoRepaired: string[] = [];
   const backupPaths: string[] = [];
+  const failures: RepairFailure[] = [];
 
   // Detect skill-ref advisory: active when stale settings entries are present
   // (pre-P1 consumer likely also has everything-claude-code:* skill refs in AGENT.md files)
@@ -407,115 +449,144 @@ export async function executeRepairs(
   const skillRefAdvisoryActive = hasStaleSettings;
 
   for (const action of actions) {
-    switch (action.kind) {
-      case "stale-settings-mcp-entries": {
-        // C12: backup BEFORE any write
-        const settingsAbsPath = path.join(targetRoot, SETTINGS_JSON_REL);
-        const existing = await fns.readFile(settingsAbsPath);
-        if (existing === undefined) {
-          // File was removed between detect and repair — nothing to strip
+    try {
+      switch (action.kind) {
+        case "stale-settings-mcp-entries": {
+          // Split into definitive (strip) and non-definitive (warn)
+          const definitiveEntries = action.staleEntries.filter((e) => e.definitive);
+          const ambiguousEntries = action.staleEntries.filter((e) => !e.definitive);
+
+          // Warn about ambiguous entries (not stripped — operator must review)
+          for (const entry of ambiguousEntries) {
+            notAutoRepaired.push(
+              `stale-settings-mcp-entries: "${entry.serverName}" matched ambiguous patterns` +
+                ` only (${entry.reason}) — NOT auto-stripped; verify it is archon-managed` +
+                ` and remove manually from ${SETTINGS_JSON_REL} if so`
+            );
+          }
+
+          if (definitiveEntries.length === 0) {
+            // No definitive entries to strip — nothing to do
+            break;
+          }
+
+          // C12: backup BEFORE any write
+          const settingsAbsPath = path.join(targetRoot, SETTINGS_JSON_REL);
+          const existing = await fns.readFile(settingsAbsPath);
+          if (existing === undefined) {
+            notAutoRepaired.push(
+              "stale-settings-mcp-entries: .claude/settings.json not found at repair time (skipped)"
+            );
+            break;
+          }
+
+          const staleNames = new Set(definitiveEntries.map((e) => e.serverName));
+
+          // Idempotency guard: only strip if definitive entries still present
+          const stillStale = detectStaleMcpEntries(existing);
+          const stillDefinitive = stillStale.filter(
+            (e) => e.definitive && staleNames.has(e.serverName)
+          );
+          if (stillDefinitive.length === 0) {
+            break;
+          }
+
+          const backupPath = await backupFile(
+            targetRoot,
+            SETTINGS_JSON_REL,
+            timestamp,
+            fns
+          );
+          backupPaths.push(backupPath);
+
+          const stripped = stripStaleMcpEntriesFromSettings(existing, staleNames);
+          await fns.writeFile(settingsAbsPath, stripped);
+
+          repaired.push({
+            kind: "stale-settings-mcp-entries",
+            description:
+              `Stripped ${stillDefinitive.length} definitive stale archon-managed` +
+              ` mcpServers entries from ${SETTINGS_JSON_REL}` +
+              ` (${stillDefinitive.map((e) => e.serverName).join(", ")}).` +
+              ` Backup: ${backupPath}`,
+            backupPath,
+          });
+          break;
+        }
+
+        case "stuck-migration-report": {
+          // C12: backup BEFORE any write
+          const reportAbsPath = path.join(targetRoot, MIGRATION_REPORT_REL);
+          const existing = await fns.readFile(reportAbsPath);
+          if (existing === undefined) {
+            notAutoRepaired.push(
+              "stuck-migration-report: migration-report.json not found at repair time (skipped)"
+            );
+            break;
+          }
+
+          // Idempotency guard: only advance if still "planned"
+          let currentStatus: unknown;
+          try {
+            const p = JSON.parse(existing) as Record<string, unknown>;
+            currentStatus = p.status;
+          } catch {
+            currentStatus = undefined;
+          }
+          if (currentStatus !== "planned") {
+            break;
+          }
+
+          const backupPath = await backupFile(
+            targetRoot,
+            MIGRATION_REPORT_REL,
+            timestamp,
+            fns
+          );
+          backupPaths.push(backupPath);
+
+          const updated = advanceMigrationReportStatus(existing, timestamp);
+          await fns.writeFile(reportAbsPath, updated);
+
+          repaired.push({
+            kind: "stuck-migration-report",
+            description:
+              `Advanced migration-report.json status from "planned" to "upgrade-applied".` +
+              ` Backup: ${backupPath}`,
+            backupPath,
+          });
+          break;
+        }
+
+        case "missing-mcp-json":
           notAutoRepaired.push(
-            "stale-settings-mcp-entries: .claude/settings.json not found at repair time (skipped)"
+            "missing-mcp-json: .mcp.json will be created by the managed-file upgrade pass"
           );
           break;
-        }
 
-        const staleNames = new Set(
-          action.staleEntries.map((e) => e.serverName)
-        );
-
-        // Verify there is still something to strip (idempotency guard)
-        const stillStale = detectStaleMcpEntries(existing);
-        const stillNamed = stillStale.filter((e) => staleNames.has(e.serverName));
-        if (stillNamed.length === 0) {
-          // Already clean — no backup, no write
-          break;
-        }
-
-        const backupPath = await backupFile(
-          targetRoot,
-          SETTINGS_JSON_REL,
-          timestamp,
-          fns
-        );
-        backupPaths.push(backupPath);
-
-        const stripped = stripStaleMcpEntriesFromSettings(existing, staleNames);
-        await fns.writeFile(settingsAbsPath, stripped);
-
-        repaired.push({
-          kind: "stale-settings-mcp-entries",
-          description: `Stripped ${stillNamed.length} stale archon-managed mcpServers entries from ${SETTINGS_JSON_REL} (${stillNamed.map((e) => e.serverName).join(", ")}). Backup: ${backupPath}`,
-          backupPath,
-        });
-        break;
-      }
-
-      case "stuck-migration-report": {
-        // C12: backup BEFORE any write
-        const reportAbsPath = path.join(targetRoot, MIGRATION_REPORT_REL);
-        const existing = await fns.readFile(reportAbsPath);
-        if (existing === undefined) {
+        case "missing-manifest":
           notAutoRepaired.push(
-            "stuck-migration-report: migration-report.json not found at repair time (skipped)"
+            "missing-manifest: .archon/install-manifest.json will be backfilled by the upgrade pass"
           );
           break;
-        }
 
-        // Idempotency guard: only advance if still "planned"
-        let currentStatus: unknown;
-        try {
-          const p = JSON.parse(existing) as Record<string, unknown>;
-          currentStatus = p.status;
-        } catch {
-          currentStatus = undefined;
-        }
-        if (currentStatus !== "planned") {
-          // Already advanced — skip
+        case "legacy-workflow-scripts":
+          notAutoRepaired.push(
+            `legacy-workflow-scripts: ${action.scriptPaths.join(", ")} — migrate to` +
+              ` scripts/check-archon-workflow.ts (TypeScript form); see archon documentation`
+          );
+          break;
+
+        default: {
+          const _exhaustive: never = action;
           break;
         }
-
-        const backupPath = await backupFile(
-          targetRoot,
-          MIGRATION_REPORT_REL,
-          timestamp,
-          fns
-        );
-        backupPaths.push(backupPath);
-
-        const updated = advanceMigrationReportStatus(existing, timestamp);
-        await fns.writeFile(reportAbsPath, updated);
-
-        repaired.push({
-          kind: "stuck-migration-report",
-          description: `Advanced migration-report.json status from "planned" to "upgrade-applied". Backup: ${backupPath}`,
-          backupPath,
-        });
-        break;
       }
-
-      case "missing-mcp-json":
-        notAutoRepaired.push(
-          "missing-mcp-json: .mcp.json will be created by the managed-file upgrade pass"
-        );
-        break;
-
-      case "missing-manifest":
-        notAutoRepaired.push(
-          "missing-manifest: .archon/install-manifest.json will be backfilled by the upgrade pass"
-        );
-        break;
-
-      case "legacy-workflow-scripts":
-        notAutoRepaired.push(
-          `legacy-workflow-scripts: ${action.scriptPaths.join(", ")} — migrate to scripts/check-archon-workflow.ts (TypeScript form); see archon documentation`
-        );
-        break;
-
-      default: {
-        const _exhaustive: never = action;
-        break;
-      }
+    } catch (err) {
+      failures.push({
+        kind: action.kind,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -525,7 +596,36 @@ export async function executeRepairs(
     notAutoRepaired,
     backupPaths,
     skillRefAdvisoryActive,
+    failures,
+    ok: failures.length === 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// maybeRunConsumerRepairPhase — exported for testing
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs the S5 consumer repair phase for upgrade --apply.
+ * Returns undefined when dryRun=true or command≠"upgrade" (phase is skipped).
+ * Returns the RepairReport when repair runs.
+ *
+ * Exported so tests can exercise the wiring logic (dry-run skip, live apply)
+ * without invoking the full CLI main() function.
+ * Production callers: main() in cli.ts only.
+ */
+export async function maybeRunConsumerRepairPhase(
+  command: "init" | "upgrade",
+  dryRun: boolean,
+  targetRoot: string,
+  fns: RepairFns
+): Promise<RepairReport | undefined> {
+  if (command !== "upgrade" || dryRun) {
+    return undefined;
+  }
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const actions = await detectRepairNeeds(targetRoot, fns.readFile);
+  return executeRepairs(targetRoot, actions, timestamp, fns);
 }
 
 // ---------------------------------------------------------------------------

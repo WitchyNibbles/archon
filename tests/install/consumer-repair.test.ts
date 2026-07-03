@@ -24,11 +24,17 @@ import {
   executeRepairs,
   stripStaleMcpEntriesFromSettings,
   advanceMigrationReportStatus,
+  maybeRunConsumerRepairPhase,
 } from "../../src/install/consumer-repair.ts";
 import type {
   RepairAction,
   RepairFns,
+  RepairReport,
 } from "../../src/install/consumer-repair.ts";
+import {
+  printRepairReport,
+} from "../../src/install/guided-init.ts";
+import type { GuidedInitIo } from "../../src/install/guided-init.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -229,7 +235,7 @@ test("detectRepairNeeds — hexchange class: detects all 5 action kinds", async 
   );
 });
 
-test("detectRepairNeeds — hexchange class: detects 5 stale archon mcpServers entries", async () => {
+test("detectRepairNeeds — hexchange class: detects 5 stale archon mcpServers entries with correct definitive flags", async () => {
   const files = buildHexchangeFixture();
   const actions = await detectRepairNeeds(TARGET_ROOT, makeReadFn(files));
   const staleAction = actions.find(
@@ -246,6 +252,14 @@ test("detectRepairNeeds — hexchange class: detects 5 stale archon mcpServers e
   assert.ok(staleNames.includes("playwright"), "playwright not in stale list");
   assert.ok(staleNames.includes("playwright_vision"), "playwright_vision not in stale list");
   assert.ok(!staleNames.includes("gitnexus"), "gitnexus should NOT be in stale list");
+
+  // definitive flag: only entries with node_modules/archon/src/ path are definitive
+  const byName = Object.fromEntries(staleAction.staleEntries.map((e) => [e.serverName, e]));
+  assert.equal(byName.archon!.definitive, true, "archon must be definitive (has src path)");
+  assert.equal(byName.grafana!.definitive, true, "grafana must be definitive (has src path)");
+  assert.equal(byName.obsidian!.definitive, false, "obsidian must NOT be definitive (@latest only, no src path)");
+  assert.equal(byName.playwright!.definitive, false, "playwright must NOT be definitive (--yes+@latest only)");
+  assert.equal(byName.playwright_vision!.definitive, false, "playwright_vision must NOT be definitive");
 });
 
 test("detectRepairNeeds — detects missing-manifest when manifest absent", async () => {
@@ -365,26 +379,45 @@ test("executeRepairs — hexchange class: C12 backup BEFORE mutation (sequence c
   );
 });
 
-test("executeRepairs — hexchange class: stale settings entries stripped (gitnexus preserved)", async () => {
+test("executeRepairs — hexchange class: definitive stale entries stripped; ambiguous ones warned, NOT stripped", async () => {
   const files = buildHexchangeFixture();
   const fns = makeRepairFns(files);
   const actions = await detectRepairNeeds(TARGET_ROOT, makeReadFn(files));
-  await executeRepairs(TARGET_ROOT, actions, "ts", fns);
+  const report = await executeRepairs(TARGET_ROOT, actions, "ts", fns);
 
   const updatedSettings = files.get(abs(".claude/settings.json"));
-  assert.ok(updatedSettings, "settings.json should be written after repair");
+  assert.ok(updatedSettings, "settings.json should be written after repair (definitive entries exist)");
   const parsed = JSON.parse(updatedSettings!) as Record<string, unknown>;
   const mcpServers = parsed.mcpServers as Record<string, unknown> | undefined;
 
-  // Stale archon-managed entries removed
-  assert.ok(!mcpServers?.archon, "archon should be stripped from settings.json");
-  assert.ok(!mcpServers?.grafana, "grafana should be stripped from settings.json");
-  assert.ok(!mcpServers?.playwright, "playwright should be stripped from settings.json");
-  assert.ok(!mcpServers?.playwright_vision, "playwright_vision should be stripped from settings.json");
-  assert.ok(!mcpServers?.obsidian, "obsidian should be stripped from settings.json");
+  // Definitive entries (node_modules/archon/src/ path) → auto-stripped
+  assert.ok(!mcpServers?.archon, "archon should be stripped (definitive: node_modules/archon/src/)");
+  assert.ok(!mcpServers?.grafana, "grafana should be stripped (definitive: node_modules/archon/src/)");
+
+  // Ambiguous entries (@latest / --yes only, no src path) → NOT stripped; must stay in settings
+  assert.ok(mcpServers?.playwright, "playwright must NOT be stripped (non-definitive: @latest+--yes only)");
+  assert.ok(mcpServers?.playwright_vision, "playwright_vision must NOT be stripped (non-definitive)");
+  assert.ok(mcpServers?.obsidian, "obsidian must NOT be stripped (non-definitive: @latest only)");
 
   // User-managed entry preserved
   assert.ok(mcpServers?.gitnexus, "gitnexus (user-managed) should be preserved");
+
+  // Ambiguous entries surfaced in notAutoRepaired with operator-visible reason
+  const ambiguousWarnings = report.notAutoRepaired.filter((n) =>
+    n.includes("ambiguous")
+  );
+  assert.ok(
+    ambiguousWarnings.some((w) => w.includes("playwright") && !w.includes("playwright_vision")),
+    "playwright ambiguous warning missing"
+  );
+  assert.ok(
+    ambiguousWarnings.some((w) => w.includes("playwright_vision")),
+    "playwright_vision ambiguous warning missing"
+  );
+  assert.ok(
+    ambiguousWarnings.some((w) => w.includes("obsidian")),
+    "obsidian ambiguous warning missing"
+  );
 });
 
 test("executeRepairs — hexchange class: migration-report status advanced to upgrade-applied", async () => {
@@ -602,4 +635,260 @@ test("advanceMigrationReportStatus — updates status field, preserves other fie
 test("advanceMigrationReportStatus — returns original on parse failure", () => {
   const input = "bad json";
   assert.equal(advanceMigrationReportStatus(input, "ts"), input);
+});
+
+// ---------------------------------------------------------------------------
+// executeRepairs — ok + failures (finding 5: per-action error isolation)
+// ---------------------------------------------------------------------------
+
+test("executeRepairs — healthy repo: ok=true, failures empty", async () => {
+  const files = buildHealthyFixture();
+  const fns = makeRepairFns(files);
+  const actions = await detectRepairNeeds(TARGET_ROOT, makeReadFn(files));
+  const report = await executeRepairs(TARGET_ROOT, actions, "ts", fns);
+  assert.equal(report.ok, true, "ok must be true when no failures");
+  assert.equal(report.failures.length, 0, "failures must be empty on success");
+});
+
+test("executeRepairs — hexchange class: ok=true, failures empty when all succeed", async () => {
+  const files = buildHexchangeFixture();
+  const fns = makeRepairFns(files);
+  const actions = await detectRepairNeeds(TARGET_ROOT, makeReadFn(files));
+  const report = await executeRepairs(TARGET_ROOT, actions, "ts", fns);
+  assert.equal(report.ok, true, "ok must be true when all actions succeed");
+  assert.equal(report.failures.length, 0, "failures must be empty on success");
+});
+
+test("executeRepairs — per-action error isolation: copyFile throw on action 1, action 2 still executes", async () => {
+  // stale-settings-mcp-entries fires first (has definitive archon+grafana entries)
+  // stuck-migration-report fires second.
+  // We make copyFile throw on any path containing "settings.json",
+  // succeed for migration-report.json.
+  const files = buildHexchangeFixture();
+  const errorFns: RepairFns = {
+    async readFile(p: string) {
+      return files.get(p);
+    },
+    async writeFile(p: string, content: string) {
+      files.set(p, content);
+    },
+    async copyFile(src: string, dest: string) {
+      if (src.includes("settings.json")) {
+        throw new Error("simulated backup failure on settings.json");
+      }
+      const content = files.get(src);
+      if (content === undefined) throw new Error(`copyFile: src not found: ${src}`);
+      files.set(dest, content);
+    },
+    async ensureDir(_p: string) {},
+  };
+
+  const actions = await detectRepairNeeds(TARGET_ROOT, makeReadFn(files));
+  const report = await executeRepairs(TARGET_ROOT, actions, "ts", errorFns);
+
+  // Action 1 (stale-settings-mcp-entries) failed
+  assert.equal(report.ok, false, "ok must be false when any action fails");
+  assert.equal(report.failures.length, 1, "exactly one failure recorded");
+  assert.equal(
+    report.failures[0]!.kind,
+    "stale-settings-mcp-entries",
+    "failure kind must be stale-settings-mcp-entries"
+  );
+  assert.ok(
+    report.failures[0]!.error.includes("simulated"),
+    "failure error should include thrown message"
+  );
+
+  // Action 2 (stuck-migration-report) still ran and succeeded
+  const migratedReport = files.get(`${TARGET_ROOT}/.archon/runtime/migration-report.json`);
+  assert.ok(migratedReport, "migration-report.json should have been written by action 2");
+  const parsed = JSON.parse(migratedReport!) as Record<string, unknown>;
+  assert.equal(parsed.status, "upgrade-applied", "migration-report status should be upgrade-applied");
+
+  // stuck-migration-report IS in repaired
+  assert.ok(
+    report.repaired.some((r) => r.kind === "stuck-migration-report"),
+    "stuck-migration-report should appear in repaired"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// printRepairReport — finding 1: test coverage
+// ---------------------------------------------------------------------------
+
+/** Creates a GuidedInitIo stub that collects all stdout lines for assertion. */
+function makeIoStub(): GuidedInitIo & { lines: string[] } {
+  const lines: string[] = [];
+  const io: GuidedInitIo = {
+    isTTY: false,
+    stdout: (s: string) => { lines.push(s); },
+    stderr: (s: string) => { lines.push(`ERR:${s}`); },
+    question: async () => "",
+  };
+  return Object.assign(io, { lines });
+}
+
+/** Minimal RepairReport builder for printRepairReport tests. */
+function makeReport(overrides: Partial<RepairReport>): RepairReport {
+  return {
+    detected: [],
+    repaired: [],
+    notAutoRepaired: [],
+    backupPaths: [],
+    skillRefAdvisoryActive: false,
+    failures: [],
+    ok: true,
+    ...overrides,
+  };
+}
+
+test("printRepairReport — prints repaired action descriptions", () => {
+  const io = makeIoStub();
+  const report = makeReport({
+    detected: [{ kind: "stuck-migration-report", currentStatus: "planned" }],
+    repaired: [
+      {
+        kind: "stuck-migration-report",
+        description: 'Advanced migration-report.json from "planned" to "upgrade-applied". Backup: .archon/install-backups/ts/report.json',
+        backupPath: ".archon/install-backups/ts/report.json",
+      },
+    ],
+    backupPaths: [".archon/install-backups/ts/report.json"],
+  });
+
+  printRepairReport(report, io);
+
+  assert.ok(
+    io.lines.some((l) => l.includes("repaired")),
+    "should print repaired section header"
+  );
+  assert.ok(
+    io.lines.some((l) => l.includes("Advanced migration-report")),
+    "should print repaired action description"
+  );
+});
+
+test("printRepairReport — prints notAutoRepaired entries", () => {
+  const io = makeIoStub();
+  const report = makeReport({
+    detected: [{ kind: "missing-mcp-json" }],
+    notAutoRepaired: ["missing-mcp-json: .mcp.json will be created by the managed-file upgrade pass"],
+  });
+
+  printRepairReport(report, io);
+
+  assert.ok(
+    io.lines.some((l) => l.includes("pending") || l.includes("notAutoRepaired") || l.includes("requires action")),
+    "should print pending/notAutoRepaired section"
+  );
+  assert.ok(
+    io.lines.some((l) => l.includes("missing-mcp-json")),
+    "should print notAutoRepaired content"
+  );
+});
+
+test("printRepairReport — prints C12 backup paths", () => {
+  const io = makeIoStub();
+  const report = makeReport({
+    backupPaths: [".archon/install-backups/ts/.claude/settings.json"],
+  });
+
+  printRepairReport(report, io);
+
+  assert.ok(
+    io.lines.some((l) => l.includes("backup") || l.includes("C12")),
+    "should print backup section header"
+  );
+  assert.ok(
+    io.lines.some((l) => l.includes(".archon/install-backups/ts/.claude/settings.json")),
+    "should print backup path"
+  );
+});
+
+test("printRepairReport — prints skill-ref advisory text with heuristic disclosure (finding 4)", () => {
+  const io = makeIoStub();
+  const report = makeReport({ skillRefAdvisoryActive: true });
+
+  printRepairReport(report, io);
+
+  const advisoryLine = io.lines.find((l) => l.includes("everything-claude-code"));
+  assert.ok(advisoryLine, "advisory line should be printed when skillRefAdvisoryActive=true");
+  assert.ok(
+    advisoryLine!.includes("inferred from stale settings.json entries"),
+    "advisory must disclose heuristic origin"
+  );
+  assert.ok(
+    advisoryLine!.includes("archon verify"),
+    "advisory must mention 'archon verify' for full scan"
+  );
+  assert.ok(
+    advisoryLine!.includes("--migrate-skill-refs"),
+    "advisory must mention --migrate-skill-refs (S6)"
+  );
+});
+
+test("printRepairReport — does NOT print advisory when skillRefAdvisoryActive=false", () => {
+  const io = makeIoStub();
+  const report = makeReport({ skillRefAdvisoryActive: false });
+
+  printRepairReport(report, io);
+
+  assert.ok(
+    !io.lines.some((l) => l.includes("everything-claude-code")),
+    "advisory should NOT be printed when inactive"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// maybeRunConsumerRepairPhase — finding 2: cli.ts upgrade wiring
+// ---------------------------------------------------------------------------
+
+test("maybeRunConsumerRepairPhase — dry-run: returns undefined, no IO", async () => {
+  const files = buildHexchangeFixture();
+  const fns = makeRepairFns(files);
+
+  const result = await maybeRunConsumerRepairPhase("upgrade", true, TARGET_ROOT, fns);
+
+  assert.equal(result, undefined, "dry-run must return undefined");
+  assert.equal(fns.writeCalls.length, 0, "dry-run must not write anything");
+});
+
+test("maybeRunConsumerRepairPhase — command=init: returns undefined, no IO", async () => {
+  const files = buildHexchangeFixture();
+  const fns = makeRepairFns(files);
+
+  const result = await maybeRunConsumerRepairPhase("init", false, TARGET_ROOT, fns);
+
+  assert.equal(result, undefined, "init command must return undefined");
+  assert.equal(fns.writeCalls.length, 0, "init command must not write anything");
+});
+
+test("maybeRunConsumerRepairPhase — upgrade live: calls detectRepairNeeds + executeRepairs, returns RepairReport", async () => {
+  const files = buildHexchangeFixture();
+  const fns = makeRepairFns(files);
+
+  const result = await maybeRunConsumerRepairPhase("upgrade", false, TARGET_ROOT, fns);
+
+  assert.ok(result !== undefined, "upgrade live must return a RepairReport");
+
+  // detectRepairNeeds was called (report.detected is populated)
+  assert.ok(result.detected.length > 0, "detected should be non-empty for hexchange fixture");
+
+  // executeRepairs was called (stale-settings and migration-report repaired)
+  const repairedKinds = result.repaired.map((r) => r.kind);
+  assert.ok(
+    repairedKinds.includes("stale-settings-mcp-entries"),
+    "stale-settings-mcp-entries should be repaired"
+  );
+  assert.ok(
+    repairedKinds.includes("stuck-migration-report"),
+    "stuck-migration-report should be repaired"
+  );
+
+  // timestamp was used (backupPaths contain an ISO-ish timestamp)
+  assert.ok(result.backupPaths.length > 0, "backupPaths must be non-empty (C12)");
+
+  // Report propagated correctly
+  assert.equal(result.ok, true, "ok must be true when no failures");
+  assert.equal(result.failures.length, 0, "failures must be empty on success");
 });

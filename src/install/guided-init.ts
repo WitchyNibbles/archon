@@ -663,7 +663,8 @@ export function printRepairReport(report: RepairReport, io: GuidedInitIo): void 
 
   if (report.skillRefAdvisoryActive) {
     io.stdout(
-      "  Advisory: consumer AGENT.md files may contain stale everything-claude-code:* skill refs." +
+      "  Advisory: consumer AGENT.md files may contain stale everything-claude-code:* skill refs" +
+        " (inferred from stale settings.json entries; run archon verify for a full AGENT.md scan)." +
         " Run archon upgrade --migrate-skill-refs (S6) to migrate them."
     );
   }
