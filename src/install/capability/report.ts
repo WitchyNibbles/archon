@@ -129,10 +129,13 @@ export function assembleCapabilityReport(
 }
 
 /**
- * Builds L2/L3 placeholder probes for capabilities not yet implemented in S1.
+ * Builds L2/L3 placeholder probes for the fast `verify` path, which by design
+ * does not shell out to external tools. The real L2/L3 probes live in
+ * probes-external.ts and admin/capability-probes-runtime.ts and run in
+ * `archon doctor` / the guided init post-check.
  *
- * Returns skipped ProbeResults for all L2/L3 capabilities so the report is
- * complete and honest: "not checked yet" is advisory, never a crash or a blocker.
+ * Returns skipped ProbeResults for these capabilities so the report is
+ * complete and honest: "not checked here" is advisory, never a crash or a blocker.
  */
 export function buildL2L3PlaceholderProbes(): readonly ProbeResult[] {
   const placeholders: ProbeResult[] = [
@@ -154,7 +157,7 @@ export function buildL2L3PlaceholderProbes(): readonly ProbeResult[] {
       status: "skipped",
       code: "playwright-browsers-placeholder",
       detail:
-        "Playwright browser check not yet implemented — ships in S2. Install manually: npm run archon:setup:playwright",
+        "Playwright browser check is not run by 'verify' — run 'npm run archon:doctor' for the live check. Install browsers: npm run archon:setup:playwright",
       remediation: "Run 'npm run archon:setup:playwright' to install Playwright browsers.",
     },
     {
@@ -163,7 +166,7 @@ export function buildL2L3PlaceholderProbes(): readonly ProbeResult[] {
       status: "skipped",
       code: "doctor-runtime-placeholder",
       detail:
-        "DB preflight runtime check (L3) not yet implemented — ships in S2. Run 'npm run archon:doctor' manually.",
+        "DB preflight runtime checks (L3) are not run by 'verify' — run 'npm run archon:doctor' for connectivity and migration checks.",
       remediation: "Run 'npm run archon:doctor' to check DB connectivity and migrations.",
     },
   ];
