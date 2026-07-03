@@ -217,6 +217,14 @@ jobs:
           node "$BIN" verify --json --target "$INIT_DIR" > "$INIT_DIR/verify-json-output.json"
           node "$GITHUB_WORKSPACE/scripts/ci/assert-verify-json.mjs" "$INIT_DIR"
 
+          # MCP handshake guard: proves the archon MCP server's entrypoint guard
+          # fires in the compiled dist. The bug (pre-fix): dist/mcp/server.js exited
+          # 0 silently because the guard checked for "src/mcp/server.ts" in argv[1].
+          # After the fix: isMainModule(import.meta.url) fires for both src and dist.
+          # The assert script accepts a jsonrpc response (full handshake) OR non-empty
+          # output (guard fired, DB unavailable in pack-install CI).
+          node "$GITHUB_WORKSPACE/scripts/ci/assert-mcp-handshake.mjs" "$INIT_DIR"
+
           # Assert dist tree cleanliness, shipped-script cleanliness, and no install
           # lifecycle hooks. The inspection logic lives in scripts/ci/*.mjs (shared
           # verbatim with the windows leg) so the rules live in ONE place. $GITHUB_WORKSPACE
@@ -294,6 +302,11 @@ jobs:
           node $bin verify --json --target $initDir | Out-File -FilePath $verifyJsonOutput -Encoding utf8
           if ($LASTEXITCODE -ne 0) { Write-Error "verify --json exited with unexpected code $LASTEXITCODE"; exit 1 }
           node "$env:GITHUB_WORKSPACE/scripts/ci/assert-verify-json.mjs" $initDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # MCP handshake guard: same logic as the unix leg, shared script.
+          # Proves the archon MCP server's entrypoint guard fires in the dist build.
+          node "$env:GITHUB_WORKSPACE/scripts/ci/assert-mcp-handshake.mjs" $initDir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Dist/scripts/package inspection. Same scripts/ci/*.mjs the unix leg runs
