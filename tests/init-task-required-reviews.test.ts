@@ -175,30 +175,33 @@ for (const cls of TASK_CLASSES) {
 // inline so this test file has no dependency on the hook for this assertion.
 // ---------------------------------------------------------------------------
 
-test("install/cli.ts happy-path task template: ## Required reviews section emits real roles, not 'none'", async () => {
-  // The function we need is not exported; reproduce the relevant snippet inline
-  // to guard the contract.  We verify by inspecting the source text directly,
-  // which is the authoritative artifact and covers the exact byte the hook reads.
+test("install/scaffold-templates.ts happy-path task template: ## Required reviews section emits real roles, not 'none'", async () => {
+  // buildHappyPathFixtureTask was extracted from cli.ts to scaffold-templates.ts (S4).
+  // We verify by inspecting the source text directly — the authoritative artifact.
   const { readFile } = await import("node:fs/promises");
-  const cliPath = path.resolve(
+  const scaffoldPath = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
     "src",
     "install",
-    "cli.ts"
+    "scaffold-templates.ts"
   );
-  const src = await readFile(cliPath, "utf8");
+  const src = await readFile(scaffoldPath, "utf8");
 
   // Find the Required reviews block in the happy-path fixture template.
   // We look for the block that contains the section header and verify it
   // lists real roles, not "none".
   const reviewsBlockMatch = src.match(/"## Required reviews"[\s\S]*?"## Rollback notes"/);
-  assert.ok(reviewsBlockMatch, 'cli.ts must contain a "## Required reviews" block before "## Rollback notes"');
+  assert.ok(reviewsBlockMatch,
+    'scaffold-templates.ts must contain a "## Required reviews" block before "## Rollback notes"');
 
   const block = reviewsBlockMatch[0];
   assert.ok(!block.includes('"- none"') && !block.includes("- none"),
-    'cli.ts "## Required reviews" block must not contain "- none"');
-  assert.ok(block.includes("reviewer"), 'cli.ts "## Required reviews" block must include "reviewer"');
-  assert.ok(block.includes("security_reviewer"), 'cli.ts "## Required reviews" block must include "security_reviewer"');
-  assert.ok(block.includes("qa_engineer"), 'cli.ts "## Required reviews" block must include "qa_engineer"');
+    'scaffold-templates.ts "## Required reviews" block must not contain "- none"');
+  assert.ok(block.includes("reviewer"),
+    'scaffold-templates.ts "## Required reviews" block must include "reviewer"');
+  assert.ok(block.includes("security_reviewer"),
+    'scaffold-templates.ts "## Required reviews" block must include "security_reviewer"');
+  assert.ok(block.includes("qa_engineer"),
+    'scaffold-templates.ts "## Required reviews" block must include "qa_engineer"');
 });

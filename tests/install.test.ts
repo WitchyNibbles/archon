@@ -433,6 +433,15 @@ test("mergeGitignore always adds graphify-out selective ignore", () => {
   assert.equal(first, second);
 });
 
+test("mergeGitignore includes .archon/ecc-plugin-record.json once and idempotently", () => {
+  const first = mergeGitignore("node_modules/\n");
+  const second = mergeGitignore(first);
+
+  assert.match(first, /\.archon\/ecc-plugin-record\.json/,
+    ".archon/ecc-plugin-record.json must be in merged .gitignore output");
+  assert.equal(first, second, "mergeGitignore must be idempotent for ecc-plugin-record");
+});
+
 test("ci workflow pins external actions and keeps read-only permissions", async () => {
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const ciWorkflow = await readFile(path.join(sourceRoot, ".github/workflows/ci.yml"), "utf8");
