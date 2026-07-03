@@ -168,8 +168,8 @@ export function parsePluginList(stdout: string): readonly InstalledPlugin[] {
   for (const line of lines) {
     const trimmed = line.trim();
 
-    // Plugin header line: "❯ <name>@<marketplace>" or "❯ <name>@<marketplace>"
-    if (trimmed.startsWith("❯ ") || trimmed.startsWith("❯ ")) {
+    // Plugin header line: "❯ <name>@<marketplace>" (U+276F HEAVY RIGHT-POINTING ANGLE QUOTATION MARK)
+    if (trimmed.startsWith("❯ ")) {
       flushPlugin();
       const rest = trimmed.slice(2).trim();
       const atIdx = rest.indexOf("@");

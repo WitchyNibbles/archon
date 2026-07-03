@@ -31,11 +31,12 @@ import {
   ECC_MARKETPLACE_SOURCE,
   ECC_PLUGIN_RECORD_RELATIVE_PATH,
 } from "../../src/install/ecc-plugin.ts";
-import { parseCliArgs } from "../../src/install/cli.ts";
+import { parseCliArgs, runEccInstallFromCli } from "../../src/install/cli.ts";
 import type { SpawnFn } from "../../src/install/capability/probes-external.ts";
 import type { ReadFileFn } from "../../src/install/capability/probes-file.ts";
 import type { WriteFileFn } from "../../src/install/ecc-plugin.ts";
 import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
 
 // ---------------------------------------------------------------------------
 // Stub builders
@@ -587,4 +588,160 @@ test("C6: installed version is captured and round-trips correctly", async () => 
   const readFn2 = makeReadFn({ [RECORD_PATH]: writeFn.written[RECORD_PATH]! });
   const readBack = await readEccPluginRecord(readFn2, TARGET);
   assert.equal(readBack?.version, "2.1.5", "C6: version must round-trip through record file");
+});
+
+// ---------------------------------------------------------------------------
+// MEDIUM-3: --yes alone must NOT set installPlugin (C5 binding test)
+// ---------------------------------------------------------------------------
+
+test("C5 / MEDIUM-3: --yes alone must not set installPlugin", () => {
+  const parsed = parseCliArgs(["init", "--apply", "--yes", "/some/target"]);
+  assert.equal(parsed.command, "init");
+  assert.equal(
+    (parsed as { installPlugin?: boolean }).installPlugin,
+    undefined,
+    "C5 / MEDIUM-3: --yes alone must never set installPlugin; ~/.claude writes require --install-plugin"
+  );
+});
+
+test("C5 / MEDIUM-3: --yes with --dry-run must not set installPlugin", () => {
+  // --yes is accepted as a known flag (reserved for S4 interactive consent) but
+  // C5 mandates it NEVER sets installPlugin; only --install-plugin may.
+  const parsed = parseCliArgs(["init", "--dry-run", "--yes", "/some/target"]);
+  assert.equal(
+    (parsed as { installPlugin?: boolean }).installPlugin,
+    undefined,
+    "C5 / MEDIUM-3: --yes with --dry-run must still not set installPlugin without --install-plugin"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// MEDIUM-4: same-major minor version bump → no gate, record updated
+// ---------------------------------------------------------------------------
+
+test("MEDIUM-4: pre-existing record v1.8.0, installed v1.9.0 (same major) → record updated, no gate", async () => {
+  // Installed: 1.9.0 (legacy identity); recorded: 1.8.0 → same major → no confirmation gate
+  const legacyV190List = `Installed plugins:\n\n  ❯ everything-claude-code@everything-claude-code\n    Version: 1.9.0\n    Scope: user\n    Status: ✔ enabled\n`;
+  const spawnFn = makeSpawnFn({
+    "claude plugin list": { exitCode: 0, stdout: legacyV190List, stderr: "" },
+  });
+  const existingRecord = JSON.stringify({
+    identity: "everything-claude-code@everything-claude-code",
+    version: "1.8.0",
+    installedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const readFn = makeReadFn({ [RECORD_PATH]: existingRecord });
+  const writeFn = makeWriteFn();
+
+  const result = await runConsentedEccInstall(spawnFn, readFn, writeFn, TARGET);
+
+  // Same major → no confirmation gate; result is already-installed
+  assert.equal(
+    result.status,
+    "already-installed",
+    "MEDIUM-4: same-major minor bump must not trigger needs-confirmation gate"
+  );
+  // Record must be updated to the new minor version
+  assert.equal(result.record.version, "1.9.0", "MEDIUM-4: record must be updated to installed v1.9.0");
+  assert.ok(RECORD_PATH in writeFn.written, "MEDIUM-4: record must be written with updated version");
+  const written = JSON.parse(writeFn.written[RECORD_PATH]!) as { version: string };
+  assert.equal(written.version, "1.9.0", "MEDIUM-4: written record version must be 1.9.0");
+  // No install/marketplace calls (already installed)
+  assert.equal(
+    spawnFn.calls.filter((c) => c.args[1] === "install" || c.args[1] === "marketplace").length,
+    0,
+    "MEDIUM-4: same-major bump must not trigger re-install"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// MEDIUM-5: CLI orchestration test via exported runEccInstallFromCli
+// ---------------------------------------------------------------------------
+
+test("MEDIUM-5: runEccInstallFromCli with stub spawn, already-installed → no plugin install call", async () => {
+  // Use a real tmpDir so createDefaultEccReadFileFn/WriteFileFn can operate without errors.
+  // No ~/.claude writes: stub spawn returns "already-installed" — plugin install never invoked.
+  const tmpDir = await mkdtemp("/tmp/archon-test-ecc-m5-");
+  try {
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    const spawnStub: SpawnFn = async (command, args) => {
+      calls.push({ command, args });
+      if (args[0] === "plugin" && args[1] === "list") {
+        return { exitCode: 0, stdout: CANONICAL_PLUGIN_LIST, stderr: "" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+
+    await runEccInstallFromCli(tmpDir, false, spawnStub);
+
+    // The C5 gate in main() ensures runEccInstallFromCli is never called without --install-plugin.
+    // Here we verify that when runEccInstallFromCli IS called (--install-plugin path),
+    // it does not spawn `claude plugin install` when the plugin is already present.
+    const installCalls = calls.filter((c) => c.args[0] === "plugin" && c.args[1] === "install");
+    assert.equal(
+      installCalls.length,
+      0,
+      "MEDIUM-5: plugin install must not be spawned when ECC is already installed"
+    );
+    // Only plugin list should have been called
+    const listCalls = calls.filter((c) => c.args[0] === "plugin" && c.args[1] === "list");
+    assert.ok(listCalls.length >= 1, "MEDIUM-5: plugin list must be called to detect installed state");
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// LOW-9: parsePluginList — missing Version column
+// ---------------------------------------------------------------------------
+
+test("LOW-9: parsePluginList: entry missing Version field → version = 'unknown'", () => {
+  const input = `Installed plugins:
+
+  ❯ ecc@ecc
+    Scope: user
+    Status: ✔ enabled
+`;
+  const plugins = parsePluginList(input);
+  assert.equal(plugins.length, 1);
+  const p = plugins[0]!;
+  assert.equal(p.identity, "ecc@ecc");
+  assert.equal(p.version, "unknown", "LOW-9: missing Version field must yield version='unknown'");
+  assert.equal(p.enabled, true);
+});
+
+// ---------------------------------------------------------------------------
+// LOW-10: isAcceptedEccIdentity near-match tests
+// ---------------------------------------------------------------------------
+
+test("LOW-10: isAcceptedEccIdentity: 'ecc-extra@ecc' → false (name prefix match must not trigger)", () => {
+  assert.equal(
+    isAcceptedEccIdentity("ecc-extra@ecc"),
+    false,
+    "LOW-10: 'ecc-extra@ecc' is not canonical (name must be exactly 'ecc')"
+  );
+});
+
+test("LOW-10: isAcceptedEccIdentity: 'ecc@ecc-fake' → false (canonical requires name AND marketplace both 'ecc')", () => {
+  assert.equal(
+    isAcceptedEccIdentity("ecc@ecc-fake"),
+    false,
+    "LOW-10: 'ecc@ecc-fake' must not match canonical — marketplace must be exactly 'ecc'"
+  );
+});
+
+test("LOW-10: isAcceptedEccIdentity: 'everything-claude-code-extra@somewhere' → false (prefix too long)", () => {
+  assert.equal(
+    isAcceptedEccIdentity("everything-claude-code-extra@somewhere"),
+    false,
+    "LOW-10: name must start with 'everything-claude-code' exactly; extra suffix disqualifies it"
+  );
+});
+
+test("LOW-10: isAcceptedEccIdentity: empty string → false", () => {
+  assert.equal(isAcceptedEccIdentity(""), false, "LOW-10: empty string must not be accepted");
+});
+
+test("LOW-10: isAcceptedEccIdentity: 'ecc@' (no marketplace) → false", () => {
+  assert.equal(isAcceptedEccIdentity("ecc@"), false, "LOW-10: 'ecc@' with empty marketplace must not match canonical");
 });

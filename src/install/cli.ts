@@ -1,5 +1,4 @@
 import { cp, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
-import { spawn as nodeSpawn } from "node:child_process";
 import { readdirSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -37,6 +36,7 @@ import { assembleCapabilityReport, buildL2L3PlaceholderProbes } from "./capabili
 import type { CapabilityReport, ProbeResult } from "./capability/types.ts";
 import {
   runConsentedEccInstall,
+  createDefaultEccSpawnFn,
   createDefaultEccReadFileFn,
   createDefaultEccWriteFileFn,
 } from "./ecc-plugin.ts";
@@ -988,7 +988,19 @@ function parseInstallCommand(command: "init" | "upgrade", args: string[]): Parse
     "--with-obsidian",
     "--install-plugin",
     "--confirm-ecc-major",
+    // C5: --yes is recognized (reserved for S4 interactive consent) but never triggers
+    // installPlugin on its own. Adding it here prevents resolveCliTarget from mistaking
+    // it for a positional path argument.
+    "--yes",
   ]);
+
+  // LOW-8: warn when --confirm-ecc-major is set without --install-plugin (silently discarded otherwise)
+  if (hasConfirmEccMajor && !hasInstallPlugin) {
+    console.warn(
+      "Warning: --confirm-ecc-major has no effect without --install-plugin. " +
+      "Add --install-plugin to enable the ECC plugin install with major-version confirmation."
+    );
+  }
 
   return {
     command,
@@ -2508,35 +2520,21 @@ async function main() {
  * Runs the consented ECC plugin install for the CLI flag-driven path.
  *
  * Council C5: only called when --install-plugin is explicitly present (never --yes alone).
- * Council C7: uses injected SpawnFn with array args, hardcoded constants.
- * Council C6: prints installed version; returns needs-confirmation on major bump.
+ * Council C7: uses createDefaultEccSpawnFn() — array args, hardcoded constants, shell:false.
+ * Council C6: prints installed version; sets exitCode=1 on needs-confirmation or failure.
  * Council C13: idempotent — safe to run repeatedly.
+ *
+ * Exported (not just the module-private function) to allow tests to inject a SpawnFn
+ * via spawnFnOverride and verify the CLI orchestration path's spawn behaviour (MEDIUM-5).
+ * In production, spawnFnOverride is omitted and createDefaultEccSpawnFn() is used.
  */
-async function runEccInstallFromCli(
+export async function runEccInstallFromCli(
   targetRoot: string,
-  confirmEccMajor: boolean
+  confirmEccMajor: boolean,
+  spawnFnOverride?: EccSpawnFn
 ): Promise<void> {
-  // Real fs/spawn implementations (no test stubs — this is the production path).
-  // Tests exercise runConsentedEccInstall directly with injected stubs.
-  const spawnFn: EccSpawnFn = (command, args, stdinData) =>
-    new Promise((resolve, reject) => {
-      const child = nodeSpawn(command, [...args], {
-        shell: false,
-        stdio: stdinData !== undefined
-          ? ["pipe", "pipe", "pipe"]
-          : ["ignore", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
-      child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-      child.on("error", reject);
-      child.on("exit", (code) => { resolve({ exitCode: code, stdout, stderr }); });
-      if (stdinData !== undefined && child.stdin) {
-        child.stdin.write(stdinData, "utf8");
-        child.stdin.end();
-      }
-    });
+  // HIGH-2: delegate to the exported factory; no inline re-implementation.
+  const spawnFn = spawnFnOverride ?? createDefaultEccSpawnFn();
 
   const result = await runConsentedEccInstall(
     spawnFn,

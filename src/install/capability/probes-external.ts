@@ -517,9 +517,11 @@ export type FindAgentFilesFn = (targetRoot: string) => Promise<readonly string[]
  */
 export function createFindAgentFilesFn(): FindAgentFilesFn {
   async function walk(dir: string): Promise<string[]> {
-    let entries: Awaited<ReturnType<typeof readdir>>;
+    // encoding:'utf8' ensures readdir returns Dirent<string>[] (not Dirent<NonSharedBuffer>[])
+    // which is required for .name to be typed as string under @types/node@22+.
+    let entries: import("node:fs").Dirent<string>[];
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      entries = await readdir(dir, { withFileTypes: true, encoding: "utf8" });
     } catch {
       return [];
     }

@@ -354,10 +354,11 @@ Uses everything-claude-code:search skill`,
   );
   assert.equal(result.status, "degraded");
   assert.equal(result.code, "skill-ref-namespace-mismatch");
-  assert.ok(result.detail.includes("1"), "detail must report count of mismatched files");
+  // LOW-11: assert the specific mismatch direction string (legacy prefix found, canonical expected)
   assert.ok(
-    result.detail.includes(ECC_LEGACY_SKILL_PREFIX),
-    "detail must name the mismatched prefix"
+    result.detail.includes(`use '${ECC_LEGACY_SKILL_PREFIX}'`) &&
+      result.detail.includes(`'${ECC_CANONICAL_SKILL_PREFIX}' namespace`),
+    "LOW-11: detail must state direction: files use legacy prefix but installed plugin exposes canonical namespace"
   );
   // Probe must state it is read-only (S6 owns writes)
   assert.ok(
@@ -420,8 +421,11 @@ test("probeSkillRefNamespace: multiple files counted correctly", async () => {
     ECC_CANONICAL_SKILL_PREFIX // canonical installed
   );
   assert.equal(result.status, "degraded");
-  // 1 file has the legacy (mismatched) prefix
-  assert.ok(result.detail.includes("1"), "1 mismatched file should be reported");
+  // LOW-11: assert specific mismatch direction — 1 file using legacy prefix where canonical expected
+  assert.ok(
+    result.detail.includes("1 agent file(s)") && result.detail.includes(`use '${ECC_LEGACY_SKILL_PREFIX}'`),
+    "LOW-11: mismatch detail must report count ('1 agent file(s)') and direction (legacy prefix found)"
+  );
 });
 
 // ---------------------------------------------------------------------------

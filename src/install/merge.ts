@@ -389,7 +389,9 @@ export function mergeGitignore(
     ".env.archon.*",
     "graphify-out/*",
     "!graphify-out/GRAPH_REPORT.md",
-    "!graphify-out/wiki/"
+    "!graphify-out/wiki/",
+    // Runtime-written local artifact; must not be committed to the consumer repo.
+    ".archon/ecc-plugin-record.json"
   ];
   const existingLines = new Set(
     (existingContent ?? "")

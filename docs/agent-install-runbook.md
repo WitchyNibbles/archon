@@ -109,6 +109,8 @@ psql "postgresql://localhost:5432/postgres" -c "select 1" 2>&1 | grep -E "(1|err
 
 The `ecc` plugin (formerly `everything-claude-code`, repo `affaan-m/ECC`) is a **required external dependency**. Skills prefixed `ecc:*` will not resolve without it.
 
+**Runtime artifact note:** After running `archon init --apply --install-plugin`, archon records the installed ECC identity and version in `.archon/ecc-plugin-record.json`. This file is a runtime-written local artifact and is excluded from version control by the archon-managed `.gitignore` entry. Do not commit it; it will be regenerated on the next `--install-plugin` run.
+
 **Command:**
 ```bash
 claude code --version 2>/dev/null | head -1 || echo "claude code not found"
