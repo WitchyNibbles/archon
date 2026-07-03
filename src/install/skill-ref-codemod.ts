@@ -406,6 +406,19 @@ export async function executeSkillRefMigration(
 
   for (const filePlan of plan.files) {
     try {
+      // Path-boundary guard: executeSkillRefMigration is an exported API surface,
+      // so the plan cannot be trusted to be internally consistent. Reject any
+      // absolutePath that resolves outside targetRoot BEFORE any read or write —
+      // the backupFile guard alone only protects the backup destination.
+      const checkedRel = path.relative(plan.targetRoot, filePlan.absolutePath);
+      if (checkedRel.startsWith("..") || path.isAbsolute(checkedRel)) {
+        errors.push({
+          path: filePlan.relPath,
+          error: "absolutePath outside targetRoot — rejected.",
+        });
+        continue;
+      }
+
       // Re-read current content at apply time for idempotency safety
       const currentContent = await fns.readFile(filePlan.absolutePath);
       if (currentContent === undefined) {

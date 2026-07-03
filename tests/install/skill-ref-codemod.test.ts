@@ -945,3 +945,47 @@ test("executeSkillRefMigration: backup path outside backup root throws — error
   assert.strictEqual(copyLog.length, 0, "no copies must occur after boundary rejection");
   assert.strictEqual(result.ok, false);
 });
+
+test("executeSkillRefMigration: safe relPath but out-of-root absolutePath → rejected before any read or write", async () => {
+  // Adversarial plan targeting the exported API surface: the relPath looks safe
+  // (would pass the backup-destination guard) but absolutePath escapes targetRoot.
+  const plan: SkillRefMigrationPlan = {
+    targetRoot: TARGET_ROOT,
+    installedNamespace: ECC_CANONICAL_SKILL_PREFIX,
+    wrongPrefix: ECC_LEGACY_SKILL_PREFIX,
+    files: [
+      {
+        absolutePath: "/etc/passwd",
+        relPath: ".claude/agents/safe-looking.md",
+        count: 1,
+        direction: "legacy-to-canonical",
+        fromPrefix: ECC_LEGACY_SKILL_PREFIX,
+        toPrefix: ECC_CANONICAL_SKILL_PREFIX,
+      },
+    ],
+    totalReplacements: 1,
+  };
+
+  const vfs = new Map([["/etc/passwd", `${ECC_LEGACY_SKILL_PREFIX}web-search`]]);
+  const { fns, writeLog, copyLog } = makeCodemodFns(vfs);
+  const readCalls: string[] = [];
+  const guardedFns = {
+    ...fns,
+    readFile: async (p: string) => {
+      readCalls.push(p);
+      return fns.readFile(p);
+    },
+  };
+
+  const result = await executeSkillRefMigration(plan, false, "2026-07-03T00-00-00-000Z", guardedFns);
+
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.errors.length, 1, "one per-file error must be recorded");
+  assert.ok(
+    result.errors[0]!.error.includes("outside targetRoot"),
+    `error must name the boundary violation, got: ${result.errors[0]!.error}`
+  );
+  assert.strictEqual(readCalls.length, 0, "readFile must never be called for out-of-root absolutePath");
+  assert.strictEqual(writeLog.length, 0, "no writes");
+  assert.strictEqual(copyLog.length, 0, "no copies");
+});
