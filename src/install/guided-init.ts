@@ -35,6 +35,7 @@ import type { SpawnFn as EccSpawnFn } from "./capability/probes-external.ts";
 import type { ReadFileFn as EccReadFileFn } from "./capability/probes-file.ts";
 import type { CapabilityReport } from "./capability/types.ts";
 import type { InstallSummary } from "./types.ts";
+import type { RepairReport } from "./consumer-repair.ts";
 import { buildNextSteps } from "./next-steps.ts";
 
 // ---------------------------------------------------------------------------
@@ -589,6 +590,14 @@ export interface GuidedPhaseOptions {
    */
   readonly jsonReport?: boolean;
 
+  // --- S5 consumer repair report ---
+  /**
+   * Optional repair report from consumer-repair.ts (S5).
+   * When present, runGuidedPhase prints it after the install summary so
+   * operators see what was healed before the capability check runs.
+   */
+  readonly repairReport?: RepairReport;
+
   // --- Injected capability report source ---
   /**
    * Async function that runs L0+L1+L2 probes and returns the CapabilityReport.
@@ -620,6 +629,47 @@ export interface GuidedPhaseResult {
 }
 
 // ---------------------------------------------------------------------------
+// printRepairReport — S5 consumer repair report
+// ---------------------------------------------------------------------------
+
+/**
+ * Prints the S5 consumer repair report after the install summary.
+ * Exported for tests; called by runGuidedPhase when repairReport is present.
+ */
+export function printRepairReport(report: RepairReport, io: GuidedInitIo): void {
+  io.stdout("\nConsumer repair (S5):");
+  io.stdout(`  detected: ${report.detected.length} issue(s)`);
+
+  if (report.repaired.length > 0) {
+    io.stdout("  repaired:");
+    for (const r of report.repaired) {
+      io.stdout(`    - ${r.description}`);
+    }
+  }
+
+  if (report.notAutoRepaired.length > 0) {
+    io.stdout("  pending (handled by upgrade pass or requires action):");
+    for (const note of report.notAutoRepaired) {
+      io.stdout(`    - ${note}`);
+    }
+  }
+
+  if (report.backupPaths.length > 0) {
+    io.stdout("  C12 backups:");
+    for (const bp of report.backupPaths) {
+      io.stdout(`    - ${bp}`);
+    }
+  }
+
+  if (report.skillRefAdvisoryActive) {
+    io.stdout(
+      "  Advisory: consumer AGENT.md files may contain stale everything-claude-code:* skill refs." +
+        " Run archon upgrade --migrate-skill-refs (S6) to migrate them."
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // runGuidedPhase — main export
 // ---------------------------------------------------------------------------
 
@@ -645,6 +695,11 @@ export async function runGuidedPhase(opts: GuidedPhaseOptions): Promise<GuidedPh
 
   // Step 1: Print install summary (extracted from cli.ts)
   printInstallSummary(opts.command, opts.targetRoot, opts.summary, io);
+
+  // Step 1b: Print S5 consumer repair report (upgrade only; omitted when empty)
+  if (opts.repairReport && opts.repairReport.detected.length > 0) {
+    printRepairReport(opts.repairReport, io);
+  }
 
   // Step 2: Return early for dry-run (next-steps from buildNextSteps, no prompts)
   if (opts.summary.mode === "dry-run") {
