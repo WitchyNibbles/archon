@@ -57,6 +57,14 @@ import {
   createDefaultRepairFns,
 } from "./consumer-repair.ts";
 import type { RepairReport } from "./consumer-repair.ts";
+import {
+  detectInstalledNamespace,
+  planSkillRefMigration,
+  executeSkillRefMigration,
+  printMigrationPreview,
+  printMigrationResult,
+  createDefaultCodemodFns,
+} from "./skill-ref-codemod.ts";
 
 // Re-export for backward compatibility with tests that import from cli.ts
 export { managedFileCapability } from "./guided-init.ts";
@@ -146,6 +154,15 @@ interface ParsedInstallCommand {
    * Human text report is still shown; JSON is appended at the end.
    */
   jsonReport?: boolean;
+  /**
+   * --migrate-skill-refs: run the S6 skill-ref codemod against consumer agent files.
+   * Dry-run preview when dryRun=true; actual writes when dryRun=false (--apply).
+   *
+   * Council C1: only active under explicit --migrate-skill-refs flag; NEVER silent.
+   * Direction (legacy→canonical or canonical→legacy) is determined by the installed
+   * ECC plugin namespace — never by any flag.
+   */
+  migrateSkillRefs?: boolean;
 }
 
 interface ParsedVerifyCommand {
@@ -1038,6 +1055,8 @@ function parseInstallCommand(command: "init" | "upgrade", args: string[]): Parse
     "--run-db-setup",
     "--no-plugin",
     "--json",
+    // S6 flag: skill-ref codemod (dry-run preview when --dry-run; apply when --apply)
+    "--migrate-skill-refs",
   ]);
 
   // LOW-8: warn when --confirm-ecc-major is set without --install-plugin
@@ -1062,6 +1081,8 @@ function parseInstallCommand(command: "init" | "upgrade", args: string[]): Parse
     ...(args.includes("--run-db-setup") ? { runDbSetup: true } : {}),
     ...(args.includes("--no-plugin") ? { noPlugin: true } : {}),
     ...(args.includes("--json") ? { jsonReport: true } : {}),
+    // S6: skill-ref codemod flag (dry-run/apply governed by the existing --dry-run/--apply pair)
+    ...(args.includes("--migrate-skill-refs") ? { migrateSkillRefs: true } : {}),
   };
 }
 
@@ -2184,6 +2205,56 @@ async function main() {
         withGrafana: parsedArgs.withGrafana,
         withObsidian: parsedArgs.withObsidian
       });
+
+  // S6 skill-ref codemod: runs after repair + managed-file pass, before guided phase.
+  // Only active when --migrate-skill-refs is explicitly present (C1: never silent).
+  // Dry-run governed by the existing --dry-run / --apply pair.
+  if (parsedArgs.migrateSkillRefs === true) {
+    const defaultCodemodReadFileFn = async (p: string): Promise<string | undefined> => {
+      try {
+        return await readFile(p, "utf8");
+      } catch {
+        return undefined;
+      }
+    };
+    const codemodSpawnFn = createDefaultEccSpawnFn();
+    const namespaceResult = await detectInstalledNamespace(codemodSpawnFn);
+
+    if (!namespaceResult.found) {
+      console.warn(
+        `[skill-ref-codemod] Cannot determine installed ECC namespace — skipping codemod.\n` +
+          `  Reason: ${namespaceResult.reason}\n` +
+          `  Install the claude CLI and ECC plugin, then re-run with --migrate-skill-refs.`
+      );
+    } else {
+      const { createFindAgentFilesFn } = await import(
+        "./capability/probes-external.ts"
+      );
+      const plan = await planSkillRefMigration(
+        targetRoot,
+        namespaceResult.namespace,
+        createFindAgentFilesFn(),
+        defaultCodemodReadFileFn
+      );
+
+      if (parsedArgs.dryRun) {
+        printMigrationPreview(plan);
+      } else {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const codemodFns = createDefaultCodemodFns();
+        const codemodResult = await executeSkillRefMigration(
+          plan,
+          false,
+          timestamp,
+          codemodFns
+        );
+        printMigrationResult(codemodResult);
+        if (!codemodResult.ok) {
+          process.exitCode = 1;
+        }
+      }
+    }
+  }
 
   // For upgrade: halt on conflicts before guided phase (file state not safe to act on)
   if (parsedArgs.command === "upgrade" && summary.conflicts.length > 0 && !parsedArgs.dryRun) {
