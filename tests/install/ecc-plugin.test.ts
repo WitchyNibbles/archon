@@ -672,7 +672,14 @@ test("MEDIUM-5: runEccInstallFromCli with stub spawn, already-installed → no p
       return { exitCode: 0, stdout: "", stderr: "" };
     };
 
-    await runEccInstallFromCli(tmpDir, false, spawnStub);
+    // 3rd arg is now GuidedInitIo (io); 4th arg is the optional spawn override.
+    const ioStub = {
+      isTTY: false,
+      async question(): Promise<string> { return ""; },
+      stdout(_msg: string): void {},
+      stderr(_msg: string): void {},
+    };
+    await runEccInstallFromCli(tmpDir, false, ioStub, spawnStub);
 
     // The C5 gate in main() ensures runEccInstallFromCli is never called without --install-plugin.
     // Here we verify that when runEccInstallFromCli IS called (--install-plugin path),
