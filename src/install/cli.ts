@@ -34,13 +34,28 @@ import type { ReadFileFn } from "./capability/probes-file.ts";
 import { runL1Probes } from "./capability/probes-config.ts";
 import { assembleCapabilityReport, buildL2L3PlaceholderProbes } from "./capability/report.ts";
 import type { CapabilityReport, ProbeResult } from "./capability/types.ts";
+import { createDefaultEccSpawnFn } from "./ecc-plugin.ts";
+import { runL2Probes, createFindAgentFilesFn } from "./capability/probes-external.ts";
 import {
-  runConsentedEccInstall,
-  createDefaultEccSpawnFn,
-  createDefaultEccReadFileFn,
-  createDefaultEccWriteFileFn,
-} from "./ecc-plugin.ts";
-import type { SpawnFn as EccSpawnFn } from "./capability/probes-external.ts";
+  managedFileCapability,
+  printInstallSummary,
+  runGuidedPhase,
+  createDefaultGuidedInitIo,
+} from "./guided-init.ts";
+import {
+  buildBriefFromTemplate,
+  buildPlanArtifact,
+  buildTaskFromTemplate,
+  appendReasoningHardeningSections,
+  buildReviewFromTemplate,
+  buildHappyPathFixtureBrief,
+  buildHappyPathFixtureTask,
+  buildHappyPathFixtureReview,
+} from "./scaffold-templates.ts";
+
+// Re-export for backward compatibility with tests that import from cli.ts
+export { managedFileCapability } from "./guided-init.ts";
+export { runEccInstallFromCli } from "./guided-init.ts";
 
 interface InstallFile {
   source: string;
@@ -105,6 +120,27 @@ interface ParsedInstallCommand {
    * Council C6: major version bump requires explicit confirmation.
    */
   confirmEccMajor?: boolean;
+  /**
+   * --yes: accept CONSUMER-REPO consents (npm install, DB migrate, bootstrap-project).
+   * Council C5: MUST NOT imply installPlugin. ~/. claude writes still require
+   * --install-plugin or interactive consent.
+   */
+  yes?: boolean;
+  /**
+   * --run-db-setup: explicit consent for npm install + archon migrate + bootstrap-project.
+   * Equivalent to --yes for the DB setup step (more explicit, single-purpose flag).
+   */
+  runDbSetup?: boolean;
+  /**
+   * --no-plugin: explicitly decline ECC plugin install. Suppresses the TTY prompt.
+   * Takes precedence over --install-plugin when both are present.
+   */
+  noPlugin?: boolean;
+  /**
+   * --json: emit the post-install capability report as JSON to stdout.
+   * Human text report is still shown; JSON is appended at the end.
+   */
+  jsonReport?: boolean;
 }
 
 interface ParsedVerifyCommand {
@@ -988,13 +1024,16 @@ function parseInstallCommand(command: "init" | "upgrade", args: string[]): Parse
     "--with-obsidian",
     "--install-plugin",
     "--confirm-ecc-major",
-    // C5: --yes is recognized (reserved for S4 interactive consent) but never triggers
-    // installPlugin on its own. Adding it here prevents resolveCliTarget from mistaking
-    // it for a positional path argument.
+    // C5: --yes consents only to consumer-repo steps; NEVER implies --install-plugin.
+    // Listed here so resolveCliTarget does not mistake it for a positional path arg.
     "--yes",
+    // S4 flags: DB setup, explicit plugin decline, JSON report
+    "--run-db-setup",
+    "--no-plugin",
+    "--json",
   ]);
 
-  // LOW-8: warn when --confirm-ecc-major is set without --install-plugin (silently discarded otherwise)
+  // LOW-8: warn when --confirm-ecc-major is set without --install-plugin
   if (hasConfirmEccMajor && !hasInstallPlugin) {
     console.warn(
       "Warning: --confirm-ecc-major has no effect without --install-plugin. " +
@@ -1011,6 +1050,11 @@ function parseInstallCommand(command: "init" | "upgrade", args: string[]): Parse
     // C5: only set when the flag is explicitly present
     ...(hasInstallPlugin ? { installPlugin: true } : {}),
     ...(hasConfirmEccMajor ? { confirmEccMajor: true } : {}),
+    // S4 flags
+    ...(args.includes("--yes") ? { yes: true } : {}),
+    ...(args.includes("--run-db-setup") ? { runDbSetup: true } : {}),
+    ...(args.includes("--no-plugin") ? { noPlugin: true } : {}),
+    ...(args.includes("--json") ? { jsonReport: true } : {}),
   };
 }
 
@@ -1554,29 +1598,8 @@ export async function verifyArchonInstall(options: InstallOptions): Promise<Veri
   };
 }
 
-/**
- * LOW-8 fix: maps a managed file's target path to the appropriate capability
- * name from the CAPABILITY_REGISTRY (S2). Previously all L0 probes used the
- * generic "managed-files" capability, which obscured which capability was
- * actually affected by a file drift. Now each file maps to a specific
- * capability so the report can surface "agents drifted" vs "rules drifted".
- *
- * Exported for unit testing (tests/install/capability-engine.test.ts LOW-8 assertions).
- */
-export function managedFileCapability(targetPath: string): string {
-  if (targetPath.startsWith(".claude/agents/")) return "agents";
-  if (targetPath.startsWith(".claude/skills/")) return "skills";
-  if (targetPath.startsWith(".claude/hooks/") || targetPath === ".claude/settings.json") return "hooks";
-  if (targetPath.startsWith(".archon/rules/")) return "rules";
-  if (targetPath.startsWith(".archon/templates/")) return "workflow-scaffold";
-  if (targetPath.startsWith(".archon/playwright/")) return "playwright-browsers";
-  if (targetPath.startsWith(".githooks/")) return "git-guard";
-  if (targetPath.startsWith("plugins/archon/")) return "mcp-archon";
-  if (targetPath === ".mcp.json") return "mcp-archon";
-  if (targetPath === "AGENTS.md") return "agents";
-  // Fallback for files not yet mapped to a specific capability
-  return "managed-files";
-}
+// managedFileCapability moved to src/install/guided-init.ts (S4 extraction).
+// Re-exported from cli.ts at the top of the file for backward compatibility.
 
 /** Runs L0 + L1 + L2/L3 placeholder probes; returns assembled CapabilityReport for verify. */
 async function runVerifyCapabilityEngine(
@@ -1607,50 +1630,53 @@ async function runVerifyCapabilityEngine(
   return assembleCapabilityReport(allProbes, "verify");
 }
 
-function printInstallSummary(command: "init" | "upgrade", targetRoot: string, summary: InstallSummary): void {
-  if (command === "upgrade") {
-    console.log(
-      summary.mode === "dry-run"
-        ? `archon upgrade plan for ${targetRoot}`
-        : `archon upgraded ${targetRoot}`
-    );
-  } else {
-    console.log(
-      summary.mode === "dry-run"
-        ? `archon dry run for ${targetRoot}`
-        : `archon installed into ${targetRoot}`
-    );
-  }
+/**
+ * Runs L0+L1+real L2 probes for the post-install capability check.
+ *
+ * Unlike runVerifyCapabilityEngine (which uses L2/L3 placeholders for the fast
+ * headless verify command), this function runs real L2 probes via runL2Probes
+ * so the post-install report reflects actual external state (ECC presence,
+ * node_modules, playwright, adapter-stub, skill-ref namespace).
+ *
+ * Used by the guided phase (init/upgrade --apply) to print the honest
+ * post-install capability report including real external checks.
+ */
+async function runPostInstallCapabilityEngine(
+  sourceRoot: string,
+  targetRoot: string
+): Promise<CapabilityReport> {
+  const withGrafana = await detectInstalledGrafana(targetRoot);
+  const withObsidian = await detectInstalledObsidian(targetRoot);
+  const obsidianVaultPath = withObsidian ? await readObsidianVaultPath(targetRoot) : undefined;
+  const planEntries = (await buildInstallPlan(sourceRoot, { withGrafana, withObsidian, obsidianVaultPath }))
+    .filter((e) => e.mode === "managed");
 
-  console.log(`mode: ${summary.mode}`);
-  console.log(`created: ${summary.created.length}`);
-  console.log(`updated: ${summary.updated.length}`);
-  console.log(`skipped: ${summary.skipped.length}`);
-  console.log(`conflicts: ${summary.conflicts.length}`);
-  console.log(`orphans: ${summary.orphans.length}`);
-  console.log(`backups created: ${summary.backups.length}`);
-  console.log(`backups planned: ${summary.plannedBackups.length}`);
-  console.log(`writes performed: ${summary.writesPerformed ? "yes" : "no"}`);
-
-  if (summary.conflicts.length > 0) {
-    console.log("Conflicts:");
-    for (const filePath of summary.conflicts) {
-      console.log(`- ${filePath}`);
+  const l0Probes: ProbeResult[] = [];
+  for (const entry of planEntries) {
+    const resolved = await resolvePlanEntry(entry, targetRoot);
+    const capability = managedFileCapability(entry.target);
+    if (resolved.invalidReason) {
+      l0Probes.push({ capability, layer: "L0", status: "blocked", code: "managed-file-invalid", detail: `Managed path issue: ${entry.target} (${resolved.invalidReason})`, remediation: "Run 'archon upgrade --apply' to restore managed files." });
+      continue;
     }
+    const readFn: ReadFileFn = async (_p) => resolved.currentContent;
+    l0Probes.push(await probeManagedFile(readFn, { capability, code: "managed-file", relativePath: entry.target, absolutePath: resolved.absolutePath, desiredContent: resolved.desiredContent }));
   }
 
-  if (summary.orphans.length > 0) {
-    console.log("Orphans:");
-    for (const filePath of summary.orphans) {
-      console.log(`- ${filePath}`);
-    }
-  }
-
-  console.log("Next steps:");
-  for (const [index, step] of summary.nextSteps.entries()) {
-    console.log(`${index + 1}. ${step}`);
-  }
+  const fsReadFn: ReadFileFn = async (p) => { try { return await readFile(p, "utf8"); } catch { return undefined; } };
+  const l1Probes = await runL1Probes(fsReadFn, targetRoot);
+  const l2Probes = await runL2Probes(
+    createDefaultEccSpawnFn(),
+    fsReadFn,
+    createFindAgentFilesFn(),
+    targetRoot
+  );
+  const allProbes: readonly ProbeResult[] = [...l0Probes, ...l1Probes, ...l2Probes];
+  return assembleCapabilityReport(allProbes, "verify");
 }
+
+// printInstallSummary moved to src/install/guided-init.ts (S4 extraction).
+// runGuidedPhase (from guided-init.ts) calls it internally; no direct call needed here.
 
 function printVerifySummary(targetRoot: string, summary: VerifySummary): void {
   console.log(`archon verify for ${targetRoot}`);
@@ -1757,370 +1783,6 @@ function printUpgradeReasoningWorkflowSummary(targetRoot: string, summary: Workf
   for (const [index, step] of summary.nextSteps.entries()) {
     console.log(`${index + 1}. ${step}`);
   }
-}
-
-function replaceTemplateTaskId(templateContent: string, taskId: string): string {
-  return templateContent.replaceAll("<task-id>", taskId);
-}
-
-function buildBriefFromTemplate(templateContent: string, taskId: string): string {
-  return replaceTemplateTaskId(templateContent, taskId).replace(
-    "Original user ask:",
-    "Original user ask:\n\nFill in the substantive user request here."
-  );
-}
-
-function buildPlanArtifact(taskId: string): string {
-  return [
-    "# Plan",
-    "",
-    "## Task ID",
-    "",
-    `\`${taskId}\``,
-    "",
-    "## Goal",
-    "",
-    "Fill in the concrete execution plan for this task before claiming completion.",
-    "",
-    "## Steps",
-    "",
-    "- record the implementation slices you will run",
-    "- record the verification commands you will use",
-    "- keep the plan aligned with the live task packet"
-  ].join("\n");
-}
-
-function fillEmptySection(content: string, heading: string, body: string): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return content.replace(new RegExp(`(${escaped}\n\n)(?=(?:## |### |$))`), `$1${body}\n\n`);
-}
-
-function replaceSectionBody(content: string, heading: string, body: string): string {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return content.replace(new RegExp(`(${escaped}\n\n)([\\s\\S]*?)(?=\n## |\n### |$)`), `$1${body}\n`);
-}
-
-function buildTaskFromTemplate(templateContent: string, taskId: string): string {
-  const scaffolded = replaceTemplateTaskId(templateContent, taskId)
-    .replace("`<owner-role>`", "`planner`")
-    .replace("`artifact_complete | specialist_verified`", "`artifact_complete`")
-    .replace("`strict | dual | legacy`", "`strict`")
-    .replace("review_exports=required | runtime_optional", "review_exports=required");
-
-  const hydrated = [
-    ["## Goal", `Seed starter workflow metadata for \`${taskId}\` and replace these defaults before claiming completion.`],
-    ["## Inputs", "- scaffold-workflow generated artifact set\n- repo-specific context to be filled before execution"],
-    ["## Dependencies", "- none yet; add upstream tasks or runtime prerequisites before execution"],
-    ["## Outputs", "- a specialized task packet, brief, plan, and review set for the real work"],
-    ["## Coverage impact", "- establishes starter workflow coverage only; replace with task-specific impact before execution"],
-    ["## Touched ledger items", "- workflow:scaffolded-task-packet"],
-    ["## Required runtime traces", "- none yet; add task-specific runtime traces or state why none are required"],
-    ["## Progress proof", "- replace with the first concrete progress proof once substantive execution starts"],
-    ["## Interrupt checkpoint policy", "- checkpoint before any substantive write beyond the scaffolded workflow artifacts"],
-    ["## Allowed write scope", "- specialize this section before implementation; scaffold only covers workflow artifact setup"],
-    ["## Out of scope", "- substantive product or code changes outside the eventual task-specific write scope"],
-    ["## Acceptance criteria", "- replace scaffold defaults with task-specific completion criteria before execution"],
-    ["## UI surface", "`none`"],
-    ["## Playwright requirement", "`false`"],
-    [
-      "## Browser evidence expectations",
-      "- not required for the scaffolded default; replace this block if the task becomes UI-affecting"
-    ],
-    ["## Verification steps", "- update with the exact commands, fixtures, and runtime proofs for this task"],
-    ["## Security checks", "- confirm the scaffold does not widen trust boundaries or write scope unintentionally"],
-    ["## Retrieval guidance", "- prefer runtime authority and task-local artifacts over narrative summaries when they disagree"],
-    ["## Anti-patterns to avoid", "- leaving scaffold placeholders in place once the task moves into execution"],
-    ["## Rollback notes", "- delete or regenerate the scaffolded workflow artifacts if this task is abandoned or replaced"],
-    ["### Claim", `A specialized workflow packet for \`${taskId}\` must be completed before this task can be executed safely.`],
-    ["### Facts", "- this artifact was generated by scaffold-workflow\n- the seeded values are starter defaults only"],
-    ["### Assumptions", "- a manager or planner will replace the seeded defaults with task-specific content before execution"],
-    ["### Hypotheses and alternatives", "- best path: specialize this scaffold in place before implementation\n- alternative: delete and regenerate the workflow artifacts if the task scope changes materially"],
-    ["### Evidence refs", "- scaffold-workflow generated task packet template\n- installed workflow contract checks"],
-    ["### Counter-evidence", "- a scaffolded packet alone is not proof that the underlying task is ready for execution"],
-    ["### Confidence", "`low`"],
-    ["### Verification plan", "- update the task packet with real scope and verification details\n- run the workflow checks after the packet is specialized"],
-    ["### Research and debug budgets", "- implementation attempts: 1\n- verification passes: 1\n- repair loops: 1"]
-  ].reduce((current, pair) => fillEmptySection(current, pair[0]!, pair[1]!), scaffolded);
-
-  const withRoleDefaults = replaceSectionBody(hydrated, "## Required specialist roles", "- `planner`");
-  const withQualityGateDefaults = replaceSectionBody(withRoleDefaults, "## Quality gates", "- `product_acceptance`");
-  const withCouncilDefaults = [
-    ["### Required", "`false`"],
-    [
-      "### Trigger rationale",
-      "- scaffold-only default: replace this once the task is specialized enough to know whether council review applies"
-    ],
-    ["### Decision packet", "`none`"],
-    ["### Council members", "`none`"],
-    ["### Dissent owner", "`none`"],
-    ["### Outcome", "`inherited`"],
-    ["### Exception expiry", "`none`"]
-  ].reduce((current, pair) => replaceSectionBody(current, pair[0]!, pair[1]!), withQualityGateDefaults);
-  const withUiDefaults = replaceSectionBody(withCouncilDefaults, "## UI surface", "`none`");
-  const withPlaywrightDefaults = replaceSectionBody(withUiDefaults, "## Playwright requirement", "`false`");
-  return replaceSectionBody(
-    withPlaywrightDefaults,
-    "## Browser evidence expectations",
-    "- not required for the scaffolded default; replace this block if the task becomes UI-affecting"
-  );
-}
-
-function extractMarkdownSection(content: string, heading: string): string | undefined {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = content.match(new RegExp(`${escaped}\\n\\n([\\s\\S]*?)(?=\\n## |$)`));
-  return match?.[1]?.trim();
-}
-
-function appendReasoningHardeningSections(
-  content: string,
-  mode: "dual" | "strict"
-): string {
-  if (content.includes("## Reasoning policy")) {
-    return content;
-  }
-
-  const claim = extractMarkdownSection(content, "### Claim") ?? "- backfilled from legacy task packet";
-  const evidenceRefs = extractMarkdownSection(content, "### Evidence refs") ?? "- none recorded yet";
-  const verificationPlan =
-    extractMarkdownSection(content, "### Verification plan") ??
-    extractMarkdownSection(content, "## Verification steps") ??
-    "- add verification evidence";
-  const counterEvidence =
-    extractMarkdownSection(content, "### Counter-evidence") ?? "- none recorded yet";
-
-  const block = [
-    "",
-    "## Reasoning policy",
-    "",
-    "### Mode",
-    "",
-    `\`${mode}\``,
-    "",
-    "### Requirements",
-    "",
-    mode === "strict"
-      ? "- require explicit reasoning block, attempt records, trace refs, verification records, critic verification, and a supported verdict before completion"
-      : "- keep legacy-compatible routing while requiring explicit attempts, verification records, and a verdict for upgraded tasks",
-    "",
-    "### Max attempts",
-    "",
-    "- 3",
-    "",
-    "## Reasoning attempts",
-    "",
-    "### Attempt records",
-    "",
-    "- id: `attempt-1`",
-    "- label: legacy reasoning upgrade backfill",
-    `- hypothesis: ${claim.replace(/\n+/g, " ")}`,
-    "- alternatives: add explicit competing hypotheses before final review",
-    `- evidence refs: ${evidenceRefs.replace(/\n+/g, " ")}`,
-    "- verification refs: verification-1",
-    "- trace ref: add runtime or artifact trace ref",
-    mode === "strict" ? "- outcome: inconclusive" : "- outcome: supported",
-    "- summary: backfilled from legacy reasoning-quality sections during workflow upgrade",
-    "",
-    "### Verification records",
-    "",
-    "- id: `verification-1`",
-    "- kind: `critic_review`",
-    "- ref: add reviewer or critic evidence ref",
-    mode === "strict" ? "- status: `pending`" : "- status: `passed`",
-    `- summary: seeded from existing verification guidance: ${verificationPlan.replace(/\n+/g, " ")}`,
-    "",
-    "### Verdict",
-    "",
-    mode === "strict"
-      ? "- status: `needs_review`"
-      : "- status: `supported`",
-    "- summary: upgraded from legacy semantics under the strict-by-default workflow; verify attempt, trace, and critic evidence before relying on this verdict",
-    "- supporting attempt ids: `attempt-1`",
-    `- blocking issues: ${counterEvidence.replace(/\n+/g, " ")}`,
-    ""
-  ].join("\n");
-
-  return `${content.trimEnd()}\n${block}`;
-}
-
-function buildReviewFromTemplate(
-  templateContent: string,
-  taskId: string,
-  reviewerRole: "reviewer" | "qa_engineer" | "security_reviewer"
-): string {
-  return replaceTemplateTaskId(templateContent, taskId)
-    .replace("`reviewer | qa_engineer | security_reviewer`", `\`${reviewerRole}\``)
-    .replace("`<recorded-actor-id>`", "`pending-review`")
-    .replace(
-      "`reviewer | qa_engineer | security_reviewer | planner | solution_architect`",
-      `\`${reviewerRole}\``
-    )
-    .replace("`summary_only | runtime_verified | legacy_backfill`", "`summary_only`")
-    .replace("`pending | passed | blocked | waived`", "`pending`")
-    .replace("`low | medium | high | critical`", "`low`")
-    .replace("`none | manager | security_exception`", "`none`")
-    .replace("`approved | blocked | waived`", "`blocked`")
-    .replace(
-      "## Specialist execution evidence\n\nList the evidence used to trust the claimed specialist ownership for this task.\n",
-      "## Specialist execution evidence\n\nPending specialist execution evidence.\n"
-    )
-    .replace(
-      "## Quality gate evidence\n\nList the evidence used to trust the declared quality gates for this task.\n",
-      "## Quality gate evidence\n\nPending quality gate evidence.\n"
-    )
-    .replace(
-      "## Findings\n",
-      "## Findings\n\nReview has not run yet.\n\n"
-    )
-    .replace(
-      "## Residual risk\n",
-      "## Residual risk\n\nWorkflow remains blocked until this review is completed.\n\n"
-    )
-    .replace(
-      "## Verification evidence\n\nList exact commands, fixtures, or repro steps used for this gate.\n",
-      "## Verification evidence\n\nPending review execution. For Playwright-required QA reviews, cite Playwright evidence refs here.\n"
-    )
-    .replace(
-      "## Waiver reason\n\nDo not waive a required gate without actor, actor role, authority, and explicit reason. Unauthorized waivers remain blocking.\n",
-      "## Waiver reason\n\nNone.\n"
-    )
-    .replace(
-      "## Source handoff\n\nManager-written summary of reviewer output. Cite the trusted source here when `Provenance status` is `runtime_verified`, because the markdown file alone is not proof.\n\nFor `specialist_verified` work with `runtime_verified` provenance, include a `Runtime proof:` line here that points to the same authenticated runtime artifact summarized above.\n",
-      "## Source handoff\n\nPending reviewer handoff.\n"
-    );
-}
-
-function buildHappyPathFixtureBrief(taskId: string): string {
-  return [
-    "## Task ID",
-    "",
-    `\`${taskId}\``,
-    "",
-    "## Fixture posture",
-    "",
-    "Synthetic install-proof only. Do not reuse these artifacts as live workflow evidence."
-  ].join("\n");
-}
-
-function buildHappyPathFixtureTask(taskId: string): string {
-  return [
-    "## Task ID",
-    "",
-    `\`${taskId}\``,
-    "",
-    "## Owner role",
-    "",
-    "`backend_engineer`",
-    "",
-    "## Completion standard",
-    "",
-    "`specialist_verified`",
-    "",
-    "## Required specialist roles",
-    "",
-    "- `backend_engineer`",
-    "- `reviewer`",
-    "- `qa_engineer`",
-    "- `security_reviewer`",
-    "",
-    "## Quality gates",
-    "",
-    "- `workflow_happy_path_required`",
-    "- `artifact_contract_required`",
-    "- `advisory_retrieval_required`",
-    "",
-    "## Acceptance criteria",
-    "",
-    "- composed happy-path command passes",
-    "- fixture remains synthetic and non-authoritative",
-    "",
-    "## Verification steps",
-    "",
-    "- bash scripts/check-archon-happy-path.sh",
-    "",
-    "## Required reviews",
-    "",
-    "- reviewer",
-    "- qa_engineer",
-    "- security_reviewer",
-    "",
-    "## Rollback notes",
-    "",
-    "- delete the synthetic fixture artifacts"
-  ].join("\n");
-}
-
-function buildHappyPathFixtureReview(
-  taskId: string,
-  reviewerRole: "reviewer" | "qa_engineer" | "security_reviewer"
-): string {
-  return [
-    "# Review Gate",
-    "",
-    "## Task ID",
-    "",
-    `\`${taskId}\``,
-    "",
-    "## Reviewer role",
-    "",
-    `\`${reviewerRole}\``,
-    "",
-    "## Actor",
-    "",
-    "`synthetic-install-fixture`",
-    "",
-    "## Actor role",
-    "",
-    `\`${reviewerRole}\``,
-    "",
-    "## Provenance status",
-    "",
-    "`summary_only`",
-    "",
-    "## Review state",
-    "",
-    "`blocked`",
-    "",
-    "## Severity",
-    "",
-    "`low`",
-    "",
-    "## Findings",
-    "",
-    "- Synthetic install fixture only; replace with authenticated runtime review evidence before live work.",
-    "",
-    "## Residual risk",
-    "",
-    "Residual risk remains fully open because this fixture is not authenticated reviewer evidence.",
-    "",
-    "## Verification evidence",
-    "",
-    `- bash scripts/check-archon-happy-path.sh --task-id ${taskId}`,
-    "- fixture review is intentionally non-authoritative",
-    "",
-    "## Specialist execution evidence",
-    "",
-    "- specialist handoff references reviewed files",
-    "",
-    "## Quality gate evidence",
-    "",
-    "- happy-path composition references synthetic fixture checks and retrieval smoke",
-    "",
-    "## Waiver authority",
-    "",
-    "`none`",
-    "",
-    "## Waiver reason",
-    "",
-    "None.",
-    "",
-    "## Decision",
-    "",
-    "`blocked`",
-    "",
-    "## Source handoff",
-    "",
-    "Synthetic fixture summary. No authenticated reviewer source exists for this install proof."
-  ].join("\n");
 }
 
 async function prepareWorkflowArtifactPaths(
@@ -2487,6 +2149,9 @@ async function main() {
     return;
   }
 
+  const withGrafana = parsedArgs.withGrafana ?? false;
+  const withObsidian = parsedArgs.withObsidian ?? false;
+
   const summary = parsedArgs.command === "init"
     ? await installArchonIntoProject({
         sourceRoot,
@@ -2503,65 +2168,39 @@ async function main() {
         withObsidian: parsedArgs.withObsidian
       });
 
-  printInstallSummary(parsedArgs.command, targetRoot, summary);
-  if (parsedArgs.command === "upgrade" && summary.conflicts.length > 0) {
+  // For upgrade: halt on conflicts before guided phase (file state not safe to act on)
+  if (parsedArgs.command === "upgrade" && summary.conflicts.length > 0 && !parsedArgs.dryRun) {
+    printInstallSummary(parsedArgs.command, targetRoot, summary, createDefaultGuidedInitIo());
     process.exitCode = 1;
     return;
   }
 
-  // C5: ECC install only runs when --install-plugin is explicitly set.
-  // --yes alone MUST NOT trigger this path (invariant enforced by parseInstallCommand).
-  if (parsedArgs.installPlugin === true && !parsedArgs.dryRun) {
-    await runEccInstallFromCli(targetRoot, parsedArgs.confirmEccMajor ?? false);
-  }
-}
-
-/**
- * Runs the consented ECC plugin install for the CLI flag-driven path.
- *
- * Council C5: only called when --install-plugin is explicitly present (never --yes alone).
- * Council C7: uses createDefaultEccSpawnFn() — array args, hardcoded constants, shell:false.
- * Council C6: prints installed version; sets exitCode=1 on needs-confirmation or failure.
- * Council C13: idempotent — safe to run repeatedly.
- *
- * Exported (not just the module-private function) to allow tests to inject a SpawnFn
- * via spawnFnOverride and verify the CLI orchestration path's spawn behaviour (MEDIUM-5).
- * In production, spawnFnOverride is omitted and createDefaultEccSpawnFn() is used.
- */
-export async function runEccInstallFromCli(
-  targetRoot: string,
-  confirmEccMajor: boolean,
-  spawnFnOverride?: EccSpawnFn
-): Promise<void> {
-  // HIGH-2: delegate to the exported factory; no inline re-implementation.
-  const spawnFn = spawnFnOverride ?? createDefaultEccSpawnFn();
-
-  const result = await runConsentedEccInstall(
-    spawnFn,
-    createDefaultEccReadFileFn(),
-    createDefaultEccWriteFileFn(),
+  // Delegate all post-install orchestration (print summary, consent, DB setup,
+  // capability report) to runGuidedPhase.
+  // C5: installPlugin, yes, runDbSetup, noPlugin all come from parsedArgs directly.
+  //     The guided phase enforces that eccConsented is NEVER derived from yes.
+  const guidedResult = await runGuidedPhase({
+    command: parsedArgs.command,
     targetRoot,
-    { confirmMajorBump: confirmEccMajor }
-  );
+    summary,
+    withGrafana,
+    withObsidian,
+    yes: parsedArgs.yes,
+    installPlugin: parsedArgs.installPlugin,
+    noPlugin: parsedArgs.noPlugin,
+    runDbSetup: parsedArgs.runDbSetup,
+    confirmEccMajor: parsedArgs.confirmEccMajor,
+    jsonReport: parsedArgs.jsonReport,
+    getCapabilityReport: () => runPostInstallCapabilityEngine(sourceRoot, targetRoot),
+  });
 
-  // C6: show installed version at the (non-interactive) consent surface
-  if (result.status === "installed") {
-    console.log(`ECC plugin installed: ${result.record.identity} v${result.record.version}`);
-  } else if (result.status === "already-installed") {
-    console.log(`ECC plugin already installed: ${result.record.identity} v${result.record.version}`);
-  } else if (result.status === "needs-confirmation") {
-    console.error(
-      `ECC plugin major version bump detected: installed=${result.installedVersion}, ` +
-      `recorded=${result.recordedVersion}. ` +
-      `Re-run with --confirm-ecc-major to proceed.`
-    );
-    process.exitCode = 1;
-  } else {
-    // status === "failed"
-    console.error(`ECC plugin install failed: ${result.error}`);
-    process.exitCode = 1;
+  if (guidedResult.exitCode !== 0) {
+    process.exitCode = guidedResult.exitCode;
   }
 }
+
+// runEccInstallFromCli moved to src/install/guided-init.ts (S4 extraction).
+// Re-exported from cli.ts at module level for backward compatibility with tests.
 
 const isEntrypoint =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
