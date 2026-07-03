@@ -1482,7 +1482,8 @@ test("upgradeDevgodInProject writes runtime migration artifacts for legacy insta
         commands: string[];
       };
     };
-    assert.equal(migrationReport.status, "planned");
+    // S5: status is now "upgrade-applied" (honest; was "planned" pre-S5)
+    assert.equal(migrationReport.status, "upgrade-applied");
     assert.deepEqual(migrationReport.verification.commands, [
       "npm run archon:doctor",
       "npm run archon:verify:setup"

@@ -52,6 +52,11 @@ import {
   buildHappyPathFixtureTask,
   buildHappyPathFixtureReview,
 } from "./scaffold-templates.ts";
+import {
+  maybeRunConsumerRepairPhase,
+  createDefaultRepairFns,
+} from "./consumer-repair.ts";
+import type { RepairReport } from "./consumer-repair.ts";
 
 // Re-export for backward compatibility with tests that import from cli.ts
 export { managedFileCapability } from "./guided-init.ts";
@@ -561,7 +566,9 @@ async function writeRuntimeMigrationArtifacts(params: {
     params.targetRoot,
     migrationReportPath,
     {
-      status: "planned",
+      // "upgrade-applied" is honest: the upgrade ran and applied managed-file changes.
+      // Operator should run archon:doctor + archon:verify:setup to confirm full readiness.
+      status: "upgrade-applied",
       project: {
         repoPath: params.targetRoot,
         projectSlug
@@ -2152,6 +2159,16 @@ async function main() {
   const withGrafana = parsedArgs.withGrafana ?? false;
   const withObsidian = parsedArgs.withObsidian ?? false;
 
+  // S5 consumer repair: detect + backup + repair BEFORE the managed-file pass.
+  // Delegates to maybeRunConsumerRepairPhase (exported for testability).
+  // Only runs for upgrade --apply (not dry-run, not init).
+  const repairReport: RepairReport | undefined = await maybeRunConsumerRepairPhase(
+    parsedArgs.command,
+    parsedArgs.dryRun,
+    targetRoot,
+    createDefaultRepairFns()
+  );
+
   const summary = parsedArgs.command === "init"
     ? await installArchonIntoProject({
         sourceRoot,
@@ -2191,6 +2208,7 @@ async function main() {
     runDbSetup: parsedArgs.runDbSetup,
     confirmEccMajor: parsedArgs.confirmEccMajor,
     jsonReport: parsedArgs.jsonReport,
+    repairReport,
     getCapabilityReport: () => runPostInstallCapabilityEngine(sourceRoot, targetRoot),
   });
 
