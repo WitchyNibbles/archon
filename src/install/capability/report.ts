@@ -96,10 +96,8 @@ export function assembleCapabilityReport(
     }
   }
 
-  // LOW-7: surface non-empty remediation from skipped probes so operators
-  // know what to do even when a probe is skipped (tool absent / placeholder).
-  // (Skipped probes have already been accumulated above; this pass adds their
-  //  remediation to nextActions if it is non-empty.)
+  // Convert the deduplicated nextActions Set to an ordered array for the report shape.
+  // Skipped-probe remediations were already added to the Set in the accumulation loop above.
   const nextActions = [...nextActionsSet];
   const ok = blockers.length === 0;
   const reason =

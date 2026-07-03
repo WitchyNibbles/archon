@@ -757,3 +757,191 @@ test("parseCliArgs: without --migrate-skill-refs, flag is absent", () => {
     undefined
   );
 });
+
+// ---------------------------------------------------------------------------
+// Item B4: explicit boundary token tests (B4)
+// ---------------------------------------------------------------------------
+
+test("rewriteContent: newline-preceded ref (mid-string) is matched", () => {
+  // "\necc:x" — newline is not [A-Za-z0-9_/.]  → lookbehind passes → matched
+  const original = `# Header\n${ECC_LEGACY_SKILL_PREFIX}tool-name`;
+  const { rewritten, count } = rewriteContent(
+    original,
+    ECC_LEGACY_SKILL_PREFIX,
+    ECC_CANONICAL_SKILL_PREFIX
+  );
+  assert.strictEqual(count, 1);
+  assert.ok(rewritten.includes(`${ECC_CANONICAL_SKILL_PREFIX}tool-name`));
+});
+
+test("rewriteContent: paren-preceded ref is matched", () => {
+  // "(ecc:x" — paren is not [A-Za-z0-9_/.]  → lookbehind passes → matched
+  const original = `(${ECC_LEGACY_SKILL_PREFIX}tool-name)`;
+  const { rewritten, count } = rewriteContent(
+    original,
+    ECC_LEGACY_SKILL_PREFIX,
+    ECC_CANONICAL_SKILL_PREFIX
+  );
+  assert.strictEqual(count, 1);
+  assert.ok(rewritten.includes(`${ECC_CANONICAL_SKILL_PREFIX}tool-name`));
+});
+
+test("rewriteContent: bracket-preceded ref is matched", () => {
+  // "[ecc:x" — bracket is not [A-Za-z0-9_/.]  → lookbehind passes → matched
+  const original = `[${ECC_LEGACY_SKILL_PREFIX}tool-name]`;
+  const { rewritten, count } = rewriteContent(
+    original,
+    ECC_LEGACY_SKILL_PREFIX,
+    ECC_CANONICAL_SKILL_PREFIX
+  );
+  assert.strictEqual(count, 1);
+  assert.ok(rewritten.includes(`${ECC_CANONICAL_SKILL_PREFIX}tool-name`));
+});
+
+test("rewriteContent: ref at EOF with no trailing newline is matched and rewritten", () => {
+  // No trailing newline — regex must still match end-of-string
+  const original = `Call ${ECC_LEGACY_SKILL_PREFIX}tool-name`;
+  const { rewritten, count } = rewriteContent(
+    original,
+    ECC_LEGACY_SKILL_PREFIX,
+    ECC_CANONICAL_SKILL_PREFIX
+  );
+  assert.strictEqual(count, 1);
+  assert.ok(rewritten.endsWith(`${ECC_CANONICAL_SKILL_PREFIX}tool-name`));
+  assert.ok(!rewritten.endsWith("\n"));
+});
+
+// ---------------------------------------------------------------------------
+// Item B5: two-cycle e2e idempotency
+// ---------------------------------------------------------------------------
+
+test("two-cycle e2e idempotency: plan→apply→plan again → second plan totalReplacements === 0, second execute writes nothing", async () => {
+  const agentFile = `${TARGET_ROOT}/.claude/agents/agent.md`;
+  const original =
+    `# Agent\n\n` +
+    `Use ${ECC_LEGACY_SKILL_PREFIX}web-search and ${ECC_LEGACY_SKILL_PREFIX}run-js.\n`;
+
+  // Shared vfs — fns.writeFile mutates it; liveReadFn reads the same map.
+  const { fns, vfs } = makeCodemodFns(new Map([[agentFile, original]]));
+  const findFn = makeFindAgentFilesFn([agentFile]);
+  const liveReadFn = (p: string): Promise<string | undefined> =>
+    Promise.resolve(vfs.get(p));
+  const ts = "2026-07-03T00-00-00-000Z";
+
+  // --- First cycle ---
+  const plan1 = await planSkillRefMigration(
+    TARGET_ROOT,
+    ECC_CANONICAL_SKILL_PREFIX,
+    findFn,
+    liveReadFn
+  );
+  assert.strictEqual(plan1.totalReplacements, 2, "first plan must find 2 replacements");
+
+  const result1 = await executeSkillRefMigration(plan1, false, ts, fns);
+  assert.ok(result1.ok);
+  assert.strictEqual(result1.appliedFiles.length, 1, "first apply must write one file");
+
+  // --- Second cycle on the same (now-migrated) vfs ---
+  const plan2 = await planSkillRefMigration(
+    TARGET_ROOT,
+    ECC_CANONICAL_SKILL_PREFIX,
+    findFn,
+    liveReadFn
+  );
+  assert.strictEqual(plan2.totalReplacements, 0, "second plan must be empty after apply");
+  assert.strictEqual(plan2.files.length, 0, "second plan must have no files");
+
+  const result2 = await executeSkillRefMigration(plan2, false, ts, fns);
+  assert.strictEqual(result2.appliedFiles.length, 0, "second execute must write nothing");
+  assert.strictEqual(result2.backupPaths.length, 0, "second execute must create no backups");
+  assert.ok(result2.ok);
+});
+
+// ---------------------------------------------------------------------------
+// Item A3: path boundary / traversal guard
+// ---------------------------------------------------------------------------
+
+test("planSkillRefMigration: absolute path outside targetRoot → excluded, readFn never called", async () => {
+  // /etc/passwd-style path — completely outside TARGET_ROOT
+  const escapePath = "/etc/passwd";
+
+  const readCalls: string[] = [];
+  const trackingReadFn = async (p: string): Promise<string | undefined> => {
+    readCalls.push(p);
+    // Return content that WOULD match to confirm the guard fires before any read
+    return `Use ${ECC_LEGACY_SKILL_PREFIX}web-search.`;
+  };
+
+  const plan = await planSkillRefMigration(
+    TARGET_ROOT,
+    ECC_CANONICAL_SKILL_PREFIX,
+    makeFindAgentFilesFn([escapePath]),
+    trackingReadFn
+  );
+
+  assert.strictEqual(plan.files.length, 0, "out-of-root absolute path must not appear in plan");
+  assert.strictEqual(plan.totalReplacements, 0);
+  assert.strictEqual(readCalls.length, 0, "readFn must never be called for out-of-root path");
+});
+
+test("planSkillRefMigration: relative traversal path outside targetRoot → excluded, readFn never called", async () => {
+  // Path using ../.. to escape targetRoot
+  const traversalPath = `${TARGET_ROOT}/../etc/shadow`;
+
+  const readCalls: string[] = [];
+  const trackingReadFn = async (p: string): Promise<string | undefined> => {
+    readCalls.push(p);
+    return `Use ${ECC_LEGACY_SKILL_PREFIX}web-search.`;
+  };
+
+  const plan = await planSkillRefMigration(
+    TARGET_ROOT,
+    ECC_CANONICAL_SKILL_PREFIX,
+    makeFindAgentFilesFn([traversalPath]),
+    trackingReadFn
+  );
+
+  assert.strictEqual(plan.files.length, 0, "traversal path must not appear in plan");
+  assert.strictEqual(plan.totalReplacements, 0);
+  assert.strictEqual(readCalls.length, 0, "readFn must never be called for traversal path");
+});
+
+test("executeSkillRefMigration: backup path outside backup root throws — error recorded, no write or copy", async () => {
+  // Craft a plan with a relPath that would escape .archon/install-backups/ via traversal.
+  // This tests the defense-in-depth assertion in backupFile.
+  const badRelPath = "../../../etc/passwd";
+  const fakeAbsPath = TARGET_ROOT + "/" + badRelPath;
+
+  const plan: SkillRefMigrationPlan = {
+    targetRoot: TARGET_ROOT,
+    installedNamespace: ECC_CANONICAL_SKILL_PREFIX,
+    wrongPrefix: ECC_LEGACY_SKILL_PREFIX,
+    files: [
+      {
+        absolutePath: fakeAbsPath,
+        relPath: badRelPath,
+        count: 1,
+        direction: "legacy-to-canonical",
+        fromPrefix: ECC_LEGACY_SKILL_PREFIX,
+        toPrefix: ECC_CANONICAL_SKILL_PREFIX,
+      },
+    ],
+    totalReplacements: 1,
+  };
+
+  const vfs = new Map([[fakeAbsPath, `${ECC_LEGACY_SKILL_PREFIX}web-search`]]);
+  const { fns, writeLog, copyLog } = makeCodemodFns(vfs);
+
+  const result = await executeSkillRefMigration(plan, false, "2026-07-03T00-00-00-000Z", fns);
+
+  // Backup assertion must throw → error collected, no writes or copies
+  assert.strictEqual(result.errors.length, 1, "one per-file error must be recorded");
+  assert.ok(
+    result.errors[0]!.error.toLowerCase().includes("outside") ||
+      result.errors[0]!.error.toLowerCase().includes("traversal"),
+    `error message must describe the boundary violation, got: ${result.errors[0]!.error}`
+  );
+  assert.strictEqual(writeLog.length, 0, "no file writes must occur after boundary rejection");
+  assert.strictEqual(copyLog.length, 0, "no copies must occur after boundary rejection");
+  assert.strictEqual(result.ok, false);
+});
