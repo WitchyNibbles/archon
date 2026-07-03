@@ -7,29 +7,34 @@
  * Coverage:
  *  - managedFileCapability: path-to-capability mapping
  *  - printInstallSummary: output via injected io
- *  - printCapabilityReport: human format + JSON format
+ *  - printCapabilityReport: human format + JSON format + nextActions
  *  - deriveNextStepsFromReport: satisfied step dropped, unmet steps kept
  *  - runGuidedPhase — consent resolution paths:
- *      NON-TTY, no flags   → both declined (C3 messages, exitCode=0) [C3]
- *      --no-plugin          → ECC declined, DB prompt skipped (non-TTY)
- *      --install-plugin     → ECC consented, no DB (non-TTY, no --yes)
- *      --yes                → DB consented, ECC NOT triggered (C5)
- *      --yes alone          → spawn recorder never invoked for 'claude' (C5 hard)
- *      --run-db-setup       → DB consented, ECC NOT triggered
- *      --json               → capability report emitted as JSON
- *      dry-run              → returns early, no prompts, no capability check
+ *      NON-TTY, no flags          → both declined (C3 messages, exitCode=0) [C3]
+ *      --no-plugin                → ECC declined, DB prompt skipped (non-TTY)
+ *      --no-plugin + --install-plugin conflict → noPlugin wins, eccConsented=false [C3]
+ *      --install-plugin           → ECC consented, no DB (non-TTY, no --yes), full stub injection
+ *      --yes                      → DB consented, ECC NOT triggered (C5)
+ *      --yes alone                → spawn recorder never invoked for 'claude' (C5 hard)
+ *      --yes + --no-plugin        → DB consented, ECC NOT triggered
+ *      --run-db-setup             → DB consented, ECC NOT triggered
+ *      --json                     → report emitted as JSON with all doctor-shape fields
+ *      dry-run                    → returns early, no prompts, no capability check
  *  - runGuidedPhase — TTY paths (via injected io.question):
- *      TTY, answers 'n'/'N' → ECC declined (C3), DB declined (C3)
- *      TTY, answers 'y'/'Y' → ECC consented, DB consented
- *      TTY, answer '' (enter) → ECC default No, DB default Yes
+ *      TTY, answers 'n'/'N'       → ECC declined (C3), DB declined (C3)
+ *      TTY, answer '' (enter)     → ECC default No, DB default Yes
+ *      TTY, 'n' then 'y'          → ECC declined, DB consented (partial-decline mid-sequence)
+ *      TTY, answers 'y'/'Y'       → ECC consented, DB consented, full stub injection
  *  - Consented DB step failure: capability report still printed (honesty)
  *  - Satisfied DB setup → derive next-steps drops migrate + bootstrap steps
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import type { CapabilityReport, ProbeResult } from "../../src/install/capability/types.ts";
+// Note: mkdtemp/rm no longer needed — ECC tests use injected read/write stubs instead of real fs.
 import type { InstallSummary } from "../../src/install/types.ts";
+import type { ReadFileFn } from "../../src/install/capability/probes-file.ts";
+import type { WriteFileFn as EccWriteFileFn } from "../../src/install/ecc-plugin.ts";
 import {
   managedFileCapability,
   printInstallSummary,
@@ -107,6 +112,40 @@ function makeEccSpawnFn(
   };
   (fn as EccSpawnFn & { calls: typeof calls }).calls = calls;
   return fn as ReturnType<typeof makeEccSpawnFn>;
+}
+
+/** Stub ECC read-file fn: returns the pre-seeded record content or undefined. */
+function makeEccReadFileFn(
+  files: Record<string, string> = {}
+): ReadFileFn {
+  return async (absolutePath: string) => files[absolutePath];
+}
+
+/** Stub ECC write-file fn: records writes without touching the filesystem. */
+function makeEccWriteFileFn(): EccWriteFileFn & { written: Record<string, string> } {
+  const written: Record<string, string> = {};
+  const fn: EccWriteFileFn = async (absolutePath: string, content: string) => {
+    written[absolutePath] = content;
+  };
+  (fn as EccWriteFileFn & { written: typeof written }).written = written;
+  return fn as ReturnType<typeof makeEccWriteFileFn>;
+}
+
+/**
+ * Builds a minimal opts bundle for ECC-install tests that avoids real fs writes.
+ * The ECC spawn returns a "already-installed" plugin list; read/write are stubbed.
+ */
+function makeEccStubBundle(): {
+  eccSpawn: ReturnType<typeof makeEccSpawnFn>;
+  eccReadFileFn: ReadFileFn;
+  eccWriteFileFn: ReturnType<typeof makeEccWriteFileFn>;
+} {
+  const eccSpawn = makeEccSpawnFn({
+    "*": { exitCode: 0, stdout: "Installed plugins:\n\n  > ecc@ecc\n    Version: 2.0.0\n", stderr: "" },
+  });
+  const eccReadFileFn = makeEccReadFileFn(); // no existing record → triggers install path
+  const eccWriteFileFn = makeEccWriteFileFn();
+  return { eccSpawn, eccReadFileFn, eccWriteFileFn };
 }
 
 function makeReport(overrides?: Partial<CapabilityReport>): CapabilityReport {
@@ -294,6 +333,24 @@ test("printCapabilityReport: json=true emits single-line JSON, no prose", () => 
   assert.deepEqual(parsed.advisories, ["advisory-1"]);
 });
 
+// Finding 4: nextActions non-empty exercises lines 473-477
+test("printCapabilityReport: non-empty nextActions printed in human format", () => {
+  const io = makeIo({});
+  printCapabilityReport(
+    makeReport({
+      ok: false,
+      blockers: ["db missing"],
+      nextActions: ["Create .env.archon", "Run npm run archon:migrate"],
+    }),
+    io,
+    false
+  );
+  const out = io.stdoutLines.join("\n");
+  assert.match(out, /next actions:/);
+  assert.match(out, /Create \.env\.archon/);
+  assert.match(out, /Run npm run archon:migrate/);
+});
+
 // ---------------------------------------------------------------------------
 // deriveNextStepsFromReport
 // ---------------------------------------------------------------------------
@@ -417,31 +474,60 @@ test("runGuidedPhase --no-plugin: ECC skipped by choice, still exits 0", async (
   assert.equal(eccSpawn.calls.length, 0, "--no-plugin must not spawn ECC");
 });
 
+// Finding 1: conflict — --no-plugin + --install-plugin → noPlugin wins, eccConsented=false
+test("runGuidedPhase conflict: --no-plugin + --install-plugin → noPlugin wins, zero ECC spawn", async () => {
+  const io = makeIo({ isTTY: false });
+  const eccSpawn = makeEccSpawnFn();
+  const consumerSpawn = makeConsumerSpawnFn();
+  const result = await runGuidedPhase(
+    makeOpts({ noPlugin: true, installPlugin: true, io, eccSpawnFn: eccSpawn, consumerSpawnFn: consumerSpawn })
+  );
+  assert.equal(result.exitCode, 0);
+  // ECC must be blocked by --no-plugin even though --install-plugin is also set
+  assert.equal(eccSpawn.calls.length, 0, "--no-plugin wins over --install-plugin: zero ECC spawn calls");
+  // Skip message must reference --install-plugin so operator knows how to re-enable
+  assert.ok(
+    result.skippedMessages.some((m) => /--install-plugin/.test(m)),
+    "conflict resolution: skip message must reference --install-plugin"
+  );
+});
+
+// Finding 2: {yes:true, noPlugin:true} → DB consented, ECC NOT triggered
+test("runGuidedPhase --yes + --no-plugin: DB consented, ECC not triggered", async () => {
+  const io = makeIo({ isTTY: false });
+  const consumerSpawn = makeConsumerSpawnFn({ "*": { exitCode: 0, stdout: "", stderr: "" } });
+  const eccSpawn = makeEccSpawnFn();
+  const result = await runGuidedPhase(
+    makeOpts({ yes: true, noPlugin: true, io, consumerSpawnFn: consumerSpawn, eccSpawnFn: eccSpawn })
+  );
+  assert.equal(result.exitCode, 0);
+  // DB setup must have run (--yes consents)
+  assert.ok(consumerSpawn.calls.length > 0, "--yes must trigger DB setup");
+  // ECC must be blocked (--no-plugin)
+  assert.equal(eccSpawn.calls.length, 0, "--no-plugin must block ECC even when --yes is present");
+  // Skip message must reference --install-plugin
+  assert.ok(
+    result.skippedMessages.some((m) => /--install-plugin/.test(m)),
+    "ECC skip message must reference --install-plugin"
+  );
+});
+
 // ---------------------------------------------------------------------------
 // runGuidedPhase — --install-plugin (explicit ECC consent, C5 test)
 // ---------------------------------------------------------------------------
 
 test("runGuidedPhase --install-plugin: ECC spawn called, no consumer spawn (no --yes)", async () => {
-  // Needs a real tmpDir because runEccInstallFromCli writes the ECC record to disk.
-  const tmpDir = await mkdtemp("/tmp/archon-test-guided-init-");
-  try {
-    const io = makeIo({ isTTY: false });
-    const consumerSpawn = makeConsumerSpawnFn();
-    // ECC install reads a plugin list — fake a successful already-installed response
-    const eccSpawn = makeEccSpawnFn({
-      "*": { exitCode: 0, stdout: "Installed plugins:\n\n  > ecc@ecc\n    Version: 2.0.0\n", stderr: "" },
-    });
-    const result = await runGuidedPhase(
-      makeOpts({ installPlugin: true, targetRoot: tmpDir, io, consumerSpawnFn: consumerSpawn, eccSpawnFn: eccSpawn })
-    );
-    assert.equal(result.exitCode, 0);
-    // ECC install was attempted (at least plugin list is checked)
-    assert.ok(eccSpawn.calls.length > 0, "--install-plugin must trigger ECC spawn");
-    // Consumer spawns (npm etc.) were NOT called (no --yes)
-    assert.equal(consumerSpawn.calls.length, 0, "no consumer spawns without --yes or --run-db-setup");
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true });
-  }
+  const io = makeIo({ isTTY: false });
+  const consumerSpawn = makeConsumerSpawnFn();
+  const { eccSpawn, eccReadFileFn, eccWriteFileFn } = makeEccStubBundle();
+  const result = await runGuidedPhase(
+    makeOpts({ installPlugin: true, io, consumerSpawnFn: consumerSpawn, eccSpawnFn: eccSpawn, eccReadFileFn, eccWriteFileFn })
+  );
+  assert.equal(result.exitCode, 0);
+  // ECC install was attempted (at least plugin list is checked)
+  assert.ok(eccSpawn.calls.length > 0, "--install-plugin must trigger ECC spawn");
+  // Consumer spawns (npm etc.) were NOT called (no --yes)
+  assert.equal(consumerSpawn.calls.length, 0, "no consumer spawns without --yes or --run-db-setup");
 });
 
 // ---------------------------------------------------------------------------
@@ -531,9 +617,25 @@ test("runGuidedPhase: DB setup failure still emits capability report and exits 0
 // runGuidedPhase — --json flag
 // ---------------------------------------------------------------------------
 
-test("runGuidedPhase --json: capability report is emitted as JSON line in stdout", async () => {
+// Finding 6: strengthen --json to verify all doctor-shape fields (ok, probes, reason, nextActions)
+test("runGuidedPhase --json: emits compact JSON with all doctor-shape fields", async () => {
   const io = makeIo({ isTTY: false });
-  const report = makeReport({ ok: true, advisories: ["advisory-json"] });
+  const probe: ProbeResult = {
+    capability: "agents",
+    layer: "L0",
+    status: "ok",
+    code: "agents-present",
+    detail: "agents installed",
+    remediation: "",
+  };
+  const report = makeReport({
+    ok: false,
+    blockers: ["db-missing"],
+    advisories: ["advisory-json"],
+    nextActions: ["Create .env.archon"],
+    reason: "database unreachable",
+    probes: [probe],
+  });
   await runGuidedPhase(
     makeOpts({
       jsonReport: true,
@@ -551,7 +653,15 @@ test("runGuidedPhase --json: capability report is emitted as JSON line in stdout
   });
   assert.ok(jsonLine !== undefined, "--json must emit a parseable JSON line");
   const parsed = JSON.parse(jsonLine!) as CapabilityReport;
-  assert.deepEqual(parsed.advisories, ["advisory-json"]);
+  // Doctor-shape: all required fields must be present and round-trip correctly
+  assert.equal(parsed.ok, false, "ok field must round-trip");
+  assert.deepEqual(parsed.blockers, ["db-missing"], "blockers field must round-trip");
+  assert.deepEqual(parsed.advisories, ["advisory-json"], "advisories field must round-trip");
+  assert.deepEqual(parsed.nextActions, ["Create .env.archon"], "nextActions field must round-trip");
+  assert.equal(parsed.reason, "database unreachable", "reason field must round-trip");
+  assert.ok(Array.isArray(parsed.probes), "probes field must be an array");
+  assert.equal(parsed.probes.length, 1, "probes must round-trip");
+  assert.equal(parsed.probes[0]?.capability, "agents", "probe capability must round-trip");
 });
 
 // ---------------------------------------------------------------------------
@@ -591,27 +701,39 @@ test("runGuidedPhase TTY: answer '' to ECC (default No) and '' to DB (default Ye
   assert.match(allMessages, /--install-plugin/);
 });
 
+// Finding 5: TTY mid-sequence partial-decline (ECC 'n', DB 'y')
+test("runGuidedPhase TTY: ECC 'n' then DB 'y' → ECC declined, DB consented (partial-decline)", async () => {
+  const io = makeIo({ isTTY: true, answers: ["n", "y"] }); // 'n' for ECC, 'y' for DB
+  const consumerSpawn = makeConsumerSpawnFn({ "*": { exitCode: 0, stdout: "", stderr: "" } });
+  const eccSpawn = makeEccSpawnFn();
+  const result = await runGuidedPhase(
+    makeOpts({ io, consumerSpawnFn: consumerSpawn, eccSpawnFn: eccSpawn })
+  );
+  assert.equal(result.exitCode, 0, "partial-decline must still exit 0 (C3)");
+  assert.equal(io.questionCount, 2, "both prompts must fire");
+  // ECC declined
+  assert.equal(eccSpawn.calls.length, 0, "ECC must not be spawned when first prompt answered 'n'");
+  // DB consented
+  assert.ok(consumerSpawn.calls.length > 0, "DB setup must run when second prompt answered 'y'");
+  // ECC skip message present, no DB skip message
+  const eccSkipped = result.skippedMessages.some((m) => /ECC plugin/.test(m));
+  const dbSkipped = result.skippedMessages.some((m) => /DB setup/.test(m));
+  assert.equal(eccSkipped, true, "ECC skip message must be present");
+  assert.equal(dbSkipped, false, "DB skip message must NOT be present when DB was consented");
+});
+
 test("runGuidedPhase TTY: answer 'y' to ECC and 'y' to DB → both consented", async () => {
-  // Needs a real tmpDir because runEccInstallFromCli writes the ECC record to disk.
-  const tmpDir = await mkdtemp("/tmp/archon-test-guided-init-tty-");
-  try {
-    const io = makeIo({ isTTY: true, answers: ["y", "y"] });
-    const consumerSpawn = makeConsumerSpawnFn({ "*": { exitCode: 0, stdout: "", stderr: "" } });
-    // ECC needs a plugin list response for the installed check
-    const eccSpawn = makeEccSpawnFn({
-      "*": { exitCode: 0, stdout: "Installed plugins:\n\n  > ecc@ecc\n    Version: 2.0.0\n", stderr: "" },
-    });
-    const result = await runGuidedPhase(
-      makeOpts({ targetRoot: tmpDir, io, consumerSpawnFn: consumerSpawn, eccSpawnFn: eccSpawn })
-    );
-    assert.equal(result.exitCode, 0);
-    assert.ok(eccSpawn.calls.length > 0, "ECC must be spawned when TTY answer is 'y'");
-    assert.ok(consumerSpawn.calls.length > 0, "consumer spawns must run when TTY answer is 'y'");
-    // No skipped messages
-    assert.equal(result.skippedMessages.length, 0, "no skipped messages when both consented");
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true });
-  }
+  const io = makeIo({ isTTY: true, answers: ["y", "y"] });
+  const consumerSpawn = makeConsumerSpawnFn({ "*": { exitCode: 0, stdout: "", stderr: "" } });
+  const { eccSpawn, eccReadFileFn, eccWriteFileFn } = makeEccStubBundle();
+  const result = await runGuidedPhase(
+    makeOpts({ io, consumerSpawnFn: consumerSpawn, eccSpawnFn: eccSpawn, eccReadFileFn, eccWriteFileFn })
+  );
+  assert.equal(result.exitCode, 0);
+  assert.ok(eccSpawn.calls.length > 0, "ECC must be spawned when TTY answer is 'y'");
+  assert.ok(consumerSpawn.calls.length > 0, "consumer spawns must run when TTY answer is 'y'");
+  // No skipped messages
+  assert.equal(result.skippedMessages.length, 0, "no skipped messages when both consented");
 });
 
 // ---------------------------------------------------------------------------

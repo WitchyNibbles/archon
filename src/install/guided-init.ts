@@ -30,8 +30,9 @@ import {
   createDefaultEccReadFileFn,
   createDefaultEccWriteFileFn,
 } from "./ecc-plugin.ts";
-import type { EccInstallResult } from "./ecc-plugin.ts";
+import type { EccInstallResult, WriteFileFn as EccWriteFileFn } from "./ecc-plugin.ts";
 import type { SpawnFn as EccSpawnFn } from "./capability/probes-external.ts";
+import type { ReadFileFn as EccReadFileFn } from "./capability/probes-file.ts";
 import type { CapabilityReport } from "./capability/types.ts";
 import type { InstallSummary } from "./types.ts";
 import { buildNextSteps } from "./next-steps.ts";
@@ -219,14 +220,18 @@ export async function runEccInstallFromCli(
   targetRoot: string,
   confirmEccMajor: boolean,
   io: GuidedInitIo,
-  spawnFnOverride?: EccSpawnFn
+  spawnFnOverride?: EccSpawnFn,
+  readFileFnOverride?: EccReadFileFn,
+  writeFileFnOverride?: EccWriteFileFn
 ): Promise<void> {
   const spawnFn = spawnFnOverride ?? createDefaultEccSpawnFn();
+  const readFileFn = readFileFnOverride ?? createDefaultEccReadFileFn();
+  const writeFileFn = writeFileFnOverride ?? createDefaultEccWriteFileFn();
 
   const result: EccInstallResult = await runConsentedEccInstall(
     spawnFn,
-    createDefaultEccReadFileFn(),
-    createDefaultEccWriteFileFn(),
+    readFileFn,
+    writeFileFn,
     targetRoot,
     { confirmMajorBump: confirmEccMajor }
   );
@@ -372,13 +377,15 @@ async function runConsentedDbSetup(
   targetRoot: string,
   io: GuidedInitIo
 ): Promise<DbSetupResult> {
-  const steps: DbSetupStepResult[] = [];
-
+  /**
+   * Runs one step immutably: returns a DbSetupStepResult without mutating any array.
+   * Callers accumulate results via spread/concat (immutable style).
+   */
   const runStep = async (
     label: string,
     command: string,
     args: readonly string[]
-  ): Promise<boolean> => {
+  ): Promise<DbSetupStepResult> => {
     io.stdout(`\n  Running: ${command} ${args.join(" ")}`);
     try {
       const result = await spawnFn(command, args, targetRoot);
@@ -386,42 +393,35 @@ async function runConsentedDbSetup(
         const errMsg = `${label} exited with code ${String(result.exitCode)}.`;
         io.stderr(`  Error: ${errMsg}`);
         io.stderr(`  Remediation: run '${command} ${args.join(" ")}' manually in the project directory.`);
-        steps.push({ step: label, ok: false, error: errMsg });
-        return false;
+        return { step: label, ok: false, error: errMsg };
       }
-      steps.push({ step: label, ok: true });
-      return true;
+      return { step: label, ok: true };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       io.stderr(`  Failed to spawn ${command}: ${errMsg}`);
       io.stderr(`  Remediation: run '${command} ${args.join(" ")}' manually in the project directory.`);
-      steps.push({ step: label, ok: false, error: errMsg });
-      return false;
+      return { step: label, ok: false, error: errMsg };
     }
   };
 
-  // Step 1: npm install (must succeed before further steps that need node_modules)
-  const npmOk = await runStep("npm install", "npm", ["install"]);
+  // Step 1: npm install (must succeed before further steps that need node_modules).
+  const npmResult = await runStep("npm install", "npm", ["install"]);
 
-  if (npmOk) {
-    // Step 2: npm run archon:migrate
-    await runStep("npm run archon:migrate", "npm", ["run", "archon:migrate"]);
-    // Step 3: npx archon bootstrap-project
-    await runStep("npx archon bootstrap-project", "npx", ["archon", "bootstrap-project"]);
-  } else {
-    steps.push({
-      step: "npm run archon:migrate",
-      ok: false,
-      error: "Skipped: npm install did not succeed.",
-    });
-    steps.push({
-      step: "npx archon bootstrap-project",
-      ok: false,
-      error: "Skipped: npm install did not succeed.",
-    });
+  if (npmResult.ok) {
+    // Steps 2 and 3 run in sequence — bootstrap reads the migrations applied in step 2.
+    const migrateResult = await runStep("npm run archon:migrate", "npm", ["run", "archon:migrate"]);
+    const bootstrapResult = await runStep("npx archon bootstrap-project", "npx", ["archon", "bootstrap-project"]);
+    const steps: readonly DbSetupStepResult[] = [npmResult, migrateResult, bootstrapResult];
+    return { steps, allOk: steps.every((s) => s.ok) };
   }
 
-  return { steps, allOk: steps.every((s) => s.ok) };
+  // npm install failed — record downstream steps as skipped without running them.
+  const steps: readonly DbSetupStepResult[] = [
+    npmResult,
+    { step: "npm run archon:migrate", ok: false, error: "Skipped: npm install did not succeed." },
+    { step: "npx archon bootstrap-project", ok: false, error: "Skipped: npm install did not succeed." },
+  ];
+  return { steps, allOk: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -600,6 +600,10 @@ export interface GuidedPhaseOptions {
   readonly io?: GuidedInitIo;
   readonly consumerSpawnFn?: ConsumerSpawnFn;
   readonly eccSpawnFn?: EccSpawnFn;
+  /** Optional injected read-file fn for ECC plugin record (avoids real fs in tests). */
+  readonly eccReadFileFn?: EccReadFileFn;
+  /** Optional injected write-file fn for ECC plugin record (avoids real fs in tests). */
+  readonly eccWriteFileFn?: EccWriteFileFn;
 }
 
 /** Result returned by runGuidedPhase. */
@@ -674,7 +678,9 @@ export async function runGuidedPhase(opts: GuidedPhaseOptions): Promise<GuidedPh
       opts.targetRoot,
       opts.confirmEccMajor ?? false,
       io,
-      opts.eccSpawnFn
+      opts.eccSpawnFn,
+      opts.eccReadFileFn,
+      opts.eccWriteFileFn
     );
   } else if (consent.eccSkipReason) {
     skippedMessages.push(`ECC plugin install: ${consent.eccSkipReason}`);
