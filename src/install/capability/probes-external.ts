@@ -283,13 +283,11 @@ export async function probePlaywrightBrowsers(
   }
 
   // Check ms-playwright cache for installed browsers.
-  // The cache lives at ~/.cache/ms-playwright on Linux.
+  // The cache lives at ~/.cache/ms-playwright on Linux/WSL and at
+  // ~/Library/Caches/ms-playwright on macOS; we try both.
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-  const msPlaywrightCache = home
-    ? path.join(home, ".cache", "ms-playwright")
-    : "";
 
-  if (!msPlaywrightCache) {
+  if (!home) {
     return {
       capability: "playwright-browsers",
       layer: "L2",
@@ -300,20 +298,28 @@ export async function probePlaywrightBrowsers(
     };
   }
 
-  // Try reading a sentinel from the cache directory. We use the presence of
-  // any file inside ~/.cache/ms-playwright/ as the installed signal.
-  // (The exact path varies by playwright version; the directory itself is stable.)
-  const sentinelPath = path.join(msPlaywrightCache, ".links");
-  let sentinel: string | undefined;
-  try {
-    sentinel = await readFileFn(sentinelPath);
-  } catch {
-    sentinel = undefined;
+  // The .links sentinel is written by playwright after browser installation.
+  // Its presence in any known cache location confirms browsers are ready.
+  const cacheCandidates = [
+    path.join(home, ".cache", "ms-playwright"),               // Linux / WSL
+    path.join(home, "Library", "Caches", "ms-playwright"),    // macOS
+  ];
+
+  let foundSentinel = false;
+  for (const cacheDir of cacheCandidates) {
+    const sentinelPath = path.join(cacheDir, ".links");
+    try {
+      const sentinel = await readFileFn(sentinelPath);
+      if (sentinel !== undefined) {
+        foundSentinel = true;
+        break;
+      }
+    } catch {
+      // sentinel not at this location — try next candidate
+    }
   }
 
-  if (sentinel === undefined) {
-    // Try an alternative: does the cache directory exist at all?
-    // We can probe this by reading a directory index file if present.
+  if (!foundSentinel) {
     return {
       capability: "playwright-browsers",
       layer: "L2",

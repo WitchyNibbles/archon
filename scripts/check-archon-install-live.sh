@@ -156,7 +156,9 @@ if [[ -f "$repo_root/.env.archon" ]]; then
   # set -a exports all sourced vars; restore the previous state after sourcing.
   set -a
   # shellcheck disable=SC1090
-  source "$repo_root/.env.archon" || true
+  if ! source "$repo_root/.env.archon" 2>/dev/null; then
+    printf 'WARNING: .env.archon exists but could not be sourced (syntax error?) — ARCHON_CORE_DATABASE_URL may be unset\n' >&2
+  fi
   set +a
 fi
 

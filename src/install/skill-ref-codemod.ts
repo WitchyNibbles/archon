@@ -272,6 +272,15 @@ export async function planSkillRefMigration(
   let totalReplacements = 0;
 
   for (const absolutePath of agentFiles) {
+    // Security boundary: compute relPath first and reject any path that resolves
+    // outside targetRoot. path.relative returns a ".." prefix when absolutePath
+    // is not under targetRoot; an absolute relPath would indicate a bug in the
+    // FindAgentFilesFn injection. Both cases are skipped — never read, never planned.
+    const relPath = path.relative(targetRoot, absolutePath);
+    if (relPath.startsWith("..") || path.isAbsolute(relPath)) {
+      continue;
+    }
+
     let content: string | undefined;
     try {
       content = await readFileFn(absolutePath);
@@ -287,7 +296,6 @@ export async function planSkillRefMigration(
       continue;
     }
 
-    const relPath = path.relative(targetRoot, absolutePath);
     files.push({
       absolutePath,
       relPath,
@@ -330,6 +338,22 @@ async function backupFile(
   const backupRelPath = `${BACKUP_ROOT_REL}/${timestamp}/${relPath}`;
   const backupAbsPath = path.join(targetRoot, backupRelPath);
   const srcAbsPath = path.join(targetRoot, relPath);
+
+  // Security assertion (C12 defense-in-depth): the resolved backup destination
+  // must stay within targetRoot/.archon/install-backups/. A relPath containing
+  // path-traversal sequences (../../) could escape the backup root otherwise.
+  const backupRoot = path.resolve(targetRoot, BACKUP_ROOT_REL);
+  const resolvedBackupAbs = path.resolve(backupAbsPath);
+  if (
+    resolvedBackupAbs !== backupRoot &&
+    !resolvedBackupAbs.startsWith(backupRoot + path.sep)
+  ) {
+    throw new Error(
+      `[skill-ref-codemod] Backup destination '${resolvedBackupAbs}' is outside ` +
+        `the allowed backup root '${backupRoot}' — path traversal rejected.`
+    );
+  }
+
   await fns.ensureDir(path.dirname(backupAbsPath));
   await fns.copyFile(srcAbsPath, backupAbsPath);
   return backupRelPath;
@@ -382,6 +406,19 @@ export async function executeSkillRefMigration(
 
   for (const filePlan of plan.files) {
     try {
+      // Path-boundary guard: executeSkillRefMigration is an exported API surface,
+      // so the plan cannot be trusted to be internally consistent. Reject any
+      // absolutePath that resolves outside targetRoot BEFORE any read or write —
+      // the backupFile guard alone only protects the backup destination.
+      const checkedRel = path.relative(plan.targetRoot, filePlan.absolutePath);
+      if (checkedRel.startsWith("..") || path.isAbsolute(checkedRel)) {
+        errors.push({
+          path: filePlan.relPath,
+          error: "absolutePath outside targetRoot — rejected.",
+        });
+        continue;
+      }
+
       // Re-read current content at apply time for idempotency safety
       const currentContent = await fns.readFile(filePlan.absolutePath);
       if (currentContent === undefined) {

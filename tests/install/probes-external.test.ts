@@ -14,6 +14,7 @@
  *   - runL2Probes: 6 probes, never throws, includes ecc-plugin + skill-ref-namespace
  *   - council C9: adapter-stub remediation states the assurance boundary
  */
+import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -166,6 +167,47 @@ test("probePlaywrightBrowsers: dep present, node_modules installed, no cache →
   // With no home cache → blocked (no sentinel found)
   assert.ok(result.status === "blocked" || result.status === "skipped",
     `expected blocked or skipped, got ${result.status}`);
+});
+
+test("probePlaywrightBrowsers: macOS cache path sentinel → ok (multi-path check)", async () => {
+  // Verify the probe tries ~/Library/Caches/ms-playwright when the Linux path is absent.
+  // We use the actual HOME to build the expected path (same as the production code does).
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  if (!home) {
+    // HOME not available in this environment — skip by returning early
+    return;
+  }
+  const pkgPath = `${TARGET}/package.json`;
+  const pwPkgPath = `${TARGET}/node_modules/playwright/package.json`;
+  // Only populate the macOS sentinel; Linux sentinel is absent
+  const macOsSentinel = path.join(home, "Library", "Caches", "ms-playwright", ".links");
+  const readFn = makeReadFn({
+    [pkgPath]: JSON.stringify({ devDependencies: { playwright: "^1.0.0" } }),
+    [pwPkgPath]: JSON.stringify({ name: "playwright", version: "1.0.0" }),
+    [macOsSentinel]: "link-data",
+  });
+  const result = await probePlaywrightBrowsers(readFn, TARGET);
+  assert.equal(result.status, "ok", "macOS cache sentinel must trigger ok status");
+  assert.match(result.code, /ok/);
+});
+
+test("probePlaywrightBrowsers: Linux cache path sentinel → ok (multi-path check)", async () => {
+  // Verify the probe accepts the Linux ~/.cache/ms-playwright sentinel.
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  if (!home) {
+    return;
+  }
+  const pkgPath = `${TARGET}/package.json`;
+  const pwPkgPath = `${TARGET}/node_modules/playwright/package.json`;
+  const linuxSentinel = path.join(home, ".cache", "ms-playwright", ".links");
+  const readFn = makeReadFn({
+    [pkgPath]: JSON.stringify({ devDependencies: { playwright: "^1.0.0" } }),
+    [pwPkgPath]: JSON.stringify({ name: "playwright", version: "1.0.0" }),
+    [linuxSentinel]: "link-data",
+  });
+  const result = await probePlaywrightBrowsers(readFn, TARGET);
+  assert.equal(result.status, "ok", "Linux cache sentinel must trigger ok status");
+  assert.match(result.code, /ok/);
 });
 
 // ---------------------------------------------------------------------------

@@ -66,6 +66,11 @@ dataRoot/secrets/
 # state and must never be committed.
 prune-backups/
 
+# ECC plugin install record — consumer-local runtime state; not a package asset.
+# This file lives in .archon/ of CONSUMER repos (see src/install/ecc-plugin.ts).
+# The archon SOURCE repo should never commit one.
+.archon/ecc-plugin-record.json
+
 # Logs
 *.log
 npm-debug.log*
