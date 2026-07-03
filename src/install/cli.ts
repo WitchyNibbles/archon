@@ -34,6 +34,13 @@ import type { ReadFileFn } from "./capability/probes-file.ts";
 import { runL1Probes } from "./capability/probes-config.ts";
 import { assembleCapabilityReport, buildL2L3PlaceholderProbes } from "./capability/report.ts";
 import type { CapabilityReport, ProbeResult } from "./capability/types.ts";
+import {
+  runConsentedEccInstall,
+  createDefaultEccSpawnFn,
+  createDefaultEccReadFileFn,
+  createDefaultEccWriteFileFn,
+} from "./ecc-plugin.ts";
+import type { SpawnFn as EccSpawnFn } from "./capability/probes-external.ts";
 
 interface InstallFile {
   source: string;
@@ -82,6 +89,22 @@ interface ParsedInstallCommand {
   targetArg: string;
   withGrafana?: boolean;
   withObsidian?: boolean;
+  /**
+   * When true, run the consented ECC plugin install after the managed file writes.
+   * Writes to ~/.claude (user-global). MUST be set explicitly via --install-plugin.
+   *
+   * Council C5: --yes alone MUST NOT set this flag. ~/.claude writes require
+   * a separate explicit opt-in via --install-plugin (or interactive consent in S4).
+   * This invariant is enforced at the flag-parse level: parseInstallCommand only sets
+   * installPlugin when the --install-plugin flag is present in rawArgs.
+   */
+  installPlugin?: boolean;
+  /**
+   * When true, bypasses the ECC major-version confirmation gate (--confirm-ecc-major).
+   * Only relevant when installPlugin is also true.
+   * Council C6: major version bump requires explicit confirmation.
+   */
+  confirmEccMajor?: boolean;
 }
 
 interface ParsedVerifyCommand {
@@ -954,12 +977,40 @@ function parseInstallCommand(command: "init" | "upgrade", args: string[]): Parse
     throw new Error(`${command} requires exactly one of --apply or --dry-run.`);
   }
 
+  // C5: installPlugin ONLY from --install-plugin flag; never inferred from --yes or any other flag.
+  const hasInstallPlugin = args.includes("--install-plugin");
+  const hasConfirmEccMajor = args.includes("--confirm-ecc-major");
+
+  const knownFlags = new Set([
+    "--dry-run",
+    "--apply",
+    "--with-grafana",
+    "--with-obsidian",
+    "--install-plugin",
+    "--confirm-ecc-major",
+    // C5: --yes is recognized (reserved for S4 interactive consent) but never triggers
+    // installPlugin on its own. Adding it here prevents resolveCliTarget from mistaking
+    // it for a positional path argument.
+    "--yes",
+  ]);
+
+  // LOW-8: warn when --confirm-ecc-major is set without --install-plugin (silently discarded otherwise)
+  if (hasConfirmEccMajor && !hasInstallPlugin) {
+    console.warn(
+      "Warning: --confirm-ecc-major has no effect without --install-plugin. " +
+      "Add --install-plugin to enable the ECC plugin install with major-version confirmation."
+    );
+  }
+
   return {
     command,
     dryRun: hasDryRun,
-    targetArg: resolveCliTarget(args, new Set(["--dry-run", "--apply", "--with-grafana", "--with-obsidian"])),
+    targetArg: resolveCliTarget(args, knownFlags),
     ...(args.includes("--with-grafana") ? { withGrafana: true } : {}),
-    ...(args.includes("--with-obsidian") ? { withObsidian: true } : {})
+    ...(args.includes("--with-obsidian") ? { withObsidian: true } : {}),
+    // C5: only set when the flag is explicitly present
+    ...(hasInstallPlugin ? { installPlugin: true } : {}),
+    ...(hasConfirmEccMajor ? { confirmEccMajor: true } : {}),
   };
 }
 
@@ -2454,6 +2505,60 @@ async function main() {
 
   printInstallSummary(parsedArgs.command, targetRoot, summary);
   if (parsedArgs.command === "upgrade" && summary.conflicts.length > 0) {
+    process.exitCode = 1;
+    return;
+  }
+
+  // C5: ECC install only runs when --install-plugin is explicitly set.
+  // --yes alone MUST NOT trigger this path (invariant enforced by parseInstallCommand).
+  if (parsedArgs.installPlugin === true && !parsedArgs.dryRun) {
+    await runEccInstallFromCli(targetRoot, parsedArgs.confirmEccMajor ?? false);
+  }
+}
+
+/**
+ * Runs the consented ECC plugin install for the CLI flag-driven path.
+ *
+ * Council C5: only called when --install-plugin is explicitly present (never --yes alone).
+ * Council C7: uses createDefaultEccSpawnFn() — array args, hardcoded constants, shell:false.
+ * Council C6: prints installed version; sets exitCode=1 on needs-confirmation or failure.
+ * Council C13: idempotent — safe to run repeatedly.
+ *
+ * Exported (not just the module-private function) to allow tests to inject a SpawnFn
+ * via spawnFnOverride and verify the CLI orchestration path's spawn behaviour (MEDIUM-5).
+ * In production, spawnFnOverride is omitted and createDefaultEccSpawnFn() is used.
+ */
+export async function runEccInstallFromCli(
+  targetRoot: string,
+  confirmEccMajor: boolean,
+  spawnFnOverride?: EccSpawnFn
+): Promise<void> {
+  // HIGH-2: delegate to the exported factory; no inline re-implementation.
+  const spawnFn = spawnFnOverride ?? createDefaultEccSpawnFn();
+
+  const result = await runConsentedEccInstall(
+    spawnFn,
+    createDefaultEccReadFileFn(),
+    createDefaultEccWriteFileFn(),
+    targetRoot,
+    { confirmMajorBump: confirmEccMajor }
+  );
+
+  // C6: show installed version at the (non-interactive) consent surface
+  if (result.status === "installed") {
+    console.log(`ECC plugin installed: ${result.record.identity} v${result.record.version}`);
+  } else if (result.status === "already-installed") {
+    console.log(`ECC plugin already installed: ${result.record.identity} v${result.record.version}`);
+  } else if (result.status === "needs-confirmation") {
+    console.error(
+      `ECC plugin major version bump detected: installed=${result.installedVersion}, ` +
+      `recorded=${result.recordedVersion}. ` +
+      `Re-run with --confirm-ecc-major to proceed.`
+    );
+    process.exitCode = 1;
+  } else {
+    // status === "failed"
+    console.error(`ECC plugin install failed: ${result.error}`);
     process.exitCode = 1;
   }
 }

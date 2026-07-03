@@ -6,7 +6,8 @@
  *   - @witchynibbles/archon resolvable in node_modules
  *   - playwright browser binaries installed
  *   - review-identity-adapter.ts was replaced (stub detection)
- *   - ecc-present: STUB — returns skipped; S3 fills the real body (single-writer rule)
+ *   - ecc-present: ECC plugin installed and identity in accepted set (dual-identity)
+ *   - skill-ref-namespace: consumer AGENT.md skill-ref prefix matches installed ECC namespace (C1)
  *
  * All probes take an injected SpawnFn / ReadFileFn so they can be unit-tested
  * with stubs. Mirrors the DbQueryFn pattern in src/admin/db-preflight.ts.
@@ -14,16 +15,30 @@
  * PROBE DISCIPLINE (council C7):
  *   - All `claude` invocations use the injected SpawnFn with array args, shell:false.
  *   - Command name is the CLAUDE_CLI constant — never derived from config or input.
+ *   - Plugin names are imported from ecc-plugin.ts as hardcoded package constants.
  *
  * SECURITY (council C8): detail and remediation fields never echo credentials.
  * They are passed through scrubPgCredentials() as defence-in-depth.
  *
  * SEVERITY: probes are pure — status (ok|degraded|blocked|skipped) is returned;
  * whether that status blocks is decided at report assembly (report.ts), not here.
+ *
+ * SKILL-REF PROBE (council C1): read-only scan of consumer AGENT.md files.
+ * This probe NEVER rewrites files — S6 owns the codemod write path.
  */
 import path from "node:path";
+import { readdir } from "node:fs/promises";
 import type { ProbeResult } from "./types.ts";
 import type { ReadFileFn } from "./probes-file.ts";
+import {
+  parsePluginList,
+  isAcceptedEccIdentity,
+  isLegacyEccIdentity,
+  ECC_CANONICAL_IDENTITY,
+  ECC_MARKETPLACE_SOURCE,
+  ECC_CANONICAL_SKILL_PREFIX,
+  ECC_LEGACY_SKILL_PREFIX,
+} from "../ecc-plugin.ts";
 
 // ---------------------------------------------------------------------------
 // Injectable spawn interface (council C7)
@@ -389,30 +404,293 @@ export async function probeAdapterStub(
 }
 
 // ---------------------------------------------------------------------------
-// L2 probe: ecc-present — STUB (S3 fills the real body)
+// L2 probe: ecc-present — dual-identity detection (council C1, C7)
 // ---------------------------------------------------------------------------
 
 /**
- * L2 probe: ECC plugin presence check.
+ * L2 probe: ECC plugin presence check with dual-identity acceptance.
  *
- * STUB — returns skipped with a clear remediation. S3 fills the real probe
- * body (single-writer rule: probes-external.ts is written by S2, then S3).
+ * Spawns `claude plugin list` via injected spawnFn (C7: array args, shell:false).
+ * Accepted identities: canonical "ecc@ecc" OR legacy "everything-claude-code@*".
+ * Either counts as "present"; legacy additionally raises a migration advisory.
  *
- * Do NOT implement this function in S2. S3 will replace this stub with
- * dual-identity detection via `claude plugin list`.
+ * CLI absent → skipped (never crash).
+ * Plugin absent → blocked with exact install remediation.
+ * Canonical → ok.
+ * Legacy → ok with migration advisory code (status ok, advisory code).
+ *
+ * Plugin/server names are hardcoded constants imported from ecc-plugin.ts (C7).
  */
-export async function probeEccPresent(_spawnFn: SpawnFn): Promise<ProbeResult> {
+export async function probeEccPresent(spawnFn: SpawnFn): Promise<ProbeResult> {
+  let result: { exitCode: number | null; stdout: string; stderr: string };
+  try {
+    // C7: CLAUDE_CLI constant, array args, shell:false via injected spawnFn
+    result = await spawnFn(CLAUDE_CLI, ["plugin", "list"]);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const isAbsent = /ENOENT|command not found|not found/i.test(errMsg);
+    return {
+      capability: "ecc-plugin",
+      layer: "L2",
+      status: "skipped",
+      code: isAbsent ? "ecc-claude-absent" : "ecc-plugin-list-spawn-error",
+      detail: isAbsent
+        ? "claude CLI not found — cannot check ECC plugin state."
+        : `Failed to spawn 'claude plugin list': ${errMsg}`,
+      remediation: isAbsent
+        ? "Install the claude CLI: https://claude.ai/download — then re-run doctor."
+        : "Verify the claude CLI is installed and accessible on PATH, then re-run doctor.",
+    };
+  }
+
+  if (result.exitCode !== 0) {
+    return {
+      capability: "ecc-plugin",
+      layer: "L2",
+      status: "skipped",
+      code: "ecc-plugin-list-nonzero",
+      detail: `'claude plugin list' exited ${String(result.exitCode)}.`,
+      remediation: "Check the claude CLI installation and re-run doctor.",
+    };
+  }
+
+  const plugins = parsePluginList(result.stdout);
+  const eccPlugin = plugins.find((p) => isAcceptedEccIdentity(p.identity));
+
+  if (eccPlugin === undefined) {
+    return {
+      capability: "ecc-plugin",
+      layer: "L2",
+      status: "blocked",
+      code: "ecc-plugin-absent",
+      detail:
+        "ECC plugin is not installed. No accepted ECC identity found in 'claude plugin list'.",
+      remediation:
+        `Run 'archon init --apply --install-plugin' or install manually: ` +
+        `claude plugin marketplace add ${ECC_MARKETPLACE_SOURCE} && ` +
+        `claude plugin install ${ECC_CANONICAL_IDENTITY}`,
+    };
+  }
+
+  // Drift check: is the installed identity the expected canonical one?
+  if (isLegacyEccIdentity(eccPlugin.identity)) {
+    // Legacy is accepted-as-present but warrants a migration advisory.
+    return {
+      capability: "ecc-plugin",
+      layer: "L2",
+      status: "ok",
+      code: "ecc-plugin-legacy-present",
+      detail:
+        `ECC plugin present as legacy identity: ${eccPlugin.identity} v${eccPlugin.version}. ` +
+        `Canonical identity is ${ECC_CANONICAL_IDENTITY} — migration advisory applies.`,
+      remediation:
+        `Legacy ECC identity '${eccPlugin.identity}' detected. Canonical is '${ECC_CANONICAL_IDENTITY}'. ` +
+        `To migrate: reinstall with 'archon init --apply --install-plugin'.`,
+    };
+  }
+
   return {
     capability: "ecc-plugin",
     layer: "L2",
-    status: "skipped",
-    code: "ecc-present-placeholder",
+    status: "ok",
+    code: "ecc-plugin-present",
+    detail: `ECC plugin present: ${eccPlugin.identity} v${eccPlugin.version}.`,
+    remediation: "",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// L2 probe: skill-ref-namespace mismatch (council C1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Injectable function that returns all agent markdown file paths under
+ * .claude/agents/ in the consumer repo (recursive directory walk).
+ * Returns empty array if the directory does not exist — never throws.
+ */
+export type FindAgentFilesFn = (targetRoot: string) => Promise<readonly string[]>;
+
+/**
+ * Creates a real FindAgentFilesFn backed by node:fs/promises readdir.
+ * Walks .claude/agents/ recursively; returns all .md file absolute paths.
+ * Returns empty array on missing directory or permission errors.
+ */
+export function createFindAgentFilesFn(): FindAgentFilesFn {
+  async function walk(dir: string): Promise<string[]> {
+    // encoding:'utf8' ensures readdir returns Dirent<string>[] (not Dirent<NonSharedBuffer>[])
+    // which is required for .name to be typed as string under @types/node@22+.
+    let entries: import("node:fs").Dirent<string>[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true, encoding: "utf8" });
+    } catch {
+      return [];
+    }
+    const results: string[] = [];
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const sub = await walk(fullPath);
+        results.push(...sub);
+      } else if (entry.isFile() && entry.name.endsWith(".md")) {
+        results.push(fullPath);
+      }
+    }
+    return results;
+  }
+
+  return async (targetRoot: string) => {
+    const agentsDir = path.join(targetRoot, ".claude", "agents");
+    return walk(agentsDir);
+  };
+}
+
+/**
+ * Resolves the installed ECC skill-ref namespace ("ecc:" or "everything-claude-code:")
+ * from the probeEccPresent result code.
+ *
+ * Returns undefined when ECC is not installed or the state is unknown (skipped/blocked
+ * with a non-identity code).
+ */
+function resolveEccNamespaceFromProbeCode(
+  code: string
+): typeof ECC_CANONICAL_SKILL_PREFIX | typeof ECC_LEGACY_SKILL_PREFIX | undefined {
+  if (code === "ecc-plugin-present") {
+    return ECC_CANONICAL_SKILL_PREFIX;
+  }
+  if (code === "ecc-plugin-legacy-present") {
+    return ECC_LEGACY_SKILL_PREFIX;
+  }
+  return undefined;
+}
+
+/**
+ * L2 probe: skill-ref namespace mismatch detection (council C1).
+ *
+ * Reads consumer .claude/agents/**\/*.md files (READ-ONLY, never rewrites).
+ * Extracts ECC skill-ref prefixes (everything-claude-code: or ecc:).
+ * Compares against the installed ECC plugin namespace.
+ *
+ * Mismatch direction matters:
+ *   - Canonical installed + legacy refs: skills will not resolve.
+ *   - Legacy installed + canonical refs: skills will not resolve.
+ *   - Either installed + matching refs: ok.
+ *   - ECC not installed + refs found: degraded (unresolvable).
+ *   - No agent files / no refs: skipped.
+ *
+ * This probe NEVER rewrites files — S6 owns the codemod write path.
+ *
+ * @param installedEccNamespace - Derived from probeEccPresent's result code
+ *   via resolveEccNamespaceFromProbeCode. Pass undefined when ECC is not installed.
+ */
+export async function probeSkillRefNamespace(
+  findAgentFilesFn: FindAgentFilesFn,
+  readFileFn: ReadFileFn,
+  targetRoot: string,
+  installedEccNamespace:
+    | typeof ECC_CANONICAL_SKILL_PREFIX
+    | typeof ECC_LEGACY_SKILL_PREFIX
+    | undefined
+): Promise<ProbeResult> {
+  let agentFiles: readonly string[];
+  try {
+    agentFiles = await findAgentFilesFn(targetRoot);
+  } catch {
+    agentFiles = [];
+  }
+
+  if (agentFiles.length === 0) {
+    return {
+      capability: "skill-ref-namespace",
+      layer: "L2",
+      status: "skipped",
+      code: "skill-ref-no-agent-files",
+      detail: "No agent files found under .claude/agents/ — skill-ref namespace check skipped.",
+      remediation: "Run 'archon init --apply' to install agent files.",
+    };
+  }
+
+  let canonicalRefCount = 0;
+  let legacyRefCount = 0;
+  let filesScanned = 0;
+
+  for (const filePath of agentFiles) {
+    let content: string | undefined;
+    try {
+      content = await readFileFn(filePath);
+    } catch {
+      content = undefined;
+    }
+    if (!content) {
+      continue;
+    }
+    filesScanned += 1;
+    if (content.includes(ECC_CANONICAL_SKILL_PREFIX)) {
+      canonicalRefCount += 1;
+    }
+    if (content.includes(ECC_LEGACY_SKILL_PREFIX)) {
+      legacyRefCount += 1;
+    }
+  }
+
+  if (canonicalRefCount === 0 && legacyRefCount === 0) {
+    return {
+      capability: "skill-ref-namespace",
+      layer: "L2",
+      status: "skipped",
+      code: "skill-ref-no-ecc-refs",
+      detail: `Scanned ${String(filesScanned)} agent file(s) — no ECC skill refs found.`,
+      remediation: "",
+    };
+  }
+
+  // ECC not installed — any refs are unresolvable
+  if (installedEccNamespace === undefined) {
+    const totalRefs = canonicalRefCount + legacyRefCount;
+    return {
+      capability: "skill-ref-namespace",
+      layer: "L2",
+      status: "degraded",
+      code: "skill-ref-ecc-not-installed",
+      detail:
+        `${String(totalRefs)} agent file(s) contain ECC skill refs but ECC plugin is not installed — ` +
+        `skill refs will not resolve.`,
+      remediation:
+        `Install ECC: 'archon init --apply --install-plugin'. ` +
+        `${String(canonicalRefCount)} file(s) use '${ECC_CANONICAL_SKILL_PREFIX}' refs, ` +
+        `${String(legacyRefCount)} file(s) use '${ECC_LEGACY_SKILL_PREFIX}' refs.`,
+    };
+  }
+
+  const installedIsCanonical = installedEccNamespace === ECC_CANONICAL_SKILL_PREFIX;
+  const mismatchCount = installedIsCanonical ? legacyRefCount : canonicalRefCount;
+  const mismatchPrefix = installedIsCanonical ? ECC_LEGACY_SKILL_PREFIX : ECC_CANONICAL_SKILL_PREFIX;
+  const correctPrefix = installedEccNamespace;
+
+  if (mismatchCount === 0) {
+    return {
+      capability: "skill-ref-namespace",
+      layer: "L2",
+      status: "ok",
+      code: "skill-ref-namespace-match",
+      detail:
+        `ECC skill refs match the installed plugin namespace ('${installedEccNamespace}') ` +
+        `across ${String(filesScanned)} scanned agent file(s).`,
+      remediation: "",
+    };
+  }
+
+  return {
+    capability: "skill-ref-namespace",
+    layer: "L2",
+    status: "degraded",
+    code: "skill-ref-namespace-mismatch",
     detail:
-      "ECC plugin presence check not yet implemented — ships in S3. " +
-      "Install manually: claude plugin marketplace add affaan-m/ECC && claude plugin install ecc@ecc",
+      `${String(mismatchCount)} agent file(s) use '${mismatchPrefix}' skill refs but the installed ` +
+      `ECC plugin exposes the '${correctPrefix}' namespace — these skill refs will not resolve.`,
     remediation:
-      "ECC verification ships in S3. Until then, install manually: " +
-      "claude plugin marketplace add affaan-m/ECC && claude plugin install ecc@ecc",
+      `Run 'archon upgrade --apply --migrate-skill-refs' to rewrite skill refs ` +
+      `from '${mismatchPrefix}' to '${correctPrefix}'. ` +
+      `(This probe is read-only — no files were modified. S6 codemod owns the rewrite.)`,
   };
 }
 
@@ -422,43 +700,68 @@ export async function probeEccPresent(_spawnFn: SpawnFn): Promise<ProbeResult> {
 
 /**
  * Runs all L2 probes against a target directory.
- * Returns one ProbeResult per probe, never throws.
+ * Returns one ProbeResult per probe (6 total), never throws.
+ *
+ * Probe order: ecc-plugin (first, others may depend on its result),
+ * then independent probes in parallel, then skill-ref-namespace last
+ * (depends on ecc-plugin result to determine expected namespace).
  *
  * Tool absent → skipped; parse-fail → skipped advisory.
  * Severity is decided at report assembly, not here.
+ *
+ * @param findAgentFilesFn - Injectable file finder for .claude/agents/ walk (C1).
+ *   Use createFindAgentFilesFn() in production; stub in tests.
  */
 export async function runL2Probes(
   spawnFn: SpawnFn,
   readFileFn: ReadFileFn,
+  findAgentFilesFn: FindAgentFilesFn,
   targetRoot: string
 ): Promise<readonly ProbeResult[]> {
-  const results = await Promise.allSettled([
+  // Run ECC probe first so skill-ref probe can use its result
+  const [eccSettled, ...independentSettled] = await Promise.allSettled([
+    probeEccPresent(spawnFn),
     probeClaudePresent(spawnFn),
     probeNodeModules(readFileFn, targetRoot),
     probePlaywrightBrowsers(readFileFn, targetRoot),
     probeAdapterStub(readFileFn, targetRoot),
-    probeEccPresent(spawnFn),
   ]);
 
-  return results.map((r, i): ProbeResult => {
+  // Determine installed ECC namespace from ECC probe result
+  const eccResult = eccSettled?.status === "fulfilled" ? eccSettled.value : undefined;
+  const installedEccNamespace =
+    eccResult !== undefined
+      ? resolveEccNamespaceFromProbeCode(eccResult.code)
+      : undefined;
+
+  // Run skill-ref probe sequenced after ECC (C1: depends on installed namespace)
+  const [skillRefSettled] = await Promise.allSettled([
+    probeSkillRefNamespace(findAgentFilesFn, readFileFn, targetRoot, installedEccNamespace),
+  ]);
+
+  const allSettled = [eccSettled, ...independentSettled, skillRefSettled];
+  const capabilityNames = [
+    "ecc-plugin",
+    "claude-present",
+    "node-modules",
+    "playwright-browsers",
+    "adapter-stub",
+    "skill-ref-namespace",
+  ];
+
+  return (allSettled as PromiseSettledResult<ProbeResult>[]).map((r, i): ProbeResult => {
     if (r.status === "fulfilled") {
       return r.value;
     }
-    // Unexpected probe throw — return skipped advisory rather than crashing.
-    const capabilities = [
-      "claude-present",
-      "node-modules",
-      "playwright-browsers",
-      "adapter-stub",
-      "ecc-plugin",
-    ];
-    const cap = capabilities[i] ?? "unknown";
+    const cap = capabilityNames[i] ?? "unknown";
     return {
       capability: cap,
       layer: "L2",
       status: "skipped",
       code: `${cap}-unexpected-error`,
-      detail: `L2 probe threw unexpectedly: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`,
+      detail: `L2 probe threw unexpectedly: ${
+        r.reason instanceof Error ? r.reason.message : String(r.reason)
+      }`,
       remediation: "Investigate and re-run doctor.",
     };
   });

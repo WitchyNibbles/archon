@@ -142,9 +142,11 @@ export function buildL2L3PlaceholderProbes(): readonly ProbeResult[] {
       status: "skipped",
       code: "ecc-plugin-placeholder",
       detail:
-        "ECC plugin presence check not yet implemented — ships in S2/S3. Install manually: claude plugin marketplace add affaan-m/ECC && claude plugin install ecc@ecc",
+        "ECC plugin live check runs during 'archon init --apply'. Run init to detect presence and install. " +
+        "Manual install: claude plugin marketplace add affaan-m/ECC && claude plugin install ecc@ecc",
       remediation:
-        "Install ECC manually: claude plugin marketplace add affaan-m/ECC && claude plugin install ecc@ecc",
+        "Run 'archon init --apply' to detect and optionally install the ECC plugin, " +
+        "or manually: claude plugin marketplace add affaan-m/ECC && claude plugin install ecc@ecc",
     },
     {
       capability: "playwright-browsers",
