@@ -553,8 +553,9 @@ export async function probeMcpHandshake(
     };
   }
 
-  // Server errored (non-zero exit or output without jsonrpc) — separate from entrypoint bug
-  const stderrSnippet = result.stderr.slice(0, 200).replace(/\n/g, " ");
+  // Server errored (non-zero exit or output without jsonrpc) — separate from entrypoint bug.
+  // C8: stderr may echo the DB URL (connection failures) — scrub before it reaches the report.
+  const stderrSnippet = scrubPgCredentials(result.stderr.slice(0, 200).replace(/\n/g, " "));
   return {
     capability: "mcp-handshake",
     layer: "L3",
