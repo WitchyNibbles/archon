@@ -28,6 +28,7 @@
  *   Hook exits 0. This is the dry-run mechanism used by probeHookDryRun.
  */
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import type { ProbeResult } from "../install/capability/types.ts";
 import type { SpawnFn } from "../install/capability/probes-external.ts";
 import type { DbQueryFn } from "./db-preflight.ts";
@@ -380,6 +381,192 @@ export async function probeDbMigrations(queryFn: DbQueryFn): Promise<ProbeResult
 }
 
 // ---------------------------------------------------------------------------
+// L3 probe: MCP handshake (entrypoint guard functional check)
+// ---------------------------------------------------------------------------
+
+/**
+ * MCP initialize request in NDJSON (single line) format.
+ * Sent to the server via stdin; the server must respond with a jsonrpc result.
+ */
+const MCP_INIT_REQUEST =
+  JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "archon-doctor", version: "0.1.0" },
+    },
+  }) + "\n";
+
+/**
+ * L3 probe: sends an MCP initialize request to the archon MCP server registered
+ * in .mcp.json and asserts a jsonrpc response is returned.
+ *
+ * Closes the blind spot that let the dist entrypoint guard bug ship undetected:
+ *   - Silent exit 0 with no output → blocked (mcp-handshake-silent-exit)
+ *   - Server errored (non-zero exit, DB unavailable) → blocked (mcp-handshake-server-error)
+ *   - jsonrpc response received → ok
+ *   - .mcp.json absent / invalid / node missing → skipped
+ *
+ * Relative args in the archon entry are resolved against targetRoot so the
+ * spawn works regardless of the caller's working directory.
+ *
+ * SECURITY (C8): detail/remediation fields never contain credentials.
+ */
+export async function probeMcpHandshake(
+  spawnFn: SpawnFn,
+  targetRoot: string
+): Promise<ProbeResult> {
+  // Read .mcp.json
+  let mcpRaw: string;
+  try {
+    mcpRaw = await readFile(path.join(targetRoot, ".mcp.json"), "utf8");
+  } catch (err) {
+    const code = err instanceof Error && "code" in err ? String((err as NodeJS.ErrnoException).code) : "";
+    if (code === "ENOENT") {
+      return {
+        capability: "mcp-handshake",
+        layer: "L3",
+        status: "skipped",
+        code: "mcp-handshake-no-mcp-json",
+        detail: ".mcp.json not found — probe skipped.",
+        remediation: "Run 'archon init --apply' to create .mcp.json.",
+      };
+    }
+    return {
+      capability: "mcp-handshake",
+      layer: "L3",
+      status: "skipped",
+      code: "mcp-handshake-read-error",
+      detail: `Could not read .mcp.json: ${err instanceof Error ? err.message : String(err)}`,
+      remediation: "Check .mcp.json is readable and re-run doctor.",
+    };
+  }
+
+  // Parse and extract archon entry
+  let mcpJson: Record<string, unknown>;
+  try {
+    mcpJson = JSON.parse(mcpRaw) as Record<string, unknown>;
+  } catch {
+    return {
+      capability: "mcp-handshake",
+      layer: "L3",
+      status: "skipped",
+      code: "mcp-handshake-parse-error",
+      detail: ".mcp.json could not be parsed as JSON.",
+      remediation: "Run 'archon upgrade --apply' to restore .mcp.json.",
+    };
+  }
+
+  const servers = mcpJson["mcpServers"];
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+    return {
+      capability: "mcp-handshake",
+      layer: "L3",
+      status: "skipped",
+      code: "mcp-handshake-no-archon-entry",
+      detail: ".mcp.json has no mcpServers object.",
+      remediation: "Run 'archon upgrade --apply' to add the archon entry.",
+    };
+  }
+
+  const archonEntry = (servers as Record<string, unknown>)["archon"];
+  if (!archonEntry || typeof archonEntry !== "object" || Array.isArray(archonEntry)) {
+    return {
+      capability: "mcp-handshake",
+      layer: "L3",
+      status: "skipped",
+      code: "mcp-handshake-no-archon-entry",
+      detail: ".mcp.json has no mcpServers.archon entry.",
+      remediation: "Run 'archon upgrade --apply' to add the archon entry in .mcp.json.",
+    };
+  }
+
+  const entry = archonEntry as Record<string, unknown>;
+  const command = entry["command"];
+  const rawArgs = entry["args"];
+
+  if (typeof command !== "string" || !Array.isArray(rawArgs)) {
+    return {
+      capability: "mcp-handshake",
+      layer: "L3",
+      status: "skipped",
+      code: "mcp-handshake-invalid-entry",
+      detail: "mcpServers.archon has no valid command/args.",
+      remediation: "Run 'archon upgrade --apply' to restore .mcp.json.",
+    };
+  }
+
+  // Resolve relative paths against targetRoot (council C7: args are never shell-interpolated)
+  const args: readonly string[] = rawArgs.map((arg: unknown) => {
+    const str = typeof arg === "string" ? arg : String(arg);
+    if (!path.isAbsolute(str) && (str.startsWith("./") || str.startsWith("../"))) {
+      return path.resolve(targetRoot, str);
+    }
+    return str;
+  });
+
+  // Spawn and send the initialize request via stdin (council C7: shell:false via injected spawnFn)
+  let result: { exitCode: number | null; stdout: string; stderr: string };
+  try {
+    result = await spawnFn(command, args, MCP_INIT_REQUEST);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const isAbsent = /ENOENT|not found|no such file/i.test(errMsg);
+    return {
+      capability: "mcp-handshake",
+      layer: "L3",
+      status: "skipped",
+      code: isAbsent ? "mcp-handshake-node-absent" : "mcp-handshake-spawn-error",
+      detail: `Failed to spawn MCP server: ${errMsg}`,
+      remediation: isAbsent
+        ? "Ensure node is installed and on PATH, then re-run doctor."
+        : "Check .mcp.json command is correct and re-run doctor.",
+    };
+  }
+
+  // Full handshake: server responded with a jsonrpc message
+  if (result.stdout.includes('"jsonrpc"') && result.stdout.includes('"id"')) {
+    return {
+      capability: "mcp-handshake",
+      layer: "L3",
+      status: "ok",
+      code: "mcp-handshake-ok",
+      detail: "MCP server responded to the initialize handshake.",
+      remediation: "",
+    };
+  }
+
+  // Silent exit 0 — the entrypoint guard did not fire (pre-fix bug)
+  if (result.exitCode === 0 && result.stdout.length === 0 && result.stderr.length === 0) {
+    return {
+      capability: "mcp-handshake",
+      layer: "L3",
+      status: "blocked",
+      code: "mcp-handshake-silent-exit",
+      detail:
+        "The archon MCP server exited 0 with no output — the entrypoint guard did not fire.",
+      remediation:
+        "Upgrade the installed archon package: npm install @witchynibbles/archon@latest",
+    };
+  }
+
+  // Server errored (non-zero exit or output without jsonrpc) — separate from entrypoint bug
+  const stderrSnippet = result.stderr.slice(0, 200).replace(/\n/g, " ");
+  return {
+    capability: "mcp-handshake",
+    layer: "L3",
+    status: "blocked",
+    code: "mcp-handshake-server-error",
+    detail: `MCP server did not respond to initialize (exit ${String(result.exitCode)}). ${stderrSnippet}`,
+    remediation:
+      "Ensure ARCHON_CORE_DATABASE_URL is set and the database is reachable, then re-run doctor.",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Aggregate runner
 // ---------------------------------------------------------------------------
 
@@ -398,6 +585,7 @@ export async function runL3Probes(
   const probePromises: Promise<ProbeResult | ProbeResult[]>[] = [
     probeMcpConnected(spawnFn),
     probeHookDryRun(spawnFn, targetRoot),
+    probeMcpHandshake(spawnFn, targetRoot),
   ];
 
   if (queryFn) {
@@ -420,7 +608,7 @@ export async function runL3Probes(
 
   const settled = await Promise.allSettled(probePromises);
   const results: ProbeResult[] = [];
-  const capNames = ["mcp-archon", "hooks", "doctor", "doctor"];
+  const capNames = ["mcp-archon", "hooks", "mcp-handshake", "doctor", "doctor"];
 
   settled.forEach((r, i) => {
     if (r.status === "fulfilled") {

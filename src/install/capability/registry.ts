@@ -89,6 +89,12 @@ export const CAPABILITY_REGISTRY: readonly CapabilityEntry[] = [
     description: "Archon workflow scaffold template files (.archon/templates/) present",
     layers: ["L0"],
   },
+  {
+    capability: "mcp-handshake",
+    description:
+      "Archon MCP server responds to the MCP initialize handshake (L3 — closes the silent-exit entrypoint bug blind spot)",
+    layers: ["L3"],
+  },
 ];
 
 /**
