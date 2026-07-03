@@ -1,4 +1,5 @@
 import process from "node:process";
+import { isMainModule } from "../shared/is-main-module.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createGrafanaClient, type ArchonGrafanaQueryOptions } from "./client.ts";
@@ -63,7 +64,7 @@ export async function startGrafanaMcpServer(): Promise<void> {
   await server.connect(transport);
 }
 
-if (process.argv[1] && process.argv[1].endsWith("src/grafana/mcp-server.ts")) {
+if (isMainModule(import.meta.url)) {
   startGrafanaMcpServer().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);

@@ -18,11 +18,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   parseMcpListStatus,
   probeHookDryRun,
+  probeMcpHandshake,
 } from "../../src/admin/capability-probes-runtime.ts";
 import type { SpawnFn } from "../../src/install/capability/probes-external.ts";
 
@@ -208,4 +211,97 @@ test("probeHookDryRun: spawns node with the pre-tool hook path", async () => {
     call.args[0]?.endsWith(".claude/hooks/archon-pre-tool.mjs"),
     "hook path must end with .claude/hooks/archon-pre-tool.mjs"
   );
+});
+
+// ---------------------------------------------------------------------------
+// probeMcpHandshake unit tests (stubbed spawn; temp .mcp.json)
+// ---------------------------------------------------------------------------
+
+const HANDSHAKE_MCP_JSON = JSON.stringify({
+  mcpServers: {
+    archon: {
+      command: "node",
+      args: ["./node_modules/@witchynibbles/archon/dist/cli/archon-bin.js", "mcp"],
+    },
+  },
+});
+
+async function withHandshakeTempDir<T>(
+  mcpJsonContent: string | undefined,
+  fn: (dir: string) => Promise<T>
+): Promise<T> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "archon-handshake-"));
+  try {
+    if (mcpJsonContent !== undefined) {
+      await writeFile(path.join(dir, ".mcp.json"), mcpJsonContent, "utf8");
+    }
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("probeMcpHandshake: jsonrpc response → ok", async () => {
+  await withHandshakeTempDir(HANDSHAKE_MCP_JSON, async (dir) => {
+    const spawnFn = makeSpawnFn(0, '{"result":{},"jsonrpc":"2.0","id":1}');
+    const result = await probeMcpHandshake(spawnFn, dir);
+    assert.equal(result.status, "ok");
+    assert.equal(result.code, "mcp-handshake-ok");
+    assert.equal(result.layer, "L3");
+  });
+});
+
+test("probeMcpHandshake: silent exit 0 with no output → blocked (pre-fix entrypoint bug)", async () => {
+  await withHandshakeTempDir(HANDSHAKE_MCP_JSON, async (dir) => {
+    const spawnFn = makeSpawnFn(0, "", "");
+    const result = await probeMcpHandshake(spawnFn, dir);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.code, "mcp-handshake-silent-exit");
+  });
+});
+
+test("probeMcpHandshake: server error → blocked, stderr credential scrubbed (C8)", async () => {
+  await withHandshakeTempDir(HANDSHAKE_MCP_JSON, async (dir) => {
+    const spawnFn = makeSpawnFn(
+      1,
+      "",
+      "connection failed: postgres://archon:sekretpass@localhost:5432/archon refused"
+    );
+    const result = await probeMcpHandshake(spawnFn, dir);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.code, "mcp-handshake-server-error");
+    assert.ok(!result.detail.includes("sekretpass"), "credential must be scrubbed from detail");
+    assert.ok(!result.remediation.includes("sekretpass"), "credential must be scrubbed from remediation");
+  });
+});
+
+test("probeMcpHandshake: .mcp.json absent → skipped", async () => {
+  await withHandshakeTempDir(undefined, async (dir) => {
+    const spawnFn = makeSpawnFn(0, "");
+    const result = await probeMcpHandshake(spawnFn, dir);
+    assert.equal(result.status, "skipped");
+    assert.equal(result.code, "mcp-handshake-no-mcp-json");
+  });
+});
+
+test("probeMcpHandshake: spawn ENOENT → skipped (node absent)", async () => {
+  await withHandshakeTempDir(HANDSHAKE_MCP_JSON, async (dir) => {
+    const spawnFn = makeSpawnFnThrowing("spawn node ENOENT");
+    const result = await probeMcpHandshake(spawnFn, dir);
+    assert.equal(result.status, "skipped");
+    assert.equal(result.code, "mcp-handshake-node-absent");
+  });
+});
+
+test("probeMcpHandshake: relative args resolved against targetRoot, initialize sent on stdin", async () => {
+  await withHandshakeTempDir(HANDSHAKE_MCP_JSON, async (dir) => {
+    const spawnFn = makeSpawnFnCapturing();
+    await probeMcpHandshake(spawnFn, dir);
+    const call = spawnFn.calls[0];
+    assert.equal(call.command, "node");
+    assert.ok(path.isAbsolute(call.args[0]!), "relative ./ arg must be resolved to absolute");
+    assert.ok(call.args[0]!.startsWith(dir), "resolved arg must stay under targetRoot");
+    assert.equal(call.args[1], "mcp");
+    assert.ok(call.stdin?.includes('"initialize"'), "initialize request must be sent via stdin");
+  });
 });
