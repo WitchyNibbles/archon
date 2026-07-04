@@ -4,6 +4,7 @@ description: "Spawns reviewer, qa_engineer, and security_reviewer agents and wri
 model: claude-sonnet-4-6
 effort: high
 tools: [Bash, Read, Grep, Glob, Agent]
+skills: [archon-review, archon-qa-verification, verification-loop]
 ---
 
 # Review Orchestrator

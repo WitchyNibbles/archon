@@ -1,13 +1,9 @@
-# Archon Handoff
-
-**Trigger domain**: invoked when the agent's context budget reaches `handoff_required`
-or `hard_stop`, or when the operator explicitly requests a context handoff.
-
-**Skill ID**: `archon-handoff`
-
-**Invocation**: `/archon-handoff`
-
 ---
+name: archon-handoff
+description: Use when the agent's context budget reaches handoff_required or hard_stop (or the operator explicitly requests a handoff) to produce a resumable handoff artifact via the two-step archon_handoff_prepare / archon_handoff_commit MCP flow, then stop cleanly before the context window is exhausted.
+---
+
+# Archon Handoff
 
 ## Purpose
 

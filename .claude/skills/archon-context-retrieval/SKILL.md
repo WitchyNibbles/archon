@@ -12,9 +12,14 @@ Goal: give the agent the right context — not all context.
 ## Authority hierarchy
 
 1. `.archon/memory/` — reviewed durable facts (highest)
-2. Postgres runtime — `npx tsx src/admin.ts status` for task/review records
-3. Obsidian vault — exported summaries, decision logs (if vault MCP configured)
-4. Qdrant semantic index — `src/store/qdrant-artifact-index.ts` (advisory)
+2. Postgres runtime — `npx tsx src/admin.ts status` for task/run/review records
+3. Obsidian docs-export vault — exported summaries and decision logs written by
+   `npx tsx src/export.ts` (`src/docs-export/`); read-only advisory, if configured
+4. Postgres semantic memory search — embeddings-backed advisory retrieval via
+   `npx tsx src/admin.ts plan-context` (index/refresh with `index-repo-markdown`
+   and `refresh-retrieval`), backed by `src/store/postgres-memory-search.ts` and
+   `src/memory.ts`. (Replaces the removed Qdrant index — migration
+   `014_drop_qdrant_columns.sql` dropped Qdrant.)
 5. Repo grep / filesystem scan (lowest)
 
 ## Retrieval steps
