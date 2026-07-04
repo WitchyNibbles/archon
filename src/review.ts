@@ -1645,7 +1645,7 @@ export async function parseOrReadFindingsJson(
 // SaveReviewCommandDeps — injectable dependencies for saveReviewCommand (FIX 4)
 // ---------------------------------------------------------------------------
 
-type SaveReviewStore = Pick<PostgresStore, "findLatestRunForTask" | "saveOrchestratorReview">;
+type SaveReviewStore = Pick<PostgresStore, "findLatestRunForTask" | "saveOrchestratorReview" | "getRun">;
 
 export interface SaveReviewCommandDeps {
   /**
@@ -1733,6 +1733,15 @@ export async function saveReviewCommand(args: readonly string[], deps?: SaveRevi
     // An explicit --run-id flag bypasses the lookup entirely.
     let resolvedRunId: string;
     if (explicitRunId) {
+      const run = await store.getRun(explicitRunId);
+      if (!run) {
+        throw new Error(`save-review: run "${explicitRunId}" not found`);
+      }
+      if (run.workspaceId !== workspaceId || run.projectId !== projectId) {
+        throw new Error(
+          `save-review: run "${explicitRunId}" does not belong to ${workspaceSlug}/${projectSlug}; refusing cross-project write`
+        );
+      }
       resolvedRunId = explicitRunId;
     } else {
       const taskRun = await store.findLatestRunForTask({ workspaceSlug, projectSlug, taskId: taskId! });
@@ -1774,7 +1783,7 @@ export async function saveReviewCommand(args: readonly string[], deps?: SaveRevi
 
 type ApprovalStore = Pick<
   ArchonStoreContract,
-  "findLatestRunForTask" | "getTasksByRun" | "getReviews" | "saveApproval" | "updateTask"
+  "findLatestRunForTask" | "getRun" | "getTasksByRun" | "getReviews" | "saveApproval" | "updateTask"
 >;
 
 export interface SaveApprovalCommandDeps {
@@ -1810,6 +1819,9 @@ export async function saveApprovalCommand(
     throw new Error("save-approval requires ARCHON_WORKSPACE_SLUG and ARCHON_PROJECT_SLUG to be set");
   }
 
+  const workspaceId = `workspace:${workspaceSlug}`;
+  const projectId = `project:${workspaceSlug}:${projectSlug}`;
+
   const now = new Date().toISOString();
 
   const withClientFn: <T>(fn: (store: ApprovalStore) => Promise<T>) => Promise<T> =
@@ -1819,8 +1831,19 @@ export async function saveApprovalCommand(
   const result = await withClientFn(async (store) => {
     // Resolve the run that contains this task (not the project's active run which may
     // have advanced). An explicit --run-id flag bypasses the lookup entirely.
+    // When --run-id is provided, validate it belongs to this workspace/project to
+    // prevent cross-project writes.
     let runId: string;
     if (explicitRunId) {
+      const run = await store.getRun(explicitRunId);
+      if (!run) {
+        throw new Error(`save-approval: run "${explicitRunId}" not found`);
+      }
+      if (run.workspaceId !== workspaceId || run.projectId !== projectId) {
+        throw new Error(
+          `save-approval: run "${explicitRunId}" does not belong to ${workspaceSlug}/${projectSlug}; refusing cross-project write`
+        );
+      }
       runId = explicitRunId;
     } else {
       const taskRun = await store.findLatestRunForTask({ workspaceSlug, projectSlug, taskId: taskId! });

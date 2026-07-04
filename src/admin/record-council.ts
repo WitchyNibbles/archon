@@ -23,7 +23,7 @@ function parseFlag(args: readonly string[], flag: string): string | undefined {
 }
 
 export interface RecordCouncilOptions {
-  store: Pick<ArchonStore, "findLatestRunForTask" | "getTask" | "updateTask" | "ensureProjectContext">;
+  store: Pick<ArchonStore, "findLatestRunForTask" | "getRun" | "getTask" | "updateTask" | "ensureProjectContext">;
   workspaceSlug: string;
   projectSlug: string;
   /** Explicit run id — when provided, bypasses findLatestRunForTask. */
@@ -45,9 +45,21 @@ export async function executeRecordCouncilCommand(options: RecordCouncilOptions)
     );
   }
   // Resolve the run that contains the task — not the project's active run, which may have
-  // advanced past the run where the task lives. An explicit runId bypasses the lookup.
+  // advanced past the run where the task lives. An explicit runId bypasses the lookup,
+  // but must be validated to belong to this workspace/project (cross-project write guard).
   let runId: string;
   if (options.runId) {
+    const run = await options.store.getRun(options.runId);
+    if (!run) {
+      throw new Error(`record-council: run "${options.runId}" not found`);
+    }
+    const expectedWorkspaceId = `workspace:${options.workspaceSlug}`;
+    const expectedProjectId = `project:${options.workspaceSlug}:${options.projectSlug}`;
+    if (run.workspaceId !== expectedWorkspaceId || run.projectId !== expectedProjectId) {
+      throw new Error(
+        `record-council: run "${options.runId}" does not belong to ${options.workspaceSlug}/${options.projectSlug}; refusing cross-project write`
+      );
+    }
     runId = options.runId;
   } else {
     const taskRun = await options.store.findLatestRunForTask({
@@ -66,9 +78,11 @@ export async function executeRecordCouncilCommand(options: RecordCouncilOptions)
   if (!task) {
     throw new Error(`record-council: task ${options.taskId} not found in run ${runId}`);
   }
+  const now = new Date().toISOString();
   await options.store.updateTask({
     ...task,
-    packet: { ...task.packet, councilOutcome: options.outcome }
+    packet: { ...task.packet, councilOutcome: options.outcome },
+    updatedAt: now
   });
   return { taskId: options.taskId, runId, outcome: options.outcome };
 }
@@ -85,8 +99,16 @@ export async function recordCouncilCommand(
   const taskId = parseFlag(args, "task-id");
   const outcome = parseFlag(args, "outcome");
   const explicitRunId = parseFlag(args, "run-id");
+  const source = parseFlag(args, "source") ?? "";
   if (!taskId) throw new Error("record-council requires --task-id");
   if (!outcome) throw new Error("record-council requires --outcome");
+  // TRUST GATE: only orchestrator-sourced invocations are permitted.
+  // Matches the save-review and save-approval invariant.
+  if (source !== "orchestrator") {
+    throw new Error(
+      "record-council only accepts --source orchestrator; direct invocation without orchestrator provenance is not permitted"
+    );
+  }
 
   const workspaceSlug = env.ARCHON_WORKSPACE_SLUG ?? "default";
   const projectSlug = env.ARCHON_PROJECT_SLUG;

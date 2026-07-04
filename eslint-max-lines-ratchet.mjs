@@ -21,7 +21,7 @@ export default {
   "src/admin/ops.ts": 350,
   "src/admin/planning-context.ts": 325,
   "src/admin/prune-orphans.ts": 500,
-  "src/admin/record-council.ts": 100,
+  "src/admin/record-council.ts": 125, // raised: +22 for getRun scope validation + --source trust gate (review-gate fix)
   "src/admin/report.ts": 775,
   "src/admin/runtime-surface.ts": 450,
   "src/admin/secret.ts": 525,
@@ -137,7 +137,7 @@ export default {
   "src/mcp/subtask-tools.ts": 150,
   "src/mcp/tools.ts": 400,
   "src/memory.ts": 900,
-  "src/review.ts": 1875,
+  "src/review.ts": 1900, // raised: +23 for getRun scope validation in save-review + save-approval (review-gate fix)
   "src/runtime.ts": 2450,
   "src/runtime/agentic-loop.ts": 375,
   "src/runtime/agentic-metrics.ts": 200,

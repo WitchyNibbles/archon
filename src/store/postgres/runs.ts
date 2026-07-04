@@ -89,7 +89,7 @@ export async function findLatestRunForTask(
      join workspaces w on w.id = p.workspace_id
      join tasks t on t.run_id = r.id
      where w.slug = $1 and p.slug = $2 and t.task_key = $3
-     order by r.updated_at desc
+     order by (case when r.status = 'in_progress' then 0 else 1 end) asc, r.updated_at desc
      limit 1`,
     [params.workspaceSlug, params.projectSlug, params.taskId]
   );

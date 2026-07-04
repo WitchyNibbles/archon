@@ -238,7 +238,12 @@ export class MemoryStore implements ArchonStore {
 
     const runs = [...this.runs.values()]
       .filter((run) => run.projectId === project.id)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      .sort((left, right) => {
+        const statusPriority = (s: string) => (s === "in_progress" ? 0 : 1);
+        const statusDiff = statusPriority(left.status) - statusPriority(right.status);
+        if (statusDiff !== 0) return statusDiff;
+        return right.updatedAt.localeCompare(left.updatedAt);
+      });
 
     for (const run of runs) {
       const hasTask = [...this.tasks.values()].some(
