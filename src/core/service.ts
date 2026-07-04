@@ -1,35 +1,18 @@
-import { randomUUID } from "node:crypto";
-import {
-  validateReviewAction,
-  validateHandoff,
-  effectiveRequiredReviewsForTask,
-  isReviewFloorReduced
-} from "../domain/contracts.ts";
-import { requiredGateReviews } from "../domain/types.ts";
-import {
-  evaluateReviewDecision,
-  findBlockingReasonsForTask,
-  findTaskDependencies
-} from "./policy.ts";
 import { AutonomousExecutionStore } from "./autonomous-execution-store.ts";
 import { TaskLifecycleManager } from "./task-lifecycle.ts";
 import { StatusExecutionPlanner } from "./status-execution-planner.ts";
 import { DirectiveExecutionManager } from "./directive-execution.ts";
 import { RecoveryManager } from "./recovery-manager.ts";
 import { MemorySearchManager } from "./memory-search-manager.ts";
+import { GateClosureManager } from "./gate-closure-manager.ts";
+import type { HandoffLifecycleEvent } from "./gate-closure-manager.ts";
 import type {
   DirectiveExecutionResult,
   ExecuteDirectiveStepOptions
 } from "./directive-execution.ts";
-import { buildRuntimeTaskQueue, deriveRunStatus } from "./task-queue-projection.ts";
-import {
-  buildDefaultProductState,
-  timestamp
-} from "./project-runtime-state.ts";
 import type {
   ResolveReviewActionContext
 } from "./review-context.ts";
-import { fireMistakeCapture, fireDistillation } from "../runtime/mistake-capture.ts";
 import type { AntiPatternDraftStoreLike, MistakeLedgerStoreLike } from "../store/types.ts";
 import type {
   AnalysisPhase,
@@ -43,7 +26,6 @@ import type {
   ExternalEvalRecord,
   HandoffInput,
   IntakeRequestInput,
-  LockRecord,
   MemoryPromotionInput,
   MigrationLedgerEntryRecord,
   ParityRequirementRecord,
@@ -56,8 +38,6 @@ import type {
   RunExecutionPlan,
   RunResumeSnapshot,
   ReviewInput,
-  ReviewRecord,
-  ReviewFloorReductionRecord,
   RecoveryApplyResult,
   RecoveryInspectionReport,
   RoutingRecommendationReport,
@@ -72,11 +52,11 @@ import type {
 } from "../domain/types.ts";
 import type { ArchonStore } from "../store/types.ts";
 
-export interface HandoffLifecycleEvent {
-  runId: string;
-  taskId: string;
-  actor: string;
-}
+// HandoffLifecycleEvent is DEFINED in ./gate-closure-manager.ts (the gate cluster
+// that fires it) and re-exported here so existing consumers that import it from
+// "../core/service.ts" keep working unchanged — the public type surface of this
+// module is preserved across the slice-5 split.
+export type { HandoffLifecycleEvent } from "./gate-closure-manager.ts";
 
 export interface ArchonCoreServiceOptions {
   resolveReviewActionContext?: ResolveReviewActionContext | undefined;
@@ -106,13 +86,12 @@ export type {
   DirectiveExecutionResult
 } from "./directive-execution.ts";
 
+// ArchonCoreService is a thin COMPOSITION ROOT. Every domain cluster lives in its
+// own extracted manager (audit F5 / architecture-runtime-debt §3.4); this class
+// owns only the constructor wiring, the shared require/run-status private helpers,
+// and public delegate stubs that preserve the API + type surface unchanged.
 export class ArchonCoreService {
   private readonly store: ArchonStore;
-  private readonly resolveReviewActionContext?: ResolveReviewActionContext | undefined;
-  private readonly reviewSource: "orchestrator" | "seed";
-  private readonly onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
-  private readonly mistakeLedgerStore?: MistakeLedgerStoreLike | undefined;
-  private readonly antiPatternDraftStore?: AntiPatternDraftStoreLike | undefined;
   // Autonomous-execution analysis state (coverage, gaps, checkpoints, traces,
   // evidence ledgers) is owned by this extracted store; the public methods below
   // delegate to it. See src/core/autonomous-execution-store.ts (audit F5).
@@ -120,70 +99,86 @@ export class ArchonCoreService {
   // Run/task lifecycle transitions (intake -> plan -> task graph -> append ->
   // claim -> fail) plus the run-status mutators (bumpRunState/syncRunState) are
   // owned by this extracted manager; the public methods below delegate to it, and
-  // gate/closure/recovery methods still on this class drive run status through the
-  // private bumpRunState/syncRunState delegates. See src/core/task-lifecycle.ts.
+  // the gate/closure and recovery managers drive run status through the private
+  // bumpRunState/syncRunState delegates. See src/core/task-lifecycle.ts.
   private readonly taskLifecycle: TaskLifecycleManager;
   // Status + execution-plan derivation (getStatus/getExecutionPlan/
   // recommendRouting/resumeRun) is owned by this extracted planner; the public
-  // methods below delegate to it. inspectRecovery (recovery cluster, still on
-  // this class) is injected because getExecutionPlan calls it, and the class's
-  // own recovery/registry methods call this.getStatus (which delegates back to
-  // the planner) — both directions are runtime closures, so no import cycle
-  // forms. See src/core/status-execution-planner.ts (audit F5, slice 3).
+  // methods below delegate to it. See src/core/status-execution-planner.ts.
   private readonly statusPlanner: StatusExecutionPlanner;
   // Directive execution loop (executeDirectiveStep) + loop-execution history
-  // (getLoopExecutionHistory/persistLoopExecutionHistory) are owned by this
-  // extracted manager; the public methods below delegate to it. getStatus/
-  // getExecutionPlan (the planner) and claimTask (the lifecycle manager) are
-  // injected. See src/core/directive-execution.ts (audit F5, slice 3).
+  // (getLoopExecutionHistory) are owned by this extracted manager; the public
+  // methods below delegate to it. See src/core/directive-execution.ts.
   private readonly directiveExecution: DirectiveExecutionManager;
   // Recovery cluster (inspectRecovery/applyRecovery) is owned by this extracted
-  // manager; the public methods below delegate to it. getStatus (the planner) and
-  // the run-status/require closures are injected. inspectRecovery is injected back
-  // into the planner (getExecutionPlan calls it) — both directions are runtime
-  // closures, so no import cycle forms. See src/core/recovery-manager.ts
-  // (audit F5, slice 4).
+  // manager; the public methods below delegate to it. The advisory-only authority
+  // boundary is enforced inside the manager. See src/core/recovery-manager.ts.
   private readonly recovery: RecoveryManager;
   // Memory/search cluster (promoteMemory/searchMemory/getRuntimeTraceRegistry) is
-  // owned by this extracted manager; the public methods below delegate to it.
-  // getStatus (the planner), bumpRunState (the lifecycle manager), and the
-  // trusted review-action resolver are injected — the P0 trust gate on
-  // promoteMemory is enforced inside the manager, not bypassed. See
-  // src/core/memory-search-manager.ts (audit F5, slice 4).
+  // owned by this extracted manager; the P0 promotion trust gate is enforced
+  // inside the manager, not bypassed. See src/core/memory-search-manager.ts.
   private readonly memorySearch: MemorySearchManager;
+  // Gate/closure cluster (submitHandoff/recordReview/findTaskBlockers) — the
+  // completion authority of the runtime — is owned by this extracted manager; the
+  // public methods below delegate to it, and findTaskBlockers is injected FROM it
+  // INTO the lifecycle manager and status planner. The review trust-context,
+  // floor-reduction provenance, and mistake-ledger capture ordering are enforced
+  // inside the manager. See src/core/gate-closure-manager.ts (audit F5, slice 5).
+  private readonly gateClosure: GateClosureManager;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
-    this.resolveReviewActionContext = options.resolveReviewActionContext;
-    this.reviewSource = options.reviewSource ?? "orchestrator";
-    this.onHandoff = options.onHandoff;
-    this.mistakeLedgerStore = options.mistakeLedgerStore;
-    this.antiPatternDraftStore = options.antiPatternDraftStore;
+    // WIRING INVARIANT (durable — resolves the slice-4 carried LOW).
+    // Every cross-manager dependency below is a LAZY `this.<field>` arrow closure,
+    // evaluated only when the wrapped method is actually invoked at runtime — and
+    // every manager constructor ONLY STORES its deps, never invokes them. So no
+    // closure can read a manager field before it is assigned: construction order
+    // among the managers is immaterial to correctness, even for the mutually-
+    // referencing pairs (statusPlanner<->recovery, gateClosure<->taskLifecycle,
+    // and the gateClosure->memorySearch->statusPlanner->gateClosure ring). A
+    // closure could only observe a pre-initialization (undefined) field if it
+    // were rewritten to read the field EAGERLY at construction time (e.g.
+    // `const r = this.recovery;` captured outside the arrow). That regression is
+    // guarded by tests/service-constructor-wiring.test.ts, which constructs the
+    // service and immediately drives every mutually-recursive path — it fails
+    // fast if any cross-manager dep is converted from a lazy `this.<field>` read
+    // into an eager capture. Do NOT destructure a manager field into a closure.
     this.autonomousExecution = new AutonomousExecutionStore({
       store,
       requireRun: (runId) => this.requireRun(runId)
+    });
+    this.memorySearch = new MemorySearchManager({
+      store,
+      requireRun: (runId) => this.requireRun(runId),
+      getStatus: (runId) => this.statusPlanner.getStatus(runId),
+      bumpRunState: (runId, status) => this.bumpRunState(runId, status),
+      resolveReviewActionContext: options.resolveReviewActionContext
+    });
+    this.gateClosure = new GateClosureManager({
+      store,
+      requireTask: (runId, taskId) => this.requireTask(runId, taskId),
+      bumpRunState: (runId, status) => this.bumpRunState(runId, status),
+      reviewSource: options.reviewSource ?? "orchestrator",
+      onHandoff: options.onHandoff,
+      resolveReviewActionContext: options.resolveReviewActionContext,
+      mistakeLedgerStore: options.mistakeLedgerStore,
+      antiPatternDraftStore: options.antiPatternDraftStore,
+      promoteMemory: (runId, input) => this.memorySearch.promoteMemory(runId, input)
     });
     this.taskLifecycle = new TaskLifecycleManager({
       store,
       requireRun: (runId) => this.requireRun(runId),
       requireTask: (runId, taskId) => this.requireTask(runId, taskId),
       findTaskBlockers: (task, allTasks, activeLocks) =>
-        this.findTaskBlockers(task, allTasks, activeLocks),
+        this.gateClosure.findTaskBlockers(task, allTasks, activeLocks),
       saveAutonomousExecutionState: (run, update) => this.autonomousExecution.saveState(run, update)
     });
     this.statusPlanner = new StatusExecutionPlanner({
       store,
       requireRun: (runId) => this.requireRun(runId),
       findTaskBlockers: (task, allTasks, activeLocks) =>
-        this.findTaskBlockers(task, allTasks, activeLocks),
+        this.gateClosure.findTaskBlockers(task, allTasks, activeLocks),
       inspectRecovery: (runId, inspectOptions) => this.recovery.inspectRecovery(runId, inspectOptions)
-    });
-    this.directiveExecution = new DirectiveExecutionManager({
-      store,
-      requireRun: (runId) => this.requireRun(runId),
-      claimTask: (runId, taskId, actor) => this.claimTask(runId, taskId, actor),
-      getStatus: (runId) => this.statusPlanner.getStatus(runId),
-      getExecutionPlan: (runId, planOptions) => this.statusPlanner.getExecutionPlan(runId, planOptions)
     });
     this.recovery = new RecoveryManager({
       store,
@@ -192,12 +187,12 @@ export class ArchonCoreService {
       getStatus: (runId) => this.statusPlanner.getStatus(runId),
       syncRunState: (runId) => this.syncRunState(runId)
     });
-    this.memorySearch = new MemorySearchManager({
+    this.directiveExecution = new DirectiveExecutionManager({
       store,
       requireRun: (runId) => this.requireRun(runId),
+      claimTask: (runId, taskId, actor) => this.claimTask(runId, taskId, actor),
       getStatus: (runId) => this.statusPlanner.getStatus(runId),
-      bumpRunState: (runId, status) => this.bumpRunState(runId, status),
-      resolveReviewActionContext: this.resolveReviewActionContext
+      getExecutionPlan: (runId, planOptions) => this.statusPlanner.getExecutionPlan(runId, planOptions)
     });
   }
 
@@ -352,275 +347,16 @@ export class ArchonCoreService {
     return this.taskLifecycle.claimTask(runId, taskId, actor);
   }
 
+  // Gate/closure cluster is owned by GateClosureManager (audit F5 / service.ts
+  // split slice 5). These delegate; the review trust-context checks, floor-
+  // reduction provenance, and mistake-ledger capture ordering are enforced inside
+  // the manager and the public API is unchanged.
   async submitHandoff(runId: string, taskId: string, handoff: HandoffInput) {
-    const task = await this.requireTask(runId, taskId);
-    if (task.status !== "in_progress") {
-      throw new Error(`Task ${taskId} must be in progress before handoff`);
-    }
-
-    const validationErrors = validateHandoff(handoff);
-    if (validationErrors.length > 0) {
-      throw new Error(`Invalid handoff: ${validationErrors.join("; ")}`);
-    }
-
-    if (handoff.ownerRole !== task.packet.ownerRole) {
-      throw new Error(`Invalid handoff: ownerRole must match task ownerRole ${task.packet.ownerRole}`);
-    }
-
-    if (handoff.completionStandard !== task.packet.completionStandard) {
-      throw new Error(
-        `Invalid handoff: completionStandard must match task completionStandard ${task.packet.completionStandard}`
-      );
-    }
-
-    const record = {
-      id: randomUUID(),
-      runId,
-      taskId,
-      actor: handoff.actor,
-      ownerRole: handoff.ownerRole,
-      completionStandard: handoff.completionStandard,
-      summary: handoff.summary,
-      changedFiles: [...handoff.changedFiles],
-      blockers: [...handoff.blockers],
-      verificationNotes: [...handoff.verificationNotes],
-      executionEvidence: [...handoff.executionEvidence],
-      qualityGateEvidence: [...handoff.qualityGateEvidence],
-      contextRefs: [...handoff.contextRefs],
-      createdAt: timestamp()
-    };
-
-    await this.store.saveHandoff(record);
-    await this.store.updateTask({
-      ...task,
-      status: "review_blocked",
-      updatedAt: timestamp()
-    });
-    await this.bumpRunState(runId, "review_blocked");
-    const allTasks = await this.store.getTasksByRun(runId);
-    const reviewBlockedTasks = allTasks.map((candidate) =>
-      candidate.packet.taskId === taskId
-        ? {
-            ...candidate,
-            status: "review_blocked" as const,
-            updatedAt: record.createdAt
-          }
-        : candidate
-    );
-    const existingState = await this.store.getProjectRuntimeState(task.projectId);
-    await this.store.saveProjectRuntimeState({
-      projectId: task.projectId,
-      workspaceId: task.workspaceId,
-      activeRunId: runId,
-      activeTaskId: taskId,
-      taskQueue: buildRuntimeTaskQueue("review_blocked", reviewBlockedTasks, taskId),
-      productState: existingState?.productState ?? buildDefaultProductState(),
-      lastVerifiedRunId: existingState?.lastVerifiedRunId,
-      metadata: existingState?.metadata ?? {},
-      createdAt: existingState?.createdAt ?? record.createdAt,
-      updatedAt: record.createdAt
-    });
-
-    if (this.onHandoff) {
-      await this.onHandoff({ runId, taskId, actor: handoff.actor }).catch(() => {
-        // ingestion errors must never block handoff completion
-      });
-    }
-
-    return record;
+    return this.gateClosure.submitHandoff(runId, taskId, handoff);
   }
 
   async recordReview(runId: string, taskId: string, actor: string, review: ReviewInput) {
-    if (!this.resolveReviewActionContext) {
-      throw new Error("recordReview requires a trusted review action context resolver");
-    }
-
-    const task = await this.requireTask(runId, taskId);
-    if (task.status !== "review_blocked") {
-      throw new Error(`Task ${taskId} must be review_blocked before reviews can be recorded`);
-    }
-
-    let context;
-    try {
-      context = await this.resolveReviewActionContext({
-        runId,
-        taskId,
-        actor,
-        reviewerRole: review.reviewerRole,
-        reviewState: review.state
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Invalid review action: ${message}`);
-    }
-
-    const validationErrors = validateReviewAction(context, review);
-    if (validationErrors.length > 0) {
-      throw new Error(`Invalid review action: ${validationErrors.join("; ")}`);
-    }
-
-    // P2.1 / P1.5: when findingDetails is supplied, derive findings[] from the message
-    // fields so the free-text view always matches the structured records and callers
-    // cannot record divergent text.  Three sub-cases:
-    //   • Accepted pass (all findingDetails have disposition="accepted"): derive from
-    //     findingDetails — makes findings[] canonical for the P2.1 accepted path.
-    //   • Non-passing review (blocked/failed) with findingDetails: derive from
-    //     findingDetails so reviewers don't double-author (P1.5 behaviour).
-    //   • Clean pass with provenance-only findingDetails (no acceptance disposition):
-    //     keep findings[] from the caller (normally []) so the gate is not broken by
-    //     deriving non-empty findings that lack acceptance records.
-    const allFindingDetailsAccepted =
-      review.findingDetails !== undefined &&
-      review.findingDetails.length > 0 &&
-      review.findingDetails.every((f) => f.disposition === "accepted");
-    const shouldDeriveFromDetails =
-      allFindingDetailsAccepted ||
-      (review.state !== "passed" &&
-       review.findingDetails !== undefined &&
-       review.findingDetails.length > 0);
-    const derivedFindings: string[] = shouldDeriveFromDetails
-      ? review.findingDetails!.map((f) => f.message)
-      : [...review.findings];
-
-    const reviewRecord: ReviewRecord = {
-      id: randomUUID(),
-      runId,
-      taskId,
-      reviewerRole: review.reviewerRole,
-      actor: context.actor,
-      actorRole: context.actorRole,
-      source: this.reviewSource,
-      state: review.state,
-      severity: review.severity,
-      findings: derivedFindings,
-      waiverReason: review.waiverReason,
-      evidenceRefs: [...(review.evidenceRefs ?? [])],
-      createdAt: timestamp(),
-      findingDetails: review.findingDetails !== undefined ? [...review.findingDetails] : undefined
-    };
-
-    await this.store.saveReview(reviewRecord);
-
-    // P1 MPL capture hook — non-fatal; must never block the review path.
-    // Delegated to fireMistakeCapture (FIX 3: extracted glue function, see module scope above).
-    if (this.mistakeLedgerStore) {
-      fireMistakeCapture(reviewRecord, task.projectId, this.mistakeLedgerStore);
-    }
-
-    // P2 MPL distillation hook — non-fatal; runs after capture, never blocks review path.
-    // Requires both mistakeLedgerStore (to read occurrences) and resolveReviewActionContext
-    // (to create a sealed trusted context for autonomous promotion through promoteMemory).
-    // SECURITY: promoteMemory is bound here — P0 trust gate (isTrustedReviewActionContext)
-    // is enforced inside promoteMemory, not bypassed. actorRole: "reviewer" in the
-    // MemoryPromotionInput satisfies the anti_pattern role-gate (council condition 2).
-    // The resolver provides the sealed WeakSet-registered context (council condition 1).
-    // If antiPatternDraftStore is absent, review_required candidates persist to a no-op store.
-    // resolveReviewActionContext is guaranteed non-null here (checked above at line ~1405).
-    if (this.mistakeLedgerStore && this.antiPatternDraftStore) {
-      fireDistillation(
-        runId,
-        task.projectId,
-        this.mistakeLedgerStore,
-        this.antiPatternDraftStore,
-        this.promoteMemory.bind(this)
-      );
-    }
-
-    const reviews = await this.store.getReviews(runId, taskId);
-    const decision = evaluateReviewDecision(task, reviews);
-
-    await this.store.saveApproval({
-      id: randomUUID(),
-      runId,
-      taskId,
-      actor: context.actor,
-      actorRole: context.actorRole,
-      source: this.reviewSource,
-      decision: decision.decision,
-      rationale:
-        decision.blockers.length > 0 ? decision.blockers.join("; ") : "All required reviews passed",
-      createdAt: timestamp()
-    });
-
-    const nextStatus = decision.decision === "approved" ? "approved" : "review_blocked";
-    const updatedTask: TaskRecord = {
-      ...task,
-      status: nextStatus,
-      updatedAt: timestamp()
-    };
-
-    if (nextStatus === "approved") {
-      // Condition 5: a task may never be approved under a reduced review floor
-      // without a durable provenance row. Use the same shared predicate the gate
-      // decision used so the floor decision and its audit record cannot drift.
-      if (isReviewFloorReduced(task)) {
-        const effectiveFloor = effectiveRequiredReviewsForTask(task);
-        const droppedRoles = requiredGateReviews.filter((role) => !effectiveFloor.includes(role));
-        await this.store.saveReviewFloorReduction({
-          id: randomUUID(),
-          runId,
-          taskId,
-          derivedClass: task.class,
-          droppedRoles: [...droppedRoles],
-          effectiveFloor: [...effectiveFloor],
-          writeScopeSnapshot: [...task.packet.allowedWriteScope],
-          basis: "opt_out_class+scope_review_safe",
-          source: "runtime",
-          decidedAt: updatedTask.updatedAt
-        } satisfies ReviewFloorReductionRecord);
-      }
-      await this.store.releaseLocksForTask(runId, taskId, timestamp());
-    }
-
-    await this.store.updateTask(updatedTask);
-    await this.bumpRunState(runId, nextStatus);
-    const allTasks = await this.store.getTasksByRun(runId);
-    const syncedTasks = allTasks.map((candidate) =>
-      candidate.packet.taskId === taskId ? updatedTask : candidate
-    );
-    const existingState = await this.store.getProjectRuntimeState(task.projectId);
-    const activeTaskId = syncedTasks.find((candidate) => candidate.status === "in_progress")?.packet.taskId;
-    await this.store.saveProjectRuntimeState({
-      projectId: task.projectId,
-      workspaceId: task.workspaceId,
-      activeRunId: runId,
-      activeTaskId,
-      taskQueue: buildRuntimeTaskQueue(deriveRunStatus(syncedTasks), syncedTasks, activeTaskId),
-      productState: existingState?.productState ?? buildDefaultProductState(),
-      lastVerifiedRunId: nextStatus === "approved" ? runId : existingState?.lastVerifiedRunId,
-      metadata: existingState?.metadata ?? {},
-      createdAt: existingState?.createdAt ?? timestamp(),
-      updatedAt: timestamp()
-    });
-    await this.store.saveWorkflowDocument({
-      id: randomUUID(),
-      workspaceId: task.workspaceId,
-      projectId: task.projectId,
-      runId,
-      taskId,
-      kind: "review_summary",
-      title: `Review summary: ${taskId}`,
-      body: JSON.stringify(
-        {
-          review: reviewRecord,
-          blockers: decision.blockers,
-          status: nextStatus
-        },
-        null,
-        2
-      ),
-      metadata: {
-        source: "runtime_review",
-        evidenceRefs: reviewRecord.evidenceRefs ?? []
-      },
-      createdAt: reviewRecord.createdAt,
-      updatedAt: reviewRecord.createdAt
-    });
-    return {
-      review: reviewRecord,
-      blockers: decision.blockers,
-      task: updatedTask
-    };
+    return this.gateClosure.recordReview(runId, taskId, actor, review);
   }
 
   async failTask(runId: string, taskId: string, reason: string) {
@@ -717,40 +453,15 @@ export class ArchonCoreService {
   }
 
   // Run-status mutators are owned by TaskLifecycleManager (audit F5 / service.ts
-  // split slice 2). These private delegates keep gate/closure/recovery methods
-  // still on this class (recordReview, submitHandoff, promoteMemory, applyRecovery)
-  // driving run status through the same code path as the lifecycle transitions.
+  // split slice 2). These private delegates keep the gate/closure and recovery
+  // managers driving run status through the same code path as the lifecycle
+  // transitions (gateClosure.bumpRunState and recovery.syncRunState are injected
+  // from these).
   private async bumpRunState(runId: string, status: RunRecord["status"]) {
     return this.taskLifecycle.bumpRunState(runId, status);
   }
 
   private async syncRunState(runId: string) {
     return this.taskLifecycle.syncRunState(runId);
-  }
-
-  private async findTaskBlockers(
-    task: TaskRecord,
-    allTasks: readonly TaskRecord[],
-    activeLocks: readonly LockRecord[]
-  ): Promise<string[]> {
-    const blockers = findBlockingReasonsForTask(task, allTasks, activeLocks);
-
-    for (const dependency of findTaskDependencies(task.packet, allTasks)) {
-      if (dependency.status !== "approved") {
-        continue;
-      }
-
-      const reviews = await this.store.getReviews(dependency.runId, dependency.packet.taskId);
-      const decision = evaluateReviewDecision(dependency, reviews);
-      if (decision.decision === "approved") {
-        continue;
-      }
-
-      blockers.push(
-        `dependency ${dependency.packet.taskId} has stale approval: ${decision.blockers.join("; ")}`
-      );
-    }
-
-    return blockers;
   }
 }
