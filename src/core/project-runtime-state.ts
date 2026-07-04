@@ -1,10 +1,14 @@
 // Shared project-runtime-state primitives.
 //
 // Extracted from core/service.ts (audit F5 / architecture-runtime-debt §3.4) so
-// that both ArchonCoreService and the extracted AutonomousExecutionStore module
-// depend on ONE copy of these helpers rather than importing across each other
-// (which would create a service.ts <-> autonomous-execution-store.ts import
-// cycle). Keep this module dependency-light: pure primitives only, no store.
+// that both ArchonCoreService and the extracted store modules (autonomous-execution
+// store, task-lifecycle manager) depend on ONE copy of these helpers rather than
+// importing across each other (which would create service.ts <-> module import
+// cycles). Keep this module dependency-light: pure primitives only, no store.
+//
+// The run-status + task-queue projections (deriveRunStatus, buildRuntimeTaskQueue)
+// live in a sibling module — ./task-queue-projection.ts — not here, so this file's
+// max-lines ratchet stays put; both share the same cycle-break rationale.
 
 import type { TaskQueue } from "../archon/task-queue.ts";
 import type { AutonomousExecutionState, ProjectRuntimeMetadata } from "../domain/types.ts";
