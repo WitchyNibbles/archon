@@ -14,24 +14,28 @@ Goal: ship the smallest clean increment without bypassing gates.
 3. Enforce write scope, completion standard, required roles, and quality gates.
 4. Spawn only the agents needed for the active slice via the Agent tool with explicit `model` routing.
 5. Manager coordinates; non-trivial work stays with the named specialist owner.
-6. Move completed work into `reviewer`, `qa_engineer`, and `security_reviewer` handoff.
+6. Move completed work into the `reviewer`, `qa_engineer`, and `security_reviewer` gates (runtime role ids): with a connected runtime, record them via `review-orchestrator` (see `archon-review`); handoffs follow `.archon/templates/handoff.md`.
 7. Capture owner role, completion standard, specialist evidence, and quality-gate evidence.
-8. The manager persists review gate files under `.archon/work/reviews/` when the reviewer roles are read-only.
-9. Run `node --experimental-strip-types scripts/check-archon-workflow.ts --task-id <task-id>` before claiming the substantive slice is complete.
+8. The manager persists review gate files under `.archon/work/reviews/` (naming `review-<task-id>-<role>.md`, structure per `.archon/templates/review-gate.md`) when the reviewer roles are read-only — evidence layer only; runtime records remain the completion authority.
+9. Run the canonical workflow check `npx tsx ./src/admin.ts workflow-proof --run-id latest --task-id <task-id>` before claiming the substantive slice is complete (`bash scripts/check-archon-workflow-live.sh [--task-id <task-id>]` is the documented local-live alias).
 10. Promote only reviewed durable memory.
 
 ## Agent routing
 
-- architecture and sequencing handoff: `solution_architect`
+Agent-tool `subagent_type` names (kebab-case, matching `.claude/agents/`; the runtime's
+gate role ids in DB records and review filenames stay snake_case):
+
+- architecture and sequencing handoff: `solution-architect`
 - decomposition, dependencies, and worker routing: `planner`
-- documentation, release-note, and standards verification: `docs_researcher`
-- UI, flow, accessibility: `frontend_designer`
-- server logic, API, auth, data: `backend_engineer`
-- deploy, env, secrets, monitoring: `infra_engineer`
-- build, test, typecheck, or setup failure resolution: `build_resolver`
+- documentation, release-note, and standards verification: `docs-researcher`
+- UI, flow, accessibility: `frontend-designer`
+- server logic, API, auth, data: `backend-engineer`
+- deploy, env, secrets, monitoring: `infra-engineer`
+- build, test, typecheck, or setup failure resolution: `build-resolver`
 - correctness and regression review: `reviewer`
-- threat review and abuse cases: `security_reviewer`
-- tests and regressions: `qa_engineer`
+- threat review and abuse cases: `security-reviewer`
+- tests and regressions: `qa-engineer`
+- gate recording against a live runtime: `review-orchestrator`
 
 ## Token discipline
 
