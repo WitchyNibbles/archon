@@ -133,7 +133,7 @@ Archon routes tasks to the right Claude model automatically:
 | Task Class | Model | Effort |
 |---|---|---|
 | Planning, architecture, council | `claude-opus-4-8` | high |
-| Implementation, review, QA | `claude-sonnet-4-6` | high |
+| Implementation, review, QA | `claude-sonnet-5` | high |
 | Docs, knowledge, memory | `claude-haiku-4-5-20251001` | medium |
 | Trivial mechanical tasks | `claude-haiku-4-5-20251001` | low |
 

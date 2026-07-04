@@ -165,6 +165,12 @@ export async function verifyAgentCatalogArtifacts(input: {
     // resolveModelAlias path — direct MODEL_ALIAS_TO_ID indexing would return
     // undefined for an unknown alias and only produce a mismatch string, never an
     // exception; resolveModelAlias throws, keeping failures loud everywhere.
+    // INTENTIONAL behavior change (reviewer LOW, round 2): this aborts the whole
+    // verifyAgentCatalogArtifacts call on the FIRST unknown alias found across all
+    // roles, rather than accumulating it as one more mismatch string alongside
+    // every other agent's findings. An unresolvable alias means the catalog itself
+    // is broken (not a per-agent drift), so fail-fast is correct here — do not
+    // "fix" this into a try/catch that turns it back into an accumulated finding.
     const expectedModel = resolveModelAlias(entry.model);
     try {
       const content = await readFile(path.join(input.repoRoot, entry.artifactPath), "utf8");

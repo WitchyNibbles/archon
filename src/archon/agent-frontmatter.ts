@@ -4,28 +4,15 @@ import {
   resolveModelAlias,
   type AgentRoleId
 } from "./agent-catalog.ts";
+import { assertScalarsSafeForRoundTrip } from "./agent-frontmatter-safety.ts";
+
+export { assertScalarsSafeForRoundTrip } from "./agent-frontmatter-safety.ts";
 
 // Single source of truth for AGENT.md YAML frontmatter (catalog is authority; verifier asserts drift).
 
 /** ".claude/agents/<name>/AGENT.md" -> "<name>". Always POSIX-separated. */
 export function agentNameFromArtifactPath(artifactPath: string): string {
   return path.posix.basename(path.posix.dirname(artifactPath));
-}
-
-/** Assert scalars have no `\` or `"` — `stripYamlScalar` does not unescape, so those chars
- *  silently break the round-trip. Exported for escape-safety tests. */
-export function assertScalarsSafeForRoundTrip(
-  scalars: ReadonlyArray<{ field: string; value: string }>,
-  agentName: string
-): void {
-  for (const { field, value } of scalars) {
-    if (/[\\"]/.test(value)) {
-      throw new Error(
-        `renderAgentFrontmatter: agent "${agentName}" field "${field}" has a backslash` +
-          ` or double-quote that breaks round-trip (stripYamlScalar won't unescape). Value: ${JSON.stringify(value)}`
-      );
-    }
-  }
 }
 
 /** Wrap as a YAML double-quoted scalar, escaping backslash and quote. */

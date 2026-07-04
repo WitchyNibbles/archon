@@ -14,7 +14,12 @@ import {
   verifyAgentCatalogArtifacts,
   parseAgentFrontmatter
 } from "../src/archon/agent-artifact-verifier.ts";
-import { getAgentCatalogEntry, MODEL_ALIAS_TO_ID, resolveModelAlias } from "../src/archon/agent-catalog.ts";
+import {
+  agentCatalog,
+  getAgentCatalogEntry,
+  MODEL_ALIAS_TO_ID,
+  resolveModelAlias
+} from "../src/archon/agent-catalog.ts";
 import { renderAgentFrontmatter } from "../src/archon/agent-frontmatter.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -151,4 +156,29 @@ test("alias-resolution: resolveModelAlias throws on unknown alias (verifier uses
   // the same input. The verifier no longer takes this path.
   const directResult = (MODEL_ALIAS_TO_ID as Record<string, string | undefined>)["not-a-real-alias"];
   assert.equal(directResult, undefined, "direct map index silently returns undefined — the fixed verifier no longer does this");
+});
+
+// ── Round 2 (QA, empirically proven): guard the ACTUAL call site ──
+//
+// QA reverted agent-artifact-verifier.ts byte-for-byte to the old silent
+// MODEL_ALIAS_TO_ID[entry.model] indexing inside the try/catch, re-ran the full
+// suite, and it stayed green — the test above only exercises resolveModelAlias
+// standalone, never the verifyAgentCatalogArtifacts call site itself. This test
+// drives verifyAgentCatalogArtifacts end-to-end against the REAL repo root with
+// a temporarily corrupted catalog alias, and asserts the call rejects (uncaught
+// throw) rather than merely returning a mismatch string. A future revert of the
+// resolveModelAlias fix must turn this test red.
+test("verifyAgentCatalogArtifacts: rejects (uncaught throw) when a shipped role's catalog model alias is corrupted", async () => {
+  const role = BASELINE_ROLE;
+  const entry = agentCatalog[role];
+  const originalModel = entry.model;
+  try {
+    (entry as { model: string }).model = "not-a-real-alias-round2";
+    await assert.rejects(
+      () => verifyAgentCatalogArtifacts({ repoRoot, roles: [role] }),
+      /Unknown model alias/
+    );
+  } finally {
+    (entry as { model: string }).model = originalModel;
+  }
 });
