@@ -163,6 +163,62 @@ test("reconcileRunClosure: onRunSealed receives the sealed run's terminal task k
 });
 
 // ---------------------------------------------------------------------------
+// Retro nudge (audit F5 learning loop) — printed ONLY on an actual seal
+// ---------------------------------------------------------------------------
+
+const RETRO_NUDGE = "/archon-retro";
+
+function collectingDeps(snap: RunStatusSnapshot, lines: string[]): CloseRunDeps {
+  return {
+    getStatusSnapshot: async () => snap,
+    getReviews: async (): Promise<ReviewRecord[]> => [],
+    getApprovals: async (): Promise<ApprovalRecord[]> => [],
+    getReviewFloorReductions: async () => [],
+    updateTask: async () => {},
+    updateRun: async () => {},
+    now: () => "2026-07-04T00:00:00.000Z",
+    writeLine: (line) => lines.push(line)
+  };
+}
+
+test("retro nudge: emitted when a run is actually sealed (--confirm, all tasks terminal)", async () => {
+  const snap = snapshotOf([task("t1", "done"), task("t2", "done")]);
+  const lines: string[] = [];
+  const result = await reconcileRunClosure("run-1", true, collectingDeps(snap, lines));
+  assert.equal(result.sealedRun, true);
+  assert.ok(
+    lines.some((l) => l.includes(RETRO_NUDGE)),
+    "a sealed run must nudge the operator to run the retro"
+  );
+});
+
+test("retro nudge: NOT emitted on dry-run even when the run is seal-ready", async () => {
+  const snap = snapshotOf([task("t1", "done"), task("t2", "done")]);
+  const lines: string[] = [];
+  const result = await reconcileRunClosure("run-1", false, collectingDeps(snap, lines));
+  assert.equal(result.sealedRun, false);
+  assert.ok(
+    lines.some((l) => l.includes("seal run: yes")),
+    "dry-run still reports the run is seal-ready"
+  );
+  assert.ok(
+    !lines.some((l) => l.includes(RETRO_NUDGE)),
+    "dry-run must not fire the retro nudge — only an actual seal does"
+  );
+});
+
+test("retro nudge: NOT emitted when the run is not sealable (non-terminal task remains)", async () => {
+  const snap = snapshotOf([task("t1", "done"), task("t2", "in_progress")]);
+  const lines: string[] = [];
+  const result = await reconcileRunClosure("run-1", true, collectingDeps(snap, lines));
+  assert.equal(result.sealedRun, false);
+  assert.ok(
+    !lines.some((l) => l.includes(RETRO_NUDGE)),
+    "an unsealed run must not fire the retro nudge"
+  );
+});
+
+// ---------------------------------------------------------------------------
 // isMutateConfirmed — --confirm AND --apply both mean "mutate"
 // ---------------------------------------------------------------------------
 

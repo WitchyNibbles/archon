@@ -160,6 +160,13 @@ export async function reconcileRunClosure(
   deps.writeLine(`  advanced ${plan.closeable.length} task(s) to done.`);
   if (sealedRun) {
     deps.writeLine("  sealed the run (status → done).");
+    // Learning loop (audit F5): a sealed run is an initiative-closure moment —
+    // nudge the operator to run the retro before the next initiative so the
+    // learning compounds instead of being lost. Emitted only on an actual seal
+    // (sealedRun === true), never on dry-run or an already-sealed re-run.
+    deps.writeLine(
+      "  next: run /archon-retro to record the promotion decision (repo facts → .archon/memory/, process lessons → /archon-skill-evolution, or an explicit \"nothing to promote\") before starting the next initiative."
+    );
   } else if (plan.sealRun) {
     deps.writeLine("  run already sealed.");
   } else {

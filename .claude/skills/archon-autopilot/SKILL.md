@@ -46,8 +46,9 @@ If `product-state.md` or `task-queue.json` is missing, initialize it from `.arch
     - `.archon/work/product-state.md`
     - `.archon/work/task-queue.json`
     - `.archon/ACTIVE`
-12. Select the next unblocked task and continue immediately unless a stop condition is met.
-13. Do not wait for the user to say "continue" between internal tasks; only stop for real blockers, approval-matrix actions, or explicit planning-only requests.
+12. Run `/archon-retro` to record the promotion decision (repo facts to `.archon/memory/`, process lessons to `/archon-skill-evolution`, or an explicit "nothing to promote") before selecting the next task — this compounds the learning so the next task is cheaper.
+13. Select the next unblocked task and continue immediately unless a stop condition is met.
+14. Do not wait for the user to say "continue" between internal tasks; only stop for real blockers, approval-matrix actions, or explicit planning-only requests.
 
 ## Hard rules
 
