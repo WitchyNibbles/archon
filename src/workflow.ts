@@ -1,6 +1,6 @@
 // Workflow, run, task-queue, status, checkpoint/resume, and shared CLI helpers.
 // Extracted verbatim from src/admin.ts (P8-T1 split). MOVE ONLY — no logic changes.
-import { access, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { access, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
@@ -12,6 +12,7 @@ export { collectCommandFlagValues, resolveCommandFlag, resolveFormatFlag };
 
 
 import { triggerTaskCloseIngestion } from "./runtime/memory-ingestion-pipeline.ts";
+import { writeArchonExport } from "./runtime/export-writer.ts";
 
 
 
@@ -1772,24 +1773,12 @@ export function isCompleteProjectStatus(projectStatus: string | undefined): bool
 }
 
 
+// Export-surface writer: routes through the single Archon export writer so the
+// task-queue.json / ACTIVE writes are atomic (temp+rename) and skip-on-unchanged.
+// `filePath` must be within `.archon/work/**` or the `.archon/ACTIVE` pointer —
+// its only callers are the workflow export writes below.
 export async function writeFileIfChanged(filePath: string, content: string): Promise<boolean> {
-  try {
-    const existing = await readFile(filePath, "utf8");
-    if (existing === content) {
-      return false;
-    }
-  } catch (error) {
-    const code =
-      typeof error === "object" && error !== null && "code" in error
-        ? String((error as { code?: unknown }).code)
-        : "";
-    if (code !== "ENOENT") {
-      throw error;
-    }
-  }
-
-  await writeFile(filePath, content, "utf8");
-  return true;
+  return writeArchonExport(filePath, content, { ifChanged: true });
 }
 
 
@@ -1816,7 +1805,7 @@ export async function syncRuntimeWorkflowExports(
   const archonRoot = path.join(path.resolve(cwd), ".archon");
   const workRoot = path.join(archonRoot, "work");
 
-  await mkdir(workRoot, { recursive: true });
+  // Parent-directory creation is handled atomically inside the export writer.
   const queueChanged = await writeFileIfChanged(
     path.join(workRoot, "task-queue.json"),
     `${JSON.stringify(queue, null, 2)}\n`
@@ -2411,7 +2400,15 @@ export async function executeRepairTaskQueueCommandFromArgs(
   const repaired = repairTaskQueueContent(existing);
 
   if (repaired.changed) {
-    await writeFile(queuePath, repaired.content, "utf8");
+    // Route the default `.archon/work/task-queue.json` through the atomic export
+    // writer; an operator `--queue-path` override to a non-export location keeps
+    // the plain write so repair can still target an arbitrary queue file.
+    const defaultQueuePath = path.join(cwd, ".archon", "work", "task-queue.json");
+    if (path.resolve(queuePath) === path.resolve(defaultQueuePath)) {
+      await writeArchonExport(queuePath, repaired.content);
+    } else {
+      await writeFile(queuePath, repaired.content, "utf8");
+    }
   }
 
   return {

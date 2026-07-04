@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { writeArchonExport } from "../runtime/export-writer.ts";
 import type { TaskQueue } from "../archon/task-queue.ts";
 import type { RunRecord, TaskRecord, TaskPacketInput } from "../domain/types.ts";
 import type { ArchonStore } from "../store/types.ts";
@@ -292,8 +292,7 @@ async function maybeWritePacketMarkdown(
       `init-task: refusing to write packet outside the tasks directory (${packetPath})`
     );
   }
-  await mkdir(path.dirname(packetPath), { recursive: true });
-  await writeFile(packetPath, renderTaskPacketMarkdown(packet, taskClass), "utf8");
+  await writeArchonExport(packetPath, renderTaskPacketMarkdown(packet, taskClass));
   return packetPath;
 }
 
