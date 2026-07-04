@@ -166,6 +166,16 @@ export class AutonomousExecutionStore {
     this.requireRun = deps.requireRun;
   }
 
+  /**
+   * @internal Public only for cross-module wiring, not part of the store's
+   * caller-facing surface. `saveState` is the primitive every other method here
+   * builds on, and it is also the single seam through which the extracted
+   * task-lifecycle manager seeds autonomous-execution state during createTaskGraph
+   * (injected as `saveAutonomousExecutionState` — see src/core/task-lifecycle.ts).
+   * Its public-ness is bounded by that wiring: no runtime/admin/daemon/mcp caller
+   * invokes it directly, and it must not be treated as a stable external API. If
+   * the task-lifecycle seam is later inlined or reshaped, this may become private.
+   */
   async saveState(
     run: RunRecord,
     update: (current: AutonomousExecutionState | undefined, now: string) => AutonomousExecutionState
