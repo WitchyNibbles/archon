@@ -1,7 +1,7 @@
 ---
 name: accessibility-engineer
 description: "Owns accessibility_acceptance gate: semantic HTML, keyboard navigation, ARIA discipline, contrast, and focus management."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash]
 skills: [caveman, archon-accessibility-gate, ecc:e2e-testing, web-design-guidelines]

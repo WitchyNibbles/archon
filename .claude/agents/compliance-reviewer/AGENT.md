@@ -1,7 +1,7 @@
 ---
 name: compliance-reviewer
 description: "Reviews compliance-sensitive workflows, policy controls, auditability, and regulated-surface risks."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write]
 skills: [caveman, archon-compliance-review, ecc:security-review, documentation-lookup]

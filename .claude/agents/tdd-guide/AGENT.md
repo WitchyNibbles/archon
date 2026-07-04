@@ -1,7 +1,7 @@
 ---
 name: tdd-guide
 description: "Drives red-green-refactor sequencing, failing test design, and test-first discipline."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [archon-tdd, ecc:tdd-workflow]

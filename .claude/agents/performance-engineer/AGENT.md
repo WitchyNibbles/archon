@@ -1,7 +1,7 @@
 ---
 name: performance-engineer
 description: "Owns performance_check_required gate: profiling, latency analysis, query cost, throughput verification, and regression blocking."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash]
 skills: [caveman, archon-performance, verification-loop, ecc:backend-patterns]

@@ -1,7 +1,7 @@
 ---
 name: backend-engineer
 description: "Implements and reviews APIs, services, auth, data models, jobs, and server-side correctness."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [archon-execution, ecc:backend-patterns, ecc:api-design, ecc:tdd-workflow]

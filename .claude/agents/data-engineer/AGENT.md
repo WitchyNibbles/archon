@@ -1,7 +1,7 @@
 ---
 name: data-engineer
 description: "Designs and implements data pipelines, schemas, transformations, and data-system reliability safeguards."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [caveman, ecc:backend-patterns, ecc:postgres-patterns, ecc:database-migrations, verification-loop]

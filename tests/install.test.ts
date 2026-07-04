@@ -34,6 +34,7 @@ import {
   verifyAgentCatalogArtifacts
 } from "../src/archon/agent-artifact-verifier.ts";
 import { listCatalogRepoLocalSkillPaths } from "../src/archon/repo-local-skill-surface.ts";
+import { renderAgentFrontmatter } from "../src/archon/agent-frontmatter.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -317,11 +318,12 @@ test("verifyAgentCatalogArtifacts reports missing and unexpected AGENT.md files 
   await mkdir(mysteryDir, { recursive: true });
 
   // Write a valid AGENT.md for backend-engineer whose frontmatter matches the
-  // catalog (model tier alias → pinned id, effort, skills), so this test isolates
-  // the missing/unexpected-artifact behavior and keeps metadataMismatches empty.
+  // catalog exactly (rendered from the single source of truth), so this test
+  // isolates the missing/unexpected-artifact behavior and keeps metadataMismatches
+  // empty regardless of any model-tier refresh.
   await writeFile(
     path.join(backendDir, "AGENT.md"),
-    "---\ndescription: Backend engineer\nmodel: claude-sonnet-4-6\neffort: high\ntools: [Read, Grep, Glob, Bash, Write, Edit]\nskills: [archon-execution, ecc:backend-patterns, ecc:api-design, ecc:tdd-workflow]\n---\n\n# Backend Engineer\n",
+    `${renderAgentFrontmatter("backend_engineer")}\n\n# Backend Engineer\n`,
     "utf8"
   );
   // Write an unexpected agent directory

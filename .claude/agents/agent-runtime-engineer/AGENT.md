@@ -1,7 +1,7 @@
 ---
 name: agent-runtime-engineer
 description: "Owns agent orchestration, prompt/runtime contracts, tool surfaces, and execution-safety behavior."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [caveman, claude-api, archon-agent-runtime, anthropic-mcp-builder, mcp-server-patterns, verification-loop, ecc:agentic-engineering, ecc:continuous-agent-loop]

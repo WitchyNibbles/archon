@@ -1,7 +1,7 @@
 ---
 name: eval-engineer
 description: "Builds and reviews benchmarks, graders, datasets, regression evidence, and measurable quality signals."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [caveman, claude-api, archon-eval-engineering, archon-skill-evals, ecc:eval-harness]

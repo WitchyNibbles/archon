@@ -1,7 +1,7 @@
 ---
 name: ux-researcher
 description: "Investigates user flows, evidence of friction, and experience-quality tradeoffs."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash]
 skills: [archon-ux-research, archon-frontend-taste, ecc:market-research]
