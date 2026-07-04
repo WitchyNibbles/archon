@@ -83,7 +83,7 @@ Delegate via the `Agent` tool with a `subagent_type` matching an agent name from
 Model routing:
 - `claude-opus-4-8`: planner, product-strategist, solution-architect (high-effort planning and reasoning)
 - `claude-haiku-4-5-20251001`: docs-researcher, memory-curator, technical-writer, git-operator (knowledge and coordination)
-- `claude-sonnet-4-6`: all other delivery and quality roles
+- `claude-sonnet-5`: all other delivery and quality roles
 
 For parallel specialist work, use `isolation: "worktree"` to run independent slices in separate git worktrees.
 

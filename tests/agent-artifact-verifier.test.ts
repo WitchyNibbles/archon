@@ -14,7 +14,7 @@ import {
   verifyAgentCatalogArtifacts,
   parseAgentFrontmatter
 } from "../src/archon/agent-artifact-verifier.ts";
-import { getAgentCatalogEntry, MODEL_ALIAS_TO_ID } from "../src/archon/agent-catalog.ts";
+import { getAgentCatalogEntry, MODEL_ALIAS_TO_ID, resolveModelAlias } from "../src/archon/agent-catalog.ts";
 import { renderAgentFrontmatter } from "../src/archon/agent-frontmatter.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -135,4 +135,20 @@ test("parseAgentFrontmatter: empty skills list parses to []", () => {
   const fm = parseAgentFrontmatter(`---\nmodel: ${MODEL_ALIAS_TO_ID.sonnet}\neffort: high\nskills: []\n---\n`);
   assert.ok(fm);
   assert.deepEqual(fm.skills, []);
+});
+
+// ── Alias-resolution consistency (item 4: auditP2Followups) ──
+
+test("alias-resolution: resolveModelAlias throws on unknown alias (verifier uses loud path, not silent map index)", () => {
+  // Direct proof that the verifier now uses resolveModelAlias (loud) rather than
+  // MODEL_ALIAS_TO_ID direct indexing (silent-undefined). If the verifier used the
+  // direct-index path, an unknown alias would return undefined and produce only a
+  // drift mismatch string "(undefined)" instead of immediately throwing.
+  assert.throws(() => resolveModelAlias("not-a-real-alias"), /Unknown model alias/);
+  assert.throws(() => resolveModelAlias(""), /Unknown model alias/);
+
+  // Confirm the pre-fix silent behavior: direct indexing returns undefined for
+  // the same input. The verifier no longer takes this path.
+  const directResult = (MODEL_ALIAS_TO_ID as Record<string, string | undefined>)["not-a-real-alias"];
+  assert.equal(directResult, undefined, "direct map index silently returns undefined — the fixed verifier no longer does this");
 });

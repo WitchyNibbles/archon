@@ -3,7 +3,7 @@ import path from "node:path";
 import {
   agentCatalogEntries,
   agentRoleIds,
-  MODEL_ALIAS_TO_ID,
+  resolveModelAlias,
   type AgentRoleId,
   getAgentCatalogEntry
 } from "./agent-catalog.ts";
@@ -159,6 +159,13 @@ export async function verifyAgentCatalogArtifacts(input: {
     // `tools` closes the PR-#152 F2 deferral: a tool grant silently added to an
     // AGENT.md (e.g. giving a worker Agent-spawn capability) is now caught here
     // because the catalog `tools` field is the single source of truth.
+    // Resolve the model alias BEFORE entering the try/catch so an unknown alias
+    // throws immediately rather than being caught and silently swallowed.
+    // Audit F5 follow-up (auditP2Followups): align with the generator's
+    // resolveModelAlias path — direct MODEL_ALIAS_TO_ID indexing would return
+    // undefined for an unknown alias and only produce a mismatch string, never an
+    // exception; resolveModelAlias throws, keeping failures loud everywhere.
+    const expectedModel = resolveModelAlias(entry.model);
     try {
       const content = await readFile(path.join(input.repoRoot, entry.artifactPath), "utf8");
       const frontmatter = parseAgentFrontmatter(content);
@@ -167,7 +174,6 @@ export async function verifyAgentCatalogArtifacts(input: {
           `${entry.artifactPath}: expected YAML frontmatter, got malformed content`
         );
       } else {
-        const expectedModel = MODEL_ALIAS_TO_ID[entry.model];
         if (frontmatter.model !== expectedModel) {
           metadataMismatches.push(
             `${entry.artifactPath}: model '${frontmatter.model ?? "(missing)"}' does not match catalog '${entry.model}' (${expectedModel})`

@@ -17,7 +17,8 @@ import {
 import {
   renderAgentFrontmatter,
   replaceFrontmatterBlock,
-  agentNameFromArtifactPath
+  agentNameFromArtifactPath,
+  assertScalarsSafeForRoundTrip
 } from "../src/archon/agent-frontmatter.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -87,4 +88,53 @@ test("resolveModelAlias: rejects an unknown alias", () => {
   assert.throws(() => resolveModelAlias("gpt"), /Unknown model alias/);
   // Prototype keys must not resolve as aliases.
   assert.throws(() => resolveModelAlias("toString"), /Unknown model alias/);
+});
+
+// ── Escape-safety validation (item 1: auditP2Followups) ──
+
+test("assertScalarsSafeForRoundTrip: throws on backslash in a scalar, message names field and agent", () => {
+  assert.throws(
+    () =>
+      assertScalarsSafeForRoundTrip(
+        [{ field: "routerDescription", value: "trigger on C:\\path\\foo" }],
+        "my-agent"
+      ),
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      return msg.includes("routerDescription") && msg.includes("my-agent");
+    }
+  );
+});
+
+test("assertScalarsSafeForRoundTrip: throws on double-quote in a scalar, message names field and agent", () => {
+  assert.throws(
+    () =>
+      assertScalarsSafeForRoundTrip(
+        [{ field: "routerDescription", value: 'say "hello" now' }],
+        "other-agent"
+      ),
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      return msg.includes("routerDescription") && msg.includes("other-agent");
+    }
+  );
+});
+
+test("assertScalarsSafeForRoundTrip: clean value passes without throwing", () => {
+  assert.doesNotThrow(() =>
+    assertScalarsSafeForRoundTrip(
+      [{ field: "routerDescription", value: "normal description text" }],
+      "any-agent"
+    )
+  );
+});
+
+test("renderAgentFrontmatter: does not throw for any shipped catalog entry", () => {
+  // Proves all real routerDescription values are escape-safe.
+  for (const role of shippedRoles) {
+    assert.doesNotThrow(
+      () => renderAgentFrontmatter(role),
+      `role ${role} unexpectedly threw from escape-safety check`
+    );
+  }
 });
