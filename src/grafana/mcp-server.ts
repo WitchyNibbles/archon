@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createGrafanaClient, type ArchonGrafanaQueryOptions } from "./client.ts";
 import { loadDevgodEnvFile } from "./config.ts";
 import { createGrafanaMcpToolDefinitions } from "./tools.ts";
+import { getPackageVersion } from "../shared/package-version.ts";
 
 export interface GrafanaMcpServerOptions {
   /** Override options for archon_grafana_query (e.g. to inject a mock fetch in tests). */
@@ -26,7 +27,7 @@ export function createGrafanaMcpServer(options: GrafanaMcpServerOptions = {}) {
 
   const server = new McpServer({
     name: "archon-grafana",
-    version: "0.1.0"
+    version: getPackageVersion()
   });
 
   for (const tool of createGrafanaMcpToolDefinitions(
