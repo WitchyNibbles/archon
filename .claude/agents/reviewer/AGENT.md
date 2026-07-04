@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: "Reviews changes for correctness, regressions, and missing tests separate from security review."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash]
 skills: [archon-review]

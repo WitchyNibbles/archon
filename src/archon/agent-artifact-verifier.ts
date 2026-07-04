@@ -3,7 +3,7 @@ import path from "node:path";
 import {
   agentCatalogEntries,
   agentRoleIds,
-  type AgentCatalogEntry,
+  MODEL_ALIAS_TO_ID,
   type AgentRoleId,
   getAgentCatalogEntry
 } from "./agent-catalog.ts";
@@ -16,35 +16,27 @@ export interface AgentArtifactVerificationResult {
   metadataMismatches: string[];
 }
 
-// Audit agents-F3: the catalog models a tier alias (`opus`/`sonnet`/`haiku`); the
-// shipped AGENT.md frontmatter pins a concrete model id. This map is the current,
-// intentional pin per tier — every shipping agent uses exactly one id per tier
-// (frontmatter census: opus→claude-opus-4-8, sonnet→claude-sonnet-4-6,
-// haiku→claude-haiku-4-5-20251001). It exists so the verifier catches UNINTENDED
-// drift.
-//
-// RUNBOOK (review finding F6): a deliberate model-tier upgrade (e.g.
-// sonnet→claude-sonnet-5) MUST update this map IN THE SAME CHANGE that repins the
-// AGENT.md frontmatter. Until both agree, this verifier fails CI loudly for every
-// agent on that tier — that failure is INTENTIONAL (it proves the roster and the
-// map moved together), NOT a reason to disable or loosen the drift check. Do not
-// "fix" a red drift gate by editing only one side.
-const MODEL_ALIAS_TO_ID: Readonly<Record<AgentCatalogEntry["model"], string>> = {
-  opus: "claude-opus-4-8",
-  sonnet: "claude-sonnet-4-6",
-  haiku: "claude-haiku-4-5-20251001"
-};
+// Audit agents-F3/F5: the alias->id map that resolves a catalog tier alias
+// (`opus`/`sonnet`/`haiku`) to the concrete model id shipped in the AGENT.md
+// frontmatter is now the SHARED map exported from agent-catalog.ts — the same one
+// the frontmatter generator (scripts/generate-agent-frontmatter.ts) renders from.
+// There is no second copy here. A deliberate tier upgrade edits that one map and
+// regenerates the roster in the same change; this verifier fails CI loudly for
+// every agent whose shipped file and the map disagree. See the RUNBOOK on
+// MODEL_ALIAS_TO_ID in agent-catalog.ts.
 
 interface AgentFrontmatter {
   model?: string;
   effort?: string;
+  description?: string;
+  tools?: string[];
   skills?: string[];
 }
 
 // Minimal, dependency-free YAML frontmatter parser for AGENT.md files. It reads
-// the leading `---`-delimited block and extracts the scalar `model`/`effort`
-// fields and the `skills:` flow list (`[a, b, c]`). Returns undefined when there
-// is no well-formed frontmatter block.
+// the leading `---`-delimited block and extracts the scalar `model`/`effort`/
+// `description` fields and the `tools:`/`skills:` flow lists (`[a, b, c]`).
+// Returns undefined when there is no well-formed frontmatter block.
 export function parseAgentFrontmatter(content: string): AgentFrontmatter | undefined {
   if (!content.startsWith("---")) {
     return undefined;
@@ -78,6 +70,10 @@ export function parseAgentFrontmatter(content: string): AgentFrontmatter | undef
       result.model = stripYamlScalar(value);
     } else if (key === "effort") {
       result.effort = stripYamlScalar(value);
+    } else if (key === "description") {
+      result.description = stripYamlScalar(value);
+    } else if (key === "tools") {
+      result.tools = parseYamlFlowList(value);
     } else if (key === "skills") {
       result.skills = parseYamlFlowList(value);
     }
@@ -150,22 +146,19 @@ export async function verifyAgentCatalogArtifacts(input: {
       continue;
     }
 
-    // Audit agents-F1/F2: parse the AGENT.md YAML frontmatter and assert the
-    // structural fields the catalog authoritatively models — model (tier alias →
-    // pinned id), effort, and the skills list — against the catalog. On mismatch
-    // the catalog is the authority (agents-audit §4). Two fields are intentionally
-    // NOT asserted here:
-    //   - description: the AGENT.md description is the richer, router-facing trigger
-    //     text and diverges from the catalog's terse internal label for EVERY agent;
-    //     forcing equality would regress trigger quality (a roster-wide description
-    //     reconciliation is out of this task's scope).
-    //   - tools: the catalog has no `tools` field, so there is no catalog authority
-    //     to check against (AGENT.md is currently the sole source for tools). This
-    //     means a tool grant added to an AGENT.md (e.g. giving a worker Agent-spawn
-    //     capability) is NOT caught by this drift gate — review finding F2 (security,
-    //     MEDIUM). DEFERRED to the audit's P2 single-source-of-truth workstream
-    //     (owner: manager): adding a catalog `tools` field and asserting it here is a
-    //     roster-architecture change out of scope for this P0 bugfix.
+    // Audit agents-F1/F2/F5: parse the AGENT.md YAML frontmatter and assert every
+    // structural field the catalog authoritatively models — model (tier alias ->
+    // pinned id via the shared map), effort, the rich router description, the tools
+    // grant set, and the skills list — against the catalog. On mismatch the catalog
+    // is the authority (agents-audit §4) and the fix is to regenerate the frontmatter
+    // (scripts/generate-agent-frontmatter.ts), never to hand-edit the file.
+    //
+    // The catalog's terse `description` remains an internal label; the AGENT.md
+    // `description:` frontmatter is asserted against `routerDescription`, the rich
+    // trigger text carried in the catalog for exactly this purpose. Asserting
+    // `tools` closes the PR-#152 F2 deferral: a tool grant silently added to an
+    // AGENT.md (e.g. giving a worker Agent-spawn capability) is now caught here
+    // because the catalog `tools` field is the single source of truth.
     try {
       const content = await readFile(path.join(input.repoRoot, entry.artifactPath), "utf8");
       const frontmatter = parseAgentFrontmatter(content);
@@ -183,6 +176,18 @@ export async function verifyAgentCatalogArtifacts(input: {
         if (frontmatter.effort !== entry.effort) {
           metadataMismatches.push(
             `${entry.artifactPath}: effort '${frontmatter.effort ?? "(missing)"}' does not match catalog '${entry.effort}'`
+          );
+        }
+        if (frontmatter.description !== entry.routerDescription) {
+          metadataMismatches.push(
+            `${entry.artifactPath}: description '${frontmatter.description ?? "(missing)"}' does not match catalog routerDescription '${entry.routerDescription}'`
+          );
+        }
+        const frontmatterTools = frontmatter.tools ?? [];
+        const catalogTools = [...entry.tools];
+        if (!setsEqual(frontmatterTools, catalogTools)) {
+          metadataMismatches.push(
+            `${entry.artifactPath}: tools [${frontmatterTools.join(", ")}] do not match catalog [${catalogTools.join(", ")}]`
           );
         }
         const frontmatterSkills = frontmatter.skills ?? [];

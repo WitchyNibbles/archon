@@ -1,7 +1,7 @@
 ---
 name: review-orchestrator
 description: "Spawns reviewer, qa_engineer, and security_reviewer agents and writes their findings to the DB as trusted orchestrator records."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Bash, Read, Grep, Glob, Agent]
 skills: [archon-review, archon-qa-verification, verification-loop]

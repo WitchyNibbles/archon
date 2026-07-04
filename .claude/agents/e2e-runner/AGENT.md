@@ -1,7 +1,7 @@
 ---
 name: e2e-runner
 description: "Verifies critical end-to-end workflows, setup paths, install flows, and regression journeys."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash]
 skills: [archon-e2e, ecc:e2e-testing, anthropic-webapp-testing]

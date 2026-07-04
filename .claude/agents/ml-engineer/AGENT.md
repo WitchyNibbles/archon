@@ -1,7 +1,7 @@
 ---
 name: ml-engineer
 description: "Owns model-integrated behavior, evaluation rigor, and ML-specific product or inference risks."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [caveman, claude-api, archon-eval-engineering, documentation-lookup, verification-loop]

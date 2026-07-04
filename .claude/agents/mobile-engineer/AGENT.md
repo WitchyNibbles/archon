@@ -1,7 +1,7 @@
 ---
 name: mobile-engineer
 description: "Implements and reviews mobile-specific product behavior, interaction flows, and platform constraints."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [archon-frontend-taste, archon-design-system, ecc:frontend-patterns, ecc:e2e-testing]

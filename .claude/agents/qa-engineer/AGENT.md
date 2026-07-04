@@ -1,7 +1,7 @@
 ---
 name: qa-engineer
 description: "Finds regressions, missing tests, flaky behavior, acceptance gaps, and release-readiness issues."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash]
 skills: [archon-qa-verification, archon-accessibility-gate, ecc:e2e-testing, verification-loop]

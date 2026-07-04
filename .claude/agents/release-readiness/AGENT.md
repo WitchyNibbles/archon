@@ -1,7 +1,7 @@
 ---
 name: release-readiness
 description: "Blocks package, migration, installer, and rollout changes that are not ready to ship."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash]
 skills: [archon-release-readiness, verification-loop]

@@ -1,7 +1,7 @@
 ---
 name: frontend-designer
 description: "Owns UX, UI quality, accessibility, and frontend implementation with a bias for polished, intentional interfaces. Produces developer-tool-grade UI: technically credible, information-dense, and visually distinguished from generic AI output."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [archon-frontend-taste, archon-design-system, ecc:frontend-patterns, web-design-guidelines]

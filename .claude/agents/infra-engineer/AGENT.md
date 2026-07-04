@@ -1,7 +1,7 @@
 ---
 name: infra-engineer
 description: "Designs and reviews deployment, environments, secrets handling, CI/CD, observability, and operational safety."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [archon-infra-ops, archon-setup, archon-release-readiness, ecc:deployment-patterns, ecc:docker-patterns]

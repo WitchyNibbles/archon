@@ -1,7 +1,7 @@
 ---
 name: build-resolver
 description: "Diagnoses and fixes build, typecheck, test, and setup failures with incremental verification."
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: medium
 tools: [Read, Grep, Glob, Bash, Write, Edit]
 skills: [archon-debugging]
