@@ -1,24 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
-  deriveTaskQueueEvidence,
-  type TaskClass,
-  type TaskStatus as QueueTaskStatus,
-  type TaskQueue
-} from "../archon/task-queue.ts";
-import {
   validateReviewAction,
   validateHandoff,
-  normalizeIntakeRequest,
   normalizeRetrievalMetadata,
   normalizeSearchInput,
   validateMemoryPromotion,
-  validatePlanInput,
-  validateTaskPacket,
   effectiveRequiredReviewsForTask,
   isReviewFloorReduced
 } from "../domain/contracts.ts";
 import { requiredGateReviews } from "../domain/types.ts";
-import { isOptOutClass } from "../domain/task-class.ts";
 import {
   canRoleAccessSearchResult,
   collectUnsatisfiedReviewRoles,
@@ -30,15 +20,14 @@ import {
 import {
   buildAutonomousExecutionSnapshot,
   collectAutonomousExecutionBlockers,
-  createAutonomousExecutionState,
-  runRequiresAutonomousExecution,
   selectAutonomousNextTarget
 } from "../runtime/autonomous-execution.ts";
 import { buildRuntimeTraceRegistry } from "../runtime/runtime-trace-registry.ts";
 import { AutonomousExecutionStore } from "./autonomous-execution-store.ts";
+import { TaskLifecycleManager } from "./task-lifecycle.ts";
+import { buildRuntimeTaskQueue, deriveRunStatus } from "./task-queue-projection.ts";
 import {
   buildDefaultProductState,
-  buildDefaultTaskQueue,
   readAutonomousExecutionState,
   timestamp,
   uniqueStrings
@@ -370,94 +359,6 @@ function parseProjectSelectorFromId(projectId: string):
   };
 }
 
-function mapTaskStatusToQueueStatus(status: TaskRecord["status"]): QueueTaskStatus {
-  switch (status) {
-    case "ready":
-      return "pending";
-    case "in_progress":
-      return "in_progress";
-    case "approved":
-    case "done":
-      return "done";
-    case "blocked":
-    case "review_blocked":
-      return "blocked";
-  }
-}
-
-// Derive the class for a plan-created task from its quality gates.
-//
-// SECURITY (Option B condition 3): this MUST NEVER return an OPT_OUT_TASK_CLASSES
-// value. Opt-out classes are review-floor-reducible, and qualityGates is a mutable,
-// packet-author-controlled field — deriving an opt-out class from it would resurrect
-// exactly the Option A hole the council rejected (a plan packet could omit quality
-// gates to land in docs_only and become eligible for a single-reviewer close).
-// Opt-out classification may ONLY be assigned explicitly via the validated
-// init-task --class path, never derived here. The default is the non-opt-out
-// prototype_slice; a defense-in-depth guard rejects any opt-out result outright.
-function mapTaskPacketToQueueClass(packet: TaskPacketInput): TaskClass {
-  const derived: TaskClass = packet.qualityGates.includes("release_readiness_required")
-    ? "release_candidate"
-    : "prototype_slice";
-  // Invariant guard: a derived class can never be opt-out (review-floor-reducible).
-  return isOptOutClass(derived) ? "prototype_slice" : derived;
-}
-
-function buildRuntimeTaskQueue(runStatus: RunRecord["status"], tasks: readonly TaskRecord[], activeTaskId?: string | undefined): TaskQueue {
-  return {
-    project_status: runStatus,
-    current_task_id: activeTaskId ?? tasks.find((task) => task.status === "in_progress")?.packet.taskId ?? null,
-    tasks: tasks.map((task) => ({
-      id: task.packet.taskId,
-      title: task.packet.title,
-      status: mapTaskStatusToQueueStatus(task.status),
-      // Read the authoritative immutable TaskRecord.class — never re-derive from
-      // the mutable qualityGates here (that was the Option A pattern the council
-      // rejected; re-deriving in the queue export would resurrect a spoofable
-      // shadow even though gate sites use task.class).
-      class: task.class,
-      depends_on: [...task.packet.dependencies],
-      acceptance_criteria: [...task.packet.acceptanceCriteria],
-      verification: [...task.packet.verificationSteps],
-      evidence: deriveTaskQueueEvidence({
-        taskId: task.packet.taskId,
-        verification: task.packet.verificationSteps,
-        qualityGates: task.packet.qualityGates
-      }),
-      blocker:
-        task.status === "blocked"
-          ? "runtime task blocked"
-          : task.status === "review_blocked"
-            ? "awaiting required reviews"
-            : null
-    }))
-  };
-}
-
-function deriveRunStatus(tasks: readonly TaskRecord[]): RunRecord["status"] {
-  if (tasks.length === 0) {
-    return "decomposed";
-  }
-
-  if (tasks.every((task) => task.status === "done")) {
-    return "done";
-  }
-
-  if (tasks.some((task) => task.status === "in_progress")) {
-    return "in_progress";
-  }
-
-  if (tasks.some((task) => task.status === "review_blocked")) {
-    return "review_blocked";
-  }
-
-  if (tasks.every((task) => task.status === "approved" || task.status === "done")) {
-    return "approved";
-  }
-
-  return "ready";
-}
-
 export class ArchonCoreService {
   private readonly store: ArchonStore;
   private readonly resolveReviewActionContext?: ResolveReviewActionContext | undefined;
@@ -469,6 +370,12 @@ export class ArchonCoreService {
   // evidence ledgers) is owned by this extracted store; the public methods below
   // delegate to it. See src/core/autonomous-execution-store.ts (audit F5).
   private readonly autonomousExecution: AutonomousExecutionStore;
+  // Run/task lifecycle transitions (intake -> plan -> task graph -> append ->
+  // claim -> fail) plus the run-status mutators (bumpRunState/syncRunState) are
+  // owned by this extracted manager; the public methods below delegate to it, and
+  // gate/closure/recovery methods still on this class drive run status through the
+  // private bumpRunState/syncRunState delegates. See src/core/task-lifecycle.ts.
+  private readonly taskLifecycle: TaskLifecycleManager;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
@@ -480,6 +387,14 @@ export class ArchonCoreService {
     this.autonomousExecution = new AutonomousExecutionStore({
       store,
       requireRun: (runId) => this.requireRun(runId)
+    });
+    this.taskLifecycle = new TaskLifecycleManager({
+      store,
+      requireRun: (runId) => this.requireRun(runId),
+      requireTask: (runId, taskId) => this.requireTask(runId, taskId),
+      findTaskBlockers: (task, allTasks, activeLocks) =>
+        this.findTaskBlockers(task, allTasks, activeLocks),
+      saveAutonomousExecutionState: (run, update) => this.autonomousExecution.saveState(run, update)
     });
   }
 
@@ -639,270 +554,26 @@ export class ArchonCoreService {
     return this.autonomousExecution.generateRepoInventory(runId, input);
   }
 
+  // Task-lifecycle transitions are owned by TaskLifecycleManager (audit F5 /
+  // service.ts split slice 2). These delegate; the public API is unchanged.
   async intakeRequest(input: IntakeRequestInput): Promise<RunRecord> {
-    const { workspace, project } = await this.store.ensureProjectContext(input);
-    const now = timestamp();
-    const run: RunRecord = {
-      id: randomUUID(),
-      workspaceId: workspace.id,
-      projectId: project.id,
-      actor: input.actor,
-      title: input.title.trim(),
-      request: input.request.trim(),
-      summary: normalizeIntakeRequest(input),
-      status: "intake",
-      createdAt: now,
-      updatedAt: now
-    };
-    await this.store.createRun(run);
-    const existingState = await this.store.getProjectRuntimeState(project.id);
-    await this.store.saveProjectRuntimeState({
-      projectId: project.id,
-      workspaceId: workspace.id,
-      activeRunId: run.id,
-      activeTaskId: existingState?.activeTaskId,
-      taskQueue: existingState?.taskQueue ?? buildDefaultTaskQueue(),
-      productState: existingState?.productState ?? buildDefaultProductState(),
-      lastVerifiedRunId: existingState?.lastVerifiedRunId,
-      metadata: existingState?.metadata ?? {},
-      createdAt: existingState?.createdAt ?? now,
-      updatedAt: now
-    });
-    return run;
+    return this.taskLifecycle.intakeRequest(input);
   }
 
   async createPlan(plan: PlanInput): Promise<PlanArtifact> {
-    const run = await this.requireRun(plan.runId);
-    const validationErrors = validatePlanInput(plan);
-    if (validationErrors.length > 0) {
-      throw new Error(`Invalid plan: ${validationErrors.join("; ")}`);
-    }
-
-    const now = timestamp();
-    const artifact: PlanArtifact = {
-      id: randomUUID(),
-      runId: run.id,
-      kind: "plan",
-      title: plan.title,
-      content: plan,
-      createdAt: now
-    };
-
-    await this.store.savePlan(artifact);
-    await this.store.saveWorkflowDocument({
-      id: randomUUID(),
-      workspaceId: run.workspaceId,
-      projectId: run.projectId,
-      runId: run.id,
-      kind: "plan",
-      title: artifact.title,
-      body: JSON.stringify(plan, null, 2),
-      metadata: {
-        source: "runtime_plan"
-      },
-      createdAt: now,
-      updatedAt: now
-    });
-    await this.store.updateRun({
-      ...run,
-      status: "planned",
-      updatedAt: now
-    });
-    return artifact;
+    return this.taskLifecycle.createPlan(plan);
   }
 
   async createTaskGraph(runId: string, taskPackets: TaskPacketInput[]): Promise<TaskRecord[]> {
-    const run = await this.requireRun(runId);
-    const knownTaskIds = new Set(taskPackets.map((packet) => packet.taskId));
-    const validationErrors = taskPackets.flatMap((packet) =>
-      validateTaskPacket(packet).map((error) => `${packet.taskId}: ${error}`)
-    );
-
-    for (const packet of taskPackets) {
-      for (const dependency of packet.dependencies) {
-        if (!knownTaskIds.has(dependency)) {
-          validationErrors.push(`${packet.taskId}: unknown dependency ${dependency}`);
-        }
-      }
-    }
-
-    if (validationErrors.length > 0) {
-      throw new Error(`Invalid task graph: ${validationErrors.join("; ")}`);
-    }
-
-    const now = timestamp();
-    const tasks: TaskRecord[] = taskPackets.map((packet) => ({
-      id: randomUUID(),
-      runId,
-      workspaceId: run.workspaceId,
-      projectId: run.projectId,
-      class: mapTaskPacketToQueueClass(packet),
-      packet,
-      status: "ready",
-      createdAt: now,
-      updatedAt: now
-    }));
-
-    await this.store.replaceTasks(tasks);
-    for (const task of tasks) {
-      await this.store.saveWorkflowDocument({
-        id: randomUUID(),
-        workspaceId: task.workspaceId,
-        projectId: task.projectId,
-        runId: task.runId,
-        taskId: task.packet.taskId,
-        kind: "task_packet",
-        title: task.packet.title,
-        body: JSON.stringify(task.packet, null, 2),
-        metadata: {
-          source: "runtime_task_graph"
-        },
-        createdAt: now,
-        updatedAt: now
-      });
-    }
-    await this.store.updateRun({
-      ...run,
-      status: "decomposed",
-      updatedAt: now
-    });
-    const existingState = await this.store.getProjectRuntimeState(run.projectId);
-    await this.store.saveProjectRuntimeState({
-      projectId: run.projectId,
-      workspaceId: run.workspaceId,
-      activeRunId: run.id,
-      activeTaskId: existingState?.activeTaskId,
-      taskQueue: buildRuntimeTaskQueue("decomposed", tasks, existingState?.activeTaskId),
-      productState: existingState?.productState ?? buildDefaultProductState(),
-      lastVerifiedRunId: existingState?.lastVerifiedRunId,
-      metadata: existingState?.metadata ?? {},
-      createdAt: existingState?.createdAt ?? now,
-      updatedAt: now
-    });
-
-    if (runRequiresAutonomousExecution(tasks)) {
-      await this.autonomousExecution.saveState(run, (current, currentNow) =>
-        current ??
-        createAutonomousExecutionState({
-          now: currentNow
-        })
-      );
-    }
-
-    return tasks;
+    return this.taskLifecycle.createTaskGraph(runId, taskPackets);
   }
 
-  /**
-   * Append new tasks to an existing run without deleting or modifying any
-   * existing tasks and without changing the run status.
-   *
-   * Uses the same packet-to-TaskRecord mapping path as createTaskGraph
-   * (mapTaskPacketToQueueClass) and rebuilds project_runtime_state.task_queue
-   * over the FULL union of existing + appended tasks, identical to the
-   * createTaskGraph rebuild at lines 1255-1266.
-   *
-   * Throws (atomically — nothing is inserted) if:
-   *   - Any task_key in taskPackets already exists in the run.
-   *   - Any dependency edge references a key absent from both existing run tasks
-   *     and the appended batch.
-   *   - The run does not exist.
-   */
   async appendTasks(runId: string, taskPackets: TaskPacketInput[]): Promise<TaskRecord[]> {
-    if (taskPackets.length === 0) {
-      return [];
-    }
-
-    const run = await this.requireRun(runId);
-    const now = timestamp();
-
-    const newTasks: TaskRecord[] = taskPackets.map((packet) => ({
-      id: randomUUID(),
-      runId,
-      workspaceId: run.workspaceId,
-      projectId: run.projectId,
-      class: mapTaskPacketToQueueClass(packet),
-      packet,
-      status: "ready" as const,
-      createdAt: now,
-      updatedAt: now
-    }));
-
-    // Delegate integrity validation + atomic insert to the store layer.
-    await this.store.appendTasks(newTasks);
-
-    // Rebuild task_queue over the FULL union of existing + appended tasks,
-    // using the same path as createTaskGraph (lines 1255-1266).
-    const allTasks = await this.store.getTasksByRun(runId);
-    const existingState = await this.store.getProjectRuntimeState(run.projectId);
-    await this.store.saveProjectRuntimeState({
-      projectId: run.projectId,
-      workspaceId: run.workspaceId,
-      activeRunId: run.id,
-      activeTaskId: existingState?.activeTaskId,
-      taskQueue: buildRuntimeTaskQueue(
-        run.status,
-        allTasks,
-        existingState?.activeTaskId
-      ),
-      productState: existingState?.productState ?? buildDefaultProductState(),
-      lastVerifiedRunId: existingState?.lastVerifiedRunId,
-      metadata: existingState?.metadata ?? {},
-      createdAt: existingState?.createdAt ?? now,
-      updatedAt: now
-    });
-
-    return newTasks;
+    return this.taskLifecycle.appendTasks(runId, taskPackets);
   }
 
   async claimTask(runId: string, taskId: string, actor: string): Promise<TaskRecord> {
-    const task = await this.requireTask(runId, taskId);
-    if (task.status !== "ready") {
-      throw new Error(`Task ${taskId} must be ready before it can be claimed`);
-    }
-
-    const allTasks = await this.store.getTasksByRun(runId);
-    const activeLocks = await this.store.getActiveLocks(task.projectId);
-    const blockers = await this.findTaskBlockers(task, allTasks, activeLocks);
-
-    if (blockers.length > 0) {
-      throw new Error(`Task cannot be claimed: ${blockers.join("; ")}`);
-    }
-
-    const claimedTask: TaskRecord = {
-      ...task,
-      status: "in_progress",
-      claimedBy: actor,
-      updatedAt: timestamp()
-    };
-
-    await this.store.updateTask(claimedTask);
-    await this.store.createLock({
-      id: randomUUID(),
-      workspaceId: task.workspaceId,
-      projectId: task.projectId,
-      runId,
-      taskId,
-      scopePaths: [...task.packet.allowedWriteScope],
-      status: "active",
-      createdAt: timestamp()
-    });
-    await this.bumpRunState(runId, "in_progress");
-    const existingState = await this.store.getProjectRuntimeState(task.projectId);
-    await this.store.saveProjectRuntimeState({
-      projectId: task.projectId,
-      workspaceId: task.workspaceId,
-      activeRunId: runId,
-      activeTaskId: taskId,
-      taskQueue: buildRuntimeTaskQueue("in_progress", allTasks.map((candidate) =>
-        candidate.packet.taskId === taskId ? claimedTask : candidate
-      ), taskId),
-      productState: existingState?.productState ?? buildDefaultProductState(),
-      lastVerifiedRunId: existingState?.lastVerifiedRunId,
-      metadata: existingState?.metadata ?? {},
-      createdAt: existingState?.createdAt ?? timestamp(),
-      updatedAt: timestamp()
-    });
-    return claimedTask;
+    return this.taskLifecycle.claimTask(runId, taskId, actor);
   }
 
   async submitHandoff(runId: string, taskId: string, handoff: HandoffInput) {
@@ -1177,52 +848,7 @@ export class ArchonCoreService {
   }
 
   async failTask(runId: string, taskId: string, reason: string) {
-    const task = await this.requireTask(runId, taskId);
-    const failedAt = timestamp();
-    const updatedTask: TaskRecord = {
-      ...task,
-      status: "blocked",
-      claimedBy: undefined,
-      updatedAt: failedAt
-    };
-
-    await this.store.releaseLocksForTask(runId, taskId, failedAt);
-    await this.store.updateTask(updatedTask);
-
-    const allTasks = await this.store.getTasksByRun(runId);
-    const syncedTasks = allTasks.map((candidate) =>
-      candidate.packet.taskId === taskId ? updatedTask : candidate
-    );
-    const nextRunStatus = deriveRunStatus(syncedTasks);
-    const run = await this.requireRun(runId);
-    await this.store.updateRun({
-      ...run,
-      status: nextRunStatus,
-      updatedAt: failedAt
-    });
-
-    const existingState = await this.store.getProjectRuntimeState(task.projectId);
-    await this.store.saveProjectRuntimeState({
-      projectId: task.projectId,
-      workspaceId: task.workspaceId,
-      activeRunId: runId,
-      activeTaskId: undefined,
-      taskQueue: buildRuntimeTaskQueue(nextRunStatus, syncedTasks),
-      productState: existingState?.productState ?? buildDefaultProductState(),
-      lastVerifiedRunId: existingState?.lastVerifiedRunId,
-      metadata: {
-        ...(existingState?.metadata ?? {}),
-        seedFailure: {
-          runId,
-          taskId,
-          reason,
-          failedAt,
-          recoveryState: "requires_reproof"
-        }
-      },
-      createdAt: existingState?.createdAt ?? failedAt,
-      updatedAt: failedAt
-    });
+    return this.taskLifecycle.failTask(runId, taskId, reason);
   }
 
   async promoteMemory(runId: string, input: MemoryPromotionInput) {
@@ -2305,23 +1931,16 @@ export class ArchonCoreService {
     return task;
   }
 
+  // Run-status mutators are owned by TaskLifecycleManager (audit F5 / service.ts
+  // split slice 2). These private delegates keep gate/closure/recovery methods
+  // still on this class (recordReview, submitHandoff, promoteMemory, applyRecovery)
+  // driving run status through the same code path as the lifecycle transitions.
   private async bumpRunState(runId: string, status: RunRecord["status"]) {
-    const run = await this.requireRun(runId);
-    await this.store.updateRun({
-      ...run,
-      status,
-      updatedAt: timestamp()
-    });
+    return this.taskLifecycle.bumpRunState(runId, status);
   }
 
   private async syncRunState(runId: string) {
-    const run = await this.requireRun(runId);
-    const tasks = await this.store.getTasksByRun(runId);
-    await this.store.updateRun({
-      ...run,
-      status: deriveRunStatus(tasks),
-      updatedAt: timestamp()
-    });
+    return this.taskLifecycle.syncRunState(runId);
   }
 
   private async findTaskBlockers(
