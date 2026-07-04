@@ -2,25 +2,21 @@ import { randomUUID } from "node:crypto";
 import {
   validateReviewAction,
   validateHandoff,
-  normalizeRetrievalMetadata,
-  normalizeSearchInput,
-  validateMemoryPromotion,
   effectiveRequiredReviewsForTask,
   isReviewFloorReduced
 } from "../domain/contracts.ts";
 import { requiredGateReviews } from "../domain/types.ts";
 import {
-  canRoleAccessSearchResult,
   evaluateReviewDecision,
   findBlockingReasonsForTask,
   findTaskDependencies
 } from "./policy.ts";
-import { buildRuntimeTraceRegistry } from "../runtime/runtime-trace-registry.ts";
 import { AutonomousExecutionStore } from "./autonomous-execution-store.ts";
 import { TaskLifecycleManager } from "./task-lifecycle.ts";
 import { StatusExecutionPlanner } from "./status-execution-planner.ts";
 import { DirectiveExecutionManager } from "./directive-execution.ts";
 import { RecoveryManager } from "./recovery-manager.ts";
+import { MemorySearchManager } from "./memory-search-manager.ts";
 import type {
   DirectiveExecutionResult,
   ExecuteDirectiveStepOptions
@@ -30,11 +26,9 @@ import {
   buildDefaultProductState,
   timestamp
 } from "./project-runtime-state.ts";
-import { annotateConflictSignals, isProvenancedSearchResult } from "./search-memory-results.ts";
 import type {
   ResolveReviewActionContext
 } from "./review-context.ts";
-import { isTrustedReviewActionContext } from "./review-context.ts";
 import { fireMistakeCapture, fireDistillation } from "../runtime/mistake-capture.ts";
 import type { AntiPatternDraftStoreLike, MistakeLedgerStoreLike } from "../store/types.ts";
 import type {
@@ -150,6 +144,13 @@ export class ArchonCoreService {
   // closures, so no import cycle forms. See src/core/recovery-manager.ts
   // (audit F5, slice 4).
   private readonly recovery: RecoveryManager;
+  // Memory/search cluster (promoteMemory/searchMemory/getRuntimeTraceRegistry) is
+  // owned by this extracted manager; the public methods below delegate to it.
+  // getStatus (the planner), bumpRunState (the lifecycle manager), and the
+  // trusted review-action resolver are injected — the P0 trust gate on
+  // promoteMemory is enforced inside the manager, not bypassed. See
+  // src/core/memory-search-manager.ts (audit F5, slice 4).
+  private readonly memorySearch: MemorySearchManager;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
@@ -190,6 +191,13 @@ export class ArchonCoreService {
       requireTask: (runId, taskId) => this.requireTask(runId, taskId),
       getStatus: (runId) => this.statusPlanner.getStatus(runId),
       syncRunState: (runId) => this.syncRunState(runId)
+    });
+    this.memorySearch = new MemorySearchManager({
+      store,
+      requireRun: (runId) => this.requireRun(runId),
+      getStatus: (runId) => this.statusPlanner.getStatus(runId),
+      bumpRunState: (runId, status) => this.bumpRunState(runId, status),
+      resolveReviewActionContext: this.resolveReviewActionContext
     });
   }
 
@@ -309,13 +317,7 @@ export class ArchonCoreService {
   }
 
   async getRuntimeTraceRegistry(runId: string): Promise<RuntimeTraceRegistrySummary> {
-    const snapshot = await this.getStatus(runId);
-    const state = snapshot.autonomousExecution?.state;
-    if (!state) {
-      throw new Error("runtime trace registry requires autonomous execution state");
-    }
-
-    return buildRuntimeTraceRegistry(state);
+    return this.memorySearch.getRuntimeTraceRegistry(runId);
   }
 
   async generateRepoInventory(
@@ -625,96 +627,15 @@ export class ArchonCoreService {
     return this.taskLifecycle.failTask(runId, taskId, reason);
   }
 
+  // Memory/search cluster is owned by MemorySearchManager (audit F5 / service.ts
+  // split slice 4). These delegate; the public API — and the P0 promotion trust
+  // gate enforced inside the manager — is unchanged.
   async promoteMemory(runId: string, input: MemoryPromotionInput) {
-    if (!this.resolveReviewActionContext) {
-      throw new Error("promoteMemory requires a trusted promotion context resolver");
-    }
-
-    const run = await this.requireRun(runId);
-    const errors = validateMemoryPromotion(input);
-    if (errors.length > 0) {
-      throw new Error(`Memory promotion rejected: ${errors.join("; ")}`);
-    }
-
-    let context;
-    try {
-      context = await this.resolveReviewActionContext({
-        runId,
-        taskId: input.sourceTaskId ?? "",
-        actor: input.actor,
-        reviewerRole: "reviewer",
-        reviewState: "passed"
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Memory promotion rejected: invalid promotion context: ${message}`);
-    }
-
-    // FINDING 1: mirror recordReview's trust gate — the resolver must return a
-    // WeakSet-registered TrustedReviewActionContext.  A plain unsealed object
-    // returned by a malicious or misconfigured resolver must be rejected here.
-    if (!isTrustedReviewActionContext(context)) {
-      throw new Error(
-        "Memory promotion rejected: promotion context must be a sealed trusted review action context"
-      );
-    }
-
-    const createdAt = timestamp();
-    // FINDING 2: authorityLevel is always "reviewed_memory" for promoted
-    // memory entries regardless of caller input — strip any caller-supplied
-    // value before passing through normalizeRetrievalMetadata.
-    const { authorityLevel: _discardedAuthorityLevel, ...callerMetadata } = input.metadata ?? {};
-    const metadata = normalizeRetrievalMetadata({
-      ...callerMetadata,
-      reviewedAt: callerMetadata.reviewedAt ?? createdAt,
-      authorityLevel: "reviewed_memory"
-    });
-
-    const entry = {
-      id: randomUUID(),
-      workspaceId: run.workspaceId,
-      projectId: input.scope === "project" ? run.projectId : undefined,
-      runId,
-      taskId: input.sourceTaskId,
-      scope: input.scope,
-      entryType: input.entryType,
-      title: input.title,
-      content: input.content,
-      // NON-BLOCKING (by design): input.reviewer and input.actor are silently
-      // discarded here — the stored values always come from the trusted resolver
-      // context.  Callers should not rely on those input fields being stored.
-      // Follow-up: mistake-pattern-ledger.md tracks this as a pattern to
-      // address in a future MemoryPromotionInput type revision.
-      reviewer: context.actor,
-      actor: context.actor,
-      status: "approved" as const,
-      metadata,
-      createdAt
-    };
-
-    await this.store.saveMemoryEntry(entry);
-    await this.bumpRunState(runId, "memorized");
-    return entry;
+    return this.memorySearch.promoteMemory(runId, input);
   }
 
   async searchMemory(input: SearchMemoryInput): Promise<SearchMemoryResult[]> {
-    const normalized = normalizeSearchInput(input);
-    const results = await this.store.searchMemory({
-      workspaceSlug: normalized.workspaceSlug,
-      projectSlug: normalized.projectSlug,
-      query: normalized.query,
-      limit: normalized.limit,
-      includeGlobal: normalized.includeGlobal,
-      queryEmbedding: normalized.queryEmbedding,
-      embeddingModel: normalized.embeddingModel,
-      requesterRole: normalized.requesterRole
-    });
-
-    return annotateConflictSignals(
-      results
-        .filter((result) => canRoleAccessSearchResult(result, normalized.requesterRole))
-        .filter(isProvenancedSearchResult)
-    );
+    return this.memorySearch.searchMemory(input);
   }
 
   async getStatus(runId: string): Promise<RunStatusSnapshot> {
