@@ -4,7 +4,7 @@ description: "Owns UX, UI quality, accessibility, and frontend implementation wi
 model: claude-sonnet-4-6
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-frontend, archon-ux-research, ecc:frontend-patterns]
+skills: [archon-frontend-taste, archon-design-system, ecc:frontend-patterns, web-design-guidelines]
 ---
 
 # Frontend Designer

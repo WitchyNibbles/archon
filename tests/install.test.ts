@@ -316,10 +316,12 @@ test("verifyAgentCatalogArtifacts reports missing and unexpected AGENT.md files 
   await mkdir(backendDir, { recursive: true });
   await mkdir(mysteryDir, { recursive: true });
 
-  // Write a valid AGENT.md for backend-engineer (exists but unexpected role mismatch won't apply since we match by directory)
+  // Write a valid AGENT.md for backend-engineer whose frontmatter matches the
+  // catalog (model tier alias → pinned id, effort, skills), so this test isolates
+  // the missing/unexpected-artifact behavior and keeps metadataMismatches empty.
   await writeFile(
     path.join(backendDir, "AGENT.md"),
-    "---\ndescription: Backend engineer\nmodel: claude-sonnet-4-5\n---\n\n# Backend Engineer\n",
+    "---\ndescription: Backend engineer\nmodel: claude-sonnet-4-6\neffort: high\ntools: [Read, Grep, Glob, Bash, Write, Edit]\nskills: [archon-execution, ecc:backend-patterns, ecc:api-design, ecc:tdd-workflow]\n---\n\n# Backend Engineer\n",
     "utf8"
   );
   // Write an unexpected agent directory
