@@ -89,17 +89,7 @@ test("save-approval: refuses when required reviews are missing", async () => {
   };
 
   const fakeStore = {
-    getProjectRuntimeState: async () => ({
-      projectId: "p1",
-      workspaceId: "ws1",
-      activeRunId: "run-uuid",
-      activeTaskId: "reviewToolingFix",
-      taskQueue: { project_status: "in_progress", current_task_id: "reviewToolingFix", tasks: [] },
-      productState: {},
-      metadata: {},
-      createdAt: "2026-06-19T00:00:00.000Z",
-      updatedAt: "2026-06-19T00:00:00.000Z"
-    }),
+    findLatestRunForTask: async () => ({ id: "run-uuid" }),
     getTasksByRun: async () => [taskWithReviews],
     getReviews: async () => [],
     saveApproval: async () => { throw new Error("should not reach saveApproval"); },
@@ -188,17 +178,7 @@ test("save-approval: writes approval record and sets task status to approved whe
   let updatedTask: unknown = undefined;
 
   const fakeStore = {
-    getProjectRuntimeState: async () => ({
-      projectId: "p1",
-      workspaceId: "ws1",
-      activeRunId: "run-uuid",
-      activeTaskId: "reviewToolingFix",
-      taskQueue: { project_status: "in_progress", current_task_id: "reviewToolingFix", tasks: [] },
-      productState: {},
-      metadata: {},
-      createdAt: "2026-06-19T00:00:00.000Z",
-      updatedAt: "2026-06-19T00:00:00.000Z"
-    }),
+    findLatestRunForTask: async () => ({ id: "run-uuid" }),
     getTasksByRun: async () => [taskWithReviews],
     getReviews: async () => reviews,
     saveApproval: async (approval: unknown) => { savedApproval = approval; },

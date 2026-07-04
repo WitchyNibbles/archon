@@ -1080,7 +1080,7 @@ describe("saveReviewCommand — multi-finding findings stored as string[] (Fix #
 
     const withClientFn: SaveReviewCommandDeps["withClientFn"] = async (fn) => {
       const fakeStore = {
-        getProjectRuntimeState: async (_projectId: string) => undefined,
+        findLatestRunForTask: async (_params: { workspaceSlug: string; projectSlug: string; taskId: string }) => ({ id: "run-g1" }),
         saveOrchestratorReview: async (input: {
           taskId: string;
           role: string;
@@ -1692,7 +1692,7 @@ describe("saveReviewCommand — N=3 multi-finding (Gate-3 Fix #6, G-suite extens
 
     const withClientFn: SaveReviewCommandDeps["withClientFn"] = async (fn) => {
       const fakeStore = {
-        getProjectRuntimeState: async (_projectId: string) => undefined,
+        findLatestRunForTask: async (_params: { workspaceSlug: string; projectSlug: string; taskId: string }) => ({ id: "run-g2" }),
         saveOrchestratorReview: async (input: {
           taskId: string;
           role: string;

@@ -1,11 +1,7 @@
 import type { ArchonStore } from "../store/types.ts";
 
-// #14 fix: record a Design & Architecture Council outcome into the authoritative
-// runtime task record (task payload). The Stop-hook reads this when the runtime is
-// connected, so a worker editing its packet markdown can no longer forge approval.
-//
-// This is an orchestrator action — it mutates the runtime task, which a worker cannot
-// do through Claude tool calls (the tasks table is only written via the store).
+// #14: record a Design & Architecture Council outcome into the authoritative runtime
+// task record. Orchestrator-only — the tasks table is not writable via Claude tools.
 
 export const COUNCIL_OUTCOME_TOKENS = new Set([
   "pending",
@@ -27,8 +23,11 @@ function parseFlag(args: readonly string[], flag: string): string | undefined {
 }
 
 export interface RecordCouncilOptions {
-  store: Pick<ArchonStore, "getProjectRuntimeState" | "getTask" | "updateTask" | "ensureProjectContext">;
-  projectId: string;
+  store: Pick<ArchonStore, "findLatestRunForTask" | "getTask" | "updateTask" | "ensureProjectContext">;
+  workspaceSlug: string;
+  projectSlug: string;
+  /** Explicit run id — when provided, bypasses findLatestRunForTask. */
+  runId?: string | undefined;
   taskId: string;
   outcome: string;
 }
@@ -45,10 +44,23 @@ export async function executeRecordCouncilCommand(options: RecordCouncilOptions)
       `record-council: --outcome "${options.outcome}" is invalid; must be one of ${[...COUNCIL_OUTCOME_TOKENS].join(", ")}`
     );
   }
-  const state = await options.store.getProjectRuntimeState(options.projectId);
-  const runId = state?.activeRunId;
-  if (!runId) {
-    throw new Error("record-council: no active run in runtime state");
+  // Resolve the run that contains the task — not the project's active run, which may have
+  // advanced past the run where the task lives. An explicit runId bypasses the lookup.
+  let runId: string;
+  if (options.runId) {
+    runId = options.runId;
+  } else {
+    const taskRun = await options.store.findLatestRunForTask({
+      workspaceSlug: options.workspaceSlug,
+      projectSlug: options.projectSlug,
+      taskId: options.taskId
+    });
+    if (!taskRun) {
+      throw new Error(
+        `record-council: task "${options.taskId}" not found in any run for ${options.workspaceSlug}/${options.projectSlug}`
+      );
+    }
+    runId = taskRun.id;
   }
   const task = await options.store.getTask(runId, options.taskId);
   if (!task) {
@@ -72,17 +84,17 @@ export async function recordCouncilCommand(
   const env = deps.env ?? process.env;
   const taskId = parseFlag(args, "task-id");
   const outcome = parseFlag(args, "outcome");
+  const explicitRunId = parseFlag(args, "run-id");
   if (!taskId) throw new Error("record-council requires --task-id");
   if (!outcome) throw new Error("record-council requires --outcome");
 
   const workspaceSlug = env.ARCHON_WORKSPACE_SLUG ?? "default";
   const projectSlug = env.ARCHON_PROJECT_SLUG;
   if (!projectSlug) throw new Error("ARCHON_PROJECT_SLUG is required");
-  const projectId = `project:${workspaceSlug}:${projectSlug}`;
 
   const result = await deps.withClient(async (client) => {
     const store = deps.createStore(client);
-    return executeRecordCouncilCommand({ store, projectId, taskId, outcome });
+    return executeRecordCouncilCommand({ store, workspaceSlug, projectSlug, runId: explicitRunId, taskId, outcome });
   });
   console.log(JSON.stringify({ recorded: true, ...result }));
 }
