@@ -343,6 +343,10 @@ test("TaskLifecycleManager.failTask: blocks the task, releases locks, records se
   assert.equal(task?.claimedBy, undefined, "claim cleared on failure");
 
   const run = await store.getRun(runId);
+  // The run status is re-derived from the post-failure task set. A single
+  // blocked task is neither done, in_progress, review_blocked, nor
+  // approved/done, so deriveRunStatus falls through to "ready".
+  assert.equal(run?.status, "ready", "run status re-derived after task failure");
   const locks = await store.getActiveLocks(run!.projectId);
   assert.equal(locks.length, 0, "locks released on failure");
 
