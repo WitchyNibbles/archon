@@ -39,7 +39,7 @@ import { initTaskCommand } from "./admin/init-task.ts";
 import { recordCouncilCommand } from "./admin/record-council.ts";
 import { pruneOrphansCommand } from "./admin/prune-orphans.ts";
 import { sweepOrphansCommand } from "./admin/sweep-orphans.ts";
-import { reconcileRunClosure, reconcileAllRuns } from "./admin/close-run.ts";
+import { reconcileRunClosure, reconcileAllRuns, shouldClearDanglingActiveTaskPointer, isMutateConfirmed } from "./admin/close-run.ts";
 import { ArchonCoreService } from "./core/service.ts";
 import { continueSessionCommand } from "./admin/continue-session.ts";
 import { forgeCommand } from "./admin/forge.ts";
@@ -425,7 +425,8 @@ async function main() {
   }
 
   if (command === "close-run") {
-    const confirm = args.includes("--confirm");
+    // Accept --confirm (native) OR --apply (reconcile-runtime-state's flag) as aliases.
+    const confirm = isMutateConfirmed(args);
     const allRuns = args.includes("--all");
     const runIdFlagIdx = args.indexOf("--run-id");
     const runIdArg = runIdFlagIdx !== -1 ? args[runIdFlagIdx + 1] : undefined;
@@ -445,13 +446,23 @@ async function main() {
         getReviewFloorReductions: (id: string, taskId: string) => store.getReviewFloorReductions(id, taskId),
         updateTask: (taskRecord: Parameters<typeof store.updateTask>[0]) => store.updateTask(taskRecord),
         updateRun: (runRecord: Parameters<typeof store.updateRun>[0]) => store.updateRun(runRecord),
-        onRunSealed: async (sealedRunId: string) => {
-          // Best-effort: clear a dangling active-task pointer when its run is sealed.
+        onRunSealed: async (sealedRunId: string, sealedTaskKeys: readonly string[]) => {
+          // Best-effort: clear a dangling active-task pointer when its run is sealed
+          // OR when its task key just went terminal in the sealed run — even if the
+          // pointer has since moved to another (duplicate) run (closureLoop bug 3).
           if (!projectSlug) return;
           const ctx = await store.getProjectContext({ workspaceSlug, projectSlug });
           if (!ctx) return;
           const state = await store.getProjectRuntimeState(ctx.project.id);
-          if (state?.activeRunId === sealedRunId && state.activeTaskId) {
+          if (!state) return;
+          if (
+            shouldClearDanglingActiveTaskPointer({
+              activeRunId: state.activeRunId,
+              activeTaskId: state.activeTaskId,
+              sealedRunId,
+              sealedTaskKeys
+            })
+          ) {
             await store.saveProjectRuntimeState({ ...state, activeTaskId: undefined, updatedAt: new Date().toISOString() });
           }
         },

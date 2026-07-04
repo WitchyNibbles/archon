@@ -216,6 +216,7 @@ export interface InitTaskCommandOptions {
     | "saveProjectRuntimeState"
     | "getTask"
     | "updateTask"
+    | "findLatestRunForTask"
   >;
   workspaceSlug: string;
   workspaceName: string;
@@ -318,13 +319,56 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
 
   const existing = await options.store.getProjectRuntimeState(project.id);
 
-  // --- Idempotency check: (project, task_key, in_progress) ---
-  // If the project already has an active run, look up whether a task with this
-  // task_key is in_progress in that run. If so, reuse the run and task instead
-  // of fragmenting runs by creating a new one unconditionally.
+  // --- Locate an existing task with this task_key (project-wide) ---
+  // Prefer the active run (the common idempotency case), but fall back to the
+  // latest run that actually CONTAINS the task_key. Without the fallback, a task
+  // sitting in a gating run that the active pointer has since moved off of is
+  // invisible here — and --update-scope would then fork a duplicate run + task
+  // and repoint the pointer at the duplicate, leaving the original gated work
+  // behind (closureLoop bug 1; live 2026-07-04: dup run 8f3417ab shadowed the
+  // gated original eca0047f). Locating by task_key regardless of pointer/status
+  // is what makes --update-scope a true in-place edit.
+  let located: { runId: string; task: TaskRecord } | undefined;
   if (existing?.activeRunId !== undefined) {
-    const existingTask = await options.store.getTask(existing.activeRunId, options.id);
-    if (existingTask?.status === "in_progress") {
+    const activeRunTask = await options.store.getTask(existing.activeRunId, options.id);
+    if (activeRunTask) {
+      located = { runId: existing.activeRunId, task: activeRunTask };
+    }
+  }
+  if (!located) {
+    const taskRun = await options.store.findLatestRunForTask({
+      workspaceSlug: options.workspaceSlug,
+      projectSlug: options.projectSlug,
+      taskId: options.id
+    });
+    if (taskRun) {
+      const taskInRun = await options.store.getTask(taskRun.id, options.id);
+      if (taskInRun) {
+        located = { runId: taskRun.id, task: taskInRun };
+      }
+    }
+  }
+
+  // --update-scope is an in-place UPDATE, never a create. If there is no task to
+  // update, fail loudly instead of silently forking a fresh run/task (the exact
+  // failure mode closureLoop bug 1 produced).
+  if (!located && options.updateScope === true) {
+    throw new Error(
+      `init-task --update-scope: no existing task with id "${options.id}" to update; ` +
+        `omit --update-scope to create a new task`
+    );
+  }
+
+  // --- Reuse path: (project, task_key) already exists ---
+  // Reuse in place when the task is still the live in-progress task (plain
+  // idempotency) OR the caller explicitly asked to update its scope. Under
+  // --update-scope we reuse REGARDLESS of status so a gated (review_blocked,
+  // approved, blocked, …) task's scope is edited in the SAME run + row — never
+  // duplicated. Without --update-scope a non-in_progress task falls through to a
+  // fresh cycle (re-opening the task_key for a new run), preserving prior behavior.
+  if (located && (located.task.status === "in_progress" || options.updateScope === true)) {
+    const existingTask = located.task;
+    {
       // Validate the incoming options (scope security checks, id format, etc.)
       // by running buildInitiativeRecords with the existing run/task ids to
       // obtain a sanitized scope. Discard the synthetic run/task — we only
@@ -367,8 +411,12 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
       };
       await options.store.updateTask(reusedTask);
 
-      // Do NOT call saveProjectRuntimeState here — the pointer already reflects
-      // this run/task and must not be clobbered by the reuse path.
+      // Do NOT call saveProjectRuntimeState here — the reuse path only edits the
+      // existing task row and must never move the active pointer. In the common
+      // case the pointer already reflects this run/task; when the task was located
+      // outside the active run (a gated run the pointer moved off of), a scope
+      // edit is still not a reason to repoint — pointer reconciliation is
+      // reconcile-runtime-state / close-run's job, not init-task's.
       const packetPath = await maybeWritePacketMarkdown(
         options.repoPath,
         reusedTask.packet,
@@ -386,7 +434,8 @@ export async function executeInitTaskCommand(options: InitTaskCommandOptions): P
     }
   }
 
-  // --- Fresh cycle: task_key not in_progress; create a new run ---
+  // --- Fresh cycle: task_key absent (or present-but-terminal without
+  // --update-scope); create a new run ---
   const { run, task, queue, taskClass } = buildInitiativeRecords({
     id: options.id,
     title: options.title,

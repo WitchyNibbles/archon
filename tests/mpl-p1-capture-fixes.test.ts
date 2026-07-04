@@ -251,12 +251,12 @@ describe("FIX 4: saveReviewCommand — --findings-json flag wiring", () => {
   };
 
   function makeStoreMock(captured: CapturedReview[]): {
-    getProjectRuntimeState: (pid: string) => Promise<{ activeRunId: string } | undefined>;
+    findLatestRunForTask: (params: { workspaceSlug: string; projectSlug: string; taskId: string }) => Promise<{ id: string } | undefined>;
     saveOrchestratorReview: (input: CapturedReview) => Promise<void>;
   } {
     return {
-      async getProjectRuntimeState(_pid) {
-        return { activeRunId: "run-mock-001" };
+      async findLatestRunForTask(_params) {
+        return { id: "run-mock-001" };
       },
       async saveOrchestratorReview(input) {
         captured.push({ ...input });

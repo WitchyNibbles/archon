@@ -17,6 +17,9 @@ const adminCommands = new Set([
   "run-embedding-jobs",
   "verify-review-identity",
   "record-review",
+  // init-task is dispatched by src/admin.ts; wiring it here makes the operator-
+  // facing `archon init-task …` route (and the hook's unblock hint) actually work.
+  "init-task",
   "status",
   "coverage",
   "gaps",
@@ -82,6 +85,7 @@ function printUsage(): void {
       "  status | coverage | gaps | checkpoint | resume | workflow-proof | seed-workflow-proof | advance-active-task | reconcile-runtime-state | sync-runtime-exports | daemon | supervisor | supervisor-history | ops | loop | recover | report | plan-context | export-docs | github-dispatch",
       "  migrate | health | doctor [--repair] | bootstrap-project | verify-setup | verify-live-migrations",
       "  verify-review-identity | record-review | index-repo-markdown | refresh-retrieval | refresh-repo-context | repair-task-queue | run-embedding-jobs",
+      "  init-task --id <id> --title \"<title>\" --scope <comma,paths> [--update-scope]",
       "  autonomous-enable [--run-id <id>] [--profile <p>] [--phase <p>] [--disable]",
       "  mcp",
       "",

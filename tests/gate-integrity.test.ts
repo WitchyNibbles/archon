@@ -139,8 +139,8 @@ function fakeCouncilStore(initialPacket: Record<string, unknown>) {
   const task = { id: "uuid", runId: "run-1", workspaceId: "w", projectId: "p", packet: initialPacket, status: "in_progress" };
   return {
     updated: null as null | Record<string, unknown>,
-    async getProjectRuntimeState() {
-      return { activeRunId: "run-1" } as never;
+    async findLatestRunForTask() {
+      return { id: "run-1" } as never;
     },
     async getTask() {
       return task as never;
@@ -158,7 +158,8 @@ test("#14 record-council: writes the outcome into the runtime task payload", asy
   const store = fakeCouncilStore({ taskId: "t", title: "T" });
   const result = await executeRecordCouncilCommand({
     store: store as never,
-    projectId: "p",
+    workspaceSlug: "default",
+    projectSlug: "archon",
     taskId: "t",
     outcome: "approved_with_conditions"
   });
@@ -169,7 +170,7 @@ test("#14 record-council: writes the outcome into the runtime task payload", asy
 test("#14 record-council: rejects an invalid outcome token", async () => {
   const store = fakeCouncilStore({ taskId: "t" });
   await assert.rejects(
-    executeRecordCouncilCommand({ store: store as never, projectId: "p", taskId: "t", outcome: "totally-approved" }),
+    executeRecordCouncilCommand({ store: store as never, workspaceSlug: "default", projectSlug: "archon", taskId: "t", outcome: "totally-approved" }),
     /invalid/i
   );
 });
