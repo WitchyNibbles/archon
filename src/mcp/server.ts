@@ -24,6 +24,7 @@ import {
 } from "../archon/agent-catalog.ts";
 import type { AgentRoleId } from "../archon/agent-catalog.ts";
 import type { ParentInvocationRef } from "../runtime/subtask-scheduler.ts";
+import { getPackageVersion } from "../shared/package-version.ts";
 
 export function createArchonMcpServer(
   runtime: McpRuntimeSurface = {
@@ -40,7 +41,7 @@ export function createArchonMcpServer(
 ) {
   const server = new McpServer({
     name: "archon",
-    version: "0.1.0"
+    version: getPackageVersion()
   });
 
   const runtimeTools = createMcpToolDefinitions(runtime);

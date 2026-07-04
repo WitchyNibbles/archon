@@ -20,6 +20,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -253,3 +254,16 @@ test(
     );
   }
 );
+
+// ---------------------------------------------------------------------------
+// getPackageVersion — servers must advertise the real package version
+// ---------------------------------------------------------------------------
+
+test("getPackageVersion returns the package.json version (not a stale hardcode)", async () => {
+  const { getPackageVersion } = await import("../../src/shared/package-version.ts");
+  const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")) as {
+    version: string;
+  };
+  assert.equal(getPackageVersion(), pkg.version);
+  assert.notEqual(getPackageVersion(), "0.0.0", "must not hit the fallback in-repo");
+});
