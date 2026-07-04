@@ -2,9 +2,10 @@
 // queued review and operator-action inputs, archiving consumed/failed/stale entries,
 // and matching operator continuation actions. Leaf module (no deps back into
 // daemon.ts). Behavior-preserving move from daemon.ts.
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { collectCommandFlagValues, resolveCommandFlag } from "../cli-flags.ts";
+import { moveIntoArchonExport, writeArchonExport } from "../runtime/export-writer.ts";
 import { normalizeRecordReviewCommandInput } from "../review.ts";
 import type { ContinueAnalysisDirectiveClassification } from "../admin/autonomous-summary.ts";
 import type { EnvShape } from "../workflow.ts";
@@ -259,11 +260,10 @@ export async function archiveConsumedDaemonReviewQueueEntries(
   }
 
   const archiveDir = path.join(cwd, ".archon", "work", "daemon", "processed-review-actions");
-  await mkdir(archiveDir, { recursive: true });
 
   for (const entry of consumedEntries) {
     const archivedPath = path.join(archiveDir, path.basename(entry.filePath));
-    await rename(entry.filePath, archivedPath);
+    await moveIntoArchonExport(cwd, entry.filePath, archivedPath);
   }
 }
 
@@ -277,11 +277,10 @@ export async function archiveConsumedDaemonOperatorActionQueueEntries(
   }
 
   const archiveDir = path.join(cwd, ".archon", "work", "daemon", "processed-operator-actions");
-  await mkdir(archiveDir, { recursive: true });
 
   for (const entry of consumedEntries) {
     const archivedPath = path.join(archiveDir, path.basename(entry.filePath));
-    await rename(entry.filePath, archivedPath);
+    await moveIntoArchonExport(cwd, entry.filePath, archivedPath);
   }
 }
 
@@ -296,13 +295,13 @@ export async function archiveFailedDaemonReviewQueueEntries(
   }
 
   const archiveDir = path.join(cwd, ".archon", "work", "daemon", "failed-review-actions");
-  await mkdir(archiveDir, { recursive: true });
 
   for (const entry of failedEntries) {
     const baseName = path.basename(entry.filePath);
     const archivedPath = path.join(archiveDir, baseName);
-    await rename(entry.filePath, archivedPath);
-    await writeFile(
+    await moveIntoArchonExport(cwd, entry.filePath, archivedPath);
+    await writeArchonExport(
+      cwd,
       path.join(archiveDir, `${baseName}.error.json`),
       `${JSON.stringify(
         {
@@ -312,8 +311,7 @@ export async function archiveFailedDaemonReviewQueueEntries(
         },
         null,
         2
-      )}\n`,
-      "utf8"
+      )}\n`
     );
   }
 }
@@ -329,13 +327,13 @@ export async function archiveFailedDaemonOperatorActionQueueEntries(
   }
 
   const archiveDir = path.join(cwd, ".archon", "work", "daemon", "failed-operator-actions");
-  await mkdir(archiveDir, { recursive: true });
 
   for (const entry of failedEntries) {
     const baseName = path.basename(entry.filePath);
     const archivedPath = path.join(archiveDir, baseName);
-    await rename(entry.filePath, archivedPath);
-    await writeFile(
+    await moveIntoArchonExport(cwd, entry.filePath, archivedPath);
+    await writeArchonExport(
+      cwd,
       path.join(archiveDir, `${baseName}.error.json`),
       `${JSON.stringify(
         {
@@ -345,8 +343,7 @@ export async function archiveFailedDaemonOperatorActionQueueEntries(
         },
         null,
         2
-      )}\n`,
-      "utf8"
+      )}\n`
     );
   }
 }
@@ -396,13 +393,13 @@ export async function archiveStaleDaemonReviewQueueEntries(
   }
 
   const archiveDir = path.join(cwd, ".archon", "work", "daemon", "stale-review-actions");
-  await mkdir(archiveDir, { recursive: true });
 
   for (const entry of staleEntries) {
     const baseName = path.basename(entry.filePath);
     const archivedPath = path.join(archiveDir, baseName);
-    await rename(entry.filePath, archivedPath);
-    await writeFile(
+    await moveIntoArchonExport(cwd, entry.filePath, archivedPath);
+    await writeArchonExport(
+      cwd,
       path.join(archiveDir, `${baseName}.reason.json`),
       `${JSON.stringify(
         {
@@ -413,8 +410,7 @@ export async function archiveStaleDaemonReviewQueueEntries(
         },
         null,
         2
-      )}\n`,
-      "utf8"
+      )}\n`
     );
   }
 }

@@ -446,6 +446,40 @@ test("mergeGitignore includes .archon/ecc-plugin-record.json once and idempotent
   assert.equal(first, second, "mergeGitignore must be idempotent for ecc-plugin-record");
 });
 
+// Audit auditDebt202607 §3.6 / F8 — consumer live-state isolation.
+// The installer must land the `.archon/work/` and `.archon/ACTIVE` ignore entries
+// in the consumer .gitignore, create them if the file is absent, never duplicate
+// on re-install, and preserve pre-existing content.
+test("mergeGitignore adds .archon/work/ and .archon/ACTIVE live-state ignores once", () => {
+  const first = mergeGitignore("node_modules/\n");
+  const second = mergeGitignore(first);
+
+  assert.match(first, /^\.archon\/work\/$/m, ".archon/work/ live-state ignore must be present");
+  assert.match(first, /^\.archon\/ACTIVE$/m, ".archon/ACTIVE pointer ignore must be present");
+  assert.equal(first, second, "re-install must not duplicate the live-state entries");
+});
+
+test("mergeGitignore does not duplicate live-state entries a consumer already has", () => {
+  const existing = "node_modules/\n.archon/work/\n.archon/ACTIVE\n";
+  const merged = mergeGitignore(existing);
+
+  const workCount = merged.split(/\r?\n/).filter((l) => l.trim() === ".archon/work/").length;
+  const activeCount = merged.split(/\r?\n/).filter((l) => l.trim() === ".archon/ACTIVE").length;
+  assert.equal(workCount, 1, ".archon/work/ must appear exactly once");
+  assert.equal(activeCount, 1, ".archon/ACTIVE must appear exactly once");
+  // Pre-existing consumer content must be preserved verbatim at the head.
+  assert.ok(merged.startsWith("node_modules/\n"), "existing content must be preserved");
+});
+
+test("mergeGitignore creates a .gitignore from scratch when consumer has none", () => {
+  const created = mergeGitignore(undefined);
+
+  assert.match(created, /^\.archon\/work\/$/m, "fresh .gitignore must include .archon/work/");
+  assert.match(created, /^\.archon\/ACTIVE$/m, "fresh .gitignore must include .archon/ACTIVE");
+  // Idempotent on a second pass.
+  assert.equal(mergeGitignore(created), created);
+});
+
 test("ci workflow pins external actions and keeps read-only permissions", async () => {
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const ciWorkflow = await readFile(path.join(sourceRoot, ".github/workflows/ci.yml"), "utf8");

@@ -20,6 +20,7 @@ import {
 import { repoLocalSkillIdPrefixes } from "../archon/repo-local-skill-surface.ts";
 import { detectGrafanaRepoConfig } from "../grafana/config.ts";
 import { resolveRuntimeEnvironmentConfig } from "../runtime/config.ts";
+import { writeArchonExport } from "../runtime/export-writer.ts";
 import type {
   InstallMode,
   InstallOptions,
@@ -1903,6 +1904,11 @@ function assertHappyPathFixtureTaskId(taskId: string): void {
   }
 }
 
+// Every entry written here is `.archon/ACTIVE` or a file under
+// `.archon/work/{briefs,plans,tasks,reviews}` of the CONSUMER repo at
+// `targetRoot` (scaffold-workflow / seed-happy-path-fixture /
+// upgrade-reasoning-workflow) — routed through the single Archon export
+// writer for atomic (temp+rename) writes and root-explicit path containment.
 async function writeWorkflowArtifactSet(
   targetRoot: string,
   writes: Array<{ absolutePath: string; content: string }>
@@ -1911,9 +1917,8 @@ async function writeWorkflowArtifactSet(
   const updated: string[] = [];
 
   for (const write of writes) {
-    await ensureDirectory(write.absolutePath);
     const existed = await fileExists(write.absolutePath);
-    await writeFile(write.absolutePath, write.content, "utf8");
+    await writeArchonExport(targetRoot, write.absolutePath, write.content);
     const relativePath = path.relative(targetRoot, write.absolutePath);
     if (existed) {
       updated.push(relativePath);
