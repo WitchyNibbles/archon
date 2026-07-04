@@ -1,19 +1,15 @@
-# Archon Subtask
-
-**Trigger domain**: invoked when the orchestrator needs to delegate a bounded,
-parallelisable slice of work to a subagent while remaining within scope and
-context-budget constraints.
-
-**Skill ID**: `archon-subtask`
-
-**Invocation**: `/archon-subtask`
-
 ---
+name: archon-subtask
+description: Use when the orchestrator needs to delegate a bounded, parallelisable work slice to a subagent — spawn-policy triggers include independent file sets that can run in parallel, risky work needing worktree isolation, and staying within child-depth / concurrency / per-task spawn limits. Enforces the subagent spawn policy and collects the result before claiming progress.
+---
+
+# Archon Subtask
 
 ## Purpose
 
 Spawn a correctly-scoped subagent for a bounded work slice, enforce the
-subagent spawn policy, and collect the result before claiming progress.
+subagent spawn policy (`.archon/rules/subagent-spawn-policy.md`), and collect the
+result before claiming progress.
 
 ## When to invoke
 
