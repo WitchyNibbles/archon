@@ -21,7 +21,14 @@ export interface AgentArtifactVerificationResult {
 // intentional pin per tier — every shipping agent uses exactly one id per tier
 // (frontmatter census: opus→claude-opus-4-8, sonnet→claude-sonnet-4-6,
 // haiku→claude-haiku-4-5-20251001). It exists so the verifier catches UNINTENDED
-// drift; a deliberate tier upgrade (e.g. sonnet→claude-sonnet-5) updates this map.
+// drift.
+//
+// RUNBOOK (review finding F6): a deliberate model-tier upgrade (e.g.
+// sonnet→claude-sonnet-5) MUST update this map IN THE SAME CHANGE that repins the
+// AGENT.md frontmatter. Until both agree, this verifier fails CI loudly for every
+// agent on that tier — that failure is INTENTIONAL (it proves the roster and the
+// map moved together), NOT a reason to disable or loosen the drift check. Do not
+// "fix" a red drift gate by editing only one side.
 const MODEL_ALIAS_TO_ID: Readonly<Record<AgentCatalogEntry["model"], string>> = {
   opus: "claude-opus-4-8",
   sonnet: "claude-sonnet-4-6",
@@ -153,7 +160,12 @@ export async function verifyAgentCatalogArtifacts(input: {
     //     forcing equality would regress trigger quality (a roster-wide description
     //     reconciliation is out of this task's scope).
     //   - tools: the catalog has no `tools` field, so there is no catalog authority
-    //     to check against (AGENT.md is currently the sole source for tools).
+    //     to check against (AGENT.md is currently the sole source for tools). This
+    //     means a tool grant added to an AGENT.md (e.g. giving a worker Agent-spawn
+    //     capability) is NOT caught by this drift gate — review finding F2 (security,
+    //     MEDIUM). DEFERRED to the audit's P2 single-source-of-truth workstream
+    //     (owner: manager): adding a catalog `tools` field and asserting it here is a
+    //     roster-architecture change out of scope for this P0 bugfix.
     try {
       const content = await readFile(path.join(input.repoRoot, entry.artifactPath), "utf8");
       const frontmatter = parseAgentFrontmatter(content);

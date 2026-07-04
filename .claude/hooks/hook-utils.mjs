@@ -78,7 +78,16 @@ const writeLikeCommandSegmentPatterns = [
   // and `dd of=` write to their output-file operands.
   /\bfind\b[\s\S]*?\s-(?:delete|exec|execdir|ok|okdir|fls|fprint|fprintf)\b/,
   /\bsort\b[^\n]*\s(?:-o|--output)(?:[=\s]|$)/,
-  /\bdd\b[^\n]*\bof=/
+  /\bdd\b[^\n]*\bof=/,
+  // Review finding F3: `eval "<payload>"` and `sh -c`/`bash -c`/`zsh -c`… run an
+  // opaque string. Because the payload lives inside a quoted span it is invisible
+  // to write-target extraction and (formerly) the managed-path scan, so it could
+  // smuggle a managed-path write (`eval "find .claude -delete"`). Treat these
+  // shell-string evaluators as write-like so the command fails closed rather than
+  // being classified read-only. Matched against the MASKED segment, so the word
+  // `eval` appearing INSIDE another command's quoted argument does not trip it.
+  /\beval\b/,
+  /\b(?:ba|z|k|da|c)?sh\s+-c\b/
 ];
 const blockerMessagePatterns = [
   /need user input/i,
@@ -324,7 +333,12 @@ export function persistHookBlockerState(repoRootPath, input) {
   );
 }
 
-export function clearHookBlockerState(repoRootPath) {
+// Review finding L1 (reviewer): NOT exported. The only supported way to clear a
+// blocker is clearHookBlockerStateForCommand, which enforces the fingerprint /
+// verification-kind scoping (audit F10 + review finding F5). An unconditional
+// exported clear would let a future caller erase a blocker without that check,
+// silently defeating the repair-loop honesty invariant.
+function clearHookBlockerState(repoRootPath) {
   try {
     rmSync(hookBlockerStatePath(repoRootPath), { force: true });
   } catch {
@@ -332,12 +346,16 @@ export function clearHookBlockerState(repoRootPath) {
   }
 }
 
-// Audit F10: clear the recorded hook-blocker state only when the succeeding
-// (exit-0) command is the one that was blocked — matched by the recorded
-// commandFingerprint — OR a recognized verification command. An unrelated exit-0
-// command (e.g. an incidental `ls`) must NOT erase the record of a failed
-// verification; that record is what the Stop gate uses to keep the repair loop
-// honest. When no blocker is recorded there is nothing to clear.
+// Audit F10 + review finding F5: clear the recorded hook-blocker state only when
+// the succeeding (exit-0) command is meaningfully the one that unblocks it:
+//   - its fingerprint matches the recorded blocked command (re-ran it, it passed), OR
+//   - it is a verification command AND the recorded blocker was ITSELF a
+//     verification failure (a passing test/typecheck clears a failed test/typecheck).
+// A verification pass must NOT clear an UNRELATED non-verification blocker (e.g. a
+// `connection_refused` on `docker compose up`): that was F5 — verification
+// clearing was applied to any recorded blocker regardless of its kind. An
+// unrelated exit-0 command (an incidental `ls`) never clears anything. When no
+// blocker is recorded there is nothing to clear.
 export function clearHookBlockerStateForCommand(repoRootPath, command, options = {}) {
   let parsed;
   try {
@@ -349,7 +367,10 @@ export function clearHookBlockerStateForCommand(repoRootPath, command, options =
     parsed && typeof parsed.commandFingerprint === "string" ? parsed.commandFingerprint : undefined;
   const matchesFingerprint =
     recordedFingerprint !== undefined && recordedFingerprint === buildCommandFingerprint(command);
-  if (matchesFingerprint || options.isVerification === true) {
+  const recordedCommand = parsed && typeof parsed.command === "string" ? parsed.command : "";
+  const recordedWasVerification = isVerificationCommand(recordedCommand);
+  const verificationClears = options.isVerification === true && recordedWasVerification;
+  if (matchesFingerprint || verificationClears) {
     clearHookBlockerState(repoRootPath);
   }
 }
@@ -705,19 +726,24 @@ async function loadDbReviewContext(resolvedRepoRoot, taskId, requiredRoles, runI
 
 // Audit F1: decide which source the Stop review gate trusts. Pure and fully
 // testable (no DB). CLAUDE.md declares review_artifact_trust=runtime_records_only,
-// so when the runtime is CONNECTED the orchestrator DB rows are the only trusted
-// source:
+// so when the runtime is CONNECTED the orchestrator DB rows are the ONLY trusted
+// source — with NO packet-level opt-out:
 //   - orchestrator rows present  -> use them (kind: "db").
 //   - zero orchestrator rows     -> reviews are MISSING (kind: "missing"); a
 //     worker-written markdown file must NOT satisfy the gate. The message names
 //     review-orchestrator as the required path.
-//   - EXCEPT when the packet declares review_exports=runtime_optional, which opts
-//     the task into the markdown fallback even while connected (kind: "markdown").
+// Review finding F1 (HIGH): the earlier `review_exports=runtime_optional` packet
+// escape hatch was a self-review bypass — task packets are worker-writable, so a
+// worker whose scope covers `.archon/work` could edit its own packet to opt into
+// the markdown fallback and then satisfy the gate with a self-written review. The
+// connected path therefore accepts no opt-out at all. (`review_exports` retains
+// its CLAUDE.md meaning for the SCOPE gate — a runtime-authoritative task need not
+// hold export write scope — but it never selects the review-gate source here; any
+// extra option passed in is ignored by construction.)
 // When the runtime is genuinely unreachable (not connected — the documented
 // offline boundary), the markdown fallback applies unchanged (kind: "markdown").
 export function resolveReviewGateSource({
   runtimeConnected,
-  reviewExportsRuntimeOptional,
   dbReviewContext,
   requiredRoles,
   taskId
@@ -726,22 +752,17 @@ export function resolveReviewGateSource({
     if (dbReviewContext) {
       return { kind: "db", context: dbReviewContext };
     }
-    if (!reviewExportsRuntimeOptional) {
-      const roles = Array.isArray(requiredRoles) ? requiredRoles : [];
-      return {
-        kind: "missing",
-        context: {
-          missingReviews: roles.map(
-            (role) =>
-              `${reviewArtifactPath(taskId, role)} (no orchestrator review recorded — run the review-orchestrator; runtime is connected and review_artifact_trust=runtime_records_only, so a self-written markdown review does not satisfy the gate)`
-          ),
-          invalidReviews: []
-        }
-      };
-    }
-    // Connected but the packet opted into runtime_optional AND there are no
-    // orchestrator rows yet — fall back to the markdown check.
-    return { kind: "markdown" };
+    const roles = Array.isArray(requiredRoles) ? requiredRoles : [];
+    return {
+      kind: "missing",
+      context: {
+        missingReviews: roles.map(
+          (role) =>
+            `${reviewArtifactPath(taskId, role)} (no orchestrator review recorded — run the review-orchestrator; runtime is connected and review_artifact_trust=runtime_records_only, so a self-written markdown review does not satisfy the gate)`
+        ),
+        invalidReviews: []
+      }
+    };
   }
   // Runtime genuinely unreachable (offline) — documented markdown fallback.
   return { kind: "markdown" };
@@ -923,11 +944,11 @@ export async function readActiveTaskContext(options = {}) {
   context.invalidReviews = [];
 
   if (requiredRoles.length > 0) {
-    // Audit F1: when the runtime is CONNECTED, orchestrator DB rows are the only
-    // trusted review source. Zero rows = MISSING reviews (fail closed) unless the
-    // packet declares review_exports=runtime_optional. Worker-writable markdown is
-    // trusted only offline, or under that explicit opt-out. See resolveReviewGateSource.
-    const reviewExportsRuntimeOptional = parseReviewExportsRuntimeOptional(taskMarkdown);
+    // Audit F1 / review finding F1: when the runtime is CONNECTED, orchestrator DB
+    // rows are the ONLY trusted review source. Zero rows = MISSING reviews (fail
+    // closed) with NO packet-level opt-out — task packets are worker-writable, so a
+    // packet flag could self-authorize the bypass. Worker-writable markdown is
+    // trusted only when the runtime is genuinely offline. See resolveReviewGateSource.
     let dbReviewContext = null;
     if (context.runtimeConnected) {
       dbReviewContext = await loadDbReviewContext(
@@ -939,7 +960,6 @@ export async function readActiveTaskContext(options = {}) {
     }
     const source = resolveReviewGateSource({
       runtimeConnected: context.runtimeConnected,
-      reviewExportsRuntimeOptional,
       dbReviewContext,
       requiredRoles,
       taskId: context.activeTaskId
@@ -1446,32 +1466,14 @@ export function parseVerificationRequired(markdown) {
   return value !== "false" && value !== "no" && value !== "skip";
 }
 
-// Audit F1: read the `review_exports=runtime_optional` packet flag. Packets carry
-// repo-relative `key=value` lines (see .archon/templates/task-packet.md). Only the
-// explicit `runtime_optional` value opts a task into the markdown-review fallback
-// while the runtime is connected; anything else (including the flag being absent,
-// or `review_exports=required`) keeps the strict runtime-records-only gate. The
-// line is matched anywhere in the packet, tolerant of leading list markers and
-// surrounding backticks, but it must START with the key so prose that merely
-// mentions the flag does not trigger it.
-export function parseReviewExportsRuntimeOptional(markdown) {
-  if (typeof markdown !== "string") {
-    return false;
-  }
-  for (const rawLine of markdown.split(/\r?\n/)) {
-    const line = rawLine
-      .trim()
-      .replace(/^[-*]\s+/, "")
-      .replace(/^`+/, "")
-      .replace(/`+$/, "")
-      .trim();
-    const match = /^review_exports\s*=\s*([A-Za-z_]+)/.exec(line);
-    if (match) {
-      return match[1].trim().toLowerCase() === "runtime_optional";
-    }
-  }
-  return false;
-}
+// Review finding F1 (HIGH): the `review_exports=runtime_optional` packet-flag
+// parser was REMOVED. Because task packets are worker-writable, any packet flag
+// that the connected-runtime review gate consults is a self-review bypass. The
+// gate now trusts orchestrator DB rows only (see resolveReviewGateSource); the
+// `review_exports` key keeps its CLAUDE.md meaning for the write-SCOPE gate but
+// is never read by the review-gate path. A tripwire test
+// (tests/audit-p0-gate-integrity.test.ts) fails if any such parser reappears in
+// hook code.
 
 export const verificationExemptTaskClasses = ["docs_only", "state_sync", "memory_curation", "scaffold_only"];
 
@@ -1730,26 +1732,45 @@ export function extractBashWriteTargets(command, repoRoot) {
     const masked = maskQuotedSpans(clean);
 
     // > path or >> path (not fd>&N which were already stripped).
-    // Run against MASKED text so a quoted `>` or a quoted target is ignored.
-    // Exclude => (arrow) via the =-lookbehind and >= (comparison) via the
-    // =-lookahead. Quote chars cannot appear in masked, so the target is unquoted.
-    const redirectPattern = /(?<![=])>>?(?!=)\s*([^\s;&|<>()$`][^\s;&|<>()$`]*)/g;
-    for (const m of masked.matchAll(redirectPattern)) {
-      addTarget(stripQuotes(m[1]), repoRoot, results);
+    // DETECT the redirect operator on MASKED text so a `>` living inside a quoted
+    // argument (`grep "a > b"`) is not a redirect. Exclude => (arrow) via the
+    // =-lookbehind and >= (comparison) via the =-lookahead. Then CAPTURE the target
+    // from the aligned `clean` text (maskQuotedSpans is length-preserving, so
+    // indices match) with a quote-aware token pattern — review finding M2's class:
+    // a QUOTED redirect target (`> ".claude/y"`) must still be captured, not
+    // dropped because masking blanked it.
+    const redirectOp = /(?<![=])>>?(?!=)/g;
+    for (const m of masked.matchAll(redirectOp)) {
+      const after = clean.slice(m.index + m[0].length);
+      const tok = /^\s*(?:"([^"]*)"|'([^']*)'|([^\s;&|<>()$`]+))/.exec(after);
+      if (tok) {
+        addTarget(stripQuotes(tok[1] ?? tok[2] ?? tok[3]), repoRoot, results);
+      }
     }
 
-    // Audit F3: `dd ... of=<target>` writes to <target>. Detect on masked so an
-    // `of=` inside a quoted string is ignored.
-    const ddOfMatch = /\bdd\b[^\n]*?\bof=([^\s;&|<>()$`'"]+)/.exec(masked);
-    if (ddOfMatch) {
-      addTarget(stripQuotes(ddOfMatch[1]), repoRoot, results);
+    // Audit F3 + review finding M2: `dd ... of=<target>` writes to <target>.
+    // Two-step (matching every other extractor here): DETECT the `of=` operand on
+    // the masked view so an `of=` living inside an unrelated quoted argument is
+    // ignored, then CAPTURE the path from the original `clean` text so a QUOTED
+    // target (`of="path with space"`) is not dropped. The clean pattern accepts a
+    // double-, single-, or unquoted operand.
+    if (/\bdd\b[^\n]*?\bof=/.test(masked)) {
+      const ddClean = /\bdd\b[^\n]*?\bof=(?:"([^"]*)"|'([^']*)'|([^\s;&|<>()$`]+))/.exec(clean);
+      if (ddClean) {
+        addTarget(stripQuotes(ddClean[1] ?? ddClean[2] ?? ddClean[3]), repoRoot, results);
+      }
     }
 
-    // Audit F3: `sort -o <target>` / `sort --output <target>` (also `-o=`/`--output=`)
-    // writes to <target>. Detect on masked so a quoted `-o` is ignored.
-    const sortOutMatch = /\bsort\b[^\n]*?\s(?:-o|--output)[=\s]+([^\s;&|<>()$`'"]+)/.exec(masked);
-    if (sortOutMatch) {
-      addTarget(stripQuotes(sortOutMatch[1]), repoRoot, results);
+    // Audit F3 + review finding M2: `sort -o <target>` / `sort --output <target>`
+    // (also `-o=`/`--output=`). Same two-step: detect on masked, capture the
+    // (possibly quoted) path from clean.
+    if (/\bsort\b[^\n]*?\s(?:-o|--output)[=\s]/.test(masked)) {
+      const sortClean = /\bsort\b[^\n]*?\s(?:-o|--output)[=\s]+(?:"([^"]*)"|'([^']*)'|([^\s;&|<>()$`]+))/.exec(
+        clean
+      );
+      if (sortClean) {
+        addTarget(stripQuotes(sortClean[1] ?? sortClean[2] ?? sortClean[3]), repoRoot, results);
+      }
     }
 
     // Audit F3: `find <paths...> ... <action-flag>` (-delete/-exec/…) writes to
@@ -2027,7 +2048,42 @@ export function extractBashReferencedManagedPaths(command, repoRoot) {
     }
   }
 
+  // Scan C (review finding F3): `eval "<payload>"` / `sh -c '<payload>'` /
+  // `bash -c …` run an opaque string that Scan A's quote-stripping would hide.
+  // The payload is executed code, so scan it RAW (like an executable heredoc
+  // body) — a managed-path write smuggled inside (`eval "cat > .claude/x"`) is
+  // then caught. Only the string ARGUMENT of a shell-string evaluator is scanned,
+  // so a managed path merely mentioned inside an unrelated command's quoted
+  // argument is not affected.
+  for (const payload of extractShellStringPayloads(normalized)) {
+    for (const hit of scanTextForManagedPrefixes(payload)) {
+      matches.push(hit);
+    }
+  }
+
   return [...new Set(matches)];
+}
+
+// Review finding F3: return the string payloads passed to shell-string evaluators
+// (`eval`, `sh -c`, `bash -c`, `zsh -c`, …). These strings are executed as code,
+// so their contents must be scanned for managed-path writes rather than treated
+// as inert quoted arguments. Captures single- and double-quoted payloads.
+function extractShellStringPayloads(command) {
+  if (typeof command !== "string") return [];
+  const payloads = [];
+  const patterns = [
+    /\beval\s+(?:"([^"]*)"|'([^']*)')/g,
+    /\b(?:ba|z|k|da|c)?sh\s+-c\s+(?:"([^"]*)"|'([^']*)')/g
+  ];
+  for (const pattern of patterns) {
+    for (const m of command.matchAll(pattern)) {
+      const payload = m[1] ?? m[2];
+      if (typeof payload === "string" && payload.length > 0) {
+        payloads.push(payload);
+      }
+    }
+  }
+  return payloads;
 }
 
 function stripHeredocBodies(command) {

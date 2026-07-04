@@ -15,8 +15,8 @@ const hooksDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "
 const {
   isReadOnlyBashCommand,
   extractBashWriteTargets,
+  extractBashReferencedManagedPaths,
   resolveReviewGateSource,
-  parseReviewExportsRuntimeOptional,
   reviewArtifactPath,
   persistHookBlockerState,
   clearHookBlockerStateForCommand,
@@ -28,10 +28,9 @@ const repoRoot = "/repo";
 
 // ─── W1: resolveReviewGateSource ─────────────────────────────────────────────
 
-test("W1: connected + zero orchestrator rows + strict packet => MISSING (no markdown fallback)", () => {
+test("W1: connected + zero orchestrator rows => MISSING (no markdown fallback)", () => {
   const source = resolveReviewGateSource({
     runtimeConnected: true,
-    reviewExportsRuntimeOptional: false,
     dbReviewContext: null, // loadDbReviewContext returns null on zero rows
     requiredRoles: ["reviewer", "qa_engineer", "security_reviewer"],
     taskId: "t1"
@@ -50,7 +49,6 @@ test("W1: connected + orchestrator rows present => DB context is authoritative",
   const dbContext = { missingReviews: [], invalidReviews: [] };
   const source = resolveReviewGateSource({
     runtimeConnected: true,
-    reviewExportsRuntimeOptional: false,
     dbReviewContext: dbContext,
     requiredRoles: ["reviewer"],
     taskId: "t1"
@@ -59,21 +57,26 @@ test("W1: connected + orchestrator rows present => DB context is authoritative",
   assert.equal(source.context, dbContext);
 });
 
-test("W1: connected + zero rows + review_exports=runtime_optional => markdown fallback allowed", () => {
+// Review finding F1 (HIGH): the connected-runtime gate accepts NO packet-level
+// opt-out. Task packets are worker-writable (a task whose scope covers
+// `.archon/work` can edit its own packet), so any packet flag consulted while
+// connected is a self-review bypass. A stray/injected opt-out property must be
+// ignored: connected + zero rows is MISSING, unconditionally.
+test("W1/F1: connected + zero rows + injected packet opt-out property => still MISSING", () => {
   const source = resolveReviewGateSource({
     runtimeConnected: true,
+    // A worker-controlled flag smuggled into the options object must have no effect.
     reviewExportsRuntimeOptional: true,
     dbReviewContext: null,
     requiredRoles: ["reviewer"],
     taskId: "t1"
   });
-  assert.equal(source.kind, "markdown");
+  assert.equal(source.kind, "missing");
 });
 
 test("W1: offline (runtime unreachable) => markdown fallback preserved (offline boundary)", () => {
   const source = resolveReviewGateSource({
     runtimeConnected: false,
-    reviewExportsRuntimeOptional: false,
     dbReviewContext: null,
     requiredRoles: ["reviewer", "qa_engineer", "security_reviewer"],
     taskId: "t1"
@@ -84,7 +87,6 @@ test("W1: offline (runtime unreachable) => markdown fallback preserved (offline 
 test("W1: missing entries reference the canonical review artifact path per role", () => {
   const source = resolveReviewGateSource({
     runtimeConnected: true,
-    reviewExportsRuntimeOptional: false,
     dbReviewContext: null,
     requiredRoles: ["reviewer"],
     taskId: "t1"
@@ -92,33 +94,19 @@ test("W1: missing entries reference the canonical review artifact path per role"
   assert.match(source.context.missingReviews[0], new RegExp(reviewArtifactPath("t1", "reviewer").replace(/[.]/g, "\\.")));
 });
 
-// ─── W1: parseReviewExportsRuntimeOptional ───────────────────────────────────
+// ─── W1/F1: packet-flag gate bypass is structurally removed ──────────────────
 
-test("W1 packet flag: review_exports=runtime_optional => true", () => {
-  assert.equal(parseReviewExportsRuntimeOptional("## Workflow artifact refs\n\nreview_exports=runtime_optional\n"), true);
-});
-
-test("W1 packet flag: review_exports=required => false", () => {
-  assert.equal(parseReviewExportsRuntimeOptional("review_exports=required\n"), false);
-});
-
-test("W1 packet flag: absent => false (strict default)", () => {
-  assert.equal(parseReviewExportsRuntimeOptional("# Task Packet\n\n## Goal\nDo work.\n"), false);
-});
-
-test("W1 packet flag: prose mention does NOT trigger", () => {
-  assert.equal(
-    parseReviewExportsRuntimeOptional("The task may declare `review_exports=runtime_optional` when appropriate.\n"),
-    false
-  );
-});
-
-test("W1 packet flag: list-item + backtick wrapped runtime_optional => true", () => {
-  assert.equal(parseReviewExportsRuntimeOptional("- `review_exports=runtime_optional`\n"), true);
-});
-
-test("W1 packet flag: template placeholder 'required | runtime_optional' => false (safe default)", () => {
-  assert.equal(parseReviewExportsRuntimeOptional("review_exports=required | runtime_optional\n"), false);
+// Tripwire (review finding F1): the Stop-hook gate code must contain NO packet
+// review-exports flag consumption. `review_exports=runtime_optional` keeps its
+// CLAUDE.md meaning (a task under runtime authority does not need export write
+// scope) but must never select the review-gate source — a packet-readable
+// opt-out in hook code is a self-review bypass by construction.
+test("W1/F1 tripwire: hook code has no packet review-exports flag consumption", () => {
+  const hookSource = fs.readFileSync(path.join(hooksDir, "hook-utils.mjs"), "utf8");
+  assert.doesNotMatch(hookSource, /parseReviewExportsRuntimeOptional/);
+  assert.doesNotMatch(hookSource, /reviewExportsRuntimeOptional/);
+  const policySource = fs.readFileSync(path.join(hooksDir, "hook-policy.mjs"), "utf8");
+  assert.doesNotMatch(policySource, /review_exports/);
 });
 
 // ─── W2a: false negatives — write-action detection ───────────────────────────
@@ -134,6 +122,13 @@ test("W2a: find with -delete extracts the search-root path as a write target", (
 
 test("W2a: find with -exec is NOT read-only", () => {
   assert.equal(isReadOnlyBashCommand("find .claude -type f -exec rm {} ;"), false);
+});
+
+// Review finding QA-L1: -exec target extraction was untested (only the read-only
+// predicate was asserted for -exec). Cover the write-target path explicitly.
+test("W2a: find with -exec extracts the search-root path as a write target", () => {
+  const targets = extractBashWriteTargets("find .archon/work -type f -exec rm {} ;", repoRoot);
+  assert.ok(targets.includes(".archon/work"), `expected .archon/work in ${JSON.stringify(targets)}`);
 });
 
 test("W2a: find WITHOUT an action flag stays read-only", () => {
@@ -164,6 +159,50 @@ test("W2a: dd of=<target> extracts the output operand as a write target", () => 
 
 test("W2a: dd of=<managed> is NOT read-only", () => {
   assert.equal(isReadOnlyBashCommand("dd of=.claude/x.img bs=1M"), false);
+});
+
+// Review finding M2 (MEDIUM): quoted write targets for dd/sort were detected on
+// the masked view only and silently dropped. They must be captured from the
+// clean text like every other write-extracting command.
+test("M2: dd of=<quoted managed path> is extracted as a write target", () => {
+  const targets = extractBashWriteTargets(`dd if=/dev/zero of=".archon/work/out file.img" bs=1M`, repoRoot);
+  assert.ok(targets.includes(".archon/work/out file.img"), `got ${JSON.stringify(targets)}`);
+});
+
+test("M2: sort -o <quoted managed path> is extracted as a write target", () => {
+  const targets = extractBashWriteTargets(`sort -o ".archon/work/out file.txt" tmp/in.txt`, repoRoot);
+  assert.ok(targets.includes(".archon/work/out file.txt"), `got ${JSON.stringify(targets)}`);
+});
+
+test("M2: sort --output=<quoted managed path> is extracted as a write target", () => {
+  const targets = extractBashWriteTargets(`sort --output=".archon/work/o.txt" a`, repoRoot);
+  assert.ok(targets.includes(".archon/work/o.txt"), `got ${JSON.stringify(targets)}`);
+});
+
+// Review finding F3 (MEDIUM): `eval "<payload>"` hid managed-path writes inside a
+// masked quoted span from both the managed-path scan and write-target extraction.
+// `eval`/`sh -c`/`bash -c` must be treated conservatively as write-like so the
+// gate fails closed rather than passing an opaque payload.
+test("F3: eval with a managed-path destructive payload is NOT read-only", () => {
+  assert.equal(isReadOnlyBashCommand(`eval "find .claude -delete"`), false);
+});
+
+test("F3: sh -c with a managed-path destructive payload is NOT read-only", () => {
+  assert.equal(isReadOnlyBashCommand(`sh -c "rm .claude/x"`), false);
+});
+
+test("F3: bash -c with a managed-path destructive payload is NOT read-only", () => {
+  assert.equal(isReadOnlyBashCommand(`bash -c "rm .claude/x"`), false);
+});
+
+test("F3: eval referencing a managed path is caught by the managed-path scan", () => {
+  const hits = extractBashReferencedManagedPaths(`eval "cat > .claude/x"`, repoRoot);
+  assert.ok(hits.some((h: string) => h.startsWith(".claude")), `got ${JSON.stringify(hits)}`);
+});
+
+test("F3: ordinary read-only commands remain read-only (no eval regression)", () => {
+  assert.equal(isReadOnlyBashCommand("cat .claude/hooks/hook-utils.mjs"), true);
+  assert.equal(isReadOnlyBashCommand(`grep -rn "eval" .claude/hooks/`), true);
 });
 
 // ─── W2b: false positives — quote-aware classification ───────────────────────
@@ -216,6 +255,14 @@ test("W2b: three audited read-only grep shapes all pass", () => {
   assert.equal(isReadOnlyBashCommand(`grep 'a|b' .claude/hooks/x.mjs`), true);
 });
 
+// Same M2 class as dd/sort: a redirect target that is QUOTED must still be
+// captured (masked detection, clean extraction). Otherwise `echo x > ".claude/y"`
+// evades the write-target gate.
+test("M2: redirect to a quoted managed path is extracted as a write target", () => {
+  const targets = extractBashWriteTargets(`echo x > ".claude/hooks/pwned file.mjs"`, repoRoot);
+  assert.ok(targets.includes(".claude/hooks/pwned file.mjs"), `got ${JSON.stringify(targets)}`);
+});
+
 // ─── W2c: fingerprint-scoped blocker clearing ────────────────────────────────
 
 function makeBlockerRepo(): string {
@@ -266,11 +313,64 @@ test("W2c: matching command fingerprint clears the blocker", () => {
   }
 });
 
-test("W2c: a verification command clears the blocker even if fingerprint differs", () => {
+test("W2c: a verification command clears a VERIFICATION blocker even if fingerprint differs", () => {
+  // Legitimate case: the recorded blocker was itself a verification failure
+  // (npm run test), so re-running a related verification command clears it.
   const dir = makeBlockerRepo();
   try {
     clearHookBlockerStateForCommand(dir, "npm run typecheck", { isVerification: true });
     assert.equal(blockerStateExists(dir), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Review finding F5 (LOW): a passing verification command must NOT clear a
+// blocker recorded for an UNRELATED non-verification command. Verification-based
+// clearing only applies when the recorded blocker was itself a verification
+// failure; otherwise only a fingerprint match clears it.
+function makeNonVerificationBlockerRepo(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-nvblocker-"));
+  const failPayload = {
+    tool_name: "Bash",
+    tool_input: { command: "docker compose up -d" },
+    tool_response: { exitCode: 1, stderr: "connection refused" }
+  };
+  const classification = classifyBashFailure(failPayload);
+  persistHookBlockerState(dir, {
+    activeTaskId: "t1",
+    queueCurrentTaskId: "t1",
+    toolName: classification.toolName,
+    command: classification.command,
+    commandFingerprint: classification.commandFingerprint,
+    exitCode: classification.exitCode,
+    blockerKind: classification.blockerKind,
+    summary: classification.summary,
+    details: classification.details,
+    recordedAt: new Date().toISOString()
+  });
+  return dir;
+}
+
+test("W2c/F5: verification success does NOT clear a non-verification blocker", () => {
+  const dir = makeNonVerificationBlockerRepo();
+  try {
+    clearHookBlockerStateForCommand(dir, "npm run test", { isVerification: true });
+    assert.equal(
+      blockerStateExists(dir),
+      true,
+      "an unrelated verification pass must not erase a non-verification blocker"
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("W2c/F5: the recorded non-verification command's fingerprint still clears it", () => {
+  const dir = makeNonVerificationBlockerRepo();
+  try {
+    clearHookBlockerStateForCommand(dir, "docker compose up -d", { isVerification: false });
+    assert.equal(blockerStateExists(dir), false, "re-running the blocked command clears it");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
