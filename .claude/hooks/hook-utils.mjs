@@ -56,7 +56,11 @@ const readOnlyCommandSegmentPatterns = [
   /^git\s+branch\s+--show-current\b/
 ];
 const writeLikeCommandSegmentPatterns = [
-  />/,
+  // NOTE: the bare `/>/` redirect pattern was removed (audit F4). A raw `>` match
+  // fired on quoted strings that merely contained the character (e.g.
+  // `grep -n "a > b" .claude/x`), producing false-positive managed-path blocks.
+  // Real, unquoted output redirects are now detected quote-aware by
+  // segmentHasWriteRedirect() below.
   /\btee\b/,
   /\btouch\b/,
   /\bmkdir\b/,
@@ -67,7 +71,14 @@ const writeLikeCommandSegmentPatterns = [
   /\bperl\b[^\n]*\s-i\b/,
   /\bpython(?:3)?\b[^\n]*\s-c\b/,
   /\bnode\b[^\n]*\s-e\b/,
-  /\bgit\s+(?:apply|checkout|restore|clean|rm|mv)\b/
+  /\bgit\s+(?:apply|checkout|restore|clean|rm|mv)\b/,
+  // Audit F3: write-action variants that the older name-only patterns missed.
+  // `find` is a WRITE when it carries an action flag; it stays read-only only
+  // without one (handled by readOnlyCommandSegmentPatterns). `sort -o`/`--output`
+  // and `dd of=` write to their output-file operands.
+  /\bfind\b[\s\S]*?\s-(?:delete|exec|execdir|ok|okdir|fls|fprint|fprintf)\b/,
+  /\bsort\b[^\n]*\s(?:-o|--output)(?:[=\s]|$)/,
+  /\bdd\b[^\n]*\bof=/
 ];
 const blockerMessagePatterns = [
   /need user input/i,
@@ -318,6 +329,28 @@ export function clearHookBlockerState(repoRootPath) {
     rmSync(hookBlockerStatePath(repoRootPath), { force: true });
   } catch {
     // ignore hook cleanup failures
+  }
+}
+
+// Audit F10: clear the recorded hook-blocker state only when the succeeding
+// (exit-0) command is the one that was blocked — matched by the recorded
+// commandFingerprint — OR a recognized verification command. An unrelated exit-0
+// command (e.g. an incidental `ls`) must NOT erase the record of a failed
+// verification; that record is what the Stop gate uses to keep the repair loop
+// honest. When no blocker is recorded there is nothing to clear.
+export function clearHookBlockerStateForCommand(repoRootPath, command, options = {}) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(hookBlockerStatePath(repoRootPath), "utf8"));
+  } catch {
+    return; // no recorded blocker (or unreadable) — nothing to clear
+  }
+  const recordedFingerprint =
+    parsed && typeof parsed.commandFingerprint === "string" ? parsed.commandFingerprint : undefined;
+  const matchesFingerprint =
+    recordedFingerprint !== undefined && recordedFingerprint === buildCommandFingerprint(command);
+  if (matchesFingerprint || options.isVerification === true) {
+    clearHookBlockerState(repoRootPath);
   }
 }
 
@@ -670,6 +703,50 @@ async function loadDbReviewContext(resolvedRepoRoot, taskId, requiredRoles, runI
   return { missingReviews, invalidReviews };
 }
 
+// Audit F1: decide which source the Stop review gate trusts. Pure and fully
+// testable (no DB). CLAUDE.md declares review_artifact_trust=runtime_records_only,
+// so when the runtime is CONNECTED the orchestrator DB rows are the only trusted
+// source:
+//   - orchestrator rows present  -> use them (kind: "db").
+//   - zero orchestrator rows     -> reviews are MISSING (kind: "missing"); a
+//     worker-written markdown file must NOT satisfy the gate. The message names
+//     review-orchestrator as the required path.
+//   - EXCEPT when the packet declares review_exports=runtime_optional, which opts
+//     the task into the markdown fallback even while connected (kind: "markdown").
+// When the runtime is genuinely unreachable (not connected — the documented
+// offline boundary), the markdown fallback applies unchanged (kind: "markdown").
+export function resolveReviewGateSource({
+  runtimeConnected,
+  reviewExportsRuntimeOptional,
+  dbReviewContext,
+  requiredRoles,
+  taskId
+}) {
+  if (runtimeConnected) {
+    if (dbReviewContext) {
+      return { kind: "db", context: dbReviewContext };
+    }
+    if (!reviewExportsRuntimeOptional) {
+      const roles = Array.isArray(requiredRoles) ? requiredRoles : [];
+      return {
+        kind: "missing",
+        context: {
+          missingReviews: roles.map(
+            (role) =>
+              `${reviewArtifactPath(taskId, role)} (no orchestrator review recorded — run the review-orchestrator; runtime is connected and review_artifact_trust=runtime_records_only, so a self-written markdown review does not satisfy the gate)`
+          ),
+          invalidReviews: []
+        }
+      };
+    }
+    // Connected but the packet opted into runtime_optional AND there are no
+    // orchestrator rows yet — fall back to the markdown check.
+    return { kind: "markdown" };
+  }
+  // Runtime genuinely unreachable (offline) — documented markdown fallback.
+  return { kind: "markdown" };
+}
+
 export async function readActiveTaskContext(options = {}) {
   const resolvedRepoRoot =
     options && typeof options.repoRoot === "string" && options.repoRoot.trim().length > 0
@@ -846,20 +923,31 @@ export async function readActiveTaskContext(options = {}) {
   context.invalidReviews = [];
 
   if (requiredRoles.length > 0) {
-    // When runtime is connected, query DB for trusted orchestrator records.
-    // Fall back to markdown file check when offline or when DB has no records.
-    let reviewContext = null;
+    // Audit F1: when the runtime is CONNECTED, orchestrator DB rows are the only
+    // trusted review source. Zero rows = MISSING reviews (fail closed) unless the
+    // packet declares review_exports=runtime_optional. Worker-writable markdown is
+    // trusted only offline, or under that explicit opt-out. See resolveReviewGateSource.
+    const reviewExportsRuntimeOptional = parseReviewExportsRuntimeOptional(taskMarkdown);
+    let dbReviewContext = null;
     if (context.runtimeConnected) {
-      reviewContext = await loadDbReviewContext(
+      dbReviewContext = await loadDbReviewContext(
         resolvedRepoRoot,
         context.activeTaskId,
         requiredRoles,
         runtimeContext?.activeRunId
       );
     }
-    if (!reviewContext) {
-      reviewContext = await loadMarkdownReviewContext(resolvedRepoRoot, context.activeTaskId, requiredRoles);
-    }
+    const source = resolveReviewGateSource({
+      runtimeConnected: context.runtimeConnected,
+      reviewExportsRuntimeOptional,
+      dbReviewContext,
+      requiredRoles,
+      taskId: context.activeTaskId
+    });
+    const reviewContext =
+      source.kind === "markdown"
+        ? await loadMarkdownReviewContext(resolvedRepoRoot, context.activeTaskId, requiredRoles)
+        : source.context;
     context.missingReviews = reviewContext.missingReviews;
     context.invalidReviews = reviewContext.invalidReviews;
   }
@@ -1358,6 +1446,33 @@ export function parseVerificationRequired(markdown) {
   return value !== "false" && value !== "no" && value !== "skip";
 }
 
+// Audit F1: read the `review_exports=runtime_optional` packet flag. Packets carry
+// repo-relative `key=value` lines (see .archon/templates/task-packet.md). Only the
+// explicit `runtime_optional` value opts a task into the markdown-review fallback
+// while the runtime is connected; anything else (including the flag being absent,
+// or `review_exports=required`) keeps the strict runtime-records-only gate. The
+// line is matched anywhere in the packet, tolerant of leading list markers and
+// surrounding backticks, but it must START with the key so prose that merely
+// mentions the flag does not trigger it.
+export function parseReviewExportsRuntimeOptional(markdown) {
+  if (typeof markdown !== "string") {
+    return false;
+  }
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const line = rawLine
+      .trim()
+      .replace(/^[-*]\s+/, "")
+      .replace(/^`+/, "")
+      .replace(/`+$/, "")
+      .trim();
+    const match = /^review_exports\s*=\s*([A-Za-z_]+)/.exec(line);
+    if (match) {
+      return match[1].trim().toLowerCase() === "runtime_optional";
+    }
+  }
+  return false;
+}
+
 export const verificationExemptTaskClasses = ["docs_only", "state_sync", "memory_curation", "scaffold_only"];
 
 // ---------------------------------------------------------------------------
@@ -1596,7 +1711,9 @@ export function extractBashWriteTargets(command, repoRoot) {
   }
 
   const stripped = stripHeredocBodies(command);
-  const segments = stripped.split(/&&|\|\||[;|]/).map((s) => s.trim()).filter(Boolean);
+  // Audit F4: quote-aware split so a separator inside a quoted argument does not
+  // fragment the command.
+  const segments = splitBashSegments(stripped).map((s) => s.trim()).filter(Boolean);
   const results = new Set();
 
   for (const seg of segments) {
@@ -1605,31 +1722,67 @@ export function extractBashWriteTargets(command, repoRoot) {
       .replace(/\s+\d*>\/dev\/null\b/g, "")
       .replace(/\s+\d*>&\d+\b/g, "")
       .trim();
+    // Audit F4: masked view with quoted spans blanked. Operator-embedded-in-string
+    // cases (a `>` or `of=`/`-o` that lives INSIDE a quoted argument of an
+    // unrelated command) are detected here so they are NOT treated as writes. The
+    // live 2026-07-04 repro was an `init-task` whose quoted `--goal` contained
+    // `dd of=` and `>` and was wrongly blocked as a write.
+    const masked = maskQuotedSpans(clean);
 
-    // > path or >> path (not fd>&N which were already stripped)
-    // Match > or >> followed by a path that is not /dev/* or $VAR or process substitution.
-    // Exclude => (arrow function) by requiring > is not immediately preceded by =.
-    // Exclude >= (comparison) by requiring > is not immediately followed by =.
+    // > path or >> path (not fd>&N which were already stripped).
+    // Run against MASKED text so a quoted `>` or a quoted target is ignored.
+    // Exclude => (arrow) via the =-lookbehind and >= (comparison) via the
+    // =-lookahead. Quote chars cannot appear in masked, so the target is unquoted.
     const redirectPattern = /(?<![=])>>?(?!=)\s*([^\s;&|<>()$`][^\s;&|<>()$`]*)/g;
-    for (const m of clean.matchAll(redirectPattern)) {
-      const p = stripQuotes(m[1]);
-      addTarget(p, repoRoot, results);
+    for (const m of masked.matchAll(redirectPattern)) {
+      addTarget(stripQuotes(m[1]), repoRoot, results);
     }
 
-    // tee [-a] path [path ...]
-    const teeMatch = /\btee\s+(?:-a\s+)?(.+)$/.exec(clean);
+    // Audit F3: `dd ... of=<target>` writes to <target>. Detect on masked so an
+    // `of=` inside a quoted string is ignored.
+    const ddOfMatch = /\bdd\b[^\n]*?\bof=([^\s;&|<>()$`'"]+)/.exec(masked);
+    if (ddOfMatch) {
+      addTarget(stripQuotes(ddOfMatch[1]), repoRoot, results);
+    }
+
+    // Audit F3: `sort -o <target>` / `sort --output <target>` (also `-o=`/`--output=`)
+    // writes to <target>. Detect on masked so a quoted `-o` is ignored.
+    const sortOutMatch = /\bsort\b[^\n]*?\s(?:-o|--output)[=\s]+([^\s;&|<>()$`'"]+)/.exec(masked);
+    if (sortOutMatch) {
+      addTarget(stripQuotes(sortOutMatch[1]), repoRoot, results);
+    }
+
+    // Audit F3: `find <paths...> ... <action-flag>` (-delete/-exec/…) writes to
+    // the files matched under its search roots. Gate on the masked text (so a
+    // quoted `find`/flag is ignored) but capture the search-root paths from the
+    // original `clean` so quoted paths survive. Paths precede the first predicate.
+    if (
+      /\bfind\b/.test(masked) &&
+      /\s-(?:delete|exec|execdir|ok|okdir|fls|fprint|fprintf)\b/.test(masked)
+    ) {
+      const findMatch = /\bfind\s+(.+)$/.exec(clean);
+      if (findMatch) {
+        for (const part of tokenize(findMatch[1])) {
+          if (part.startsWith("-")) break; // stop at the first flag/predicate
+          addTarget(stripQuotes(part), repoRoot, results);
+        }
+      }
+    }
+
+    // tee [-a] path [path ...] — gate on masked so a quoted `tee` is ignored;
+    // capture args from `clean` so quoted targets survive.
+    const teeMatch = /\btee\b/.test(masked) ? /\btee\s+(?:-a\s+)?(.+)$/.exec(clean) : null;
     if (teeMatch) {
-      const parts = teeMatch[1].trim().split(/\s+/);
-      // Skip flags like -a
-      for (const part of parts) {
+      // Quote-aware tokenization so a quoted target with an internal space stays
+      // one path (audit F4). Skip flags like -a.
+      for (const part of tokenize(teeMatch[1].trim())) {
         if (part.startsWith("-")) continue;
-        const p = stripQuotes(part);
-        addTarget(p, repoRoot, results);
+        addTarget(stripQuotes(part), repoRoot, results);
       }
     }
 
     // sed -i[suffix] 's/a/b/' path  — take the last non-flag token that isn't the script
-    const sedMatch = /\bsed\s+-i\S*\s+(.+)$/.exec(clean);
+    const sedMatch = /\bsed\s+-i/.test(masked) ? /\bsed\s+-i\S*\s+(.+)$/.exec(clean) : null;
     if (sedMatch) {
       const tokens = tokenize(sedMatch[1]);
       // Skip sed script (starts with s/ or 's/ or is quoted expression, or looks like a sed expr)
@@ -1654,7 +1807,7 @@ export function extractBashWriteTargets(command, repoRoot) {
     }
 
     // touch path [path ...]
-    const touchMatch = /\btouch\s+(.+)$/.exec(clean);
+    const touchMatch = /\btouch\b/.test(masked) ? /\btouch\s+(.+)$/.exec(clean) : null;
     if (touchMatch) {
       for (const part of tokenize(touchMatch[1])) {
         if (part.startsWith("-")) continue;
@@ -1663,7 +1816,7 @@ export function extractBashWriteTargets(command, repoRoot) {
     }
 
     // mkdir [-p] path [path ...]
-    const mkdirMatch = /\bmkdir\s+(.+)$/.exec(clean);
+    const mkdirMatch = /\bmkdir\b/.test(masked) ? /\bmkdir\s+(.+)$/.exec(clean) : null;
     if (mkdirMatch) {
       for (const part of tokenize(mkdirMatch[1])) {
         if (part.startsWith("-")) continue;
@@ -1672,7 +1825,7 @@ export function extractBashWriteTargets(command, repoRoot) {
     }
 
     // cp src dest  — only the LAST arg is the write target
-    const cpMatch = /\bcp\s+(?:-\S+\s+)*(.+)$/.exec(clean);
+    const cpMatch = /\bcp\b/.test(masked) ? /\bcp\s+(?:-\S+\s+)*(.+)$/.exec(clean) : null;
     if (cpMatch) {
       const tokens = tokenize(cpMatch[1]).filter((t) => !t.startsWith("-"));
       if (tokens.length >= 2) {
@@ -1681,7 +1834,7 @@ export function extractBashWriteTargets(command, repoRoot) {
     }
 
     // mv src dest — only the LAST arg is the write target
-    const mvMatch = /\bmv\s+(?:-\S+\s+)*(.+)$/.exec(clean);
+    const mvMatch = /\bmv\b/.test(masked) ? /\bmv\s+(?:-\S+\s+)*(.+)$/.exec(clean) : null;
     if (mvMatch) {
       const tokens = tokenize(mvMatch[1]).filter((t) => !t.startsWith("-"));
       if (tokens.length >= 2) {
@@ -1901,14 +2054,129 @@ function stripIoDiscardRedirects(segment) {
     .replace(/\s+\d*>&\d+\b/g, "");
 }
 
+// Audit F4: quote-aware segment splitter. Splits a shell command into top-level
+// segments on UNQUOTED separators (`;`, `|`, `||`, `&&`). Single quotes, double
+// quotes, and backslash escapes are respected so a separator character inside a
+// quoted string (e.g. `grep 'a|b' .claude/x`) does not split the command — which
+// previously produced a stray non-read-only fragment and a false-positive block.
+function splitBashSegments(command) {
+  if (typeof command !== "string") {
+    return [];
+  }
+  const segments = [];
+  let current = "";
+  let quote = null; // "'" or '"' when inside a quoted span
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      current += ch;
+      // Inside double quotes a backslash escapes the next char; inside single
+      // quotes a backslash is literal (bash semantics).
+      if (ch === "\\" && quote === '"' && i + 1 < command.length) {
+        current += command[i + 1];
+        i++;
+        continue;
+      }
+      if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < command.length) {
+      current += ch + command[i + 1];
+      i++;
+      continue;
+    }
+    if (ch === ";") {
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    if (ch === "|") {
+      if (command[i + 1] === "|") {
+        i++;
+      }
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    if (ch === "&" && command[i + 1] === "&") {
+      i++;
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments;
+}
+
+// Audit F4: replace every quoted span (and its delimiters) in a segment with
+// spaces, so write-like patterns and redirect detection only ever see UNQUOTED
+// text. A `>` / `tee` / `touch` that appears only inside a quoted argument of an
+// unrelated command must not trigger write classification.
+function maskQuotedSpans(str) {
+  if (typeof str !== "string") {
+    return "";
+  }
+  let out = "";
+  let quote = null;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"' && i + 1 < str.length) {
+        out += "  ";
+        i++;
+        continue;
+      }
+      out += " ";
+      if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      out += " ";
+      continue;
+    }
+    if (ch === "\\" && i + 1 < str.length) {
+      out += ch + str[i + 1];
+      i++;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+// Audit F4: true when the segment contains a real output redirection (`>` / `>>`)
+// OUTSIDE any quoted span. Quoted `>` (e.g. `grep 'a > b'`), arrow/comparison
+// tokens (`=>`, `>=`), and already-stripped io-discard redirects (2>&1,
+// 2>/dev/null) are NOT redirections.
+function segmentHasWriteRedirect(segment) {
+  if (typeof segment !== "string") {
+    return false;
+  }
+  const masked = maskQuotedSpans(stripIoDiscardRedirects(segment));
+  return /(?<![=<>])>>?(?!=)/.test(masked);
+}
+
 export function isReadOnlyBashCommand(command) {
   if (typeof command !== "string" || command.trim().length === 0) {
     return false;
   }
 
   const normalized = stripHeredocBodies(command);
-  const segments = normalized
-    .split(/\&\&|\|\||[|;]/)
+  // Audit F4: quote-aware split so separators inside quoted arguments do not
+  // create stray non-read-only fragments.
+  const segments = splitBashSegments(normalized)
     .map((segment) => stripIoDiscardRedirects(segment).trim())
     .filter(Boolean);
   if (segments.length === 0) {
@@ -1916,11 +2184,19 @@ export function isReadOnlyBashCommand(command) {
   }
 
   return segments.every((segment) => {
-    if (writeLikeCommandSegmentPatterns.some((pattern) => pattern.test(segment))) {
+    // A real (unquoted) output redirect makes the segment a write.
+    if (segmentHasWriteRedirect(segment)) {
+      return false;
+    }
+    // Audit F4: evaluate write-like and read-only name patterns against the
+    // quote-masked segment so a write-command word (tee/touch/…) inside a quoted
+    // argument of a read-only command does not misclassify it.
+    const masked = maskQuotedSpans(segment);
+    if (writeLikeCommandSegmentPatterns.some((pattern) => pattern.test(masked))) {
       return false;
     }
 
-    return readOnlyCommandSegmentPatterns.some((pattern) => pattern.test(segment));
+    return readOnlyCommandSegmentPatterns.some((pattern) => pattern.test(masked));
   });
 }
 

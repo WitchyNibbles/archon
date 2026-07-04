@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   classifyBashFailure,
-  clearHookBlockerState,
+  clearHookBlockerStateForCommand,
   extractBashReferencedManagedPaths,
   extractBashWriteTargets,
   extractToolCommand,
@@ -367,8 +367,13 @@ export function evaluatePostToolUse(payload, context) {
   }
 
   if (exitCode === 0) {
-    clearHookBlockerState(context.repoRoot);
     const command = extractToolCommand(payload);
+    // Audit F10: clear the recorded blocker only when THIS command is the one that
+    // was blocked (fingerprint match) or is a recognized verification command —
+    // not on any unrelated exit-0 command.
+    clearHookBlockerStateForCommand(context.repoRoot, command, {
+      isVerification: isVerificationCommand(command)
+    });
     const toolResponse = payload?.tool_response ?? {};
     const combinedOutput = [
       normalizeToolOutput(toolResponse.stdout),
