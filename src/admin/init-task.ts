@@ -292,7 +292,7 @@ async function maybeWritePacketMarkdown(
       `init-task: refusing to write packet outside the tasks directory (${packetPath})`
     );
   }
-  await writeArchonExport(packetPath, renderTaskPacketMarkdown(packet, taskClass));
+  await writeArchonExport(repoPath, packetPath, renderTaskPacketMarkdown(packet, taskClass));
   return packetPath;
 }
 

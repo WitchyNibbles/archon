@@ -37,6 +37,7 @@ export async function writeDaemonReviewQueueStatus(
 ): Promise<void> {
   const daemonDir = path.join(cwd, ".archon", "work", "daemon");
   await writeArchonExport(
+    cwd,
     path.join(daemonDir, "review-queue-status.json"),
     `${JSON.stringify(status, null, 2)}\n`
   );
@@ -65,6 +66,7 @@ export async function writeDaemonContinuationStatus(
 ): Promise<void> {
   const daemonDir = path.join(cwd, ".archon", "work", "daemon");
   await writeArchonExport(
+    cwd,
     path.join(daemonDir, "continuation-status.json"),
     `${JSON.stringify(status, null, 2)}\n`
   );
@@ -94,6 +96,7 @@ export async function writeDaemonAutomationEnvelope(
 ): Promise<void> {
   const daemonDir = path.join(cwd, ".archon", "work", "daemon");
   await writeArchonExport(
+    cwd,
     path.join(daemonDir, "automation-envelope.json"),
     `${JSON.stringify(envelope, null, 2)}\n`
   );
@@ -101,12 +104,12 @@ export async function writeDaemonAutomationEnvelope(
 
 
 export async function clearDaemonContinuationStatus(cwd: string): Promise<void> {
-  await removeArchonExport(path.join(cwd, ".archon", "work", "daemon", "continuation-status.json"));
+  await removeArchonExport(cwd, path.join(cwd, ".archon", "work", "daemon", "continuation-status.json"));
 }
 
 
 export async function clearDaemonAutomationEnvelope(cwd: string): Promise<void> {
-  await removeArchonExport(path.join(cwd, ".archon", "work", "daemon", "automation-envelope.json"));
+  await removeArchonExport(cwd, path.join(cwd, ".archon", "work", "daemon", "automation-envelope.json"));
 }
 
 
@@ -125,6 +128,7 @@ export async function writeDaemonContinuationContext(
   continuationPrompt: string
 ): Promise<string> {
   await writeArchonExport(
+    cwd,
     path.join(cwd, DAEMON_CONTINUATION_CONTEXT_RELATIVE_PATH),
     `${continuationPrompt.trim()}\n`
   );
@@ -158,7 +162,7 @@ export async function readDaemonContinuationContext(
 
 /** Remove the persisted continuation bundle once it has been consumed. */
 export async function clearDaemonContinuationContext(cwd: string): Promise<void> {
-  await removeArchonExport(path.join(cwd, DAEMON_CONTINUATION_CONTEXT_RELATIVE_PATH));
+  await removeArchonExport(cwd, path.join(cwd, DAEMON_CONTINUATION_CONTEXT_RELATIVE_PATH));
 }
 
 
@@ -365,13 +369,13 @@ export async function writeDaemonAppAutomationRequest(
             generatedAt: input.updatedAt
           }
         };
-  await writeArchonExport(path.join(cwd, relativePath), `${JSON.stringify(request, null, 2)}\n`);
+  await writeArchonExport(cwd, path.join(cwd, relativePath), `${JSON.stringify(request, null, 2)}\n`);
   return relativePath;
 }
 
 
 export async function clearDaemonAppAutomationRequest(cwd: string): Promise<void> {
-  await removeArchonExport(path.join(cwd, ".archon", "work", "daemon", "app-automation-request.json"));
+  await removeArchonExport(cwd, path.join(cwd, ".archon", "work", "daemon", "app-automation-request.json"));
 }
 
 
@@ -417,7 +421,7 @@ export async function writeDaemonCliSchedulerRequest(
   if (continuationContext) {
     await clearDaemonContinuationContext(cwd);
   }
-  await writeArchonExport(path.join(cwd, promptPath), prompt);
+  await writeArchonExport(cwd, path.join(cwd, promptPath), prompt);
 
   const requiresResumeSession =
     input.envelope.continuationIntent === "defer_same_thread" && input.envelope.targetMode === "same_thread";
@@ -488,7 +492,7 @@ export async function writeDaemonCliSchedulerRequest(
       generatedAt: input.updatedAt
     }
   };
-  await writeArchonExport(path.join(cwd, requestPath), `${JSON.stringify(request, null, 2)}\n`);
+  await writeArchonExport(cwd, path.join(cwd, requestPath), `${JSON.stringify(request, null, 2)}\n`);
   return {
     requestPath,
     promptPath,
@@ -499,8 +503,8 @@ export async function writeDaemonCliSchedulerRequest(
 
 
 export async function clearDaemonCliSchedulerRequest(cwd: string): Promise<void> {
-  await removeArchonExport(path.join(cwd, ".archon", "work", "daemon", "cli-scheduler-request.json"));
-  await removeArchonExport(path.join(cwd, ".archon", "work", "daemon", "cli-scheduler-prompt.txt"));
+  await removeArchonExport(cwd, path.join(cwd, ".archon", "work", "daemon", "cli-scheduler-request.json"));
+  await removeArchonExport(cwd, path.join(cwd, ".archon", "work", "daemon", "cli-scheduler-prompt.txt"));
 }
 
 
@@ -544,6 +548,7 @@ export async function writeDaemonOperatorHandoff(
 ): Promise<void> {
   const daemonDir = path.join(cwd, ".archon", "work", "daemon");
   await writeArchonExport(
+    cwd,
     path.join(daemonDir, "operator-handoff.json"),
     `${JSON.stringify(handoff, null, 2)}\n`
   );
@@ -551,7 +556,7 @@ export async function writeDaemonOperatorHandoff(
 
 
 export async function clearDaemonOperatorHandoff(cwd: string): Promise<void> {
-  await removeArchonExport(path.join(cwd, ".archon", "work", "daemon", "operator-handoff.json"));
+  await removeArchonExport(cwd, path.join(cwd, ".archon", "work", "daemon", "operator-handoff.json"));
 }
 
 
@@ -568,13 +573,13 @@ export async function writeDaemonScopeExpansionRequest(
   }
 ): Promise<string> {
   const relativePath = ".archon/work/daemon/scope-expansion-request.json";
-  await writeArchonExport(path.join(cwd, relativePath), `${JSON.stringify(request, null, 2)}\n`);
+  await writeArchonExport(cwd, path.join(cwd, relativePath), `${JSON.stringify(request, null, 2)}\n`);
   return relativePath;
 }
 
 
 export async function clearDaemonScopeExpansionRequest(cwd: string): Promise<void> {
-  await removeArchonExport(path.join(cwd, ".archon", "work", "daemon", "scope-expansion-request.json"));
+  await removeArchonExport(cwd, path.join(cwd, ".archon", "work", "daemon", "scope-expansion-request.json"));
 }
 
 
@@ -617,6 +622,7 @@ export async function writeDaemonSupervisorStatus(
 ): Promise<void> {
   const daemonDir = path.join(cwd, ".archon", "work", "daemon");
   await writeArchonExport(
+    cwd,
     path.join(daemonDir, "supervisor-status.json"),
     `${JSON.stringify(status, null, 2)}\n`
   );
@@ -694,5 +700,5 @@ export async function appendDaemonSupervisorHistory(
   }
 
   const retainedLines = [...existingLines, JSON.stringify(entry)].slice(-retentionLimit);
-  await writeArchonExport(historyPath, retainedLines.length > 0 ? `${retainedLines.join("\n")}\n` : "");
+  await writeArchonExport(cwd, historyPath, retainedLines.length > 0 ? `${retainedLines.join("\n")}\n` : "");
 }

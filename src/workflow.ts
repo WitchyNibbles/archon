@@ -1775,10 +1775,11 @@ export function isCompleteProjectStatus(projectStatus: string | undefined): bool
 
 // Export-surface writer: routes through the single Archon export writer so the
 // task-queue.json / ACTIVE writes are atomic (temp+rename) and skip-on-unchanged.
-// `filePath` must be within `.archon/work/**` or the `.archon/ACTIVE` pointer —
+// `root` is the explicit repo root the containment check resolves against;
+// `filePath` must be within `root/.archon/work/**` or `root/.archon/ACTIVE` —
 // its only callers are the workflow export writes below.
-export async function writeFileIfChanged(filePath: string, content: string): Promise<boolean> {
-  return writeArchonExport(filePath, content, { ifChanged: true });
+export async function writeFileIfChanged(root: string, filePath: string, content: string): Promise<boolean> {
+  return writeArchonExport(root, filePath, content, { ifChanged: true });
 }
 
 
@@ -1802,15 +1803,18 @@ export async function syncRuntimeWorkflowExports(
     runtimeState.activeTaskId && runtimeState.activeTaskId.trim().length > 0
       ? runtimeState.activeTaskId.trim()
       : queue.current_task_id;
-  const archonRoot = path.join(path.resolve(cwd), ".archon");
+  const resolvedCwd = path.resolve(cwd);
+  const archonRoot = path.join(resolvedCwd, ".archon");
   const workRoot = path.join(archonRoot, "work");
 
   // Parent-directory creation is handled atomically inside the export writer.
   const queueChanged = await writeFileIfChanged(
+    resolvedCwd,
     path.join(workRoot, "task-queue.json"),
     `${JSON.stringify(queue, null, 2)}\n`
   );
   const activeChanged = await writeFileIfChanged(
+    resolvedCwd,
     path.join(archonRoot, "ACTIVE"),
     formatActiveWorkflowContent(activeTaskId ?? null, queue)
   );
@@ -2405,7 +2409,7 @@ export async function executeRepairTaskQueueCommandFromArgs(
     // the plain write so repair can still target an arbitrary queue file.
     const defaultQueuePath = path.join(cwd, ".archon", "work", "task-queue.json");
     if (path.resolve(queuePath) === path.resolve(defaultQueuePath)) {
-      await writeArchonExport(queuePath, repaired.content);
+      await writeArchonExport(cwd, queuePath, repaired.content);
     } else {
       await writeFile(queuePath, repaired.content, "utf8");
     }
