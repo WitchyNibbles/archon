@@ -2123,7 +2123,9 @@ export async function executeReconcileRuntimeStateCommandFromArgs(
 ): Promise<{ format: "json" | "text"; result: ReconcileRuntimeStateCommandResult }> {
   const env = options.env ?? process.env;
   const format = resolveFormatFlag(args);
-  const apply = hasCommandFlag(args, "--apply");
+  // Accept --apply (native) OR --confirm (close-run's flag) as aliases, so the two
+  // closure commands share one mutate-vs-dry-run vocabulary. Alias only — no break.
+  const apply = hasCommandFlag(args, "--apply") || hasCommandFlag(args, "--confirm");
   const workspaceSlug = resolveCommandFlag(args, "--workspace-slug") ?? env.ARCHON_WORKSPACE_SLUG;
   const projectSlug = resolveCommandFlag(args, "--project-slug") ?? env.ARCHON_PROJECT_SLUG;
   const staleAfterHoursValue = resolveCommandFlag(args, "--stale-after-hours") ?? "24";

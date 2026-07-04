@@ -173,6 +173,15 @@ export interface ExecuteSyncRuntimeExportsCommandOptions {
   }) => Promise<{ workspace: WorkspaceRecord; project: ProjectRecord } | undefined>;
   getProjectRuntimeState: (projectId: string) => Promise<ProjectRuntimeStateRecord | undefined>;
   saveProjectRuntimeState?: ((state: ProjectRuntimeStateRecord) => Promise<void>) | undefined;
+  /**
+   * Authoritative run+task snapshot for the resolved run. When present, exports
+   * are derived from LIVE run/task rows rather than the stored task-queue
+   * snapshot in project_runtime_state — closing the stale-export bug where a
+   * sealed run still exported project_status: in_progress with a dangling
+   * current_task_id (closureLoop bug 2). Optional so tests without a run/service
+   * fall back to the stored snapshot.
+   */
+  getStatusSnapshot?: ((runId: string) => Promise<RunStatusSnapshot>) | undefined;
 }
 
 
@@ -439,6 +448,34 @@ export function buildAuthoritativeTaskQueueFromSnapshot(
             : null
     }))
   };
+}
+
+
+// Which stored active-task pointer should the EXPORT reflect, given the live
+// run+task snapshot? An export must never claim a terminal task is still the
+// current in-progress task: a sealed/terminal run, or a stored active task whose
+// live row is terminal (approved/done) or absent, yields a null current_task_id.
+// This is a faithful reflection of authoritative state, not a re-derivation of
+// ownership — that repair is reconcile-runtime-state's job, not the export path.
+export function deriveExportActiveTaskId(
+  snapshot: RunStatusSnapshot,
+  storedActiveTaskId: string | null
+): string | null {
+  if (!storedActiveTaskId) {
+    return null;
+  }
+  if (isCompleteProjectStatus(snapshot.run.status)) {
+    return null;
+  }
+  const task = snapshot.tasks.find((candidate) => candidate.packet.taskId === storedActiveTaskId);
+  if (!task) {
+    return null;
+  }
+  // approved and done both map to a terminal queue status — the pointer is stale.
+  if (task.status === "approved" || task.status === "done") {
+    return null;
+  }
+  return storedActiveTaskId;
 }
 
 
@@ -1839,8 +1876,25 @@ export async function executeSyncRuntimeExportsCommandFromArgs(
   }
 
   const runtimeState = await options.getProjectRuntimeState(projectContext.project.id);
-  const queue = parseTaskQueueRecord(runtimeState?.taskQueue);
-  const activeTaskId = runtimeState?.activeTaskId ?? null;
+  const storedActiveTaskId = runtimeState?.activeTaskId ?? null;
+  const resolvedRunId = runtimeState?.activeRunId ?? null;
+
+  // Prefer the LIVE run+task rows over the stored task-queue snapshot: after a run
+  // is sealed (run done, tasks done) the stored snapshot can still say in_progress
+  // with a dangling current_task_id (closureLoop bug 2). Derive project_status,
+  // per-task status, and current_task_id from the authoritative snapshot when it
+  // is available; fall back to the stored snapshot only when no run/service exists.
+  let queue: TaskQueue;
+  let activeTaskId: string | null;
+  if (resolvedRunId && options.getStatusSnapshot) {
+    const snapshot = await options.getStatusSnapshot(resolvedRunId);
+    activeTaskId = deriveExportActiveTaskId(snapshot, storedActiveTaskId);
+    queue = buildAuthoritativeTaskQueueFromSnapshot(snapshot, activeTaskId);
+  } else {
+    queue = parseTaskQueueRecord(runtimeState?.taskQueue);
+    activeTaskId = storedActiveTaskId;
+  }
+
   const synced = await syncRuntimeWorkflowExports(options.cwd, {
     activeTaskId,
     taskQueue: queue,
@@ -2282,6 +2336,7 @@ export async function advanceActiveTaskCommand(args: readonly string[]) {
 export async function syncRuntimeExportsCommand(args: readonly string[]) {
   await withClient(async (client) => {
     const store = new PostgresStore(client);
+    const service = new ArchonCoreService(store);
     const { format, result } = await executeSyncRuntimeExportsCommandFromArgs(args, {
       cwd: process.cwd(),
       env: process.env,
@@ -2293,6 +2348,9 @@ export async function syncRuntimeExportsCommand(args: readonly string[]) {
       },
       saveProjectRuntimeState(state) {
         return store.saveProjectRuntimeState(state);
+      },
+      getStatusSnapshot(runId) {
+        return service.getStatus(runId);
       }
     });
 

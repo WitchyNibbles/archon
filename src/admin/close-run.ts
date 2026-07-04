@@ -34,10 +34,51 @@ export interface CloseRunDeps {
   getReviewFloorReductions: (runId: string, taskId: string) => Promise<ReviewFloorReductionRecord[]>;
   updateTask: (task: TaskRecord) => Promise<void>;
   updateRun: (run: RunRecord) => Promise<void>;
-  /** Best-effort: clear the active-task pointer when a run is sealed (avoids a dangling pointer). */
-  onRunSealed?: (runId: string) => Promise<void>;
+  /**
+   * Best-effort: clear the active-task pointer when a run is sealed (avoids a
+   * dangling pointer). `sealedTaskKeys` are the task keys that just went terminal
+   * in the sealed run — the caller uses them to clear a pointer whose task key
+   * matches even when the pointer has moved to a different run (closureLoop bug 3).
+   */
+  onRunSealed?: (runId: string, sealedTaskKeys: readonly string[]) => Promise<void>;
   now: () => string;
   writeLine: (line: string) => void;
+}
+
+/**
+ * Should a sealed run clear the dangling active-task pointer?
+ *
+ * Original rule: clear only when the pointer's run is the run being sealed. That
+ * missed the case where a duplicate/fork moved the pointer to another run while
+ * the ORIGINAL run (holding the same task key) was the one sealed — the stale
+ * active_task_id then survived (closureLoop bug 3; live 2026-07-04). The pointer
+ * identifies work by task KEY, so also clear when the pointer's active_task_id
+ * matches a task key that just went terminal in the sealed run, regardless of
+ * which run the pointer currently holds. In the healthy single-run case both
+ * conditions coincide, so this is purely additive for the cross-run case.
+ */
+export function shouldClearDanglingActiveTaskPointer(input: {
+  activeRunId: string | null | undefined;
+  activeTaskId: string | null | undefined;
+  sealedRunId: string;
+  sealedTaskKeys: readonly string[];
+}): boolean {
+  if (!input.activeTaskId) {
+    return false;
+  }
+  if (input.activeRunId === input.sealedRunId) {
+    return true;
+  }
+  return input.sealedTaskKeys.includes(input.activeTaskId);
+}
+
+/**
+ * Accept BOTH the `--confirm` (close-run's native) and `--apply`
+ * (reconcile-runtime-state's native) mutate flags, so the two closure commands
+ * share one mutate-vs-dry-run vocabulary. Alias only — no breaking change.
+ */
+export function isMutateConfirmed(args: readonly string[]): boolean {
+  return args.includes("--confirm") || args.includes("--apply");
 }
 
 export interface CloseRunResult {
@@ -109,7 +150,10 @@ export async function reconcileRunClosure(
     await deps.updateRun({ ...snapshot.run, status: "done", updatedAt: deps.now() });
     sealedRun = true;
     if (deps.onRunSealed) {
-      await deps.onRunSealed(runId);
+      // A sealed run means every task in it is terminal; the full key set is what
+      // the pointer clear matches against (cross-run stale-pointer case).
+      const sealedTaskKeys = snapshot.tasks.map((task) => task.packet.taskId);
+      await deps.onRunSealed(runId, sealedTaskKeys);
     }
   }
 
