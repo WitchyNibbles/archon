@@ -31,33 +31,18 @@ import {
   buildAutonomousExecutionSnapshot,
   collectAutonomousExecutionBlockers,
   createAutonomousExecutionState,
-  mergeArchitectureDecisions,
-  mergeDuplicateFamilies,
-  mergeExternalEvalRecords,
-  mergeCoverageGaps,
-  mergeCoverageItems,
-  mergeMigrationLedgerEntries,
-  mergeParityRequirements,
-  mergeRuntimeTraces,
-  mergeSensitiveActionControls,
-  mergeUnderstandingMaps,
-  validateArchitectureDecisionRecord,
-  validateDuplicateFamilyRecord,
-  validateExternalEvalRecord,
-  validateCoverageGapRecord,
-  validateCoverageItemRecord,
-  validateCoverageManifestRecord,
-  validateMigrationLedgerEntryRecord,
-  validateParityRequirementRecord,
-  validateProgressProofRecord,
-  validateRuntimeTraceRecord,
-  validateSensitiveActionControlRecord,
-  validateUnderstandingMapRecord,
   runRequiresAutonomousExecution,
   selectAutonomousNextTarget
 } from "../runtime/autonomous-execution.ts";
-import { generateRepoInventory } from "../runtime/repo-inventory.ts";
 import { buildRuntimeTraceRegistry } from "../runtime/runtime-trace-registry.ts";
+import { AutonomousExecutionStore } from "./autonomous-execution-store.ts";
+import {
+  buildDefaultProductState,
+  buildDefaultTaskQueue,
+  readAutonomousExecutionState,
+  timestamp,
+  uniqueStrings
+} from "./project-runtime-state.ts";
 import { annotateConflictSignals, isProvenancedSearchResult } from "./search-memory-results.ts";
 import type {
   ResolveReviewActionContext
@@ -85,8 +70,6 @@ import type {
   PlanArtifact,
   PlanInput,
   ProgressProofRecord,
-  ProjectRuntimeMetadata,
-  RuntimeTraceAuthorityLabel,
   RuntimeTraceCaptureInput,
   RuntimeTraceRecord,
   RuntimeTraceRegistrySummary,
@@ -182,85 +165,8 @@ export interface DirectiveExecutionResult {
   snapshot: RunStatusSnapshot;
 }
 
-function timestamp(): string {
-  return new Date().toISOString();
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
-}
-
 function profileHasBroadRewriteScope(profile: AutonomousExecutionState["profile"]): boolean {
   return profile === "legacy_rewrite" || profile === "modernization_program";
-}
-
-function normalizeRuntimeTraceAuthorityLabel(
-  authorityLabel: RuntimeTraceAuthorityLabel | undefined
-): RuntimeTraceAuthorityLabel {
-  return authorityLabel ?? "runtime_capture";
-}
-
-function prepareRuntimeTraceRecord(
-  trace: RuntimeTraceRecord,
-  defaultAuthorityLabel: RuntimeTraceAuthorityLabel
-): RuntimeTraceRecord {
-  return {
-    ...trace,
-    authorityLabel: normalizeRuntimeTraceAuthorityLabel(trace.authorityLabel ?? defaultAuthorityLabel),
-    sideEffects: uniqueStrings(trace.sideEffects),
-    evidenceRefs: uniqueStrings(trace.evidenceRefs)
-  };
-}
-
-function mergeTraceEvidenceIntoCoverageItems(
-  items: readonly CoverageItemRecord[],
-  traces: readonly RuntimeTraceRecord[]
-): CoverageItemRecord[] {
-  const byTarget = new Map<string, { evidenceRefs: string[]; latestCreatedAt: string }>();
-  for (const trace of traces) {
-    const existing = byTarget.get(trace.targetId);
-    if (!existing) {
-      byTarget.set(trace.targetId, {
-        evidenceRefs: [...trace.evidenceRefs],
-        latestCreatedAt: trace.createdAt
-      });
-      continue;
-    }
-
-    existing.evidenceRefs = uniqueStrings([...existing.evidenceRefs, ...trace.evidenceRefs]);
-    if (existing.latestCreatedAt.localeCompare(trace.createdAt) < 0) {
-      existing.latestCreatedAt = trace.createdAt;
-    }
-  }
-
-  return items.map((item) => {
-    const traceEvidence = byTarget.get(item.id);
-    if (!traceEvidence) {
-      return item;
-    }
-
-    return {
-      ...item,
-      runtimeTraced: true,
-      evidenceRefs: uniqueStrings([...item.evidenceRefs, ...traceEvidence.evidenceRefs]),
-      lastUpdatedAt:
-        item.lastUpdatedAt.localeCompare(traceEvidence.latestCreatedAt) >= 0
-          ? item.lastUpdatedAt
-          : traceEvidence.latestCreatedAt
-    };
-  });
-}
-
-function closeMissingRuntimeTraceGaps(
-  gaps: readonly CoverageGapRecord[],
-  traces: readonly RuntimeTraceRecord[]
-): CoverageGapRecord[] {
-  const tracedTargetIds = new Set(traces.map((trace) => trace.targetId));
-  return gaps.map((gap) =>
-    gap.kind === "missing_runtime_trace" && gap.status === "open" && tracedTargetIds.has(gap.targetId)
-      ? { ...gap, status: "closed" }
-      : gap
-  );
 }
 
 function deriveNativeAutonomousDirective(input: {
@@ -432,21 +338,6 @@ function deriveNativeAutonomousDirective(input: {
   return undefined;
 }
 
-function uniqueNonEmpty(values: readonly string[] | undefined): string[] {
-  return [...new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length > 0))].sort(
-    (left, right) => left.localeCompare(right)
-  );
-}
-
-function buildCompressedContextSummary(
-  checkpoint: Omit<CheckpointRecord, "runId" | "authorityLabel">
-): string {
-  const targets =
-    checkpoint.activeTargets.length > 0 ? checkpoint.activeTargets.join(", ") : `checkpoint:${checkpoint.checkpointId}`;
-  const gaps = checkpoint.openGaps.length > 0 ? checkpoint.openGaps.join(", ") : "none";
-  return `phase=${checkpoint.phase}; targets=${targets}; open-gaps=${gaps}`;
-}
-
 function parseHoursSince(createdAt: string, now: string): number | undefined {
   const createdAtMs = Date.parse(createdAt);
   const nowMs = Date.parse(now);
@@ -476,48 +367,6 @@ function parseProjectSelectorFromId(projectId: string):
   return {
     workspaceSlug: parts[1]!,
     projectSlug: parts.slice(2).join(":")
-  };
-}
-
-function buildDefaultTaskQueue(): TaskQueue {
-  return {
-    project_status: "idle",
-    current_task_id: null,
-    tasks: []
-  };
-}
-
-function buildDefaultProductState(): Record<string, unknown> {
-  return {
-    status: "idle",
-    items: []
-  };
-}
-
-function asProjectRuntimeMetadata(
-  metadata: ProjectRuntimeMetadata | Record<string, unknown> | undefined
-): ProjectRuntimeMetadata {
-  return { ...(metadata ?? {}) };
-}
-
-function readAutonomousExecutionState(
-  metadata: ProjectRuntimeMetadata | Record<string, unknown> | undefined
-): AutonomousExecutionState | undefined {
-  const candidate = (metadata as ProjectRuntimeMetadata | undefined)?.autonomousExecution;
-  if (!candidate || typeof candidate !== "object") {
-    return undefined;
-  }
-
-  return {
-    ...candidate,
-    understandingMaps: candidate.understandingMaps ?? [],
-    runtimeTraces: candidate.runtimeTraces ?? [],
-    duplicateFamilies: candidate.duplicateFamilies ?? [],
-    architectureDecisions: candidate.architectureDecisions ?? [],
-    migrationLedger: candidate.migrationLedger ?? [],
-    parityMatrix: candidate.parityMatrix ?? [],
-    externalEvals: candidate.externalEvals ?? [],
-    sensitiveActionControls: candidate.sensitiveActionControls ?? []
   };
 }
 
@@ -616,6 +465,10 @@ export class ArchonCoreService {
   private readonly onHandoff?: ((event: HandoffLifecycleEvent) => Promise<void>) | undefined;
   private readonly mistakeLedgerStore?: MistakeLedgerStoreLike | undefined;
   private readonly antiPatternDraftStore?: AntiPatternDraftStoreLike | undefined;
+  // Autonomous-execution analysis state (coverage, gaps, checkpoints, traces,
+  // evidence ledgers) is owned by this extracted store; the public methods below
+  // delegate to it. See src/core/autonomous-execution-store.ts (audit F5).
+  private readonly autonomousExecution: AutonomousExecutionStore;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
@@ -624,46 +477,14 @@ export class ArchonCoreService {
     this.onHandoff = options.onHandoff;
     this.mistakeLedgerStore = options.mistakeLedgerStore;
     this.antiPatternDraftStore = options.antiPatternDraftStore;
-  }
-
-  private async saveAutonomousExecutionState(
-    run: RunRecord,
-    update: (current: AutonomousExecutionState | undefined, now: string) => AutonomousExecutionState
-  ): Promise<AutonomousExecutionState> {
-    const now = timestamp();
-    const existingState = await this.store.getProjectRuntimeState(run.projectId);
-    const metadata = asProjectRuntimeMetadata(existingState?.metadata);
-    const nextAutonomousExecution = update(readAutonomousExecutionState(metadata), now);
-
-    await this.store.saveProjectRuntimeState({
-      projectId: run.projectId,
-      workspaceId: run.workspaceId,
-      activeRunId: existingState?.activeRunId ?? run.id,
-      activeTaskId: existingState?.activeTaskId,
-      taskQueue: existingState?.taskQueue ?? buildDefaultTaskQueue(),
-      productState: existingState?.productState ?? buildDefaultProductState(),
-      lastVerifiedRunId: existingState?.lastVerifiedRunId,
-      metadata: {
-        ...metadata,
-        autonomousExecution: {
-          ...nextAutonomousExecution,
-          updatedAt: now
-        }
-      },
-      createdAt: existingState?.createdAt ?? now,
-      updatedAt: now
+    this.autonomousExecution = new AutonomousExecutionStore({
+      store,
+      requireRun: (runId) => this.requireRun(runId)
     });
-
-    return {
-      ...nextAutonomousExecution,
-      updatedAt: now
-    };
   }
 
   async getAutonomousExecutionState(runId: string): Promise<AutonomousExecutionState | undefined> {
-    const run = await this.requireRun(runId);
-    const state = await this.store.getProjectRuntimeState(run.projectId);
-    return readAutonomousExecutionState(state?.metadata);
+    return this.autonomousExecution.getAutonomousExecutionState(runId);
   }
 
   private async ensureDirectiveExecutionAuthority(
@@ -696,345 +517,96 @@ export class ArchonCoreService {
       pendingInvestigations?: string[] | undefined;
     }
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    if (input.manifest) {
-      const errors = validateCoverageManifestRecord(input.manifest);
-      if (errors.length > 0) {
-        throw new Error(`Invalid coverage manifest: ${errors.join("; ")}`);
-      }
-    }
-    const nextState = await this.saveAutonomousExecutionState(run, (current, now) => ({
-      ...(current ?? createAutonomousExecutionState({
-        now,
-        profile: input.profile,
-        manifest: input.manifest,
-        phase: input.phase
-      })),
-      enabled: true,
-      profile: input.profile ?? current?.profile ?? "standard_delivery",
-      phase: input.phase ?? current?.phase ?? "discovery",
-      manifest: input.manifest ?? current?.manifest,
-      pendingInvestigations: input.pendingInvestigations ?? current?.pendingInvestigations ?? [],
-      coverageItems: current?.coverageItems ?? [],
-      gaps: current?.gaps ?? [],
-      checkpoints: current?.checkpoints ?? [],
-      progressProofs: current?.progressProofs ?? [],
-      understandingMaps: current?.understandingMaps ?? [],
-      runtimeTraces: current?.runtimeTraces ?? [],
-      duplicateFamilies: current?.duplicateFamilies ?? [],
-      architectureDecisions: current?.architectureDecisions ?? [],
-      migrationLedger: current?.migrationLedger ?? [],
-      parityMatrix: current?.parityMatrix ?? [],
-      externalEvals: current?.externalEvals ?? [],
-      sensitiveActionControls: current?.sensitiveActionControls ?? [],
-      executionEpoch: current?.executionEpoch ?? 1
-    }));
-
-    if (nextState.manifest) {
-      await this.store.saveWorkflowDocument({
-        id: randomUUID(),
-        workspaceId: run.workspaceId,
-        projectId: run.projectId,
-        runId: run.id,
-        kind: "coverage_manifest",
-        title: `coverage manifest ${run.id}`,
-        body: JSON.stringify(nextState.manifest, null, 2),
-        metadata: {
-          source: "runtime_autonomous_execution"
-        },
-        createdAt: nextState.updatedAt,
-        updatedAt: nextState.updatedAt
-      });
-    }
-
-    return nextState;
+    return this.autonomousExecution.configureAutonomousExecution(runId, input);
   }
 
-  /**
-   * Disable autonomous execution for a run without clearing any accumulated
-   * analysis state (coverage items, gaps, checkpoints, etc.). The daemon will
-   * return a `blocked` directive until `configureAutonomousExecution` is called
-   * again to re-enable.
-   */
   async disableAutonomousExecution(runId: string): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: false
-      };
-    });
+    return this.autonomousExecution.disableAutonomousExecution(runId);
   }
 
   async upsertCoverageItems(runId: string, items: CoverageItemRecord[]): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = items.flatMap((item) => validateCoverageItemRecord(item));
-    if (errors.length > 0) {
-      throw new Error(`Invalid coverage item: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        coverageItems: mergeCoverageItems(base.coverageItems, items)
-      };
-    });
+    return this.autonomousExecution.upsertCoverageItems(runId, items);
   }
 
   async upsertUnderstandingMaps(
     runId: string,
     maps: UnderstandingMapRecord[]
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = maps.flatMap((map) => validateUnderstandingMapRecord(map));
-    if (errors.length > 0) {
-      throw new Error(`Invalid understanding map: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        understandingMaps: mergeUnderstandingMaps(base.understandingMaps ?? [], maps)
-      };
-    });
+    return this.autonomousExecution.upsertUnderstandingMaps(runId, maps);
   }
 
   async captureRuntimeTrace(
     runId: string,
     trace: RuntimeTraceCaptureInput
   ): Promise<AutonomousExecutionState> {
-    const now = timestamp();
-    return this.upsertRuntimeTraces(runId, [
-      {
-        traceId: trace.traceId?.trim() || `trace:${randomUUID()}`,
-        targetId: trace.targetId,
-        kind: trace.kind,
-        risky: trace.risky,
-        sideEffects: [...trace.sideEffects],
-        evidenceRefs: [...trace.evidenceRefs],
-        createdAt: trace.createdAt ?? now,
-        authorityLabel: "runtime_capture"
-      }
-    ]);
+    return this.autonomousExecution.captureRuntimeTrace(runId, trace);
   }
 
   async importRuntimeTrace(
     runId: string,
     trace: RuntimeTraceCaptureInput
   ): Promise<AutonomousExecutionState> {
-    const now = timestamp();
-    return this.upsertRuntimeTraces(runId, [
-      {
-        traceId: trace.traceId?.trim() || `trace:${randomUUID()}`,
-        targetId: trace.targetId,
-        kind: trace.kind,
-        risky: trace.risky,
-        sideEffects: [...trace.sideEffects],
-        evidenceRefs: [...trace.evidenceRefs],
-        createdAt: trace.createdAt ?? now,
-        authorityLabel: "operator_import"
-      }
-    ]);
+    return this.autonomousExecution.importRuntimeTrace(runId, trace);
   }
 
   async upsertRuntimeTraces(
     runId: string,
     traces: RuntimeTraceRecord[]
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const preparedTraces = traces.map((trace) => prepareRuntimeTraceRecord(trace, "runtime_capture"));
-    const errors = preparedTraces.flatMap((trace) => validateRuntimeTraceRecord(trace));
-    if (errors.length > 0) {
-      throw new Error(`Invalid runtime trace: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        coverageItems: mergeTraceEvidenceIntoCoverageItems(base.coverageItems, preparedTraces),
-        gaps: closeMissingRuntimeTraceGaps(base.gaps, preparedTraces),
-        runtimeTraces: mergeRuntimeTraces(base.runtimeTraces ?? [], preparedTraces)
-      };
-    });
+    return this.autonomousExecution.upsertRuntimeTraces(runId, traces);
   }
 
   async upsertDuplicateFamilies(
     runId: string,
     records: DuplicateFamilyRecord[]
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = records.flatMap((record) => validateDuplicateFamilyRecord(record));
-    if (errors.length > 0) {
-      throw new Error(`Invalid duplicate family: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        duplicateFamilies: mergeDuplicateFamilies(base.duplicateFamilies ?? [], records)
-      };
-    });
+    return this.autonomousExecution.upsertDuplicateFamilies(runId, records);
   }
 
   async upsertArchitectureDecisions(
     runId: string,
     records: ArchitectureDecisionRecord[]
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = records.flatMap((record) => validateArchitectureDecisionRecord(record));
-    if (errors.length > 0) {
-      throw new Error(`Invalid architecture decision: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        architectureDecisions: mergeArchitectureDecisions(base.architectureDecisions ?? [], records)
-      };
-    });
+    return this.autonomousExecution.upsertArchitectureDecisions(runId, records);
   }
 
   async upsertMigrationLedgerEntries(
     runId: string,
     records: MigrationLedgerEntryRecord[]
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = records.flatMap((record) => validateMigrationLedgerEntryRecord(record));
-    if (errors.length > 0) {
-      throw new Error(`Invalid migration ledger entry: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        migrationLedger: mergeMigrationLedgerEntries(base.migrationLedger ?? [], records)
-      };
-    });
+    return this.autonomousExecution.upsertMigrationLedgerEntries(runId, records);
   }
 
   async upsertParityRequirements(
     runId: string,
     records: ParityRequirementRecord[]
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = records.flatMap((record) => validateParityRequirementRecord(record));
-    if (errors.length > 0) {
-      throw new Error(`Invalid parity requirement: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        parityMatrix: mergeParityRequirements(base.parityMatrix ?? [], records)
-      };
-    });
+    return this.autonomousExecution.upsertParityRequirements(runId, records);
   }
 
   async upsertExternalEvals(
     runId: string,
     records: ExternalEvalRecord[]
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = records.flatMap((record) => validateExternalEvalRecord(record));
-    if (errors.length > 0) {
-      throw new Error(`Invalid external eval: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        externalEvals: mergeExternalEvalRecords(base.externalEvals ?? [], records)
-      };
-    });
+    return this.autonomousExecution.upsertExternalEvals(runId, records);
   }
 
   async upsertSensitiveActionControls(
     runId: string,
     records: SensitiveActionControlRecord[]
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = records.flatMap((record) => validateSensitiveActionControlRecord(record));
-    if (errors.length > 0) {
-      throw new Error(`Invalid sensitive action control: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        sensitiveActionControls: mergeSensitiveActionControls(
-          base.sensitiveActionControls ?? [],
-          records
-        )
-      };
-    });
+    return this.autonomousExecution.upsertSensitiveActionControls(runId, records);
   }
 
   async upsertCoverageGaps(runId: string, gaps: CoverageGapRecord[]): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = gaps.flatMap((gap) => validateCoverageGapRecord(gap));
-    if (errors.length > 0) {
-      throw new Error(`Invalid coverage gap: ${errors.join("; ")}`);
-    }
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        gaps: mergeCoverageGaps(base.gaps, gaps)
-      };
-    });
+    return this.autonomousExecution.upsertCoverageGaps(runId, gaps);
   }
 
   async recordProgressProof(
     runId: string,
     proof: ProgressProofRecord
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const errors = validateProgressProofRecord(proof);
-    if (errors.length > 0) {
-      throw new Error(`Invalid progress proof: ${errors.join("; ")}`);
-    }
-    const nextState = await this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      const progressProofs = [...base.progressProofs, proof].sort((left, right) => left.cycle - right.cycle);
-      const nextExecutionEpoch =
-        base.phase !== proof.phaseAfter ? base.executionEpoch + 1 : base.executionEpoch;
-      return {
-        ...base,
-        enabled: true,
-        phase: proof.phaseAfter,
-        progressProofs,
-        lastProgressProofId: proof.proofId,
-        executionEpoch: nextExecutionEpoch
-      };
-    });
-
-    await this.store.saveWorkflowDocument({
-      id: randomUUID(),
-      workspaceId: run.workspaceId,
-      projectId: run.projectId,
-      runId: run.id,
-      kind: "progress_proof",
-      title: `progress proof ${proof.proofId}`,
-      body: JSON.stringify(proof, null, 2),
-      metadata: {
-        source: "runtime_autonomous_execution"
-      },
-      createdAt: proof.createdAt,
-      updatedAt: nextState.updatedAt
-    });
-
-    return nextState;
+    return this.autonomousExecution.recordProgressProof(runId, proof);
   }
 
   async checkpointRun(
@@ -1044,66 +616,7 @@ export class ArchonCoreService {
       authorityLabel?: CheckpointRecord["authorityLabel"] | undefined;
     } = {}
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    let fullCheckpoint: CheckpointRecord | undefined;
-    const nextState = await this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      const compressedContextSourceRefs = uniqueNonEmpty(
-        checkpoint.compressedContextSourceRefs ?? checkpoint.recentEvidenceRefs
-      );
-      const storedCheckpoint: CheckpointRecord = {
-        ...checkpoint,
-        authorityLabel: options.authorityLabel ?? "runtime_authoritative",
-        runId,
-        executionEpoch: checkpoint.executionEpoch ?? base.executionEpoch,
-        compressedContextRef:
-          checkpoint.compressedContextRef?.trim() ||
-          `memory://checkpoint/${checkpoint.checkpointId}/compressed-context`,
-        compressedContextSummary:
-          checkpoint.compressedContextSummary?.trim() || buildCompressedContextSummary(checkpoint),
-        compressedContextSourceRefs,
-        compressedContextGeneratedAt: checkpoint.compressedContextGeneratedAt ?? checkpoint.createdAt
-      };
-      fullCheckpoint = storedCheckpoint;
-      const checkpoints = [...base.checkpoints, storedCheckpoint].sort((left, right) =>
-        left.createdAt.localeCompare(right.createdAt)
-      );
-      return {
-        ...base,
-        enabled: true,
-        phase: checkpoint.phase,
-        checkpoints,
-        lastCheckpointId: checkpoint.checkpointId,
-        lastSuccessfulCheckpointId:
-          fullCheckpoint.authorityLabel === "runtime_authoritative"
-            ? checkpoint.checkpointId
-            : base.lastSuccessfulCheckpointId
-      };
-    });
-
-    if (!fullCheckpoint) {
-      throw new Error("checkpoint persistence failed to produce a checkpoint record");
-    }
-
-    await this.store.saveWorkflowDocument({
-      id: randomUUID(),
-      workspaceId: run.workspaceId,
-      projectId: run.projectId,
-      runId: run.id,
-      kind: "checkpoint_summary",
-      title: `checkpoint ${checkpoint.checkpointId}`,
-      body: JSON.stringify(fullCheckpoint, null, 2),
-      metadata: {
-        source:
-          fullCheckpoint.authorityLabel === "runtime_authoritative"
-            ? "runtime_autonomous_execution"
-            : "operator_checkpoint_import"
-      },
-      createdAt: checkpoint.createdAt,
-      updatedAt: nextState.updatedAt
-    });
-
-    return nextState;
+    return this.autonomousExecution.checkpointRun(runId, checkpoint, options);
   }
 
   async getRuntimeTraceRegistry(runId: string): Promise<RuntimeTraceRegistrySummary> {
@@ -1123,22 +636,7 @@ export class ArchonCoreService {
       now?: string | undefined;
     }
   ): Promise<AutonomousExecutionState> {
-    const run = await this.requireRun(runId);
-    const generated = await generateRepoInventory({
-      repoRoot: input.repoRoot,
-      now: input.now
-    });
-
-    return this.saveAutonomousExecutionState(run, (current, now) => {
-      const base = current ?? createAutonomousExecutionState({ now });
-      return {
-        ...base,
-        enabled: true,
-        coverageItems: mergeCoverageItems(base.coverageItems, generated.coverageItems),
-        gaps: mergeCoverageGaps(base.gaps, generated.gaps),
-        understandingMaps: mergeUnderstandingMaps(base.understandingMaps ?? [], generated.understandingMaps)
-      };
-    });
+    return this.autonomousExecution.generateRepoInventory(runId, input);
   }
 
   async intakeRequest(input: IntakeRequestInput): Promise<RunRecord> {
@@ -1283,7 +781,7 @@ export class ArchonCoreService {
     });
 
     if (runRequiresAutonomousExecution(tasks)) {
-      await this.saveAutonomousExecutionState(run, (current, currentNow) =>
+      await this.autonomousExecution.saveState(run, (current, currentNow) =>
         current ??
         createAutonomousExecutionState({
           now: currentNow
