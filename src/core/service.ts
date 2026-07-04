@@ -2,25 +2,21 @@ import { randomUUID } from "node:crypto";
 import {
   validateReviewAction,
   validateHandoff,
-  normalizeRetrievalMetadata,
-  normalizeSearchInput,
-  validateMemoryPromotion,
   effectiveRequiredReviewsForTask,
   isReviewFloorReduced
 } from "../domain/contracts.ts";
 import { requiredGateReviews } from "../domain/types.ts";
 import {
-  canRoleAccessSearchResult,
-  collectUnsatisfiedReviewRoles,
   evaluateReviewDecision,
   findBlockingReasonsForTask,
   findTaskDependencies
 } from "./policy.ts";
-import { buildRuntimeTraceRegistry } from "../runtime/runtime-trace-registry.ts";
 import { AutonomousExecutionStore } from "./autonomous-execution-store.ts";
 import { TaskLifecycleManager } from "./task-lifecycle.ts";
 import { StatusExecutionPlanner } from "./status-execution-planner.ts";
 import { DirectiveExecutionManager } from "./directive-execution.ts";
+import { RecoveryManager } from "./recovery-manager.ts";
+import { MemorySearchManager } from "./memory-search-manager.ts";
 import type {
   DirectiveExecutionResult,
   ExecuteDirectiveStepOptions
@@ -30,11 +26,9 @@ import {
   buildDefaultProductState,
   timestamp
 } from "./project-runtime-state.ts";
-import { annotateConflictSignals, isProvenancedSearchResult } from "./search-memory-results.ts";
 import type {
   ResolveReviewActionContext
 } from "./review-context.ts";
-import { isTrustedReviewActionContext } from "./review-context.ts";
 import { fireMistakeCapture, fireDistillation } from "../runtime/mistake-capture.ts";
 import type { AntiPatternDraftStoreLike, MistakeLedgerStoreLike } from "../store/types.ts";
 import type {
@@ -66,8 +60,6 @@ import type {
   ReviewFloorReductionRecord,
   RecoveryApplyResult,
   RecoveryInspectionReport,
-  RecoveryIssue,
-  RecoveryAction,
   RoutingRecommendationReport,
   RunRecord,
   RunStatusSnapshot,
@@ -114,16 +106,6 @@ export type {
   DirectiveExecutionResult
 } from "./directive-execution.ts";
 
-function parseHoursSince(createdAt: string, now: string): number | undefined {
-  const createdAtMs = Date.parse(createdAt);
-  const nowMs = Date.parse(now);
-  if (Number.isNaN(createdAtMs) || Number.isNaN(nowMs) || nowMs < createdAtMs) {
-    return undefined;
-  }
-
-  return Number(((nowMs - createdAtMs) / (1000 * 60 * 60)).toFixed(2));
-}
-
 export class ArchonCoreService {
   private readonly store: ArchonStore;
   private readonly resolveReviewActionContext?: ResolveReviewActionContext | undefined;
@@ -155,6 +137,20 @@ export class ArchonCoreService {
   // getExecutionPlan (the planner) and claimTask (the lifecycle manager) are
   // injected. See src/core/directive-execution.ts (audit F5, slice 3).
   private readonly directiveExecution: DirectiveExecutionManager;
+  // Recovery cluster (inspectRecovery/applyRecovery) is owned by this extracted
+  // manager; the public methods below delegate to it. getStatus (the planner) and
+  // the run-status/require closures are injected. inspectRecovery is injected back
+  // into the planner (getExecutionPlan calls it) — both directions are runtime
+  // closures, so no import cycle forms. See src/core/recovery-manager.ts
+  // (audit F5, slice 4).
+  private readonly recovery: RecoveryManager;
+  // Memory/search cluster (promoteMemory/searchMemory/getRuntimeTraceRegistry) is
+  // owned by this extracted manager; the public methods below delegate to it.
+  // getStatus (the planner), bumpRunState (the lifecycle manager), and the
+  // trusted review-action resolver are injected — the P0 trust gate on
+  // promoteMemory is enforced inside the manager, not bypassed. See
+  // src/core/memory-search-manager.ts (audit F5, slice 4).
+  private readonly memorySearch: MemorySearchManager;
 
   constructor(store: ArchonStore, options: ArchonCoreServiceOptions = {}) {
     this.store = store;
@@ -180,7 +176,7 @@ export class ArchonCoreService {
       requireRun: (runId) => this.requireRun(runId),
       findTaskBlockers: (task, allTasks, activeLocks) =>
         this.findTaskBlockers(task, allTasks, activeLocks),
-      inspectRecovery: (runId, inspectOptions) => this.inspectRecovery(runId, inspectOptions)
+      inspectRecovery: (runId, inspectOptions) => this.recovery.inspectRecovery(runId, inspectOptions)
     });
     this.directiveExecution = new DirectiveExecutionManager({
       store,
@@ -188,6 +184,20 @@ export class ArchonCoreService {
       claimTask: (runId, taskId, actor) => this.claimTask(runId, taskId, actor),
       getStatus: (runId) => this.statusPlanner.getStatus(runId),
       getExecutionPlan: (runId, planOptions) => this.statusPlanner.getExecutionPlan(runId, planOptions)
+    });
+    this.recovery = new RecoveryManager({
+      store,
+      requireRun: (runId) => this.requireRun(runId),
+      requireTask: (runId, taskId) => this.requireTask(runId, taskId),
+      getStatus: (runId) => this.statusPlanner.getStatus(runId),
+      syncRunState: (runId) => this.syncRunState(runId)
+    });
+    this.memorySearch = new MemorySearchManager({
+      store,
+      requireRun: (runId) => this.requireRun(runId),
+      getStatus: (runId) => this.statusPlanner.getStatus(runId),
+      bumpRunState: (runId, status) => this.bumpRunState(runId, status),
+      resolveReviewActionContext: this.resolveReviewActionContext
     });
   }
 
@@ -307,13 +317,7 @@ export class ArchonCoreService {
   }
 
   async getRuntimeTraceRegistry(runId: string): Promise<RuntimeTraceRegistrySummary> {
-    const snapshot = await this.getStatus(runId);
-    const state = snapshot.autonomousExecution?.state;
-    if (!state) {
-      throw new Error("runtime trace registry requires autonomous execution state");
-    }
-
-    return buildRuntimeTraceRegistry(state);
+    return this.memorySearch.getRuntimeTraceRegistry(runId);
   }
 
   async generateRepoInventory(
@@ -623,96 +627,15 @@ export class ArchonCoreService {
     return this.taskLifecycle.failTask(runId, taskId, reason);
   }
 
+  // Memory/search cluster is owned by MemorySearchManager (audit F5 / service.ts
+  // split slice 4). These delegate; the public API — and the P0 promotion trust
+  // gate enforced inside the manager — is unchanged.
   async promoteMemory(runId: string, input: MemoryPromotionInput) {
-    if (!this.resolveReviewActionContext) {
-      throw new Error("promoteMemory requires a trusted promotion context resolver");
-    }
-
-    const run = await this.requireRun(runId);
-    const errors = validateMemoryPromotion(input);
-    if (errors.length > 0) {
-      throw new Error(`Memory promotion rejected: ${errors.join("; ")}`);
-    }
-
-    let context;
-    try {
-      context = await this.resolveReviewActionContext({
-        runId,
-        taskId: input.sourceTaskId ?? "",
-        actor: input.actor,
-        reviewerRole: "reviewer",
-        reviewState: "passed"
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Memory promotion rejected: invalid promotion context: ${message}`);
-    }
-
-    // FINDING 1: mirror recordReview's trust gate — the resolver must return a
-    // WeakSet-registered TrustedReviewActionContext.  A plain unsealed object
-    // returned by a malicious or misconfigured resolver must be rejected here.
-    if (!isTrustedReviewActionContext(context)) {
-      throw new Error(
-        "Memory promotion rejected: promotion context must be a sealed trusted review action context"
-      );
-    }
-
-    const createdAt = timestamp();
-    // FINDING 2: authorityLevel is always "reviewed_memory" for promoted
-    // memory entries regardless of caller input — strip any caller-supplied
-    // value before passing through normalizeRetrievalMetadata.
-    const { authorityLevel: _discardedAuthorityLevel, ...callerMetadata } = input.metadata ?? {};
-    const metadata = normalizeRetrievalMetadata({
-      ...callerMetadata,
-      reviewedAt: callerMetadata.reviewedAt ?? createdAt,
-      authorityLevel: "reviewed_memory"
-    });
-
-    const entry = {
-      id: randomUUID(),
-      workspaceId: run.workspaceId,
-      projectId: input.scope === "project" ? run.projectId : undefined,
-      runId,
-      taskId: input.sourceTaskId,
-      scope: input.scope,
-      entryType: input.entryType,
-      title: input.title,
-      content: input.content,
-      // NON-BLOCKING (by design): input.reviewer and input.actor are silently
-      // discarded here — the stored values always come from the trusted resolver
-      // context.  Callers should not rely on those input fields being stored.
-      // Follow-up: mistake-pattern-ledger.md tracks this as a pattern to
-      // address in a future MemoryPromotionInput type revision.
-      reviewer: context.actor,
-      actor: context.actor,
-      status: "approved" as const,
-      metadata,
-      createdAt
-    };
-
-    await this.store.saveMemoryEntry(entry);
-    await this.bumpRunState(runId, "memorized");
-    return entry;
+    return this.memorySearch.promoteMemory(runId, input);
   }
 
   async searchMemory(input: SearchMemoryInput): Promise<SearchMemoryResult[]> {
-    const normalized = normalizeSearchInput(input);
-    const results = await this.store.searchMemory({
-      workspaceSlug: normalized.workspaceSlug,
-      projectSlug: normalized.projectSlug,
-      query: normalized.query,
-      limit: normalized.limit,
-      includeGlobal: normalized.includeGlobal,
-      queryEmbedding: normalized.queryEmbedding,
-      embeddingModel: normalized.embeddingModel,
-      requesterRole: normalized.requesterRole
-    });
-
-    return annotateConflictSignals(
-      results
-        .filter((result) => canRoleAccessSearchResult(result, normalized.requesterRole))
-        .filter(isProvenancedSearchResult)
-    );
+    return this.memorySearch.searchMemory(input);
   }
 
   async getStatus(runId: string): Promise<RunStatusSnapshot> {
@@ -753,6 +676,9 @@ export class ArchonCoreService {
     return this.statusPlanner.recommendRouting(runId);
   }
 
+  // Recovery cluster is owned by RecoveryManager (audit F5 / service.ts split
+  // slice 4). These delegate; the advisory-only authority boundary is enforced
+  // inside the manager and the public API is unchanged.
   async inspectRecovery(
     runId: string,
     options: {
@@ -760,163 +686,7 @@ export class ArchonCoreService {
       now?: string | undefined;
     } = {}
   ): Promise<RecoveryInspectionReport> {
-    const staleAfterHours = options.staleAfterHours ?? 24;
-    if (!Number.isInteger(staleAfterHours) || staleAfterHours < 0) {
-      throw new Error(`staleAfterHours must be a non-negative integer: ${staleAfterHours}`);
-    }
-
-    const snapshot = await this.getStatus(runId);
-    const now = options.now ?? timestamp();
-    const issues: RecoveryIssue[] = [];
-    const actions: RecoveryAction[] = [];
-    const taskById = new Map(snapshot.tasks.map((task) => [task.packet.taskId, task]));
-
-    for (const task of snapshot.tasks) {
-      const ageHours = parseHoursSince(task.updatedAt, now);
-      const reviews = await this.store.getReviews(runId, task.packet.taskId);
-      const handoffs = await this.store.getHandoffs(runId, task.packet.taskId);
-
-      if (task.status === "in_progress" && ageHours !== undefined && ageHours >= staleAfterHours) {
-        const actionId = `reset-task:${task.packet.taskId}`;
-        issues.push({
-          id: `stalled-task:${task.packet.taskId}`,
-          authorityLabel: "derived_only",
-          kind: "stalled_task",
-          taskId: task.packet.taskId,
-          ageHours,
-          details: [
-            `task has been in progress for ${ageHours} hours`,
-            task.claimedBy ? `claimed by ${task.claimedBy}` : "task is unclaimed"
-          ],
-          suggestedActionIds: handoffs.length === 0 ? [actionId] : []
-        });
-
-        if (handoffs.length === 0) {
-          actions.push({
-            id: actionId,
-            authorityLabel: "derived_only",
-            kind: "reset_task_to_ready",
-            taskId: task.packet.taskId,
-            safeToApply: true,
-            rationale: [
-              "stalled in-progress task has no recorded handoff",
-              "safe reset releases writer lock and requeues the task"
-            ]
-          });
-        }
-      }
-
-      if (task.status === "review_blocked" && ageHours !== undefined && ageHours >= staleAfterHours) {
-        const missingReviewRoles = collectUnsatisfiedReviewRoles(task, reviews);
-        if (missingReviewRoles.length > 0) {
-          const actionId = `request-reviews:${task.packet.taskId}`;
-          issues.push({
-            id: `stale-review:${task.packet.taskId}`,
-            authorityLabel: "derived_only",
-            kind: "stale_review_block",
-            taskId: task.packet.taskId,
-            ageHours,
-            details: [
-              `task has been waiting on review for ${ageHours} hours`,
-              `missing reviews: ${missingReviewRoles.join(", ")}`
-            ],
-            suggestedActionIds: [actionId]
-          });
-          actions.push({
-            id: actionId,
-            authorityLabel: "derived_only",
-            kind: "request_missing_reviews",
-            taskId: task.packet.taskId,
-            safeToApply: false,
-            rationale: [
-              `missing authenticated reviews: ${missingReviewRoles.join(", ")}`,
-              "operator action required; no state change is applied automatically"
-            ]
-          });
-        }
-      }
-
-      if (task.status === "approved") {
-        const decision = evaluateReviewDecision(task, reviews);
-        if (decision.decision !== "approved") {
-          const actionId = `reblock-approved:${task.packet.taskId}`;
-          issues.push({
-            id: `stale-approval:${task.packet.taskId}`,
-            authorityLabel: "derived_only",
-            kind: "stale_approval",
-            taskId: task.packet.taskId,
-            details: [`approval is stale: ${decision.blockers.join("; ")}`],
-            suggestedActionIds: [actionId]
-          });
-          actions.push({
-            id: actionId,
-            authorityLabel: "derived_only",
-            kind: "reblock_stale_approval",
-            taskId: task.packet.taskId,
-            safeToApply: true,
-            rationale: [
-              "task is approved but current review evidence no longer satisfies required gates",
-              "safe reblock restores explicit review state before routing dependents"
-            ]
-          });
-        }
-      }
-    }
-
-    for (const lock of snapshot.activeLocks) {
-      const task = taskById.get(lock.taskId);
-      if (task && (task.status === "in_progress" || task.status === "review_blocked")) {
-        continue;
-      }
-
-      const actionId = `release-lock:${lock.taskId}`;
-      issues.push({
-        id: `orphan-lock:${lock.taskId}`,
-        authorityLabel: "derived_only",
-        kind: "orphan_lock",
-        taskId: task?.packet.taskId,
-        lockTaskId: lock.taskId,
-        ageHours: parseHoursSince(lock.createdAt, now),
-        details: [
-          `active lock exists for ${lock.taskId}`,
-          task ? `task status is ${task.status}` : "task no longer exists for this active lock"
-        ],
-        suggestedActionIds: [actionId]
-      });
-      actions.push({
-        id: actionId,
-        authorityLabel: "derived_only",
-        kind: "release_orphan_lock",
-        taskId: lock.taskId,
-        safeToApply: true,
-        rationale: [
-          "active lock does not correspond to an in-progress task",
-          "safe release restores routing capacity without approving work"
-        ]
-      });
-    }
-
-    const uniqueIssues = dedupeById(issues);
-    const uniqueActions = dedupeById(actions);
-
-    return {
-      mode: "advisory_only",
-      runId: snapshot.run.id,
-      staleAfterHours,
-      issues: uniqueIssues,
-      actions: uniqueActions,
-      summary: {
-        totalIssues: uniqueIssues.length,
-        safeActions: uniqueActions.filter((action) => action.safeToApply).length,
-        blockedTasks: uniqueIssues.flatMap((issue) => (issue.taskId ? [issue.taskId] : [])),
-        staleTaskIds: uniqueIssues
-          .filter((issue) => issue.kind === "stalled_task" || issue.kind === "stale_review_block")
-          .flatMap((issue) => (issue.taskId ? [issue.taskId] : [])),
-        orphanLockTaskIds: uniqueIssues
-          .filter((issue) => issue.kind === "orphan_lock")
-          .flatMap((issue) => (issue.lockTaskId ? [issue.lockTaskId] : []))
-      }
-    };
+    return this.recovery.inspectRecovery(runId, options);
   }
 
   async applyRecovery(
@@ -927,84 +697,7 @@ export class ArchonCoreService {
       now?: string | undefined;
     } = {}
   ): Promise<RecoveryApplyResult> {
-    const inspection = await this.inspectRecovery(runId, options);
-    const selectableActionIds =
-      actionIds.length > 0
-        ? new Set(actionIds)
-        : new Set(inspection.actions.filter((action) => action.safeToApply).map((action) => action.id));
-    const actionMap = new Map(inspection.actions.map((action) => [action.id, action]));
-    const appliedActionIds: string[] = [];
-    const skippedActionIds: string[] = [];
-    const appliedAt = options.now ?? timestamp();
-
-    for (const actionId of selectableActionIds) {
-      const action = actionMap.get(actionId);
-      if (!action || !action.taskId) {
-        skippedActionIds.push(actionId);
-        continue;
-      }
-
-      if (!action.safeToApply) {
-        skippedActionIds.push(actionId);
-        continue;
-      }
-
-      if (action.kind === "release_orphan_lock") {
-        const run = await this.requireRun(runId);
-        const ownerLock = (await this.store.getActiveLocks(run.projectId)).find(
-          (lock) => lock.taskId === action.taskId && lock.status === "active"
-        );
-        await this.store.releaseLocksForTask(ownerLock?.runId ?? runId, action.taskId, appliedAt);
-        appliedActionIds.push(actionId);
-        continue;
-      }
-
-      const task = await this.requireTask(runId, action.taskId);
-      if (action.kind === "reset_task_to_ready") {
-        const handoffs = await this.store.getHandoffs(runId, action.taskId);
-        if (task.status !== "in_progress" || handoffs.length > 0) {
-          skippedActionIds.push(actionId);
-          continue;
-        }
-
-        await this.store.updateTask({
-          ...task,
-          status: "ready",
-          claimedBy: undefined,
-          updatedAt: appliedAt
-        });
-        await this.store.releaseLocksForTask(runId, action.taskId, appliedAt);
-        appliedActionIds.push(actionId);
-        continue;
-      }
-
-      if (action.kind === "reblock_stale_approval") {
-        if (task.status !== "approved") {
-          skippedActionIds.push(actionId);
-          continue;
-        }
-
-        await this.store.updateTask({
-          ...task,
-          status: "review_blocked",
-          updatedAt: appliedAt
-        });
-        appliedActionIds.push(actionId);
-        continue;
-      }
-
-      skippedActionIds.push(actionId);
-    }
-
-    await this.syncRunState(runId);
-
-    return {
-      mode: "applied",
-      runId,
-      appliedActionIds,
-      skippedActionIds,
-      snapshot: await this.getStatus(runId)
-    };
+    return this.recovery.applyRecovery(runId, actionIds, options);
   }
 
   private async requireRun(runId: string): Promise<RunRecord> {
@@ -1060,20 +753,4 @@ export class ArchonCoreService {
 
     return blockers;
   }
-}
-
-function dedupeById<T extends { id: string }>(entries: readonly T[]): T[] {
-  const seen = new Set<string>();
-  const deduped: T[] = [];
-
-  for (const entry of entries) {
-    if (seen.has(entry.id)) {
-      continue;
-    }
-
-    seen.add(entry.id);
-    deduped.push(entry);
-  }
-
-  return deduped;
 }
