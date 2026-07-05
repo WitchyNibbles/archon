@@ -73,7 +73,24 @@ const ADVERSARIAL_FIXTURES: Array<{ name: string; text: string; secret: string }
   { name: "bare password in prose (no label, no colon)", text: "password is hunter2Aa1", secret: "hunter2Aa1" },
   { name: "Stripe-style live key prefix", text: "using key sk_live_51H8xyzABCDEFGHIJKLMN in prod", secret: "sk_live_51H8xyzABCDEFGHIJKLMN" },
   { name: "Anthropic API key prefix", text: "export ANTHROPIC_API_KEY=sk-ant-api03-fakekeyfortest0000", secret: "sk-ant-api03-fakekeyfortest0000" },
-  { name: "npm token prefix", text: "auth token npm_abcdefghijklmnopqrstuvwxyz0123456789 leaked", secret: "npm_abcdefghijklmnopqrstuvwxyz0123456789" }
+  { name: "npm token prefix", text: "auth token npm_abcdefghijklmnopqrstuvwxyz0123456789 leaked", secret: "npm_abcdefghijklmnopqrstuvwxyz0123456789" },
+  // Round-6 HIGH fixtures: the gate's own live probes — an unbounded numeric
+  // secret shape-matched the round-5 `SAFE_NUMBER` allowlist and survived.
+  {
+    name: "long numeric token after a space-separated --token flag",
+    text: "--token 837215098172340192",
+    secret: "837215098172340192"
+  },
+  {
+    name: "bare long numeric secret in prose, no flag",
+    text: "the secret value is 98765432109876543210",
+    secret: "98765432109876543210"
+  },
+  {
+    name: "7-digit OTP after --token (short enough to tempt a lax bound, still redacts)",
+    text: "--token 8372150",
+    secret: "8372150"
+  }
 ];
 
 for (const fixture of ADVERSARIAL_FIXTURES) {
@@ -177,6 +194,47 @@ test("round-5 MEDIUM fix retained: a URL WITH userinfo still redacts even though
   assert.match(result, /^https:\/\/\[redacted\]$/);
 });
 
+test("pass-direction (round-6 LOW fix): a query-string email address no longer over-redacts the whole URL", () => {
+  const url = "https://x.example.com/search?email=foo@bar.com";
+  assert.equal(sanitizeFreeText(url), url);
+});
+
+// ---------------------------------------------------------------------------
+// Round-6 HIGH fix: SAFE_NUMBER is bounded (≤6 integer digits), so ports,
+// exit codes, counts, and years still survive with no vocabulary — this is
+// the "unchanged path" the gate asked to prove alongside the new bound.
+// ---------------------------------------------------------------------------
+
+test("pass-direction (round-6 bound unchanged): a port number survives with no vocabulary", () => {
+  assert.equal(sanitizeFreeText("--port 8080"), "--port 8080");
+});
+
+test("pass-direction (round-6 bound unchanged): an exit code survives with no vocabulary", () => {
+  assert.equal(sanitizeFreeText("--exit-code 137"), "--exit-code 137");
+});
+
+test("pass-direction (round-6 bound unchanged): a count survives with no vocabulary", () => {
+  assert.equal(sanitizeFreeText("--count 42"), "--count 42");
+});
+
+test("pass-direction (round-6 bound unchanged): a 4-digit year survives with no vocabulary", () => {
+  assert.equal(sanitizeFreeText("--year 2026"), "--year 2026");
+});
+
+test("pass-direction (round-6 bound unchanged): an ISO-8601 timestamp still survives unaffected by the numeric bound", () => {
+  const timestamp = "2026-07-04T12:34:56.789Z";
+  assert.equal(sanitizeFreeText(timestamp), timestamp);
+});
+
+test("round-6 HIGH fix, defense-in-depth: a space-separated secret-labeled flag redacts its value even when the value is a SHORT (in-bound) number", () => {
+  // "123456" is 6 digits — within SAFE_NUMBER's bound and would otherwise
+  // survive by shape alone. The labeled-flag rule (SPACE_SEPARATED_SECRET_FLAG)
+  // catches it anyway because it's the value of a --token-shaped flag.
+  const result = sanitizeFreeText("--token 123456");
+  assert.equal(result.includes("123456"), false);
+  assert.equal(result, "--token [redacted]");
+});
+
 test("default-deny still catches a genuine unlabeled key=value pair with no recognized keyword", () => {
   // An unrecognized "KEY=value" token where KEY doesn't start with "-" is not
   // a flag=value pair — it's an opaque token that fails every safe shape, so
@@ -214,6 +272,48 @@ test("re-disclosed friction: an ordinary English sentence with no vocabulary red
     assert.equal(result.includes(word), false, `prose word "${word}" must not survive with no vocabulary`);
   }
   assert.match(result, /^(\[redacted\] ?)+$/);
+});
+
+// ---------------------------------------------------------------------------
+// Round-6 MEDIUM: the membership-invariant regression test. Round 5's
+// adversarial probing held because vocabulary membership is EXACT-match, not
+// fuzzy/substring/case-insensitive — but that property previously had no
+// dedicated CI guard. This test proves it structurally: for a sample
+// vocabulary token, every mutation (one-char change, case change,
+// pluralization, substring-superset) must redact, while only the exact
+// token survives. Loops over a transformation list rather than hand-picking
+// one mutation, so a future regression in the exact-match check is caught
+// regardless of which transformation exposes it.
+// ---------------------------------------------------------------------------
+
+test("membership invariant: only an EXACT vocabulary match survives — mutations, case changes, pluralization, and substring-supersets all redact", () => {
+  const token = "reviewer";
+  const vocabulary = new Set([token]);
+
+  // The exact token survives.
+  assert.equal(sanitizeFreeText(token, vocabulary), token, "the exact vocabulary member must survive");
+
+  const transformations: Array<{ name: string; mutate: (t: string) => string }> = [
+    { name: "one-char mutation (swap a middle character)", mutate: (t) => `${t.slice(0, 3)}x${t.slice(4)}` },
+    { name: "one-char mutation (append a character)", mutate: (t) => `${t}x` },
+    { name: "one-char mutation (drop the last character)", mutate: (t) => t.slice(0, -1) },
+    { name: "case change (capitalize first letter)", mutate: (t) => `${t[0]!.toUpperCase()}${t.slice(1)}` },
+    { name: "case change (all uppercase)", mutate: (t) => t.toUpperCase() },
+    { name: "pluralization (trailing s)", mutate: (t) => `${t}s` },
+    { name: "substring-superset (prefix added)", mutate: (t) => `the${t}` },
+    { name: "substring-superset (suffix added)", mutate: (t) => `${t}2` }
+  ];
+
+  for (const { name, mutate } of transformations) {
+    const mutated = mutate(token);
+    assert.notEqual(mutated, token, `${name}: the transformation must actually change the token to test anything`);
+    const result = sanitizeFreeText(mutated, vocabulary);
+    assert.equal(
+      result,
+      "[redacted]",
+      `${name}: "${mutated}" is NOT an exact vocabulary match and must redact (got "${result}")`
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
