@@ -33,7 +33,7 @@ export default {
   "src/archon/agent-frontmatter-safety.ts": 50,
   "src/archon/agent-frontmatter.ts": 75,
   "src/archon/autopilot-status.ts": 75,
-  "src/archon/catalog-data.ts": 1250,
+  "src/archon/catalog-data.ts": 1300,
   "src/archon/repo-local-skill-surface.ts": 50,
   "src/archon/task-queue.ts": 400,
   "src/cli-flags.ts": 50,

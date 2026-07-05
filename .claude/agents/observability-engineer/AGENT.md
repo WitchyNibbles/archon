@@ -4,7 +4,7 @@ description: "Owns observability gate: Grafana dashboards, distributed tracing, 
 model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash]
-skills: [caveman, archon-performance, verification-loop, ecc:backend-patterns]
+skills: [caveman, archon-observability, verification-loop, ecc:backend-patterns]
 ---
 
 # Observability Engineer

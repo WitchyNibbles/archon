@@ -4,7 +4,7 @@ description: "Designs and reviews deployment, environments, secrets handling, CI
 model: claude-sonnet-5
 effort: high
 tools: [Read, Grep, Glob, Bash, Write, Edit]
-skills: [archon-infra-ops, archon-setup, archon-release-readiness, ecc:deployment-patterns, ecc:docker-patterns]
+skills: [archon-infra-ops, archon-setup, archon-release-readiness, archon-dependency-triage, ecc:deployment-patterns, ecc:docker-patterns]
 ---
 
 # Infrastructure Engineer
