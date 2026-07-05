@@ -1,56 +1,67 @@
 /**
  * @module admin/why-redaction
  *
- * Secret redaction for `archon why` (audit F9, round-2 security repair).
+ * Secret redaction for `archon why` (audit F9, round-4 design inversion).
  *
- * Split out of why-diagnosis.ts (round-2 reviewer LOW: single-responsibility +
- * file-size ratchet) — this module owns ONLY text-sanitization primitives, no
- * ranking/evidence logic. Pure, no IO.
+ * Round 3's `redactSecretLikeSubstrings` was a SHAPE-HUNTING scrubber: it
+ * looked for patterns that "look like" a secret (labeled fields, URLs,
+ * Authorization headers, long opaque runs) and redacted only those. Round 4's
+ * gate found a THIRD consecutive bypass in the same family — JSON/JS-object
+ * shaped secrets (`{"password":"hunter2Aa1!"}`) sailed through with zero
+ * redaction, because every prior rule assumed a bare `key=value` /
+ * `key: value` shape and none of them matched inside a quoted JSON string.
+ * Chasing one more shape after this one would only produce a fourth bypass —
+ * "stop chasing shapes" was the gate's explicit direction.
  *
- * Round-2 gate found the round-1 version broken in BOTH directions:
- *   - UNDER-redaction (HIGH): `\b(token|secret|password|...)\b` requires a word
- *     boundary immediately before the keyword, which FAILS on compound
- *     env-var names — there is no boundary between "PG" and "PASSWORD" in
- *     "PGPASSWORD" (both are \w chars), so PGPASSWORD=, MYSQL_PWD=, and
- *     AWS_SECRET_ACCESS_KEY= all sailed through unredacted. There was also no
- *     rule at all for basic-auth connection URLs
- *     (postgresql://user:pass@host:port/db), despite the module comment
- *     claiming to mirror db-error-scrub.ts's scrubPgCredentials — which was
- *     neither called nor replicated.
- *   - OVER-redaction (MEDIUM): the opaque-token fallback matched ANY 24+ char
- *     alnum run ANYWHERE in the text, with no positional context requirement
- *     and `/` in its charset — so a long task id or file path following a CLI
- *     flag (`--task-id auditP3ArchonWhyRepairVerification123456`) was
- *     destroyed just as readily as a real secret.
+ * DESIGN INVERSION — redact by default, allowlist the safe:
  *
- * Fixes, in order applied by `redactSecretLikeSubstrings`:
- *   1. REUSE `scrubPgCredentials` (db-error-scrub.ts) for URL-embedded
- *      credentials — the precedent this module always claimed to follow, now
- *      actually called instead of re-implemented.
- *   2. Labeled/compound keyword fields: match the surrounding identifier
- *      greedily (`[\w-]*keyword[\w-]*`) rather than anchoring `\b` directly on
- *      the keyword — this is what lets PGPASSWORD, MYSQL_PWD, and
- *      AWS_SECRET_ACCESS_KEY resolve correctly (the keyword only needs to be a
- *      SUBSTRING of the identifier, not the whole identifier).
- *   3. Authorization headers / Bearer tokens — unchanged from round 1, already
- *      correct.
- *   4. Opaque-token fallback — narrowed to fire ONLY in value position
- *      (immediately after a `:`/`=` separator) and with `/` dropped from its
- *      charset, so file paths, task ids, and script paths passed as bare
- *      CLI-flag values (space-separated, not `key=value`) are never touched;
- *      the keyword/URL rules above remain the primary catchers for anything
- *      that actually looks like a credential.
+ * This module now has two exported entry points with opposite defaults:
+ *
+ *   - `sanitizeFreeText(text)` — for text SOURCED FROM OUTSIDE this module
+ *     (a hook-blocker's recorded command/summary, a seed-failure reason, a
+ *     daemon's recorded reason/nextActions, any other caught-error message).
+ *     Everything is redacted UNLESS it matches a narrow, explicit safe-shape
+ *     allowlist (see `isSafeValueShape` below). A JSON blob, a connection
+ *     string, a curl `-u user:pass`, a mysqldump `-pPassword`, an AWS key id —
+ *     none of these match any allowed shape, so none of them can survive by
+ *     omission. This is the fix for the CRITICAL/HIGH findings.
+ *   - Values the diagnosis layer itself GENERATED — task ids, run ids, role
+ *     names, status tokens, counts, file paths it constructed, the commands
+ *     it recommends — are never passed through `sanitizeFreeText` at all.
+ *     They are tagged `structured()` and pass through unchanged. See
+ *     why-diagnosis.ts's `buildEvidence` for where that provenance split is
+ *     enforced (a branded type — a raw string cannot be assigned as evidence
+ *     without going through one of the two tagging functions).
+ *
+ * Known, accepted friction (proposed to the gate, not silently absorbed):
+ * because a legitimate identifier (`build:dist`, `archon:doctor`) and a
+ * credential fragment (`user:pass`) are the SAME shape — an alnum run
+ * containing a colon — `sanitizeFreeText` cannot tell them apart, and by
+ * design it does NOT try to. Any token containing a colon (outside a
+ * recognized flag) is redacted. This means some benign free-text detail
+ * written into a sidecar file — an npm script name embedded in a recorded
+ * command, for example — will now be redacted along with real secrets. The
+ * sidecar pointer already present in every cause's evidence (e.g.
+ * `.archon/work/daemon/hook-blocker-state.json`) is the relief valve: the
+ * operator can read the untouched original there. This trade-off is
+ * deliberate, not an oversight — flagging it explicitly per the gate's
+ * request rather than trying to special-case it away (which is exactly the
+ * shape-chasing this redesign exists to stop).
  */
 
 import { scrubPgCredentials } from "./db-error-scrub.ts";
 
 export const MAX_COMMAND_DISPLAY_LENGTH = 120;
 
-// Keyword set matched as a SUBSTRING of a larger identifier, not a whole-word
-// match — this is what makes compound env-var names (PGPASSWORD, MYSQL_PWD,
-// AWS_SECRET_ACCESS_KEY) resolve. Deliberately coverage-over-precision: a key
-// name that merely contains one of these substrings (e.g. "oauth_redirect")
-// has its value redacted too. That is an accepted false-positive, not a bug.
+// ---------------------------------------------------------------------------
+// Stage 1 — high-confidence secret markers. These run BEFORE tokenization and
+// redact by pattern/context regardless of what the resulting shape would
+// otherwise look like. Kept from round 2/3 (URL credentials, labeled fields,
+// Authorization/Bearer) and extended per the round-4 adversarial fixture list
+// (generic non-Postgres URL schemes, AWS key ids, mysqldump's concatenated
+// `-p<value>` flag).
+// ---------------------------------------------------------------------------
+
 const SECRET_KEYWORD_ALTERNATION =
   "password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|accesskey|auth|credential";
 
@@ -59,50 +70,134 @@ const LABELED_FIELD_PATTERN = new RegExp(
   "gi"
 );
 
-/**
- * Redacts secret-shaped substrings from arbitrary text: URL-embedded
- * credentials, labeled key=value / key: value credential fields (including
- * compound env-var names), `Authorization:` headers, `Bearer` tokens, and
- * (fallback, value-position only) long opaque alnum/base64-ish runs assigned
- * to an unrecognized key.
- */
-export function redactSecretLikeSubstrings(text: string): string {
-  // 1. URL-embedded credentials — reuse the existing scrubPgCredentials
-  //    precedent (handles postgres[ql]://user:pass@host:port/db) instead of
-  //    re-implementing a second URL-credential scrubber.
+// Any `scheme://...` credential-shaped URL — generalizes round-3's Postgres-
+// only reuse of scrubPgCredentials to mysql://, mongodb://, mongodb+srv://,
+// redis://, https://user:pass@..., etc. (round-4 finding: non-Postgres
+// credentials leaked). scrubPgCredentials is still called first so the
+// Postgres case keeps its existing, slightly friendlier "postgres://
+// [redacted]" shape; this is the generic backstop for every other scheme.
+const GENERIC_CREDENTIAL_URL = /\b([a-z][a-z0-9+.-]*):\/\/[^\s"'`]*/gi;
+
+// AWS access-key-id-shaped tokens (AKIA/ASIA/AGPA/AIDA/AROA/ANPA/ANVA
+// prefixes are all real AWS credential-type prefixes) — redacted regardless
+// of surrounding context, since these are unambiguously credential material
+// wherever they appear.
+const AWS_KEY_ID_PATTERN = /\b(AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[A-Z0-9]{12,}\b/g;
+
+// mysqldump/mysql's `-p<password>` concatenated-value flag (no `=`, no space
+// before the value) — round-4 adversarial fixture. Deliberately broad: any
+// `-p<non-whitespace>` token is treated as this flag and its value redacted,
+// even though this occasionally over-redacts an unrelated `-p` flag from
+// another CLI (e.g. `-port`). Over-redaction here is the accepted trade-off;
+// silently letting a password through because it wasn't preceded by "=" is not.
+const MYSQL_CONCAT_PASSWORD_FLAG = /(^|\s)(-p)([^\s"'`]+)/g;
+
+function applySecretMarkerRules(text: string): string {
   let result = scrubPgCredentials(text);
-
-  // 2. Labeled / compound credential fields. See LABELED_FIELD_PATTERN comment
-  //    above for why this catches PGPASSWORD=, MYSQL_PWD=, AWS_SECRET_ACCESS_KEY=
-  //    where a `\b`-anchored whole-word match would not.
+  result = result.replace(GENERIC_CREDENTIAL_URL, (_match, scheme: string) => `${scheme.toLowerCase()}://[redacted]`);
+  result = result.replace(AWS_KEY_ID_PATTERN, "[redacted]");
   result = result.replace(LABELED_FIELD_PATTERN, "$1$2[redacted]");
-
-  // 3. Authorization headers (value may be "Bearer xyz" or a bare token).
-  //    Token components exclude quote/backtick characters so a shell-quoted
-  //    header (`"Authorization: Bearer xyz"`) redacts cleanly without
-  //    swallowing the closing quote into the replacement.
-  result = result.replace(
-    /\bAuthorization:\s*[^\s"'`]+(?:\s+[^\s"'`]+)?/gi,
-    "Authorization: [redacted]"
-  );
-
-  // 4. Bearer tokens outside an Authorization header.
+  result = result.replace(/\bAuthorization:\s*[^\s"'`]+(?:\s+[^\s"'`]+)?/gi, "Authorization: [redacted]");
   result = result.replace(/\bBearer\s+[^\s"'`]+/gi, "Bearer [redacted]");
-
-  // 5. Fallback: long opaque token-shaped runs, but ONLY in value position —
-  //    immediately after a `:`/`=` separator. This is the round-2 MEDIUM fix:
-  //    requiring the preceding separator scopes the fallback to genuine
-  //    key=value / key: value shapes (the same context every rule above
-  //    requires), so a bare CLI-flag value like `--task-id <42-char-id>`
-  //    (space-separated, no separator immediately before the id) is never
-  //    touched. `/` is also dropped from the charset so a path segment can
-  //    never qualify even if it did appear after a separator.
-  result = result.replace(
-    /([:=]\s*)([A-Za-z0-9_+]{24,}={0,2})(?=\s|["'`]|$)/g,
-    (_match, sep: string) => `${sep}[redacted]`
-  );
-
+  result = result.replace(MYSQL_CONCAT_PASSWORD_FLAG, "$1$2[redacted]");
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2 — default-deny allowlist. Every token that stage 1 didn't already
+// redact is classified; only an explicit safe shape survives.
+// ---------------------------------------------------------------------------
+
+/** camelCase / snake_case / kebab-case identifiers — the shape of every task
+ * id, run id, role name, status token, and enum value this codebase uses.
+ * Deliberately excludes `.`, `:`, `/`, `@` — none of our own identifiers use
+ * them, and excluding them is what keeps connection strings and label:value
+ * pairs out of this bucket. */
+const SAFE_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+/** A plain filesystem path: absolute or `./`/`../`-relative, containing only
+ * path-safe characters — explicitly no `@` or `:` (the two characters that
+ * signal a credential-bearing URL/connection-string shape). */
+const SAFE_PATH = /^\.{0,2}\/[A-Za-z0-9_\-./]*$/;
+
+const SAFE_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+const SAFE_NUMBER = /^-?[0-9]+(\.[0-9]+)?$/;
+
+/** A flag name on its own (`--task-id`, `-h`, `--apply-safe`) — never a
+ * credential by itself, only ever a label. */
+const SAFE_FLAG_NAME = /^--?[A-Za-z][A-Za-z0-9-]*$/;
+
+/** `--flag=value` — the flag half is always safe; the value half must still
+ * pass `isSafeValueShape` on its own. */
+const SAFE_FLAG_VALUE_PAIR = /^(--?[A-Za-z][A-Za-z0-9-]*)=([\s\S]*)$/;
+
+/** Pure shell syntax (redirects, pipes, `&&`, bare `--`) — cannot itself carry
+ * a secret since it has no alphanumeric content. */
+const SHELL_OPERATOR = /^[-&|;<>()]+$/;
+
+function isSafeValueShape(token: string): boolean {
+  return (
+    SAFE_UUID.test(token) ||
+    SAFE_IDENTIFIER.test(token) ||
+    SAFE_PATH.test(token) ||
+    SAFE_NUMBER.test(token)
+  );
+}
+
+const TOKEN_WRAPPER_PATTERN = /^([`"'(]*)([\s\S]*?)([`"'),.;]*)$/;
+
+/**
+ * Classifies one whitespace-delimited token. Wrapper punctuation (quotes,
+ * backticks, parens, trailing prose punctuation) is stripped before
+ * classification and reattached after, so it never interferes with shape
+ * matching. Anything stage 1 already redacted (contains the literal
+ * `[redacted]` marker) is left alone rather than re-processed.
+ */
+function classifyToken(token: string): string {
+  const match = TOKEN_WRAPPER_PATTERN.exec(token);
+  const prefix = match?.[1] ?? "";
+  const core = match?.[2] ?? token;
+  const suffix = match?.[3] ?? "";
+  if (core.length === 0) return token;
+  if (core.includes("[redacted]")) return token;
+
+  if (SHELL_OPERATOR.test(core) || SAFE_FLAG_NAME.test(core) || isSafeValueShape(core)) {
+    return token;
+  }
+
+  const flagValueMatch = SAFE_FLAG_VALUE_PAIR.exec(core);
+  if (flagValueMatch) {
+    const flag = flagValueMatch[1] ?? "";
+    const value = flagValueMatch[2] ?? "";
+    const safeValue = isSafeValueShape(value) ? value : "[redacted]";
+    return `${prefix}${flag}=${safeValue}${suffix}`;
+  }
+
+  return `${prefix}[redacted]${suffix}`;
+}
+
+/**
+ * Sanitizes free text SOURCED FROM OUTSIDE this module — a hook-blocker's
+ * recorded command/summary, a seed-failure reason, a daemon's recorded
+ * reason/nextActions text, or any other caught-error message. Redacts by
+ * default: only text matching an explicit safe-shape allowlist survives. See
+ * the module header for the full rationale and the accepted friction this
+ * trades off.
+ *
+ * Do NOT call this on values the diagnosis layer generated itself (task ids,
+ * run ids, role names, counts, its own recommended commands) — those are
+ * structured, not free text, and should pass through `structured()` in
+ * why-diagnosis.ts's `buildEvidence` instead. Running this on already-trusted
+ * structured text would only add noise (e.g. redacting `<id>` placeholders),
+ * not safety.
+ */
+export function sanitizeFreeText(text: string): string {
+  const marked = applySecretMarkerRules(text);
+  return marked
+    .split(/(\s+)/)
+    .map((piece) => (/^\s+$/.test(piece) || piece.length === 0 ? piece : classifyToken(piece)))
+    .join("");
 }
 
 /** Truncates text to a safe display prefix, with an explicit ellipsis marker
@@ -112,7 +207,12 @@ export function truncateForDisplay(text: string, maxLength = MAX_COMMAND_DISPLAY
   return `${text.slice(0, maxLength)}…`;
 }
 
-/** Applies redaction then truncation — the combined safe-display transform. */
+/** Applies redaction then truncation — order matters: truncating first could
+ * cut a token in half and hide it from the allowlist classifier, or worse,
+ * cut a stage-1 marker match in half and leave a fragment of a secret
+ * dangling past the truncation boundary. Redacting first guarantees nothing
+ * unsafe survives regardless of where the truncation cut falls (round-4 LOW
+ * fix: order truncation AFTER redaction, not before). */
 export function sanitizeForDisplay(text: string): string {
-  return truncateForDisplay(redactSecretLikeSubstrings(text));
+  return truncateForDisplay(sanitizeFreeText(text));
 }

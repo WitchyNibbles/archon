@@ -55,19 +55,23 @@
  * blocked/review-blocked > structural corruption > missing gates > retro gate
  * > lease/budget > sidecar blockers > advisory.
  *
- * Round-2 security fix (single egress discipline): every evidence value and
- * `nextCommand` string is redacted through ONE choke point (`redactCause`,
- * applied right before `diagnoseStall` returns), not per cause-construction
- * site — round-1 only redacted hook_blocker inline, which is why
- * `task_blocked`'s raw `reasons` shipped unredacted. See redactCause below.
+ * Round-4 redesign (redact-by-default, provenance-tagged evidence): rounds 2
+ * and 3 patched the same shape-hunting scrubber twice and both left a bypass.
+ * Round 4 inverts the default — every evidence value is tagged by PROVENANCE
+ * at construction: `structured()` (this module's own ids/roles/tokens/counts,
+ * pass through) or `freeText()` (sidecar-sourced text, redacted unless it
+ * matches an explicit safe shape — why-redaction.ts's `sanitizeFreeText`).
+ * `buildEvidence` is the ONLY way to construct evidence — its return type is
+ * privately branded, so a cause class cannot skip tagging. See
+ * why-redaction.ts's header for the full rationale and accepted friction.
  * ---------------------------------------------------------------------------
  */
 
-import { redactSecretLikeSubstrings, truncateForDisplay } from "./why-redaction.ts";
+import { sanitizeForDisplay } from "./why-redaction.ts";
 
-// Re-exported for callers that imported these from why-diagnosis.ts before the
+// Re-exported for callers importing these from why-diagnosis.ts before the
 // redaction-utilities split (reviewer LOW). Canonical home: why-redaction.ts.
-export { redactSecretLikeSubstrings, truncateForDisplay, sanitizeForDisplay } from "./why-redaction.ts";
+export { sanitizeFreeText, truncateForDisplay, sanitizeForDisplay } from "./why-redaction.ts";
 
 // ---------------------------------------------------------------------------
 // Rank constants — single source of truth for ordering.
@@ -215,11 +219,68 @@ export interface StallSignals {
 // Output shape
 // ---------------------------------------------------------------------------
 
+/** The resolved, display-ready evidence value shape — what a cause's
+ * `values` map actually holds after `buildEvidence` resolves every tagged
+ * input below. */
+type EvidenceScalar = string | number | boolean | string[];
+
+// Private brand (a real runtime symbol, not just a type-level `declare
+// const`) — deliberately NOT exported. The only way to produce a value typed
+// `StallCauseEvidence` is `buildEvidence()`; writing `evidence: { source,
+// values }` directly is missing the brand and TypeScript rejects it.
+const EVIDENCE_BRAND: unique symbol = Symbol("StallCauseEvidence");
+
 export interface StallCauseEvidence {
+  readonly [EVIDENCE_BRAND]: true;
   /** File path or DB table the signal came from. */
   source: string;
   /** Key values a human can verify against that source. */
-  values: Record<string, string | number | boolean | string[]>;
+  values: Record<string, EvidenceScalar>;
+}
+
+/** Tags a value this module generated itself — a task/run id, a role name, a
+ * status/enum token, a count, a path it constructed, a command it
+ * recommends. Passes through `buildEvidence` completely unchanged: nothing
+ * external could have written into it, so there is nothing to redact. */
+export function structured(value: EvidenceScalar): TaggedEvidenceValue {
+  return { provenance: "structured", value };
+}
+
+/** Tags a value SOURCED FROM OUTSIDE this module — a hook-blocker's recorded
+ * command/summary, a seed-failure reason, a daemon's recorded reason or
+ * nextActions text, or any other caught-error message. `buildEvidence` runs
+ * this through why-redaction.ts's `sanitizeForDisplay` (redact by default,
+ * allowlist the safe shapes, then truncate) before it becomes visible. */
+export function freeText(value: string | string[]): TaggedEvidenceValue {
+  return { provenance: "freeText", value };
+}
+
+interface TaggedEvidenceValue {
+  readonly provenance: "structured" | "freeText";
+  readonly value: EvidenceScalar;
+}
+
+function resolveEvidenceValue(tagged: TaggedEvidenceValue): EvidenceScalar {
+  if (tagged.provenance === "structured") return tagged.value;
+  if (Array.isArray(tagged.value)) return tagged.value.map((v) => sanitizeForDisplay(v));
+  return sanitizeForDisplay(String(tagged.value));
+}
+
+/**
+ * The ONLY constructor for `StallCauseEvidence` (round-4 reviewer/gate LOW:
+ * type-enforce the choke point). Every value must arrive tagged via
+ * `structured()` or `freeText()` — there is no way to pass a raw string and
+ * have it silently skip redaction, because there is no other way to obtain a
+ * value typed `StallCauseEvidence` at all (see the `EVIDENCE_BRAND` comment
+ * above). `source` is a code-owned literal (a table/file-path constant) and
+ * is never itself tagged — there is nothing external in it to redact.
+ */
+function buildEvidence(source: string, values: Record<string, TaggedEvidenceValue>): StallCauseEvidence {
+  const resolved: Record<string, EvidenceScalar> = {};
+  for (const [key, tagged] of Object.entries(values)) {
+    resolved[key] = resolveEvidenceValue(tagged);
+  }
+  return { [EVIDENCE_BRAND]: true, source, values: resolved } as StallCauseEvidence;
 }
 
 export interface StallCause {
@@ -246,48 +307,11 @@ export interface StallDiagnosis {
 }
 
 // ---------------------------------------------------------------------------
-// Secret redaction — single choke point (round-2 security repair). Every
-// evidence value + nextCommand, for EVERY cause, passes through `redactCause`
-// exactly once, right before diagnoseStall returns — not per construction
-// site (round-1 only redacted hook_blocker inline; task_blocked's `reasons`
-// shipped unredacted as a result). Text-transform primitives live in
-// why-redaction.ts (reviewer LOW: split into its own module).
-//
-// Exemptions from THIS pass (deliberate, not oversights):
-//   - `evidence.source` — a code-owned literal (table/file-path constant),
-//     never interpolated with external data.
-//   - `cause.what` — a static authored sentence; no cause interpolates
-//     external data into it.
-//   - number/boolean evidence values — nothing to redact.
-//   - truncation is NOT applied here: several authored `nextCommand` strings
-//     legitimately exceed 120 chars (record-council/record-retro), and
-//     truncating them here would clip a real instruction. Truncation is
-//     local to hook_blocker's command/summary only (the one cause whose raw
-//     fields can be arbitrarily long) — applied before this pass runs.
-// ---------------------------------------------------------------------------
-
-function redactCause(cause: StallCause): StallCause {
-  const values: Record<string, string | number | boolean | string[]> = {};
-  for (const [key, raw] of Object.entries(cause.evidence.values)) {
-    values[key] = redactEvidenceValue(raw);
-  }
-  return {
-    ...cause,
-    evidence: { ...cause.evidence, values },
-    nextCommand: redactSecretLikeSubstrings(cause.nextCommand)
-  };
-}
-
-function redactEvidenceValue(
-  value: string | number | boolean | string[]
-): string | number | boolean | string[] {
-  if (typeof value === "string") return redactSecretLikeSubstrings(value);
-  if (Array.isArray(value)) return value.map((v) => redactSecretLikeSubstrings(v));
-  return value;
-}
-
-// ---------------------------------------------------------------------------
-// Ranker — pure. Given signals, emit ranked causes.
+// Ranker — pure. Given signals, emit ranked causes. Every cause is built via
+// `buildEvidence` (above), which resolves `structured()`/`freeText()`-tagged
+// values as it constructs the evidence object — there is no later pass that
+// redacts causes after the fact, and no way to add a new cause class below
+// that skips tagging (see the `EVIDENCE_BRAND` comment on `StallCauseEvidence`).
 // ---------------------------------------------------------------------------
 
 function inScope(signals: StallSignals, taskId: string | undefined): boolean {
@@ -300,7 +324,10 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
   const causes: StallCause[] = [];
   const focusTask = signals.scope.taskId;
 
-  // 1. Integrity contradictions (rank 10).
+  // 1. Integrity contradictions (rank 10). `contradictions` is tagged
+  // freeText: it is a diagnostic diff description that can quote arbitrary
+  // internal-state field values (e.g. a task title), not a fixed vocabulary
+  // this module controls.
   if (
     signals.integrity?.status === "contradicted" &&
     signals.integrity.contradictions.length > 0
@@ -311,17 +338,17 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
       advisory: false,
       what:
         "The runtime's authoritative state disagrees with the local export files, so nothing downstream can be trusted until they are reconciled.",
-      evidence: {
-        source: "project_runtime_state vs .archon/work exports",
-        values: { contradictions: signals.integrity.contradictions }
-      },
+      evidence: buildEvidence("project_runtime_state vs .archon/work exports", {
+        contradictions: freeText(signals.integrity.contradictions)
+      }),
       nextCommand: "npx tsx ./src/admin.ts reconcile-runtime-state --apply"
     });
   }
 
   // 2. Task explicitly blocked/failed (rank 12) — CRITICAL fix: a task sitting
   // in `status: blocked` is the single most common real stall and MUST be
-  // surfaced, not silently passed over as "handled above".
+  // surfaced, not silently passed over as "handled above". `reasons` is
+  // freeText — it is a seedFailure.reason, a caught Error.message.
   const blockedInScope = (signals.blockedTasks ?? []).filter((b) => inScope(signals, b.taskId));
   if (blockedInScope.length > 0) {
     causes.push({
@@ -330,13 +357,13 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
       advisory: false,
       what:
         "A task explicitly failed and is sitting in the `blocked` status — it will not resume on its own without operator recovery.",
-      evidence: {
-        source: "tasks.status = blocked (project_runtime_state seed-failure metadata when it matches)",
-        values: {
-          tasks: blockedInScope.map((b) => b.taskId),
-          reasons: blockedInScope.map((b) => b.reason)
+      evidence: buildEvidence(
+        "tasks.status = blocked (project_runtime_state seed-failure metadata when it matches)",
+        {
+          tasks: structured(blockedInScope.map((b) => b.taskId)),
+          reasons: freeText(blockedInScope.map((b) => b.reason))
         }
-      },
+      ),
       nextCommand:
         "npx tsx ./src/admin.ts recover --apply-safe (then re-check status; escalate to the task owner if recovery does not resolve it)"
     });
@@ -344,6 +371,8 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
 
   // 3. Task stuck in review with named blocking reviews (rank 14) — CRITICAL
   // fix: `review_blocked` is the other status the old ranker never reported.
+  // `blockers` is structured: evaluateReviewDecision only ever emits fixed
+  // template strings built from role names, not external free text.
   const reviewBlockedInScope = (signals.reviewBlockedTasks ?? []).filter((b) =>
     inScope(signals, b.taskId)
   );
@@ -355,13 +384,10 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
       advisory: false,
       what:
         "A task is waiting on review: at least one required reviewer role has not recorded a passing review.",
-      evidence: {
-        source: "reviews table (evaluateReviewDecision, per review_blocked task)",
-        values: {
-          tasks: reviewBlockedInScope.map((b) => b.taskId),
-          blockers: allBlockers
-        }
-      },
+      evidence: buildEvidence("reviews table (evaluateReviewDecision, per review_blocked task)", {
+        tasks: structured(reviewBlockedInScope.map((b) => b.taskId)),
+        blockers: structured(allBlockers)
+      }),
       nextCommand:
         "run the review-orchestrator flow for the listed role(s), then re-check with `npx tsx ./src/admin.ts status`"
     });
@@ -380,13 +406,10 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
       advisory: false,
       what:
         "The same task exists in more than one run with a sealed twin, so duplicate rows are corrupting gate and closure accounting.",
-      evidence: {
-        source: "tasks table (duplicate task_key with sealed twin)",
-        values: {
-          taskKeys: dupInScope.map((g) => g.taskKey),
-          runIds: dupInScope.flatMap((g) => g.runIds)
-        }
-      },
+      evidence: buildEvidence("tasks table (duplicate task_key with sealed twin)", {
+        taskKeys: structured(dupInScope.map((g) => g.taskKey)),
+        runIds: structured(dupInScope.flatMap((g) => g.runIds))
+      }),
       nextCommand: "npx tsx ./src/admin.ts prune-orphans --confirm"
     });
   }
@@ -405,13 +428,10 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
       advisory: false,
       what:
         "A task passed into `approved` but a required review role never recorded a passed review, so it cannot close.",
-      evidence: {
-        source: "reviews table (per approved task)",
-        values: {
-          tasks: reviewBlocks.map((b) => b.taskId),
-          missingRoles: roles
-        }
-      },
+      evidence: buildEvidence("reviews table (per approved task)", {
+        tasks: structured(reviewBlocks.map((b) => b.taskId)),
+        missingRoles: structured(roles)
+      }),
       nextCommand:
         "run the review-orchestrator flow for the missing role(s), then `npx tsx ./src/admin.ts close-run --confirm`"
     });
@@ -427,16 +447,17 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
       advisory: false,
       what:
         "A task is `approved` but has no orchestrator-recorded approval, so its closure provenance is incomplete.",
-      evidence: {
-        source: "approvals table (per approved task)",
-        values: { tasks: approvalBlocks.map((b) => b.taskId) }
-      },
+      evidence: buildEvidence("approvals table (per approved task)", {
+        tasks: structured(approvalBlocks.map((b) => b.taskId))
+      }),
       nextCommand:
         "record the orchestrator approval via the review-orchestrator flow, then `npx tsx ./src/admin.ts close-run --confirm`"
     });
   }
 
-  // 6. Council gate (rank 30).
+  // 6. Council gate (rank 30). `outcomes` is structured: a council outcome is
+  // always one of a fixed set of orchestrator-recorded tokens (or "unset"),
+  // never free text.
   const councilBlocks = (signals.councilGates ?? []).filter((g) =>
     inScope(signals, g.taskId)
   );
@@ -447,13 +468,10 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
       advisory: false,
       what:
         "A task requires Design & Architecture Council review but has no approved-class outcome recorded.",
-      evidence: {
-        source: "tasks.packet.councilOutcome",
-        values: {
-          tasks: councilBlocks.map((g) => g.taskId),
-          outcomes: councilBlocks.map((g) => g.outcome ?? "unset")
-        }
-      },
+      evidence: buildEvidence("tasks.packet.councilOutcome", {
+        tasks: structured(councilBlocks.map((g) => g.taskId)),
+        outcomes: structured(councilBlocks.map((g) => g.outcome ?? "unset"))
+      }),
       nextCommand:
         "npx tsx ./src/admin.ts record-council --task-id <id> --outcome <approved|approved_with_conditions|exception_granted> --source orchestrator"
     });
@@ -467,19 +485,18 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
       advisory: false,
       what:
         "Every task is terminal so the run is ready to seal, but no task recorded a post-task retro decision, which the seal gate requires.",
-      evidence: {
-        source: "tasks.packet.retroOutcome (none recorded)",
-        values: {
-          runId: signals.run?.id ?? "unknown",
-          tasks: signals.sealReadyTaskIds ?? []
-        }
-      },
+      evidence: buildEvidence("tasks.packet.retroOutcome (none recorded)", {
+        runId: structured(signals.run?.id ?? "unknown"),
+        tasks: structured(signals.sealReadyTaskIds ?? [])
+      }),
       nextCommand:
         "npx tsx ./src/admin.ts record-retro --task-id <id> --outcome <memory_promoted|skill_patched|discarded|postmortem_filed|nothing_to_promote> --source orchestrator"
     });
   }
 
-  // 8. Respawn lease / budget (rank 50 / 55).
+  // 8. Respawn lease / budget (rank 50 / 55). `owner` is tagged freeText —
+  // the lease-owner identity string is written by whatever process/version
+  // acquired the lock file, not a value this module controls.
   const respawn = signals.respawn;
   if (respawn) {
     const respawnTaskInScope = inScope(signals, respawn.taskId);
@@ -490,10 +507,9 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
         advisory: false,
         what:
           "A respawn lease is currently held for this run, so a fresh continuation turn cannot be spawned until it is released or expires.",
-        evidence: {
-          source: ".archon/work/daemon/respawn-lease-<runId>.lock",
-          values: { owner: respawn.leaseOwner ?? "unknown" }
-        },
+        evidence: buildEvidence(".archon/work/daemon/respawn-lease-<runId>.lock", {
+          owner: freeText(respawn.leaseOwner ?? "unknown")
+        }),
         nextCommand:
           "wait for the lease to expire (5 min stale window) or `npx tsx ./src/admin.ts recover --apply-safe`"
       });
@@ -509,14 +525,11 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
         advisory: false,
         what:
           "This task has consumed its full respawn budget, so the daemon will not respawn it again without operator intervention.",
-        evidence: {
-          source: "project_runtime_state.metadata.archonDaemon",
-          values: {
-            taskId: respawn.taskId,
-            count: respawn.count,
-            budget: respawn.budget
-          }
-        },
+        evidence: buildEvidence("project_runtime_state.metadata.archonDaemon", {
+          taskId: structured(respawn.taskId),
+          count: structured(respawn.count),
+          budget: structured(respawn.budget)
+        }),
         nextCommand:
           "resolve the underlying blocker then `npx tsx ./src/admin.ts recover --apply-safe`, or raise ARCHON_MAX_RESPAWNS_PER_TASK if the task genuinely needs more"
       });
@@ -525,34 +538,34 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
 
   // 9. Sidecar blockers (rank 60-75). Each is present only when the sidecar
   // file existed and parsed — an absent file leaves the field undefined
-  // (tolerated). hook-blocker command/summary are TRUNCATED here (the one
-  // cause whose raw fields can be arbitrarily long — see redactCause's
-  // comment on why truncation is not part of the shared choke point);
-  // REDACTION of the truncated text happens uniformly for every cause via
-  // redactCause below, not here — this cause does not sanitize itself
-  // specially, it only bounds its own display length.
+  // (tolerated). hook-blocker command/summary are the canonical freeText
+  // case: a recorded failed shell command and its stdout/stderr-derived
+  // summary can contain literally anything, including a credential the
+  // command itself embedded. `buildEvidence` redacts-then-truncates them via
+  // `freeText()` — no local pre-processing needed.
   const hookBlocker = signals.sidecars.hookBlocker;
   if (hookBlocker && inScope(signals, hookBlocker.taskId)) {
-    const previewCommand = truncateForDisplay(hookBlocker.command);
-    const previewSummary = truncateForDisplay(hookBlocker.summary);
+    const safeCommand = sanitizeForDisplay(hookBlocker.command);
     causes.push({
       id: "hook_blocker",
       rank: STALL_CAUSE_RANKS.hook_blocker,
       advisory: false,
       what:
         "A command failed and the hook recorded a blocker that stays in force until the same command is re-run and passes.",
-      evidence: {
-        source: ".archon/work/daemon/hook-blocker-state.json",
-        values: {
-          blockerKind: hookBlocker.blockerKind,
-          command: previewCommand,
-          summary: previewSummary,
-          ...(hookBlocker.recordedAt ? { recordedAt: hookBlocker.recordedAt } : {})
-        }
-      },
+      evidence: buildEvidence(".archon/work/daemon/hook-blocker-state.json", {
+        blockerKind: structured(hookBlocker.blockerKind),
+        command: freeText(hookBlocker.command),
+        summary: freeText(hookBlocker.summary),
+        ...(hookBlocker.recordedAt ? { recordedAt: structured(hookBlocker.recordedAt) } : {})
+      }),
+      // nextCommand never embeds the raw recorded command directly — it
+      // points at the (redacted, in evidence.values.command above) preview
+      // and the sidecar file for the full original, so there is only ever
+      // ONE place this text is rendered, not two independently-sanitized
+      // copies that could drift.
       nextCommand:
-        previewCommand.trim().length > 0
-          ? `re-run the failed command (see .archon/work/daemon/hook-blocker-state.json for the full recorded command): ${previewCommand}`
+        safeCommand.trim().length > 0
+          ? "re-run the failed command shown in this cause's evidence (full record: .archon/work/daemon/hook-blocker-state.json)"
           : "re-run the failed command recorded in .archon/work/daemon/hook-blocker-state.json"
     });
   }
@@ -569,48 +582,45 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
       advisory: false,
       what:
         "The context guard shows a context handoff was written but the session has not yet resumed on a fresh turn.",
-      evidence: {
-        source: ".archon/work/context-guard.json",
-        values: {
-          state: contextGuard.state,
-          invocationId: contextGuard.invocationId
-        }
-      },
+      evidence: buildEvidence(".archon/work/context-guard.json", {
+        state: structured(contextGuard.state),
+        invocationId: structured(contextGuard.invocationId)
+      }),
       nextCommand: "npx tsx ./src/admin.ts continue-session"
     });
   }
 
-  // HIGH fix: join the FULL nextActions array, not just the first entry —
-  // proven against a real 2-step array in runtime.ts's preflight nextActions
-  // (`npm run archon:doctor -- --repair` then `npm run archon:reconcile`).
-  // Truncating to [0] silently drops later steps.
+  // HIGH fix (round 1): join the FULL nextActions array, not just the first
+  // entry. `reason` and each `nextActions` entry are freeText — sourced from
+  // a sidecar JSON file the daemon writes, which is less trusted than an
+  // in-memory computed value (a future daemon bug could append raw error
+  // text into either field, and this module has no way to audit that).
   const daemonHandoff = signals.sidecars.daemonHandoff;
   if (daemonHandoff) {
+    const safeNextActions = daemonHandoff.nextActions.map((step) => sanitizeForDisplay(step));
     causes.push({
       id: "daemon_handoff_blocked",
       rank: STALL_CAUSE_RANKS.daemon_handoff_blocked,
       advisory: false,
       what:
         "The daemon wrote an operator-handoff record: it hit a point in the loop it cannot pass without operator action.",
-      evidence: {
-        source: ".archon/work/daemon/operator-handoff.json",
-        values: {
-          blockerKind: daemonHandoff.blockerKind ?? "unknown",
-          reason: daemonHandoff.reason
-        }
-      },
+      evidence: buildEvidence(".archon/work/daemon/operator-handoff.json", {
+        blockerKind: structured(daemonHandoff.blockerKind ?? "unknown"),
+        reason: freeText(daemonHandoff.reason)
+      }),
       nextCommand: joinNextActions(
-        daemonHandoff.nextActions,
+        safeNextActions,
         "follow the operator-handoff nextActions in `npx tsx ./src/admin.ts status`"
       )
     });
   }
 
-  // LOW fix: also cover max_cycles_reached and invalid states, not just
-  // "blocked" — both are non-terminal-success states the supervisor stopped
-  // in without completing the loop.
+  // LOW fix (round 1): also cover max_cycles_reached and invalid states, not
+  // just "blocked" — both are non-terminal-success states the supervisor
+  // stopped in without completing the loop.
   const daemonSupervisor = signals.sidecars.daemonSupervisor;
   if (daemonSupervisor && daemonSupervisor.state !== "completed") {
+    const safeNextActions = daemonSupervisor.nextActions.map((step) => sanitizeForDisplay(step));
     causes.push({
       id: "daemon_supervisor_blocked",
       rank: STALL_CAUSE_RANKS.daemon_supervisor_blocked,
@@ -621,16 +631,13 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
           : daemonSupervisor.state === "invalid"
             ? "The daemon supervisor recorded an invalid state and could not advance the loop."
             : "The daemon supervisor stopped in a blocked state and could not advance the loop on its own.",
-      evidence: {
-        source: ".archon/work/daemon/supervisor-status.json",
-        values: {
-          state: daemonSupervisor.state,
-          blockerKind: daemonSupervisor.blockerKind ?? "unknown",
-          reason: daemonSupervisor.reason
-        }
-      },
+      evidence: buildEvidence(".archon/work/daemon/supervisor-status.json", {
+        state: structured(daemonSupervisor.state),
+        blockerKind: structured(daemonSupervisor.blockerKind ?? "unknown"),
+        reason: freeText(daemonSupervisor.reason)
+      }),
       nextCommand: joinNextActions(
-        daemonSupervisor.nextActions,
+        safeNextActions,
         "follow the supervisor nextActions in `npx tsx ./src/admin.ts status`"
       )
     });
@@ -650,32 +657,27 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
         advisory: true,
         what:
           "Owner work is simply still in flight — the runtime is waiting on the task owner, not blocked on a gate.",
-        evidence: {
-          source: "run execution plan directive",
-          values: { directive: ownerWork.directiveKind, tasks: ownerTasks }
-        },
+        evidence: buildEvidence("run execution plan directive", {
+          directive: structured(ownerWork.directiveKind),
+          tasks: structured(ownerTasks)
+        }),
         nextCommand:
           "dispatch the task owner (this is normal in-flight work, not a stall)"
       });
     }
   }
 
-  // Single egress choke point (round-2 HIGH fix): every cause's evidence
-  // values and nextCommand pass through redactCause exactly once, here, right
-  // before anything is sorted or returned. No cause construction site above
-  // sanitizes itself individually.
-  const redactedCauses = causes.map(redactCause);
-  redactedCauses.sort((a, b) => a.rank - b.rank);
+  causes.sort((a, b) => a.rank - b.rank);
 
-  const stuck = redactedCauses.some((c) => !c.advisory);
-  const healthy = stuck ? undefined : buildHealthySummary(signals, redactedCauses);
+  const stuck = causes.some((c) => !c.advisory);
+  const healthy = stuck ? undefined : buildHealthySummary(signals, causes);
 
   return {
     authorityLabel: "derived_only",
     now: signals.now,
     scope: signals.scope,
     stuck,
-    causes: redactedCauses,
+    causes,
     healthy
   };
 }
