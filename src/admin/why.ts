@@ -39,6 +39,7 @@
 
 import path from "node:path";
 import { readFile } from "node:fs/promises";
+import type { Client as PgClient } from "pg";
 
 import { withClient } from "./db.ts";
 import { PostgresStore } from "../store/postgres-store.ts";
@@ -444,6 +445,27 @@ export async function runWhyDiagnosis(
 }
 
 // ---------------------------------------------------------------------------
+// Safe SQL-client adapter (round-2 reviewer LOW). Wraps only the ONE PgClient
+// method `why` actually needs (`query`) into the `SqlClient` shape
+// prune-orphans' fetch helpers expect — the same adapter shape admin.ts
+// already uses inline for the `prune-orphans` / `sweep-orphans` verbs. This
+// replaces an unsafe whole-object cast (`client as unknown as SqlClient`),
+// which asserted structural compatibility between `pg.Client` and `SqlClient`
+// without the compiler ever checking it — a silent break if either type
+// diverges. Exported so it is directly unit-testable against a minimal fake
+// object satisfying only `{ query }`, not the full `pg.Client` surface.
+// ---------------------------------------------------------------------------
+
+export function makeSqlClientAdapter(client: Pick<PgClient, "query">): SqlClient {
+  return {
+    query: async (text, values) => {
+      const result = await client.query(text, values as unknown[] | undefined);
+      return { rows: result.rows as Record<string, unknown>[], rowCount: result.rowCount };
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Command entrypoint — thin `withClient` wrapper around runWhyDiagnosis.
 // ---------------------------------------------------------------------------
 
@@ -458,7 +480,7 @@ export async function whyCommand(args: readonly string[]): Promise<void> {
     const leaseStore = makeFileLockLeaseStore({
       lockDir: path.join(cwd, ".archon", "work", "daemon")
     });
-    const sqlClient = client as unknown as SqlClient;
+    const sqlAdapter = makeSqlClientAdapter(client);
 
     const diagnosis = await runWhyDiagnosis(args, {
       cwd,
@@ -482,10 +504,13 @@ export async function whyCommand(args: readonly string[]): Promise<void> {
       readLeaseOwner: (runId) => leaseStore.readOwner(runId),
       respawnBudget: resolveRespawnBudget(),
       async getOrphanInputs() {
+        // .bind() extracts a plain function reference (not an unbound method
+        // access) — same discipline the prune-orphans SqlClient["query"]
+        // interface already requires elsewhere in this codebase.
         const [tasks, reviewCounts, approvalCounts] = await Promise.all([
-          fetchAllTasks(sqlClient.query.bind(sqlClient)),
-          fetchReviewCounts(sqlClient.query.bind(sqlClient)),
-          fetchApprovalCounts(sqlClient.query.bind(sqlClient))
+          fetchAllTasks(sqlAdapter.query.bind(sqlAdapter)),
+          fetchReviewCounts(sqlAdapter.query.bind(sqlAdapter)),
+          fetchApprovalCounts(sqlAdapter.query.bind(sqlAdapter))
         ]);
         return { tasks, reviewCounts, approvalCounts };
       },

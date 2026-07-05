@@ -54,8 +54,20 @@
  * Summary form (matches audit §3.7): integrity contradictions > task
  * blocked/review-blocked > structural corruption > missing gates > retro gate
  * > lease/budget > sidecar blockers > advisory.
+ *
+ * Round-2 security fix (single egress discipline): every evidence value and
+ * `nextCommand` string is redacted through ONE choke point (`redactCause`,
+ * applied right before `diagnoseStall` returns), not per cause-construction
+ * site — round-1 only redacted hook_blocker inline, which is why
+ * `task_blocked`'s raw `reasons` shipped unredacted. See redactCause below.
  * ---------------------------------------------------------------------------
  */
+
+import { redactSecretLikeSubstrings, truncateForDisplay } from "./why-redaction.ts";
+
+// Re-exported for callers that imported these from why-diagnosis.ts before the
+// redaction-utilities split (reviewer LOW). Canonical home: why-redaction.ts.
+export { redactSecretLikeSubstrings, truncateForDisplay, sanitizeForDisplay } from "./why-redaction.ts";
 
 // ---------------------------------------------------------------------------
 // Rank constants — single source of truth for ordering.
@@ -234,59 +246,44 @@ export interface StallDiagnosis {
 }
 
 // ---------------------------------------------------------------------------
-// Secret redaction — security control for the hook-blocker sidecar (audit F9
-// review, MEDIUM/security). hook-blocker-state.json records the raw failed
-// command plus a stdout/stderr-derived summary; an inline credential in either
-// would otherwise be reprinted verbatim on every `archon why` call, in BOTH
-// the human and --json output. Applied once here (not in the collector) so
-// every emission path is scrubbed. Mirrors the redact-don't-guess posture of
-// admin/db-error-scrub.ts's scrubPgCredentials.
+// Secret redaction — single choke point (round-2 security repair). Every
+// evidence value + nextCommand, for EVERY cause, passes through `redactCause`
+// exactly once, right before diagnoseStall returns — not per construction
+// site (round-1 only redacted hook_blocker inline; task_blocked's `reasons`
+// shipped unredacted as a result). Text-transform primitives live in
+// why-redaction.ts (reviewer LOW: split into its own module).
+//
+// Exemptions from THIS pass (deliberate, not oversights):
+//   - `evidence.source` — a code-owned literal (table/file-path constant),
+//     never interpolated with external data.
+//   - `cause.what` — a static authored sentence; no cause interpolates
+//     external data into it.
+//   - number/boolean evidence values — nothing to redact.
+//   - truncation is NOT applied here: several authored `nextCommand` strings
+//     legitimately exceed 120 chars (record-council/record-retro), and
+//     truncating them here would clip a real instruction. Truncation is
+//     local to hook_blocker's command/summary only (the one cause whose raw
+//     fields can be arbitrarily long) — applied before this pass runs.
 // ---------------------------------------------------------------------------
 
-const MAX_COMMAND_DISPLAY_LENGTH = 120;
-
-/**
- * Redacts secret-shaped substrings from hook-blocker text: labeled key=value /
- * key: value credential fields, `Authorization:` headers, `Bearer` tokens, and
- * (fallback, coverage over precision) long opaque alnum/base64-ish runs that
- * look like an issued token rather than a word or path segment.
- */
-export function redactSecretLikeSubstrings(text: string): string {
-  let result = text;
-  // Labeled credential fields: token=/secret=/password=/api_key=/access_key=/
-  // auth=, with "=" or ":" separators, in any case.
-  result = result.replace(
-    /\b(token|secret|password|api[_-]?key|access[_-]?key|auth)(\s*[:=]\s*)[^\s"'`]+/gi,
-    "$1$2[redacted]"
-  );
-  // Authorization headers (value may be "Bearer xyz" or a bare token).
-  // Token components exclude quote/backtick characters so a shell-quoted
-  // header (`"Authorization: Bearer xyz"`) redacts cleanly without swallowing
-  // the closing quote into the replacement.
-  result = result.replace(
-    /\bAuthorization:\s*[^\s"'`]+(?:\s+[^\s"'`]+)?/gi,
-    "Authorization: [redacted]"
-  );
-  // Bearer tokens outside an Authorization header.
-  result = result.replace(/\bBearer\s+[^\s"'`]+/gi, "Bearer [redacted]");
-  // Fallback: long opaque token-shaped runs (>= 24 chars, alnum + common token
-  // punctuation). Errs toward over-redaction — a truncated, already-scoped
-  // display string is the trade-off accepted here, not exact evidence fidelity.
-  result = result.replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}\b/g, "[redacted]");
-  return result;
+function redactCause(cause: StallCause): StallCause {
+  const values: Record<string, string | number | boolean | string[]> = {};
+  for (const [key, raw] of Object.entries(cause.evidence.values)) {
+    values[key] = redactEvidenceValue(raw);
+  }
+  return {
+    ...cause,
+    evidence: { ...cause.evidence, values },
+    nextCommand: redactSecretLikeSubstrings(cause.nextCommand)
+  };
 }
 
-/** Truncates text to a safe display prefix, with an explicit ellipsis marker
- * when truncation occurred (never silently drops characters unmarked). */
-export function truncateForDisplay(text: string, maxLength = MAX_COMMAND_DISPLAY_LENGTH): string {
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength)}…`;
-}
-
-/** Applies redaction then truncation — the combined safe-display transform
- * used for both the hook-blocker `command` and `summary` fields. */
-function sanitizeForDisplay(text: string): string {
-  return truncateForDisplay(redactSecretLikeSubstrings(text));
+function redactEvidenceValue(
+  value: string | number | boolean | string[]
+): string | number | boolean | string[] {
+  if (typeof value === "string") return redactSecretLikeSubstrings(value);
+  if (Array.isArray(value)) return value.map((v) => redactSecretLikeSubstrings(v));
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -528,14 +525,16 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
 
   // 9. Sidecar blockers (rank 60-75). Each is present only when the sidecar
   // file existed and parsed — an absent file leaves the field undefined
-  // (tolerated). hook-blocker command/summary are sanitized before display:
-  // secret-shaped substrings redacted, then truncated to a safe prefix with a
-  // pointer to the sidecar file for the untruncated (still-scrubbed-at-source)
-  // record — never reprint the raw recorded command/summary verbatim.
+  // (tolerated). hook-blocker command/summary are TRUNCATED here (the one
+  // cause whose raw fields can be arbitrarily long — see redactCause's
+  // comment on why truncation is not part of the shared choke point);
+  // REDACTION of the truncated text happens uniformly for every cause via
+  // redactCause below, not here — this cause does not sanitize itself
+  // specially, it only bounds its own display length.
   const hookBlocker = signals.sidecars.hookBlocker;
   if (hookBlocker && inScope(signals, hookBlocker.taskId)) {
-    const safeCommand = sanitizeForDisplay(hookBlocker.command);
-    const safeSummary = sanitizeForDisplay(hookBlocker.summary);
+    const previewCommand = truncateForDisplay(hookBlocker.command);
+    const previewSummary = truncateForDisplay(hookBlocker.summary);
     causes.push({
       id: "hook_blocker",
       rank: STALL_CAUSE_RANKS.hook_blocker,
@@ -546,14 +545,14 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
         source: ".archon/work/daemon/hook-blocker-state.json",
         values: {
           blockerKind: hookBlocker.blockerKind,
-          command: safeCommand,
-          summary: safeSummary,
+          command: previewCommand,
+          summary: previewSummary,
           ...(hookBlocker.recordedAt ? { recordedAt: hookBlocker.recordedAt } : {})
         }
       },
       nextCommand:
-        safeCommand.trim().length > 0
-          ? `re-run the failed command (see .archon/work/daemon/hook-blocker-state.json for the full recorded command): ${safeCommand}`
+        previewCommand.trim().length > 0
+          ? `re-run the failed command (see .archon/work/daemon/hook-blocker-state.json for the full recorded command): ${previewCommand}`
           : "re-run the failed command recorded in .archon/work/daemon/hook-blocker-state.json"
     });
   }
@@ -661,17 +660,22 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
     }
   }
 
-  causes.sort((a, b) => a.rank - b.rank);
+  // Single egress choke point (round-2 HIGH fix): every cause's evidence
+  // values and nextCommand pass through redactCause exactly once, here, right
+  // before anything is sorted or returned. No cause construction site above
+  // sanitizes itself individually.
+  const redactedCauses = causes.map(redactCause);
+  redactedCauses.sort((a, b) => a.rank - b.rank);
 
-  const stuck = causes.some((c) => !c.advisory);
-  const healthy = stuck ? undefined : buildHealthySummary(signals, causes);
+  const stuck = redactedCauses.some((c) => !c.advisory);
+  const healthy = stuck ? undefined : buildHealthySummary(signals, redactedCauses);
 
   return {
     authorityLabel: "derived_only",
     now: signals.now,
     scope: signals.scope,
     stuck,
-    causes,
+    causes: redactedCauses,
     healthy
   };
 }

@@ -4,8 +4,6 @@ import assert from "node:assert/strict";
 import {
   diagnoseStall,
   formatStallDiagnosis,
-  redactSecretLikeSubstrings,
-  truncateForDisplay,
   STALL_CAUSE_RANKS,
   type StallCauseId,
   type StallSignals
@@ -523,36 +521,62 @@ test("retro_seal_gate evidence includes sealReadyTaskIds when provided", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Security MEDIUM fix: hook-blocker command/summary must never leak secrets
+// Security fix: hook-blocker command/summary must never leak secrets
 // verbatim, in EITHER the human evidence values or the nextCommand string —
 // both are part of the same StallDiagnosis object, so both --json and human
 // output are covered by one assertion on the diagnosis object.
+//
+// Low-level redaction-function unit tests (keyword matching, URL scrubbing,
+// truncation, the narrowed opaque-token fallback) live in
+// tests/admin-why-redaction.test.ts alongside the module they exercise. The
+// tests below are integration-level: they prove `diagnoseStall` actually
+// routes EVERY cause's evidence + nextCommand through the single choke point
+// (round-2 HIGH fix), not just hook_blocker.
 // ---------------------------------------------------------------------------
 
-test("redactSecretLikeSubstrings: labeled key=value credential fields are scrubbed", () => {
-  assert.equal(
-    redactSecretLikeSubstrings("npm publish --token=sk-abcdEFGH12345678901234"),
-    "npm publish --token=[redacted]"
+test("second egress (round-2 HIGH fix): task_blocked's raw seedFailure reason is redacted, not just hook_blocker's command", () => {
+  const secretReason = "build step failed: PGPASSWORD=hunter2Aa1! psql connection refused";
+  const d = diagnoseStall(
+    baseline({ blockedTasks: [{ taskId: "t1", reason: secretReason }] })
   );
-  assert.equal(
-    redactSecretLikeSubstrings("curl -H \"Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\""),
-    'curl -H "Authorization: [redacted]"'
+  const c = cause(d, "task_blocked");
+  assert.ok(c);
+  const reasons = c!.evidence.values.reasons as string[];
+  assert.equal(reasons[0]!.includes("hunter2Aa1!"), false, "reason must be redacted, not passed through raw");
+  assert.match(reasons[0]!, /PGPASSWORD=\[redacted\]/);
+});
+
+test("single choke point: EVERY cause class redacts its evidence values, not just the ones that opt in", () => {
+  const secret = "AWS_SECRET_ACCESS_KEY=AKIA_LEAKED_1";
+  const d = diagnoseStall(
+    baseline({
+      blockedTasks: [{ taskId: "t1", reason: secret }],
+      reviewBlockedTasks: [{ taskId: "t2", blockers: [secret] }],
+      councilGates: [{ taskId: "t3", outcome: secret }],
+      respawn: { taskId: "t4", count: 0, budget: 8, leaseHeld: true, leaseOwner: secret }
+    })
   );
+  const serialized = JSON.stringify(d);
+  assert.equal(serialized.includes("AKIA_LEAKED_1"), false, "no cause class may leak the raw secret value");
+  assert.ok(serialized.includes("[redacted]"), "the redaction marker must appear in its place");
 });
 
-test("redactSecretLikeSubstrings: leaves ordinary command text alone", () => {
-  assert.equal(redactSecretLikeSubstrings("npm run build:dist && npm test"), "npm run build:dist && npm test");
-});
-
-test("truncateForDisplay: truncates long text with an explicit ellipsis marker", () => {
-  const long = "x".repeat(200);
-  const truncated = truncateForDisplay(long, 10);
-  assert.equal(truncated.length, 11); // 10 chars + ellipsis marker
-  assert.ok(truncated.endsWith("…"));
-});
-
-test("truncateForDisplay: short text passes through unchanged", () => {
-  assert.equal(truncateForDisplay("npm test", 120), "npm test");
+test("daemon_handoff_blocked nextCommand (built from external sidecar text) is also redacted", () => {
+  const d = diagnoseStall(
+    baseline({
+      sidecars: {
+        daemonHandoff: {
+          state: "blocked",
+          reason: "r",
+          nextActions: ["PGPASSWORD=hunter2Aa1! npm run archon:doctor -- --repair"]
+        }
+      }
+    })
+  );
+  const c = cause(d, "daemon_handoff_blocked");
+  assert.ok(c);
+  assert.equal(c!.nextCommand.includes("hunter2Aa1!"), false);
+  assert.match(c!.nextCommand, /PGPASSWORD=\[redacted\]/);
 });
 
 test("hook_blocker cause: a credential embedded in the recorded command never appears verbatim in evidence or nextCommand", () => {
@@ -687,6 +711,19 @@ test("--task-id filter: context_guard_pending scoped correctly", () => {
     })
   );
   assert.equal(causeIds(outOfScope).includes("context_guard_pending"), false);
+});
+
+// QA LOW (round-2): the out-of-scope direction above was tested, but the
+// keep-direction under a POPULATED, MATCHING --task-id scope was not —
+// prove both halves of the filter, not just the exclusion half.
+test("--task-id filter: context_guard_pending kept under a populated, matching scope", () => {
+  const inScope = diagnoseStall(
+    baseline({
+      scope: { taskId: "t1" },
+      sidecars: { contextGuard: { state: "handoff_written", taskId: "t1", invocationId: "inv-1" } }
+    })
+  );
+  assert.ok(cause(inScope, "context_guard_pending"), "matching --task-id must keep the cause");
 });
 
 test("--task-id filter: owner_work_pending scoped correctly", () => {

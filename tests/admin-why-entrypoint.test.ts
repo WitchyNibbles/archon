@@ -4,7 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { emit, runWhyDiagnosis, type RunWhyDiagnosisDeps } from "../src/admin/why.ts";
+import { emit, runWhyDiagnosis, makeSqlClientAdapter, type RunWhyDiagnosisDeps } from "../src/admin/why.ts";
+import { fetchAllTasks } from "../src/admin/prune-orphans.ts";
 import type { RunStatusSnapshot, TaskRecord } from "../src/domain/types.ts";
 
 // Audit F9 review (QA finding): whyCommand entrypoint coverage. `runWhyDiagnosis`
@@ -223,4 +224,34 @@ test("runWhyDiagnosis: an unrelated thrown error propagates rather than being tr
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// makeSqlClientAdapter — round-2 reviewer LOW: replaces an unsafe whole-object
+// cast (`client as unknown as SqlClient`) with a safe adapter that wraps only
+// the one method actually needed. This is end-to-end-shaped: it feeds a
+// MINIMAL fake object satisfying only `{ query }` (NOT the full pg.Client or
+// SqlClient surface — proving the adapter genuinely narrows rather than just
+// re-casting) all the way through the real `fetchAllTasks` helper reused from
+// prune-orphans.ts, and checks the mapped result.
+// ---------------------------------------------------------------------------
+
+test("makeSqlClientAdapter: a minimal { query } fake flows correctly through fetchAllTasks", async () => {
+  const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
+  const fakeClient = {
+    async query(text: string, values?: unknown[]) {
+      calls.push({ text, values });
+      return {
+        rows: [{ id: "id-t1", run_id: "run-1", task_key: "t1", status: "blocked" }],
+        rowCount: 1
+      };
+    }
+  };
+
+  const adapter = makeSqlClientAdapter(fakeClient);
+  const tasks = await fetchAllTasks(adapter.query);
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.text, /select id, run_id, task_key, status from tasks/);
+  assert.deepEqual(tasks, [{ id: "id-t1", run_id: "run-1", task_key: "t1", status: "blocked" }]);
 });
