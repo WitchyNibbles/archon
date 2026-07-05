@@ -1368,7 +1368,22 @@ function isDynamicCommandWord(word) {
 // anything` now blocks even for a wholly benign trailing command — this is
 // intentional fail-closed friction, the same class of tradeoff as decision
 // (b) on interpreter-mediated access below, relieved by the scope grant or by
-// simplifying the invocation.
+// simplifying the invocation. This fail-closed direction was ACCEPTED under
+// the security round 5 gate review (audit auditP3Stewards, PR #164): their
+// probing confirmed the redesign held against the round-4 probe list and the
+// friction is the intended tradeoff.
+//
+// Security round 6 found the failure class had RELOCATED rather than closed:
+// round 5's probing showed a table can also be MISCLASSIFIED (a flag present
+// with the wrong shape), not just absent — xargs's -i/-I/-l (replace-string
+// and max-lines forms) were recorded as mandatory separate-token value
+// flags when they are actually GNU getopt-style OPTIONAL, attached-only
+// arguments, so `xargs -i psql` silently swallowed `psql` as -i's "value"
+// instead of ever checking it. Fixed via `wrapperOptionalAttachedFlags` /
+// `xargsOptionalAttachedFlagPattern` below, backed by a full man-page audit
+// of every flag in every wrapper table (see the audit comment above
+// `wrapperBooleanFlags`) so future edits inherit the classification method
+// instead of re-deriving it ad hoc.
 //
 // The boolean/value tables below are deliberately NOT exhaustive of each
 // wrapper's real flag set — that is the point. A flag absent from both is
@@ -1379,10 +1394,122 @@ function isDynamicCommandWord(word) {
 // enumerated; anything else — including common real-world flags like
 // docker's `--name`/`--memory`/`--hostname` or sudo's `--preserve-env`/`-D` —
 // is deliberately left unclassified so it blocks rather than silently passes.
+//
+// ---------------------------------------------------------------------------
+// Wrapper-flag audit (security round 6) — full man-page cross-check of every
+// flag enumerated below, run once and recorded so future edits inherit the
+// method rather than re-deriving it from scratch. Shape values: `boolean`
+// (never takes an argument) | `value` (MANDATORY argument — may be attached
+// to the flag or given as a separate following token, standard getopt
+// convention for short options with a required argument) | `optional-attached`
+// (argument is OPTIONAL and, per getopt convention for short/long options
+// with an optional argument, MUST be attached if present — a separate
+// following token is NEVER consumed as the value; it is the next word in the
+// command). A flag NOT listed for an audited wrapper is deliberately left
+// unclassified: it fails closed (hasAmbiguousWrapperFlag) rather than being
+// guessed. Where a flag's shape differs across implementations, or the
+// documentation itself is ambiguous, the table intentionally leaves it
+// unclassified (the safer, blocking direction) rather than committing to a
+// guess.
+//
+//   sudo (GNU sudo):
+//     -A --askpass          boolean  sudo(8): no argument
+//     -b --background       boolean  sudo(8): no argument
+//     -E                    boolean  sudo(8): short form takes no argument
+//                                    (only the long `--preserve-env=list`
+//                                    form takes one, and only via `=`, which
+//                                    the inline-`=` check already covers)
+//     -H --set-home         boolean  sudo(8): no argument
+//     -i --login            boolean  sudo(8): no argument
+//     -k --reset-timestamp  boolean  sudo(8): no argument
+//     -K --remove-timestamp boolean  sudo(8): no argument
+//     -n --non-interactive  boolean  sudo(8): no argument
+//     -S --stdin            boolean  sudo(8): no argument
+//     -s --shell            boolean  sudo(8): no argument
+//     -v --validate         boolean  sudo(8): no argument
+//     -V --version          boolean  sudo(8): no argument
+//     -u --user=user        value    sudo(8): mandatory argument
+//     -g --group=group      value    sudo(8): mandatory argument
+//     -h --host=host        value    sudo(8): mandatory argument
+//     -p --prompt=prompt    value    sudo(8): mandatory argument
+//     -C/-D/-R/-T/-U        (unclassified) — --close-from/--chdir/--chroot/
+//                           --command-timeout/--other-user all take mandatory
+//                           arguments too, but sit outside the currently-
+//                           required pass matrix; left unclassified (fails
+//                           closed) rather than added speculatively.
+//     Round-6 correction: `-N` was previously listed as a boolean sudo flag
+//     but does not exist in sudo(8) — removed as dead/inaccurate.
+//
+//   env (GNU coreutils env(1)):
+//     -i --ignore-environment  boolean  no argument
+//     -0 --null                boolean  no argument
+//     -v --verbose             boolean  no argument (GNU extension)
+//     -u --unset=NAME          value    mandatory argument, repeatable
+//     -C --chdir=DIR           value    mandatory argument
+//     -S --split-string=S      value    mandatory argument (GNU extension)
+//
+//   nice(1): -n --adjustment=N   value   mandatory argument (no boolean
+//            short flags in scope)
+//
+//   timeout (GNU coreutils timeout(1)):
+//     --preserve-status  boolean  no argument (long-only)
+//     --foreground       boolean  no argument (long-only)
+//     -v --verbose       boolean  no argument
+//     -s --signal=SIGNAL value    mandatory argument
+//     -k --kill-after=D  value    mandatory argument
+//
+//   xargs (GNU findutils xargs(1)) — THIS ROUND'S FIX:
+//     -i[replace-str] --replace[=replace-str]  optional-attached  Deprecated
+//         synonym for -I; the argument is OPTIONAL, and per getopt
+//         convention for an optional-argument option it must be ATTACHED
+//         (`-ifoo`) or omitted (`-i` alone, defaults to `{}`) — xargs never
+//         reads a separate following word as -i's value. Round 5's table
+//         WRONGLY classified this as a mandatory separate-token value flag,
+//         so `xargs -i psql` silently swallowed `psql` as -i's "value" and
+//         the effective command word resolved to "" — the real command
+//         escaped undetected. Fixed this round via
+//         xargsOptionalAttachedFlagPattern.
+//     -I replace-str --replace=replace-str     optional-attached  Same
+//         optional/attached-only shape and same round-5 misclassification
+//         and fix as -i above.
+//     -l[max-lines] --max-lines[=max-lines]    optional-attached  Deprecated
+//         synonym for -L; optional argument, attached-only — same shape and
+//         same round-5 misclassification and fix as -i/-I.
+//     -L max-lines --max-lines=max-lines       value   The UPPERCASE,
+//         non-deprecated form takes a MANDATORY argument (attached or
+//         separate) — a DIFFERENT flag from lowercase -l above; case matters
+//         and is preserved by xargsOptionalAttachedFlagPattern (its
+//         character class matches lowercase `l` only).
+//     -n --max-args=max-args   value   mandatory argument
+//     -P --max-procs=max-procs value   mandatory argument
+//     -s --max-chars=max-chars value   mandatory argument
+//     -a --arg-file=file       value   mandatory argument (short form only —
+//         the long form `--arg-file` is deliberately NOT enumerated, so it
+//         stays unclassified/blocked; this preserves the round-4/5 required
+//         blocked-direction test for `xargs --arg-file f psql`)
+//     -d --delimiter=delim     value   mandatory argument
+//     -E eof-str               value   mandatory argument
+//     -0 --null, -r --no-run-if-empty, -t --verbose, -p --interactive,
+//     -x --exit                boolean  no argument (unchanged this round)
+//
+//   command(1) (bash builtin): -p/-v/-V   boolean   no argument (unchanged)
+//
+//   exec (bash builtin): -a name (value, mandatory), -c/-l (boolean) are
+//     real shapes, but none are currently enumerated — every exec flag is
+//     deliberately left unclassified (fails closed); not required by the
+//     current pass matrix.
+//
+//   docker exec/run/compose-exec: -u/--user, -w/--workdir, -e/--env,
+//     --env-file, -H/--host are all real, mandatory-argument flags — matches
+//     the current table exactly, no changes this round. Boolean docker
+//     flags (-d/-i/-t/--rm/--privileged/etc.) remain unclassified on
+//     purpose: none are required by the pass matrix, and leaving them
+//     unclassified fails closed rather than guessed.
+// ---------------------------------------------------------------------------
 const wrapperBooleanFlags = {
   sudo: new Set([
     "-A", "--askpass", "-b", "--background", "-E", "-H", "-i", "-k", "-K",
-    "-n", "-N", "-S", "-s", "-v", "-V", "--stdin", "--login", "--set-home",
+    "-n", "-S", "-s", "-v", "-V", "--stdin", "--login", "--set-home",
     "--validate", "--reset-timestamp", "--remove-timestamp"
   ]),
   nice: new Set([]),
@@ -1398,10 +1525,33 @@ const wrapperFlagsWithValue = {
   nice: new Set(["-n", "--adjustment"]),
   env: new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]),
   timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
-  xargs: new Set(["-I", "-i", "-L", "-n", "-P", "-s", "-a", "-d", "-E", "--replace", "--max-args", "--max-procs", "-l"]),
+  // Security round 6: -I/-i/-l/--replace REMOVED from this set — they take
+  // an OPTIONAL argument (see wrapperOptionalAttachedFlags below), not a
+  // mandatory separate-token value. Leaving them here was the round-6
+  // misclassification: `xargs -i psql` silently consumed `psql` as -i's
+  // "value", resolving the effective command word to "" and missing the
+  // invocation entirely. See the audit comment above this table.
+  xargs: new Set(["-L", "-n", "-P", "-s", "-a", "-d", "-E", "--max-args", "--max-procs"]),
   docker: new Set(["-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file", "-H"]),
   command: new Set([]),
   exec: new Set([]),
+};
+// Security round 6 (HIGH: "table misclassification"): GNU xargs's -i/-I/-l
+// (and long forms --replace/--max-lines) take an OPTIONAL argument that, per
+// getopt convention, must be ATTACHED if present (`-i{}`, `-Ifoo`, `-l5`,
+// `--replace={}`) or omitted (`-i`, `-I`, `-l` alone) — never given as a
+// separate following token. A token matching this pattern is "boolean"-
+// shaped at the peel level: it never consumes a following token (attached
+// argument or not), so the NEXT token is always evaluated as the potential
+// command word — closing both the false-negative (`xargs -i psql` silently
+// missed) and the false-positive (`xargs -I{} npm test` wrongly blocked as
+// "unrecognized") halves of the round-5 misclassification. `-L` (uppercase)
+// is a DIFFERENT xargs(1) flag taking a MANDATORY argument — the character
+// class here is deliberately lowercase-only so it never matches `-L`, which
+// stays governed by wrapperFlagsWithValue.
+const xargsOptionalAttachedFlagPattern = /^(-[iIl].*|--replace(?:=.*)?|--max-lines(?:=.*)?)$/;
+const wrapperOptionalAttachedFlags = {
+  xargs: xargsOptionalAttachedFlagPattern
 };
 const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const dockerWrappingSubcommands = new Set(["exec", "run"]);
@@ -1410,8 +1560,16 @@ const dockerWrappingSubcommands = new Set(["exec", "run"]);
 // only itself), "value" (consumes itself + the next token), or "unrecognized"
 // (fail-closed — the caller must stop peeling, not guess). A known
 // value-taking flag with its value inline (`--user=root`) is boolean-shaped
-// at the token level — nothing further to consume.
+// at the token level — nothing further to consume. Optional-attached flags
+// (wrapperOptionalAttachedFlags above) are checked FIRST and always classify
+// as "boolean" — for that shape, "boolean" means "never consumes a SEPARATE
+// token", not "takes no argument", which is exactly the property peeling
+// needs (see the security-round-6 comment above the pattern definition).
 function classifyWrapperFlag(wrapperName, flag) {
+  const optionalAttachedPattern = wrapperOptionalAttachedFlags[wrapperName];
+  if (optionalAttachedPattern && optionalAttachedPattern.test(flag)) {
+    return "boolean";
+  }
   const valueSet = wrapperFlagsWithValue[wrapperName];
   const boolSet = wrapperBooleanFlags[wrapperName];
   if (valueSet && valueSet.has(flag)) {
@@ -1619,13 +1777,26 @@ function peelWrapperCommands(tokens) {
 //      dynamic-path idioms (e.g. `$(which node) ...`) — see the PROPOSED
 //      note directly above (not yet gate-reviewed this round).
 //   3. Wrapper-flag classification is a positive allowlist, not a full
-//      argument grammar per wrapper — see the FAIL-CLOSED redesign note on
-//      the wrapper-peel table above (PROPOSED, not yet gate-ratified this
-//      round). An unrecognized flag now blocks the segment (hasAmbiguousWrapperFlag)
-//      rather than being silently skipped, so the residual gap from round 3
-//      (guessed-past flags letting the real command escape) is closed by
-//      erring toward friction, not by enumerating every wrapper's real
-//      grammar — that remains intentionally incomplete.
+//      argument grammar per wrapper. The FAIL-CLOSED design (an unrecognized
+//      flag blocks the segment via hasAmbiguousWrapperFlag rather than being
+//      silently skipped) was ACCEPTED under the security round 5 gate review
+//      (audit auditP3Stewards, PR #164) — round 5 confirmed the fail-closed
+//      friction (e.g. `docker run --name x` blocking even a benign trailing
+//      command) is the intended tradeoff, not a bug. Round 5 also surfaced a
+//      second-order failure class: a flag can be MISCLASSIFIED (present in
+//      the table but with the wrong shape) rather than merely absent, and a
+//      misclassified flag can silently swallow the real command as its
+//      "value" instead of being flagged unverifiable — see the
+//      xargs -i/-I/-l fix and the full man-page audit table above
+//      (security round 6). The residual risk after that audit is NOT
+//      "unenumerated flags" (those already fail closed by construction) — it
+//      is "an enumerated flag whose shape was recorded wrong." That risk is
+//      mitigated, not eliminated, by: (a) the audit table itself, which
+//      requires every future addition to cite a source and a shape
+//      (boolean/value/optional-attached) before being added; and (b) gate
+//      review of any table change, the same way this round's fix was gated.
+//      This is an owned, recorded residual — not a gap papered over as
+//      "complete."
 const directDbClientWords = new Set(["psql", "pgcli", "pg_dump", "pg_restore"]);
 // Checked on the RESOLVED (word-concatenation-collapsed) text, not masked —
 // the quoted `'pg'`/`"pg"` string is itself the signal for a require()/import

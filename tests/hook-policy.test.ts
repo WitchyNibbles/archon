@@ -457,6 +457,51 @@ test("hasAmbiguousWrapperFlag: the recognized-flag matrix (docker exec/run's -u/
   assert.equal(hasAmbiguousWrapperFlag("sudo -u builder npm test"), false);
 });
 
+// ─── xargs -i/-I/-l optional-attached fix (security round 6 — table
+// misclassification) ──────────────────────────────────────────────────────
+// Round 5's table wrongly classified xargs's -i/-I/-l as mandatory
+// separate-token value flags. That silently swallowed the REAL command as
+// the flag's "value" (a false negative, not merely an imprecise block) and
+// separately caused benign attached forms to be misflagged as ambiguous (a
+// false positive). Both halves are fixed by treating -i/-I/-l (and their
+// --replace/--max-lines long forms) as optional-attached: never consuming a
+// separate following token.
+
+test("isDirectDbClientInvocation: xargs -i with no attached value no longer silently swallows the real command as its argument (security round 6, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("xargs -i psql"), true);
+  assert.equal(isDirectDbClientInvocation('ls | xargs -i psql -c "UPDATE reviews SET outcome=1"'), true);
+});
+
+test("isDirectDbClientInvocation: xargs -I{} / -l attached forms still resolve the real command correctly (security round 6, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("xargs -I{} pg_restore -d archon dump.sql"), true);
+  assert.equal(isDirectDbClientInvocation("xargs -l psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: xargs -i/-I/-l are NOT flagged ambiguous — they resolve the next word instead of guessing (security round 6, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("xargs -i psql"), false);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -I{} pg_restore -d archon dump.sql"), false);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -l psql"), false);
+});
+
+test("hasAmbiguousWrapperFlag: xargs -I{} / -i attached-form false positive is fixed — benign commands pass (security round 6, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("xargs -I{} npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -i echo {}"), false);
+  assert.equal(isDirectDbClientInvocation("xargs -I{} npm test"), false);
+  assert.equal(isDirectDbClientInvocation("xargs -i echo {}"), false);
+});
+
+test("hasAmbiguousWrapperFlag: xargs -L (uppercase, mandatory-argument) is unaffected by the -l optional-attached fix", () => {
+  assert.equal(hasAmbiguousWrapperFlag("xargs -L 1 npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("xargs --arg-file f psql"), true); // regression: round 4/5 required block, unchanged
+});
+
+test("evaluatePreToolUse: xargs -i psql is blocked as a direct DB-client invocation, not the ambiguous-wrapper-flag gate (security round 6, HIGH)", () => {
+  const result = evaluatePreToolUse(bashPayload("xargs -i psql"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /direct .*(psql|database)|db.?client/i);
+});
+
 test("isDirectDbClientInvocation: known-wrapper recursion still resolves psql correctly when no ambiguous flag is present (regression, rounds 2-4)", () => {
   assert.equal(
     isDirectDbClientInvocation('docker exec archon-postgres psql -U archon -d archon -tAc "select 1;"'),
