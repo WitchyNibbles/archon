@@ -1,65 +1,92 @@
 /**
  * @module admin/why-redaction
  *
- * Secret redaction for `archon why` (audit F9, round-4 design inversion).
+ * Secret redaction for `archon why` (audit F9, round-5 vocabulary anchoring).
  *
- * Round 3's `redactSecretLikeSubstrings` was a SHAPE-HUNTING scrubber: it
- * looked for patterns that "look like" a secret (labeled fields, URLs,
- * Authorization headers, long opaque runs) and redacted only those. Round 4's
- * gate found a THIRD consecutive bypass in the same family — JSON/JS-object
- * shaped secrets (`{"password":"hunter2Aa1!"}`) sailed through with zero
- * redaction, because every prior rule assumed a bare `key=value` /
- * `key: value` shape and none of them matched inside a quoted JSON string.
- * Chasing one more shape after this one would only produce a fourth bypass —
- * "stop chasing shapes" was the gate's explicit direction.
+ * Round 4 inverted the default from "hunt for secret shapes" to "redact by
+ * default, allowlist a few safe SHAPES" (UUID, path, number, flag, bare
+ * identifier). Round 5's gate found the residual bypass in that model: a
+ * generic identifier SHAPE (`[A-Za-z][A-Za-z0-9_-]*`) can never prove safety,
+ * because a real secret often looks EXACTLY like one — `ghp_XXXX`,
+ * `hunter2Aa1`, an API key. "token ghp_XXXX is invalid" and "password is
+ * hunter2Aa1" both shape-matched the round-4 identifier allowlist and
+ * survived untouched. Chasing yet another shape distinction would only
+ * produce a fifth bypass.
  *
- * DESIGN INVERSION — redact by default, allowlist the safe:
+ * ROUND-5 FIX — anchor the allowlist to KNOWN VOCABULARY, not shape alone:
  *
- * This module now has two exported entry points with opposite defaults:
+ * The blanket "any identifier-shaped token is safe" rule is GONE. In its
+ * place, a free-text token survives ONLY if it is:
  *
- *   - `sanitizeFreeText(text)` — for text SOURCED FROM OUTSIDE this module
- *     (a hook-blocker's recorded command/summary, a seed-failure reason, a
- *     daemon's recorded reason/nextActions, any other caught-error message).
- *     Everything is redacted UNLESS it matches a narrow, explicit safe-shape
- *     allowlist (see `isSafeValueShape` below). A JSON blob, a connection
- *     string, a curl `-u user:pass`, a mysqldump `-pPassword`, an AWS key id —
- *     none of these match any allowed shape, so none of them can survive by
- *     omission. This is the fix for the CRITICAL/HIGH findings.
- *   - Values the diagnosis layer itself GENERATED — task ids, run ids, role
- *     names, status tokens, counts, file paths it constructed, the commands
- *     it recommends — are never passed through `sanitizeFreeText` at all.
- *     They are tagged `structured()` and pass through unchanged. See
- *     why-diagnosis.ts's `buildEvidence` for where that provenance split is
- *     enforced (a branded type — a raw string cannot be assigned as evidence
- *     without going through one of the two tagging functions).
+ *   1. An EXACT member of a `knownSafeTokens` vocabulary the caller supplies
+ *      — built, at diagnosis time, from the STRUCTURED context the collector
+ *      already holds (task ids, run ids, role names, status/enum/outcome
+ *      tokens, this module's own recommended command words, sidecar paths it
+ *      constructed). See why-diagnosis.ts's `buildKnownVocabulary`.
+ *   2. A flag name (`-x`, `--long-flag`) — flags are labels, never secrets.
+ *   3. A number or ISO-timestamp shape — machine-generated, not
+ *      attacker-controlled.
+ *   4. A path (absolute, `./`/`../`-relative, OR bare relative) containing no
+ *      `@` and no `://` — credential-bearing shapes always carry one of those.
+ *   5. A `scheme://host...` URL with NO userinfo component (no `@`) — a URL
+ *      that DOES carry `user:pass@` is caught by stage 1 before tokenization
+ *      ever sees it (see `CREDENTIAL_URL_WITH_USERINFO` below).
  *
- * Known, accepted friction (proposed to the gate, not silently absorbed):
- * because a legitimate identifier (`build:dist`, `archon:doctor`) and a
- * credential fragment (`user:pass`) are the SAME shape — an alnum run
- * containing a colon — `sanitizeFreeText` cannot tell them apart, and by
- * design it does NOT try to. Any token containing a colon (outside a
- * recognized flag) is redacted. This means some benign free-text detail
- * written into a sidecar file — an npm script name embedded in a recorded
- * command, for example — will now be redacted along with real secrets. The
- * sidecar pointer already present in every cause's evidence (e.g.
- * `.archon/work/daemon/hook-blocker-state.json`) is the relief valve: the
- * operator can read the untouched original there. This trade-off is
- * deliberate, not an oversight — flagging it explicitly per the gate's
- * request rather than trying to special-case it away (which is exactly the
- * shape-chasing this redesign exists to stop).
+ * Everything else — including any bare word, identifier, or acronym that
+ * merely LOOKS like a safe token — redacts. `ghp_XXXX`, `hunter2Aa1`, and
+ * ordinary English prose in a caught error message all die unless the caller
+ * explicitly vouches for them via the vocabulary. `sanitizeFreeText`/
+ * `sanitizeForDisplay` default `knownSafeTokens` to an EMPTY set, so any
+ * caller that does not supply a vocabulary gets the strictest possible
+ * behavior — this is deliberate: a missing vocabulary must never silently
+ * fall back to "shape is enough".
+ *
+ * Stage 1 (`applySecretMarkerRules`) is kept as defense-in-depth: high-
+ * confidence context markers (credential URLs, AWS key ids, well-known
+ * secret-token prefixes — `ghp_`, `sk_live_`, `sk-ant-`, `npm_` — labeled
+ * `key=value` fields, Authorization/Bearer headers, mysqldump's `-p<value>`)
+ * redact regardless of what stage 2's vocabulary check would have decided,
+ * so an obviously-shaped secret dies even before tokenization.
+ *
+ * HONEST FRICTION (re-disclosed per the round-5 gate's explicit request —
+ * see the "Proposed decision for the gate" section of the PR body): the real
+ * footprint of this design is "any free-text token not in the known
+ * vocabulary redacts." That is broader than round 4's disclosed friction
+ * (colon-containing compound words only). It now ALSO includes: ordinary
+ * English prose in a caught error message or recorded shell command (a hook-
+ * blocker's `npm test` becomes two `[redacted]` tokens unless "npm"/"test"
+ * happen to be vocabulary words); acronyms and identifiers that are not task
+ * ids, run ids, role names, or enum tokens (a respawn lease owner like
+ * "daemon-A" redacts unless it happens to equal a known id); and IPv6
+ * addresses and other colon-bearing tokens (unchanged from round 4 — still
+ * redact, since colon is the same shape as a credential fragment). Numbers,
+ * ISO timestamps, and paths are NOT vocabulary-gated — they survive via their
+ * own shape rules regardless of vocabulary, since round 5 specifically fixed
+ * their prior over-redaction. The sidecar-file pointer already present in
+ * every cause's evidence remains the relief valve: the operator can always
+ * read the untouched original there. This is a deliberate, disclosed
+ * trade-off, not an oversight — the alternative (letting shape alone decide)
+ * is exactly the bypass class this redesign exists to close.
  */
 
 import { scrubPgCredentials } from "./db-error-scrub.ts";
 
 export const MAX_COMMAND_DISPLAY_LENGTH = 120;
 
+/** The default vocabulary for callers that don't supply one — deliberately
+ * empty, so "no vocabulary given" means "strictest possible redaction", never
+ * a silent fallback to shape-only trust. */
+const EMPTY_VOCABULARY: ReadonlySet<string> = new Set();
+
 // ---------------------------------------------------------------------------
 // Stage 1 — high-confidence secret markers. These run BEFORE tokenization and
-// redact by pattern/context regardless of what the resulting shape would
-// otherwise look like. Kept from round 2/3 (URL credentials, labeled fields,
-// Authorization/Bearer) and extended per the round-4 adversarial fixture list
-// (generic non-Postgres URL schemes, AWS key ids, mysqldump's concatenated
-// `-p<value>` flag).
+// redact by pattern/context regardless of vocabulary. Kept from round 2/3/4
+// (URL credentials, labeled fields, Authorization/Bearer, mysqldump -p) and
+// extended per round 5: well-known secret-token prefixes (defense-in-depth
+// against the exact adversarial probes the gate named), and the credential-
+// URL rule is now scoped to URLs that actually carry userinfo (round-5 MEDIUM
+// fix: a credential-free URL like `https://api.example.com` must not be
+// swept into `scheme://[redacted]` — see `CREDENTIAL_URL_WITH_USERINFO`).
 // ---------------------------------------------------------------------------
 
 const SECRET_KEYWORD_ALTERNATION =
@@ -70,19 +97,30 @@ const LABELED_FIELD_PATTERN = new RegExp(
   "gi"
 );
 
-// Any `scheme://...` credential-shaped URL — generalizes round-3's Postgres-
-// only reuse of scrubPgCredentials to mysql://, mongodb://, mongodb+srv://,
-// redis://, https://user:pass@..., etc. (round-4 finding: non-Postgres
-// credentials leaked). scrubPgCredentials is still called first so the
-// Postgres case keeps its existing, slightly friendlier "postgres://
-// [redacted]" shape; this is the generic backstop for every other scheme.
-const GENERIC_CREDENTIAL_URL = /\b([a-z][a-z0-9+.-]*):\/\/[^\s"'`]*/gi;
+// A `scheme://...` URL that carries a userinfo component (`user:pass@host` or
+// `user@host`) — generalizes round-3's Postgres-only reuse of
+// scrubPgCredentials to mysql://, mongodb://, mongodb+srv://, redis://,
+// https://user:pass@..., etc. Requires an `@` inside the authority segment
+// (before the first `/` or whitespace) so a credential-FREE URL is left
+// alone for stage 2's `SAFE_URL_NO_USERINFO` to allowlist instead (round-5
+// MEDIUM fix — round 4's version redacted every URL unconditionally).
+// scrubPgCredentials runs first so the Postgres case keeps its existing,
+// slightly friendlier "postgres://[redacted]" partial-redaction shape; this
+// is the generic backstop for every other scheme.
+const CREDENTIAL_URL_WITH_USERINFO = /\b([a-z][a-z0-9+.-]*):\/\/[^\s"'`/@]*@[^\s"'`]*/gi;
 
 // AWS access-key-id-shaped tokens (AKIA/ASIA/AGPA/AIDA/AROA/ANPA/ANVA
 // prefixes are all real AWS credential-type prefixes) — redacted regardless
 // of surrounding context, since these are unambiguously credential material
 // wherever they appear.
 const AWS_KEY_ID_PATTERN = /\b(AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[A-Z0-9]{12,}\b/g;
+
+// Well-known secret-token prefixes (round-5 gate's own adversarial probes:
+// GitHub personal-access tokens, Stripe-style live keys, Anthropic API keys,
+// npm tokens). Cheap, loud, defense-in-depth: even if a token like this
+// appears in ordinary prose ("token ghp_XXXX is invalid"), it is redacted by
+// context marker alone, before stage 2 ever has to reason about vocabulary.
+const WELL_KNOWN_SECRET_PREFIX_PATTERN = /\b(ghp_|gho_|ghu_|ghs_|ghr_|sk_live_|sk_test_|sk-ant-|npm_)[A-Za-z0-9_-]+/g;
 
 // mysqldump/mysql's `-p<password>` concatenated-value flag (no `=`, no space
 // before the value) — round-4 adversarial fixture. Deliberately broad: any
@@ -94,8 +132,12 @@ const MYSQL_CONCAT_PASSWORD_FLAG = /(^|\s)(-p)([^\s"'`]+)/g;
 
 function applySecretMarkerRules(text: string): string {
   let result = scrubPgCredentials(text);
-  result = result.replace(GENERIC_CREDENTIAL_URL, (_match, scheme: string) => `${scheme.toLowerCase()}://[redacted]`);
+  result = result.replace(
+    CREDENTIAL_URL_WITH_USERINFO,
+    (_match, scheme: string) => `${scheme.toLowerCase()}://[redacted]`
+  );
   result = result.replace(AWS_KEY_ID_PATTERN, "[redacted]");
+  result = result.replace(WELL_KNOWN_SECRET_PREFIX_PATTERN, "[redacted]");
   result = result.replace(LABELED_FIELD_PATTERN, "$1$2[redacted]");
   result = result.replace(/\bAuthorization:\s*[^\s"'`]+(?:\s+[^\s"'`]+)?/gi, "Authorization: [redacted]");
   result = result.replace(/\bBearer\s+[^\s"'`]+/gi, "Bearer [redacted]");
@@ -104,57 +146,101 @@ function applySecretMarkerRules(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Stage 2 — default-deny allowlist. Every token that stage 1 didn't already
-// redact is classified; only an explicit safe shape survives.
+// Stage 2 — vocabulary-anchored default-deny. Every token stage 1 didn't
+// already redact is classified; only an exact vocabulary member or one of the
+// four narrow structural shapes below survives. There is NO generic
+// "identifier-shaped" rule anymore (round-5 CRITICAL fix).
 // ---------------------------------------------------------------------------
-
-/** camelCase / snake_case / kebab-case identifiers — the shape of every task
- * id, run id, role name, status token, and enum value this codebase uses.
- * Deliberately excludes `.`, `:`, `/`, `@` — none of our own identifiers use
- * them, and excluding them is what keeps connection strings and label:value
- * pairs out of this bucket. */
-const SAFE_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]*$/;
-
-/** A plain filesystem path: absolute or `./`/`../`-relative, containing only
- * path-safe characters — explicitly no `@` or `:` (the two characters that
- * signal a credential-bearing URL/connection-string shape). */
-const SAFE_PATH = /^\.{0,2}\/[A-Za-z0-9_\-./]*$/;
 
 const SAFE_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
-const SAFE_NUMBER = /^-?[0-9]+(\.[0-9]+)?$/;
+const SAFE_NUMBER = /^-?[0-9]+(?:\.[0-9]+)?$/;
+
+/** ISO-8601 timestamp shape, with optional fractional seconds and a
+ * `Z`/offset suffix — e.g. `2026-07-04T12:34:56.789Z`. Machine-generated,
+ * not attacker-controlled, so safe by shape alone regardless of vocabulary
+ * (round-5 fix: round 4 only allowlisted bare numbers, so a full timestamp
+ * fell through to redaction). */
+const SAFE_ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/;
+
+function isSafeNumberOrTimestamp(token: string): boolean {
+  return SAFE_NUMBER.test(token) || SAFE_ISO_TIMESTAMP.test(token);
+}
+
+/** A filesystem path — absolute, `./`/`../`-relative, or bare relative
+ * (`src/admin/why.ts`) — built from path-safe characters, with at least one
+ * internal `/` (a bare word with no slash is NOT a path — it is an
+ * identifier, which is vocabulary-gated, not shape-safe). Deliberately
+ * excludes `@` and `:`: the two characters that signal a credential-bearing
+ * URL/connection-string shape. Round-5 fix: round 4 required a leading `./`
+ * or `/`; bare relative paths (no leading dot/slash) now also survive. */
+const SAFE_PATH = /^\.{0,2}\/?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\/?$/;
+
+/** A `scheme://host...` URL with NO userinfo component anywhere in the
+ * token — a bare, credential-free URL (`https://api.github.com/...`) is not
+ * a secret and must not be swept up by the same default-deny rule that
+ * catches everything else shaped like a connection string (round-5 MEDIUM
+ * fix). A URL that DOES carry userinfo is caught by stage 1's
+ * `CREDENTIAL_URL_WITH_USERINFO` before tokenization ever runs; the `@`
+ * exclusion here is defense-in-depth for anything that slipped past it. */
+const SAFE_URL_NO_USERINFO = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'`@]*$/;
 
 /** A flag name on its own (`--task-id`, `-h`, `--apply-safe`) — never a
- * credential by itself, only ever a label. */
+ * secret by itself, only ever a label. */
 const SAFE_FLAG_NAME = /^--?[A-Za-z][A-Za-z0-9-]*$/;
 
 /** `--flag=value` — the flag half is always safe; the value half must still
- * pass `isSafeValueShape` on its own. */
+ * pass `isSafeValueShape` on its own (vocabulary or structural shape). */
 const SAFE_FLAG_VALUE_PAIR = /^(--?[A-Za-z][A-Za-z0-9-]*)=([\s\S]*)$/;
 
 /** Pure shell syntax (redirects, pipes, `&&`, bare `--`) — cannot itself carry
  * a secret since it has no alphanumeric content. */
 const SHELL_OPERATOR = /^[-&|;<>()]+$/;
 
-function isSafeValueShape(token: string): boolean {
+function isSafeValueShape(token: string, knownSafeTokens: ReadonlySet<string>): boolean {
   return (
+    knownSafeTokens.has(token) ||
     SAFE_UUID.test(token) ||
-    SAFE_IDENTIFIER.test(token) ||
     SAFE_PATH.test(token) ||
-    SAFE_NUMBER.test(token)
+    isSafeNumberOrTimestamp(token) ||
+    SAFE_URL_NO_USERINFO.test(token)
   );
 }
 
 const TOKEN_WRAPPER_PATTERN = /^([`"'(]*)([\s\S]*?)([`"'),.;]*)$/;
 
 /**
- * Classifies one whitespace-delimited token. Wrapper punctuation (quotes,
- * backticks, parens, trailing prose punctuation) is stripped before
- * classification and reattached after, so it never interferes with shape
- * matching. Anything stage 1 already redacted (contains the literal
+ * Strips wrapper punctuation (quotes, backticks, parens, trailing prose
+ * punctuation) from one whitespace-delimited token, returning its bare
+ * "core". Exported so a caller building a `knownSafeTokens` vocabulary from
+ * static command/path strings tokenizes IDENTICALLY to how free text is
+ * scanned — a vocabulary entry tokenized differently would silently never
+ * match (see `tokenizeToVocabulary` below).
+ */
+export function extractTokenCore(token: string): string {
+  const match = TOKEN_WRAPPER_PATTERN.exec(token);
+  return match?.[2] ?? token;
+}
+
+/**
+ * Splits `text` on whitespace and extracts each token's bare core (dropping
+ * empties) — the standard way to turn a static command template or sidecar
+ * path string into vocabulary entries for `sanitizeFreeText`'s allowlist.
+ */
+export function tokenizeToVocabulary(text: string): string[] {
+  return text
+    .split(/\s+/)
+    .map((piece) => extractTokenCore(piece))
+    .filter((core) => core.length > 0);
+}
+
+/**
+ * Classifies one whitespace-delimited token against the vocabulary + shape
+ * allowlist. Wrapper punctuation is stripped before classification and
+ * reattached after. Anything stage 1 already redacted (contains the literal
  * `[redacted]` marker) is left alone rather than re-processed.
  */
-function classifyToken(token: string): string {
+function classifyToken(token: string, knownSafeTokens: ReadonlySet<string>): string {
   const match = TOKEN_WRAPPER_PATTERN.exec(token);
   const prefix = match?.[1] ?? "";
   const core = match?.[2] ?? token;
@@ -162,7 +248,7 @@ function classifyToken(token: string): string {
   if (core.length === 0) return token;
   if (core.includes("[redacted]")) return token;
 
-  if (SHELL_OPERATOR.test(core) || SAFE_FLAG_NAME.test(core) || isSafeValueShape(core)) {
+  if (SHELL_OPERATOR.test(core) || SAFE_FLAG_NAME.test(core) || isSafeValueShape(core, knownSafeTokens)) {
     return token;
   }
 
@@ -170,7 +256,7 @@ function classifyToken(token: string): string {
   if (flagValueMatch) {
     const flag = flagValueMatch[1] ?? "";
     const value = flagValueMatch[2] ?? "";
-    const safeValue = isSafeValueShape(value) ? value : "[redacted]";
+    const safeValue = isSafeValueShape(value, knownSafeTokens) ? value : "[redacted]";
     return `${prefix}${flag}=${safeValue}${suffix}`;
   }
 
@@ -181,22 +267,28 @@ function classifyToken(token: string): string {
  * Sanitizes free text SOURCED FROM OUTSIDE this module — a hook-blocker's
  * recorded command/summary, a seed-failure reason, a daemon's recorded
  * reason/nextActions text, or any other caught-error message. Redacts by
- * default: only text matching an explicit safe-shape allowlist survives. See
- * the module header for the full rationale and the accepted friction this
- * trades off.
+ * default: only a token that is an exact member of `knownSafeTokens`, or
+ * matches one of the four narrow structural shapes (flag name, number/
+ * timestamp, path, credential-free URL), survives. See the module header for
+ * the full rationale and the honestly-disclosed friction this trades off.
+ *
+ * `knownSafeTokens` defaults to an EMPTY set — a caller that doesn't supply a
+ * vocabulary gets the strictest possible behavior, never a silent fallback
+ * to shape-only trust.
  *
  * Do NOT call this on values the diagnosis layer generated itself (task ids,
  * run ids, role names, counts, its own recommended commands) — those are
  * structured, not free text, and should pass through `structured()` in
- * why-diagnosis.ts's `buildEvidence` instead. Running this on already-trusted
- * structured text would only add noise (e.g. redacting `<id>` placeholders),
- * not safety.
+ * why-diagnosis.ts's `buildEvidence` instead.
  */
-export function sanitizeFreeText(text: string): string {
+export function sanitizeFreeText(
+  text: string,
+  knownSafeTokens: ReadonlySet<string> = EMPTY_VOCABULARY
+): string {
   const marked = applySecretMarkerRules(text);
   return marked
     .split(/(\s+)/)
-    .map((piece) => (/^\s+$/.test(piece) || piece.length === 0 ? piece : classifyToken(piece)))
+    .map((piece) => (/^\s+$/.test(piece) || piece.length === 0 ? piece : classifyToken(piece, knownSafeTokens)))
     .join("");
 }
 
@@ -211,8 +303,10 @@ export function truncateForDisplay(text: string, maxLength = MAX_COMMAND_DISPLAY
  * cut a token in half and hide it from the allowlist classifier, or worse,
  * cut a stage-1 marker match in half and leave a fragment of a secret
  * dangling past the truncation boundary. Redacting first guarantees nothing
- * unsafe survives regardless of where the truncation cut falls (round-4 LOW
- * fix: order truncation AFTER redaction, not before). */
-export function sanitizeForDisplay(text: string): string {
-  return truncateForDisplay(sanitizeFreeText(text));
+ * unsafe survives regardless of where the truncation cut falls. */
+export function sanitizeForDisplay(
+  text: string,
+  knownSafeTokens: ReadonlySet<string> = EMPTY_VOCABULARY
+): string {
+  return truncateForDisplay(sanitizeFreeText(text, knownSafeTokens));
 }

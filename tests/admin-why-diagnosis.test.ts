@@ -4,8 +4,11 @@ import assert from "node:assert/strict";
 import {
   diagnoseStall,
   formatStallDiagnosis,
+  serializeStallDiagnosis,
+  assertDiagnosisEvidenceRegistered,
   STALL_CAUSE_RANKS,
   type StallCauseId,
+  type StallCauseEvidence,
   type StallSignals
 } from "../src/admin/why-diagnosis.ts";
 
@@ -160,7 +163,25 @@ test("respawn_lease_held present → lease/recover next step", () => {
   );
   const c = cause(d, "respawn_lease_held");
   assert.ok(c);
-  assert.equal(c!.evidence.values.owner, "daemon-A");
+  // Round-5: `owner` is freeText sourced from a lock file another process
+  // wrote — "daemon-A" is not part of this diagnosis's known vocabulary (it
+  // is not a task/run id, role, enum, or command word this module
+  // recommends), so it redacts by default under vocabulary-anchoring. A
+  // generic identifier SHAPE is never enough to prove safety (round-5 gate
+  // CRITICAL finding) — see why-redaction.ts's module header.
+  assert.equal(c!.evidence.values.owner, "[redacted]");
+});
+
+test("respawn_lease_held: an owner value that IS in the known vocabulary (matches the in-scope run id) survives", () => {
+  const d = diagnoseStall(
+    baseline({
+      run: { id: "run-1", status: "in_progress" },
+      respawn: { taskId: "t1", count: 0, budget: 8, leaseHeld: true, leaseOwner: "run-1" }
+    })
+  );
+  const c = cause(d, "respawn_lease_held");
+  assert.ok(c);
+  assert.equal(c!.evidence.values.owner, "run-1");
 });
 
 test("respawn lease not held → not reported", () => {
@@ -186,9 +207,36 @@ test("hook_blocker present → re-run failed command", () => {
   // Round-4: nextCommand no longer embeds the raw command directly (single-
   // egress discipline — the redacted command lives ONCE, in evidence.values,
   // and nextCommand just points there + at the sidecar file).
-  assert.equal(c!.evidence.values.command, "npm test");
+  // Round-5: "npm"/"test" are ordinary prose, not part of this diagnosis's
+  // known vocabulary (neither is a task/run id, role, enum, or a command
+  // this module itself recommends), so they redact by default — the
+  // intended, honestly re-disclosed friction (why-redaction.ts's module
+  // header), not a bug.
+  assert.equal(c!.evidence.values.command, "[redacted] [redacted]");
   assert.match(c!.nextCommand, /this cause's evidence/);
   assert.match(c!.nextCommand, /hook-blocker-state\.json/);
+});
+
+test("hook_blocker: a recorded command matching this module's own recommended-command vocabulary survives", () => {
+  const d = diagnoseStall(
+    baseline({
+      sidecars: {
+        hookBlocker: {
+          taskId: "t1",
+          blockerKind: "runtime_preflight",
+          command: "npx tsx ./src/admin.ts status --task-id t1",
+          summary: "status check failed"
+        }
+      }
+    })
+  );
+  const c = cause(d, "hook_blocker");
+  assert.ok(c);
+  // "npx"/"tsx"/"./src/admin.ts"/"status" all appear verbatim inside this
+  // module's own RECOMMENDED_COMMANDS templates, so they are known
+  // vocabulary; "t1" is the hookBlocker's own taskId, also known. Nothing in
+  // this recorded command is unrecognized, so nothing redacts.
+  assert.equal(c!.evidence.values.command, "npx tsx ./src/admin.ts status --task-id t1");
 });
 
 test("context_guard_pending present (state != registered) → continue-session", () => {
@@ -250,15 +298,17 @@ test("daemon_handoff_blocked present, real 2-step nextActions → BOTH steps joi
   );
   const c = cause(d, "daemon_handoff_blocked");
   assert.ok(c);
-  // Round-4 accepted friction: nextActions is freeText (sourced from a
-  // sidecar file), so "archon:doctor"/"archon:reconcile" — colon-containing
-  // compound words, the same shape as a label:value credential — are
-  // redacted by design (see why-redaction.ts's module header). The FLAGS
-  // survive (they don't contain a colon), and — the actual point of this
-  // test — BOTH steps must still be present and in order, none dropped.
-  assert.match(c!.nextCommand, /--repair/);
-  assert.match(c!.nextCommand, /before retrying execution/, "second step must NOT be silently dropped");
-  assert.equal(c!.nextCommand.indexOf("--repair") < c!.nextCommand.indexOf("before retrying"), true);
+  // Round-5: nextActions is freeText sourced from a daemon-written sidecar
+  // file, so under vocabulary-anchoring almost every prose word in it
+  // redacts by default (none of it is a task/run id, role, enum, or command
+  // word this module itself recommends — see why-redaction.ts's module
+  // header for the honestly re-disclosed friction). The point of THIS test
+  // is structural, not lexical: both steps must survive the join, in order,
+  // none silently dropped — proven by both numbered markers being present
+  // with the "then" joiner between them (joinNextActions's own
+  // code-generated structure, never itself redacted).
+  assert.match(c!.nextCommand, /^1\).*then 2\)/);
+  assert.match(c!.nextCommand, /--repair/, "the --repair flag survives (flag names are always safe)");
 });
 
 test("daemon_supervisor_blocked present (state=blocked) → reported", () => {
@@ -435,7 +485,18 @@ test("task_blocked present → detected, ranked near the top, recover command", 
   assert.ok(c);
   assert.equal(c!.rank, STALL_CAUSE_RANKS.task_blocked);
   assert.match(c!.nextCommand, /recover --apply-safe/);
-  assert.deepEqual(c!.evidence.values.reasons, ["build failed repeatedly and was escalated"]);
+  // Round-5: `reason` is freeText sourced from seed-failure metadata —
+  // ordinary prose that (aside from incidental overlaps with this module's
+  // own command vocabulary) is not part of the known vocabulary, so it
+  // redacts by default. This is the intended, honestly re-disclosed friction
+  // (why-redaction.ts's module header) — NOT a functional regression: the
+  // cause is still detected, ranked, and actionable regardless of what the
+  // raw reason text said.
+  const reasons = c!.evidence.values.reasons as string[];
+  for (const word of ["build", "repeatedly", "escalated"]) {
+    assert.equal(reasons[0]!.includes(word), false, `original prose word "${word}" must not survive`);
+  }
+  assert.match(reasons[0]!, /\[redacted\]/);
   // Must rank ahead of every governance/sidecar cause class.
   assert.ok(c!.rank < STALL_CAUSE_RANKS.review_gate_missing);
   assert.ok(c!.rank < STALL_CAUSE_RANKS.orphan_duplicate_runs);
@@ -782,4 +843,52 @@ test("diagnoseStall is deterministic: same signals in, identical diagnosis out, 
   assert.deepEqual(first, second);
   assert.equal(JSON.stringify(first), JSON.stringify(second));
   assert.equal(formatStallDiagnosis(first), formatStallDiagnosis(second));
+});
+
+// ---------------------------------------------------------------------------
+// Round-5 gate finding 2: the compile-time evidence brand alone is
+// convention — `{ ... } as StallCauseEvidence` compiles fine, since `as`
+// casts bypass structural checks entirely. `buildEvidence()` registers every
+// object it constructs in a private WeakSet; both render paths
+// (`formatStallDiagnosis`, `serializeStallDiagnosis`) must THROW when a
+// cause's evidence was never registered, so a cast that skips the
+// constructor fails loudly instead of silently skipping redaction.
+// ---------------------------------------------------------------------------
+
+function castEvidenceLiteral(source: string, values: Record<string, unknown>): StallCauseEvidence {
+  // Simulates the ONLY way a caller could bypass `buildEvidence()`: the
+  // `EVIDENCE_BRAND` symbol is not exported, so no code outside
+  // why-diagnosis.ts can construct a real `StallCauseEvidence` object
+  // literal — an `as unknown as` cast is the sole escape hatch, and it is
+  // exactly what this test exercises.
+  return { source, values } as unknown as StallCauseEvidence;
+}
+
+function diagnosisWithCastEvidence() {
+  const d = diagnoseStall(baseline({ retroSealBlocked: true }));
+  const castCause = {
+    ...d.causes[0]!,
+    evidence: castEvidenceLiteral("forged source", { fake: "value" })
+  };
+  return { ...d, causes: [castCause] };
+}
+
+test("runtime brand: assertDiagnosisEvidenceRegistered throws on an as-cast literal evidence object", () => {
+  assert.throws(() => assertDiagnosisEvidenceRegistered(diagnosisWithCastEvidence()), /not constructed via buildEvidence/);
+});
+
+test("runtime brand: formatStallDiagnosis throws (not silently renders) an as-cast literal evidence object", () => {
+  assert.throws(() => formatStallDiagnosis(diagnosisWithCastEvidence()), /not constructed via buildEvidence/);
+});
+
+test("runtime brand: serializeStallDiagnosis throws (not silently serializes) an as-cast literal evidence object", () => {
+  assert.throws(() => serializeStallDiagnosis(diagnosisWithCastEvidence()), /not constructed via buildEvidence/);
+});
+
+test("runtime brand: a real diagnosis (every cause built via buildEvidence) never throws on either render path", () => {
+  const d = diagnoseStall(baseline({ retroSealBlocked: true }));
+  assert.doesNotThrow(() => assertDiagnosisEvidenceRegistered(d));
+  assert.doesNotThrow(() => formatStallDiagnosis(d));
+  assert.doesNotThrow(() => serializeStallDiagnosis(d));
+  assert.equal(serializeStallDiagnosis(d), JSON.stringify(d));
 });

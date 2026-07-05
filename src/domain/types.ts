@@ -79,6 +79,19 @@ export const reasoningVerificationKinds = [
 export const reasoningVerificationStatuses = ["passed", "failed", "pending", "skipped"] as const;
 export const retrievalRoles = agentRoleIds;
 export const requiredGateReviews = ["reviewer", "security_reviewer", "qa_engineer"] as const;
+
+// Council outcomes that satisfy the Design & Architecture Council gate. Kept
+// in lockstep with .claude/hooks/hook-policy.mjs's APPROVED_COUNCIL_OUTCOMES
+// (machine-cross-checked, see tests/admin-why-council-parity.test.ts) and
+// consumed by admin/why.ts (gate evaluation, re-exported under the same name
+// for that test) and admin/why-diagnosis.ts (redaction known-vocabulary) —
+// single source, not retyped in either place (round-5 gate finding 1).
+export const councilApprovedOutcomes = [
+  "approved",
+  "approved_with_conditions",
+  "exception_granted",
+  "inherited"
+] as const;
 export const uiSurfaces = ["none", "visual_change", "interactive_flow"] as const;
 export const qualityGates = [
   "council_review_required",

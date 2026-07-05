@@ -74,9 +74,11 @@ import type {
   RunExecutionPlan,
   RunStatusSnapshot
 } from "../domain/types.ts";
+import { councilApprovedOutcomes } from "../domain/types.ts";
 import {
   diagnoseStall,
   formatStallDiagnosis,
+  serializeStallDiagnosis,
   type BlockedTaskSignal,
   type ClosureBlockSignal,
   type CouncilGateSignal,
@@ -93,12 +95,10 @@ export { diagnoseStall, formatStallDiagnosis } from "./why-diagnosis.ts";
 // not, and vice-versa. Exported so a parity test can cross-check the two sets
 // directly (audit F9 review, MEDIUM x2: this table needs a machine cross-check,
 // not just a comment promising lockstep — see tests/admin-why-council-parity.test.ts).
-export const APPROVED_COUNCIL_OUTCOMES = new Set([
-  "approved",
-  "approved_with_conditions",
-  "exception_granted",
-  "inherited"
-]);
+// The underlying token list is domain/types.ts's `councilApprovedOutcomes` —
+// SINGLE source shared with why-diagnosis.ts's redaction vocabulary (round-5
+// gate finding 1: "import them, don't retype").
+export const APPROVED_COUNCIL_OUTCOMES = new Set<string>(councilApprovedOutcomes);
 
 // ---------------------------------------------------------------------------
 // Collector deps — all IO injected so collectStallSignals is testable against
@@ -526,7 +526,10 @@ export async function whyCommand(args: readonly string[]): Promise<void> {
  * selection directly, without going through `withClient`/a real DB. */
 export function emit(diagnosis: StallDiagnosis, emitJson: boolean): void {
   if (emitJson) {
-    console.log(JSON.stringify(diagnosis));
+    // serializeStallDiagnosis validates every cause's evidence was actually
+    // constructed via buildEvidence() before stringifying (round-5 gate
+    // finding 2: runtime-enforce the brand, not just at compile time).
+    console.log(serializeStallDiagnosis(diagnosis));
   } else {
     process.stdout.write(formatStallDiagnosis(diagnosis));
   }
