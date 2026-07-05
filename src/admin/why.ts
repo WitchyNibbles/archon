@@ -12,15 +12,26 @@
  *     for every raw signal (status report, closure reconciler, respawn budget,
  *     orphan finder, sidecar files), normalizes them into `StallSignals`, and
  *     renders. No new stall-detection logic lives here — only collection.
+ *   - `runWhyDiagnosis` is the fully-injected, `withClient`-independent
+ *     orchestration function (testable without a real DB); `whyCommand` is the
+ *     thin `withClient` wrapper that wires real store/service/sidecar deps and
+ *     calls it.
  *
  * Reused surfaces (no reimplementation):
  *   - executeStatusCommandFromArgs → integrity contradictions, daemon
  *     operator-handoff + supervisor observations, run/task counts.
- *   - buildTaskEvidence / planRunClosure (closure-reconciler) → per-task missing
- *     review roles + missing approvals + seal-readiness.
+ *   - buildTaskEvidence / planRunClosure (closure-reconciler) → the SINGLE
+ *     source of truth for which approved tasks are closure-blocked
+ *     (`plan.blocked`); this module only attaches the typed missing-role /
+ *     missing-approval detail per blocked task, it does not re-derive the
+ *     blocking predicate.
+ *   - evaluateReviewDecision (core/policy.ts) → which reviews block a
+ *     review_blocked task.
  *   - RETRO_OUTCOME_TOKENS (record-retro) → retro seal-gate state.
  *   - resolveRespawnBudget + makeFileLockLeaseStore → respawn budget + lease.
- *   - findOrphanCandidates (prune-orphans) → duplicate/orphan runs per task_key.
+ *   - findOrphanCandidates + fetchAllTasks/fetchReviewCounts/fetchApprovalCounts
+ *     (prune-orphans) → duplicate/orphan runs per task_key, using prune-orphans'
+ *     own query helpers rather than a second copy of the same SQL.
  *
  * Human output is the default and reads like a colleague explaining; `--json`
  * emits the structured `StallDiagnosis`.
@@ -35,6 +46,7 @@ import { ArchonCoreService } from "../core/service.ts";
 import { executeStatusCommandFromArgs } from "../workflow.ts";
 import { resolveCommandFlag } from "../cli-flags.ts";
 import type { OperatorStatusReport } from "./status.ts";
+import { evaluateReviewDecision } from "../core/policy.ts";
 import {
   buildTaskEvidence,
   planRunClosure,
@@ -43,19 +55,32 @@ import {
 import { RETRO_OUTCOME_TOKENS } from "./record-retro.ts";
 import { resolveRespawnBudget } from "../runtime/respawn-budget.ts";
 import { makeFileLockLeaseStore } from "../runtime/respawn-lease.ts";
-import { findOrphanCandidates, type TaskRow, type ReviewCount, type ApprovalCount } from "./prune-orphans.ts";
+import {
+  findOrphanCandidates,
+  fetchAllTasks,
+  fetchReviewCounts,
+  fetchApprovalCounts,
+  type SqlClient,
+  type TaskRow,
+  type ReviewCount,
+  type ApprovalCount
+} from "./prune-orphans.ts";
 import type {
   ApprovalRecord,
   ProjectRuntimeStateRecord,
   ReviewFloorReductionRecord,
   ReviewRecord,
+  RunExecutionPlan,
   RunStatusSnapshot
 } from "../domain/types.ts";
 import {
   diagnoseStall,
   formatStallDiagnosis,
+  type BlockedTaskSignal,
   type ClosureBlockSignal,
   type CouncilGateSignal,
+  type ReviewBlockedTaskSignal,
+  type StallDiagnosis,
   type StallSignals
 } from "./why-diagnosis.ts";
 
@@ -64,8 +89,10 @@ export { diagnoseStall, formatStallDiagnosis } from "./why-diagnosis.ts";
 // Council outcomes that satisfy the Design & Architecture Council gate. Mirrors
 // APPROVED_COUNCIL_OUTCOMES in .claude/hooks/hook-policy.mjs — kept in lockstep
 // with the Stop-hook gate so `why` never claims a council block the hook would
-// not, and vice-versa.
-const APPROVED_COUNCIL_OUTCOMES = new Set([
+// not, and vice-versa. Exported so a parity test can cross-check the two sets
+// directly (audit F9 review, MEDIUM x2: this table needs a machine cross-check,
+// not just a comment promising lockstep — see tests/admin-why-council-parity.test.ts).
+export const APPROVED_COUNCIL_OUTCOMES = new Set([
   "approved",
   "approved_with_conditions",
   "exception_granted",
@@ -111,10 +138,14 @@ export interface WhyCollectDeps {
 export async function collectStallSignals(deps: WhyCollectDeps): Promise<StallSignals> {
   const { snapshot, report } = deps;
 
-  // --- Closure blocks (missing review / approval), council + retro gates. ---
+  // --- Per-task evidence, council gate, and the two CRITICAL fixes: tasks
+  // sitting in `blocked` (failed) or `review_blocked` (waiting on review) must
+  // be surfaced — they are the most common REAL stall, not "handled above". ---
   const evidence: ClosureTaskEvidence[] = [];
-  const closureBlocks: ClosureBlockSignal[] = [];
   const councilGates: CouncilGateSignal[] = [];
+  const blockedTasks: BlockedTaskSignal[] = [];
+  const reviewBlockedTasks: ReviewBlockedTaskSignal[] = [];
+  const seedFailure = report.integrity.runtimeState?.seedFailure;
 
   for (const task of snapshot.tasks) {
     const taskId = task.packet.taskId;
@@ -123,23 +154,24 @@ export async function collectStallSignals(deps: WhyCollectDeps): Promise<StallSi
       deps.getApprovals(snapshot.run.id, taskId),
       deps.getReviewFloorReductions(snapshot.run.id, taskId)
     ]);
-    const taskEvidence = buildTaskEvidence(task, reviews, approvals, reductions);
-    evidence.push(taskEvidence);
+    evidence.push(buildTaskEvidence(task, reviews, approvals, reductions));
 
-    // Typed closure blocks — same predicate planRunClosure applies, surfaced
-    // with the specific missing roles the operator needs.
-    if (task.status === "approved") {
-      const missingRoles = taskEvidence.requiredFloor.filter(
-        (role) => !taskEvidence.passedOrchestratorRoles.includes(role)
-      );
-      if (missingRoles.length > 0) {
-        closureBlocks.push({ taskId, kind: "missing_review", missingRoles: [...missingRoles] });
-      } else if (taskEvidence.orchestratorApprovals < 1) {
-        closureBlocks.push({ taskId, kind: "missing_approval", missingRoles: [] });
+    if (task.status === "blocked") {
+      const reason =
+        seedFailure && seedFailure.taskId === taskId
+          ? seedFailure.reason
+          : "task failed and was marked blocked (no seed-failure metadata recorded for this task — check the task's last handoff or run history for detail)";
+      blockedTasks.push({ taskId, reason });
+    }
+
+    if (task.status === "review_blocked") {
+      // Reuse the SAME predicate the review gate itself uses — no re-derivation.
+      const { blockers } = evaluateReviewDecision(task, reviews);
+      if (blockers.length > 0) {
+        reviewBlockedTasks.push({ taskId, blockers: [...blockers] });
       }
     }
 
-    // Council gate — required-but-not-approved-class (runtime-authoritative).
     const councilRequired = task.packet.qualityGates.some(
       (gate) => gate === "council_review_required"
     );
@@ -151,12 +183,33 @@ export async function collectStallSignals(deps: WhyCollectDeps): Promise<StallSi
     }
   }
 
+  // MEDIUM fix: consume `plan.blocked` — planRunClosure's single source of
+  // truth for "is this approved task closure-blocked" — instead of
+  // re-deriving the same missing-role/missing-approval predicate a second
+  // time in this loop. Only the typed detail (which roles, which kind) is
+  // attached here, keyed off the evidence already computed above.
   const plan = planRunClosure(evidence);
+  const evidenceByTaskId = new Map(evidence.map((e) => [e.taskId, e]));
+  const closureBlocks: ClosureBlockSignal[] = plan.blocked.map((block) => {
+    const taskEvidence = evidenceByTaskId.get(block.taskId);
+    const missingRoles = taskEvidence
+      ? taskEvidence.requiredFloor.filter(
+          (role) => !taskEvidence.passedOrchestratorRoles.includes(role)
+        )
+      : [];
+    return missingRoles.length > 0
+      ? { taskId: block.taskId, kind: "missing_review", missingRoles: [...missingRoles] }
+      : { taskId: block.taskId, kind: "missing_approval", missingRoles: [] };
+  });
+
   const hasRetro = snapshot.tasks.some((task) => {
     const outcome = task.packet.retroOutcome;
     return typeof outcome === "string" && RETRO_OUTCOME_TOKENS.has(outcome);
   });
   const retroSealBlocked = plan.sealRun && !hasRetro;
+  // LOW fix: give the retro-gate cause concrete task-id evidence, not just the
+  // run id — plan.sealRun means every task in the snapshot is terminal.
+  const sealReadyTaskIds = retroSealBlocked ? snapshot.tasks.map((t) => t.packet.taskId) : undefined;
 
   // --- Respawn lease + budget. ---
   const daemonMeta = deps.runtimeState?.metadata.archonDaemon;
@@ -195,7 +248,7 @@ export async function collectStallSignals(deps: WhyCollectDeps): Promise<StallSi
   }));
 
   // --- Owner work in flight (advisory). ready/in_progress = normal work, not a
-  //     stall. approved/blocked/review_blocked are gate states handled above. ---
+  //     stall. review_blocked/blocked/approved are handled above. ---
   const ownerTaskIds = snapshot.tasks
     .filter((task) => task.status === "ready" || task.status === "in_progress")
     .map((task) => task.packet.taskId);
@@ -221,9 +274,12 @@ export async function collectStallSignals(deps: WhyCollectDeps): Promise<StallSi
       status: report.integrity.status,
       contradictions: [...report.integrity.contradictions]
     },
+    blockedTasks: blockedTasks.length > 0 ? blockedTasks : undefined,
+    reviewBlockedTasks: reviewBlockedTasks.length > 0 ? reviewBlockedTasks : undefined,
     duplicateRuns: duplicateRuns.length > 0 ? duplicateRuns : undefined,
     closureBlocks: closureBlocks.length > 0 ? closureBlocks : undefined,
     retroSealBlocked,
+    sealReadyTaskIds,
     councilGates: councilGates.length > 0 ? councilGates : undefined,
     respawn,
     ownerWork,
@@ -303,134 +359,150 @@ export async function readHookBlockerSidecar(
 }
 
 // ---------------------------------------------------------------------------
-// Command entrypoint
+// runWhyDiagnosis — fully-injected orchestration, no `withClient` dependency.
+// This is what makes the entrypoint testable (QA finding: whyCommand
+// entrypoint coverage) — every DB/fs call is a parameter, so tests exercise
+// the --json passthrough, the no-run healthy fallback, and the full signal
+// wiring without a real database.
 // ---------------------------------------------------------------------------
 
-export async function whyCommand(args: readonly string[]): Promise<void> {
-  const emitJson = args.includes("--json");
+export interface RunWhyDiagnosisDeps {
+  cwd: string;
+  now: string;
+  env?: NodeJS.ProcessEnv | undefined;
+  findLatestRun: (workspaceSlug: string, projectSlug: string) => Promise<{ id: string } | undefined>;
+  getStatusSnapshot: (runId: string) => Promise<RunStatusSnapshot>;
+  getProjectRuntimeState: (projectId: string) => Promise<ProjectRuntimeStateRecord | undefined>;
+  getExecutionPlan: (runId: string, staleAfterHours: number) => Promise<RunExecutionPlan>;
+  getReviews: WhyCollectDeps["getReviews"];
+  getApprovals: WhyCollectDeps["getApprovals"];
+  getReviewFloorReductions: WhyCollectDeps["getReviewFloorReductions"];
+  readLeaseOwner: WhyCollectDeps["readLeaseOwner"];
+  respawnBudget: number;
+  getOrphanInputs: WhyCollectDeps["getOrphanInputs"];
+  readContextGuard: WhyCollectDeps["readContextGuard"];
+  readHookBlocker: WhyCollectDeps["readHookBlocker"];
+}
+
+export async function runWhyDiagnosis(
+  args: readonly string[],
+  deps: RunWhyDiagnosisDeps
+): Promise<StallDiagnosis> {
   const scope = {
     runId: resolveCommandFlag(args, "--run-id"),
     taskId: resolveCommandFlag(args, "--task-id")
   };
+
+  // Reuse the status assembly for integrity + daemon observations + counts,
+  // capturing the snapshot it fetches so we don't double-query.
+  let snapshot: RunStatusSnapshot | undefined;
+  let report: OperatorStatusReport;
+  try {
+    report = await executeStatusCommandFromArgs(args, {
+      cwd: deps.cwd,
+      env: deps.env,
+      findLatestRun: deps.findLatestRun,
+      async getStatusSnapshot(runId) {
+        snapshot = await deps.getStatusSnapshot(runId);
+        return snapshot;
+      },
+      getProjectRuntimeState: deps.getProjectRuntimeState,
+      getExecutionPlan: deps.getExecutionPlan
+    });
+  } catch (error) {
+    // No run resolvable → nothing is stuck (there is no loop). Emit the
+    // healthy no-run diagnosis rather than an error.
+    const message = error instanceof Error ? error.message : String(error);
+    if (/No runs found|require --run-id/i.test(message)) {
+      return diagnoseStall({ now: deps.now, scope, run: undefined, sidecars: {} });
+    }
+    throw error;
+  }
+
+  if (!snapshot) {
+    snapshot = await deps.getStatusSnapshot(report.run.id);
+  }
+  const runtimeState = await deps.getProjectRuntimeState(snapshot.run.projectId);
+
+  const signals = await collectStallSignals({
+    now: deps.now,
+    scope,
+    report,
+    snapshot,
+    runtimeState,
+    getReviews: deps.getReviews,
+    getApprovals: deps.getApprovals,
+    getReviewFloorReductions: deps.getReviewFloorReductions,
+    readLeaseOwner: deps.readLeaseOwner,
+    respawnBudget: deps.respawnBudget,
+    getOrphanInputs: deps.getOrphanInputs,
+    readContextGuard: deps.readContextGuard,
+    readHookBlocker: deps.readHookBlocker
+  });
+
+  return diagnoseStall(signals);
+}
+
+// ---------------------------------------------------------------------------
+// Command entrypoint — thin `withClient` wrapper around runWhyDiagnosis.
+// ---------------------------------------------------------------------------
+
+export async function whyCommand(args: readonly string[]): Promise<void> {
+  const emitJson = args.includes("--json");
   const cwd = process.cwd();
   const now = new Date().toISOString();
 
   await withClient(async (client) => {
     const store = new PostgresStore(client);
     const service = new ArchonCoreService(store);
-
-    // Reuse the status assembly for integrity + daemon observations + counts,
-    // capturing the snapshot it fetches so we don't double-query.
-    let snapshot: RunStatusSnapshot | undefined;
-    let report: OperatorStatusReport;
-    try {
-      report = await executeStatusCommandFromArgs(args, {
-        cwd,
-        env: process.env,
-        findLatestRun(workspaceSlug, projectSlug) {
-          return store.findLatestRun({ workspaceSlug, projectSlug });
-        },
-        async getStatusSnapshot(runId) {
-          snapshot = await service.getStatus(runId);
-          return snapshot;
-        },
-        getProjectRuntimeState(projectId) {
-          return store.getProjectRuntimeState(projectId);
-        },
-        getExecutionPlan(runId, staleAfterHours) {
-          return service.getExecutionPlan(runId, { staleAfterHours });
-        }
-      });
-    } catch (error) {
-      // No run resolvable → nothing is stuck (there is no loop). Emit the
-      // healthy no-run diagnosis rather than an error.
-      const message = error instanceof Error ? error.message : String(error);
-      if (/No runs found|require --run-id/i.test(message)) {
-        const diagnosis = diagnoseStall({ now, scope, run: undefined, sidecars: {} });
-        emit(diagnosis, emitJson);
-        return;
-      }
-      throw error;
-    }
-
-    if (!snapshot) {
-      snapshot = await service.getStatus(report.run.id);
-    }
-    const runtimeState = await store.getProjectRuntimeState(snapshot.run.projectId);
     const leaseStore = makeFileLockLeaseStore({
       lockDir: path.join(cwd, ".archon", "work", "daemon")
     });
+    const sqlClient = client as unknown as SqlClient;
 
-    const signals = await collectStallSignals({
+    const diagnosis = await runWhyDiagnosis(args, {
+      cwd,
       now,
-      scope,
-      report,
-      snapshot,
-      runtimeState,
+      env: process.env,
+      findLatestRun(workspaceSlug, projectSlug) {
+        return store.findLatestRun({ workspaceSlug, projectSlug });
+      },
+      getStatusSnapshot(runId) {
+        return service.getStatus(runId);
+      },
+      getProjectRuntimeState(projectId) {
+        return store.getProjectRuntimeState(projectId);
+      },
+      getExecutionPlan(runId, staleAfterHours) {
+        return service.getExecutionPlan(runId, { staleAfterHours });
+      },
       getReviews: (runId, taskId) => store.getReviews(runId, taskId),
       getApprovals: (runId, taskId) => store.getApprovals(runId, taskId),
       getReviewFloorReductions: (runId, taskId) => store.getReviewFloorReductions(runId, taskId),
       readLeaseOwner: (runId) => leaseStore.readOwner(runId),
       respawnBudget: resolveRespawnBudget(),
-      getOrphanInputs: () => fetchOrphanInputs(client),
+      async getOrphanInputs() {
+        const [tasks, reviewCounts, approvalCounts] = await Promise.all([
+          fetchAllTasks(sqlClient.query.bind(sqlClient)),
+          fetchReviewCounts(sqlClient.query.bind(sqlClient)),
+          fetchApprovalCounts(sqlClient.query.bind(sqlClient))
+        ]);
+        return { tasks, reviewCounts, approvalCounts };
+      },
       readContextGuard: () => readContextGuardSidecar(cwd),
       readHookBlocker: () => readHookBlockerSidecar(cwd)
     });
 
-    const diagnosis = diagnoseStall(signals);
     emit(diagnosis, emitJson);
   });
 }
 
-function emit(diagnosis: ReturnType<typeof diagnoseStall>, emitJson: boolean): void {
+/** Exported so entrypoint tests can verify the --json vs human output
+ * selection directly, without going through `withClient`/a real DB. */
+export function emit(diagnosis: StallDiagnosis, emitJson: boolean): void {
   if (emitJson) {
     console.log(JSON.stringify(diagnosis));
   } else {
     process.stdout.write(formatStallDiagnosis(diagnosis));
   }
-}
-
-// ---------------------------------------------------------------------------
-// Orphan-input queries — same shapes prune-orphans uses, kept minimal here so
-// `why` reuses findOrphanCandidates without importing prune's transactional deps.
-// ---------------------------------------------------------------------------
-
-interface PgClientLike {
-  query: (text: string, values?: readonly unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
-}
-
-async function fetchOrphanInputs(client: unknown): Promise<{
-  tasks: TaskRow[];
-  reviewCounts: ReviewCount[];
-  approvalCounts: ApprovalCount[];
-}> {
-  const pg = client as PgClientLike;
-  const [taskRes, reviewRes, approvalRes] = await Promise.all([
-    pg.query(`select id, run_id, task_key, status from tasks`),
-    pg.query(
-      `select r.run_id, r.task_id as task_key, count(distinct r.reviewer_role) as distinct_passed_roles
-       from reviews r where r.state = 'passed' group by r.run_id, r.task_id`
-    ),
-    pg.query(
-      `select a.run_id, a.task_id as task_key, count(*) as approval_count
-       from approvals a group by a.run_id, a.task_id`
-    )
-  ]);
-  const tasks = taskRes.rows.map((row) => ({
-    id: String(row.id),
-    run_id: String(row.run_id),
-    task_key: String(row.task_key),
-    status: String(row.status)
-  }));
-  const reviewCounts = reviewRes.rows.map((row) => ({
-    run_id: String(row.run_id),
-    task_key: String(row.task_key),
-    distinct_passed_roles: parseInt(String(row.distinct_passed_roles), 10)
-  }));
-  const approvalCounts = approvalRes.rows.map((row) => ({
-    run_id: String(row.run_id),
-    task_key: String(row.task_key),
-    approval_count: parseInt(String(row.approval_count), 10)
-  }));
-  return { tasks, reviewCounts, approvalCounts };
 }

@@ -248,7 +248,11 @@ interface RunRowDb {
   created_at: string;
 }
 
-async function fetchAllTasks(query: SqlClient["query"]): Promise<TaskRow[]> {
+// Exported (not just used internally by pruneOrphansCommand) so other admin
+// verbs that need the same raw rows — e.g. `why`'s orphan/duplicate-run cause
+// class — reuse these queries instead of maintaining a second copy that can
+// drift from this one (audit F9 review, MEDIUM: reuse violation).
+export async function fetchAllTasks(query: SqlClient["query"]): Promise<TaskRow[]> {
   const result = await query(
     `select id, run_id, task_key, status from tasks`
   );
@@ -258,7 +262,7 @@ async function fetchAllTasks(query: SqlClient["query"]): Promise<TaskRow[]> {
   });
 }
 
-async function fetchReviewCounts(query: SqlClient["query"]): Promise<ReviewCount[]> {
+export async function fetchReviewCounts(query: SqlClient["query"]): Promise<ReviewCount[]> {
   // Count DISTINCT passed-review roles per (run_id, task_key).
   // reviews.task_id is the task_key (text), reviews.run_id is the run UUID.
   const result = await query(
@@ -280,7 +284,7 @@ async function fetchReviewCounts(query: SqlClient["query"]): Promise<ReviewCount
   });
 }
 
-async function fetchApprovalCounts(query: SqlClient["query"]): Promise<ApprovalCount[]> {
+export async function fetchApprovalCounts(query: SqlClient["query"]): Promise<ApprovalCount[]> {
   const result = await query(
     `select
        a.run_id,

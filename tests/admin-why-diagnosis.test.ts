@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import {
   diagnoseStall,
   formatStallDiagnosis,
+  redactSecretLikeSubstrings,
+  truncateForDisplay,
   STALL_CAUSE_RANKS,
   type StallCauseId,
   type StallSignals
@@ -204,7 +206,7 @@ test("context_guard in 'registered' state → NOT a stall", () => {
   assert.equal(causeIds(d).includes("context_guard_pending"), false);
 });
 
-test("daemon_handoff_blocked present → surfaces first nextAction", () => {
+test("daemon_handoff_blocked present, single-step nextActions → numbered next command", () => {
   const d = diagnoseStall(
     baseline({
       sidecars: {
@@ -219,7 +221,35 @@ test("daemon_handoff_blocked present → surfaces first nextAction", () => {
   );
   const c = cause(d, "daemon_handoff_blocked");
   assert.ok(c);
-  assert.equal(c!.nextCommand, "run the reviewer");
+  assert.equal(c!.nextCommand, "1) run the reviewer");
+});
+
+// HIGH fix: nextCommand must join the FULL nextActions array, not silently
+// truncate to nextActions[0]. Proven against the real 2-step array runtime.ts
+// emits from its preflight blocker (see runtime.ts's runtime execution
+// preflight nextActions — "run `npm run archon:doctor -- --repair`..." then
+// "if task-state drift remains...run `npm run archon:reconcile`...").
+test("daemon_handoff_blocked present, real 2-step nextActions → BOTH steps joined, none dropped", () => {
+  const d = diagnoseStall(
+    baseline({
+      sidecars: {
+        daemonHandoff: {
+          state: "blocked",
+          blockerKind: "runtime_preflight",
+          reason: "runtime execution preflight failed",
+          nextActions: [
+            "run `npm run archon:doctor -- --repair` to replay safe runtime setup healing",
+            "if task-state drift remains after services are healthy, run `npm run archon:reconcile` before retrying execution"
+          ]
+        }
+      }
+    })
+  );
+  const c = cause(d, "daemon_handoff_blocked");
+  assert.ok(c);
+  assert.match(c!.nextCommand, /archon:doctor -- --repair/);
+  assert.match(c!.nextCommand, /archon:reconcile/, "second step must NOT be silently dropped");
+  assert.equal(c!.nextCommand.indexOf("archon:doctor") < c!.nextCommand.indexOf("archon:reconcile"), true);
 });
 
 test("daemon_supervisor_blocked present (state=blocked) → reported", () => {
@@ -236,6 +266,42 @@ test("daemon_supervisor_blocked present (state=blocked) → reported", () => {
     })
   );
   assert.ok(cause(d, "daemon_supervisor_blocked"));
+});
+
+// LOW fix: daemon_supervisor_blocked must also cover max_cycles_reached and
+// invalid — not just the literal "blocked" state.
+test("daemon_supervisor_blocked present (state=max_cycles_reached) → reported", () => {
+  const d = diagnoseStall(
+    baseline({
+      sidecars: {
+        daemonSupervisor: {
+          state: "max_cycles_reached",
+          reason: "hit cycle limit",
+          nextActions: ["raise the cycle limit or intervene"]
+        }
+      }
+    })
+  );
+  const c = cause(d, "daemon_supervisor_blocked");
+  assert.ok(c, "max_cycles_reached must be surfaced");
+  assert.match(c!.what, /max-cycles/);
+});
+
+test("daemon_supervisor_blocked present (state=invalid) → reported", () => {
+  const d = diagnoseStall(
+    baseline({
+      sidecars: {
+        daemonSupervisor: {
+          state: "invalid",
+          reason: "unrecognized supervisor state",
+          nextActions: []
+        }
+      }
+    })
+  );
+  const c = cause(d, "daemon_supervisor_blocked");
+  assert.ok(c, "invalid state must be surfaced");
+  assert.match(c!.what, /invalid state/);
 });
 
 test("daemon_supervisor completed (not blocked) → not reported", () => {
@@ -343,4 +409,321 @@ test("formatStallDiagnosis: stuck render has evidence + fix per cause", () => {
   assert.match(text, /evidence:/);
   assert.match(text, /fix:/);
   assert.match(text, /record-retro/);
+});
+
+// ---------------------------------------------------------------------------
+// CRITICAL fix: task_blocked / task_review_blocked — `why` must never say
+// "nothing is stuck" while a task explicitly failed (blocked) or is stuck
+// waiting on review (review_blocked). Both directions, both cause classes.
+// ---------------------------------------------------------------------------
+
+test("task_blocked present → detected, ranked near the top, recover command", () => {
+  const d = diagnoseStall(
+    baseline({ blockedTasks: [{ taskId: "t1", reason: "build failed 3x, escalated" }] })
+  );
+  assert.equal(d.stuck, true);
+  const c = cause(d, "task_blocked");
+  assert.ok(c);
+  assert.equal(c!.rank, STALL_CAUSE_RANKS.task_blocked);
+  assert.match(c!.nextCommand, /recover --apply-safe/);
+  assert.deepEqual(c!.evidence.values.reasons, ["build failed 3x, escalated"]);
+  // Must rank ahead of every governance/sidecar cause class.
+  assert.ok(c!.rank < STALL_CAUSE_RANKS.review_gate_missing);
+  assert.ok(c!.rank < STALL_CAUSE_RANKS.orphan_duplicate_runs);
+});
+
+test("task_blocked absent → not reported (baseline has no blocked task)", () => {
+  const d = diagnoseStall(baseline());
+  assert.equal(causeIds(d).includes("task_blocked"), false);
+});
+
+test("task_review_blocked present → detected, lists the blocking review roles", () => {
+  const d = diagnoseStall(
+    baseline({
+      reviewBlockedTasks: [{ taskId: "t1", blockers: ["missing required review: security_reviewer"] }]
+    })
+  );
+  assert.equal(d.stuck, true);
+  const c = cause(d, "task_review_blocked");
+  assert.ok(c);
+  assert.equal(c!.rank, STALL_CAUSE_RANKS.task_review_blocked);
+  assert.deepEqual(c!.evidence.values.blockers, ["missing required review: security_reviewer"]);
+});
+
+test("task_review_blocked absent → not reported", () => {
+  const d = diagnoseStall(baseline());
+  assert.equal(causeIds(d).includes("task_review_blocked"), false);
+});
+
+test("task_blocked and task_review_blocked both rank ahead of orphan/duplicate and closure gates", () => {
+  const d = diagnoseStall(
+    baseline({
+      blockedTasks: [{ taskId: "t1", reason: "r" }],
+      reviewBlockedTasks: [{ taskId: "t2", blockers: ["b"] }],
+      duplicateRuns: [{ taskKey: "t3", runIds: ["run-a", "run-b"] }],
+      closureBlocks: [{ taskId: "t4", kind: "missing_approval", missingRoles: [] }]
+    })
+  );
+  const ids = causeIds(d);
+  assert.deepEqual(ids.slice(0, 4), [
+    "task_blocked",
+    "task_review_blocked",
+    "orphan_duplicate_runs",
+    "approval_missing"
+  ]);
+});
+
+// ---------------------------------------------------------------------------
+// MEDIUM fix: headline blocking-count must equal the numbered list count —
+// verified by rendering and counting the numbered lines, not just eyeballing.
+// ---------------------------------------------------------------------------
+
+test("formatStallDiagnosis: headline count matches numbered-list count exactly (advisory excluded from both)", () => {
+  const d = diagnoseStall(
+    baseline({
+      retroSealBlocked: true,
+      blockedTasks: [{ taskId: "t1", reason: "r" }],
+      ownerWork: { directiveKind: "dispatch_owner", taskIds: ["t2"] }
+    })
+  );
+  const text = formatStallDiagnosis(d);
+  const headlineMatch = text.match(/(\d+) things are blocking it/);
+  assert.ok(headlineMatch, "expected a headline count");
+  const claimedCount = Number(headlineMatch![1]);
+
+  const numberedLines = text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.equal(numberedLines.length, claimedCount, "numbered list must match the claimed count exactly");
+
+  // The advisory owner-work cause must NOT be numbered, and must appear in the
+  // separate "Also (advisory...)" section instead.
+  assert.equal(numberedLines.some((line) => /Owner work is simply/.test(line)), false);
+  assert.match(text, /Also \(advisory/);
+});
+
+test("formatStallDiagnosis: single blocking cause + no advisory → singular headline, exactly 1 numbered item", () => {
+  const d = diagnoseStall(baseline({ retroSealBlocked: true }));
+  const text = formatStallDiagnosis(d);
+  assert.match(text, /Here's why .* is stuck:/);
+  const numberedLines = text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.equal(numberedLines.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// LOW fix: retro_seal_gate evidence carries the seal-ready task ids, not just
+// the bare run id.
+// ---------------------------------------------------------------------------
+
+test("retro_seal_gate evidence includes sealReadyTaskIds when provided", () => {
+  const d = diagnoseStall(
+    baseline({ retroSealBlocked: true, sealReadyTaskIds: ["t1", "t2"] })
+  );
+  const c = cause(d, "retro_seal_gate");
+  assert.ok(c);
+  assert.deepEqual(c!.evidence.values.tasks, ["t1", "t2"]);
+});
+
+// ---------------------------------------------------------------------------
+// Security MEDIUM fix: hook-blocker command/summary must never leak secrets
+// verbatim, in EITHER the human evidence values or the nextCommand string —
+// both are part of the same StallDiagnosis object, so both --json and human
+// output are covered by one assertion on the diagnosis object.
+// ---------------------------------------------------------------------------
+
+test("redactSecretLikeSubstrings: labeled key=value credential fields are scrubbed", () => {
+  assert.equal(
+    redactSecretLikeSubstrings("npm publish --token=sk-abcdEFGH12345678901234"),
+    "npm publish --token=[redacted]"
+  );
+  assert.equal(
+    redactSecretLikeSubstrings("curl -H \"Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\""),
+    'curl -H "Authorization: [redacted]"'
+  );
+});
+
+test("redactSecretLikeSubstrings: leaves ordinary command text alone", () => {
+  assert.equal(redactSecretLikeSubstrings("npm run build:dist && npm test"), "npm run build:dist && npm test");
+});
+
+test("truncateForDisplay: truncates long text with an explicit ellipsis marker", () => {
+  const long = "x".repeat(200);
+  const truncated = truncateForDisplay(long, 10);
+  assert.equal(truncated.length, 11); // 10 chars + ellipsis marker
+  assert.ok(truncated.endsWith("…"));
+});
+
+test("truncateForDisplay: short text passes through unchanged", () => {
+  assert.equal(truncateForDisplay("npm test", 120), "npm test");
+});
+
+test("hook_blocker cause: a credential embedded in the recorded command never appears verbatim in evidence or nextCommand", () => {
+  const secretCommand = "curl -H \"Authorization: Bearer sk-live-abcdefghijklmnopqrstuvwxyz0123456789\" https://api.example.com";
+  const d = diagnoseStall(
+    baseline({
+      sidecars: {
+        hookBlocker: {
+          taskId: "t1",
+          blockerKind: "generic_nonzero_bash",
+          command: secretCommand,
+          summary: "request failed"
+        }
+      }
+    })
+  );
+  const c = cause(d, "hook_blocker");
+  assert.ok(c);
+  const evidenceCommand = String(c!.evidence.values.command);
+  assert.equal(evidenceCommand.includes("sk-live-abcdefghijklmnopqrstuvwxyz0123456789"), false);
+  assert.equal(c!.nextCommand.includes("sk-live-abcdefghijklmnopqrstuvwxyz0123456789"), false);
+  // The pointer to the sidecar file must still be present so the operator can
+  // find the (equally-scrubbed-at-source) full record if truly needed.
+  assert.match(c!.nextCommand, /hook-blocker-state\.json/);
+});
+
+// ---------------------------------------------------------------------------
+// --task-id scope filter, exercised across every filtered signal type. Each
+// case proves the same shape: an out-of-scope signal for a DIFFERENT task is
+// dropped, while the in-scope signal for the FOCUSED task is kept.
+// ---------------------------------------------------------------------------
+
+test("--task-id filter: task_blocked scoped correctly", () => {
+  const d = diagnoseStall(
+    baseline({
+      scope: { taskId: "t2" },
+      blockedTasks: [
+        { taskId: "t1", reason: "r1" },
+        { taskId: "t2", reason: "r2" }
+      ]
+    })
+  );
+  assert.deepEqual(cause(d, "task_blocked")!.evidence.values.tasks, ["t2"]);
+});
+
+test("--task-id filter: task_review_blocked scoped correctly", () => {
+  const d = diagnoseStall(
+    baseline({
+      scope: { taskId: "t2" },
+      reviewBlockedTasks: [
+        { taskId: "t1", blockers: ["b1"] },
+        { taskId: "t2", blockers: ["b2"] }
+      ]
+    })
+  );
+  assert.deepEqual(cause(d, "task_review_blocked")!.evidence.values.tasks, ["t2"]);
+});
+
+test("--task-id filter: orphan_duplicate_runs scoped by task_key", () => {
+  const d = diagnoseStall(
+    baseline({
+      scope: { taskId: "t2" },
+      duplicateRuns: [
+        { taskKey: "t1", runIds: ["run-a"] },
+        { taskKey: "t2", runIds: ["run-b"] }
+      ]
+    })
+  );
+  assert.deepEqual(cause(d, "orphan_duplicate_runs")!.evidence.values.taskKeys, ["t2"]);
+});
+
+test("--task-id filter: council_gate scoped correctly", () => {
+  const d = diagnoseStall(
+    baseline({
+      scope: { taskId: "t2" },
+      councilGates: [
+        { taskId: "t1", outcome: undefined },
+        { taskId: "t2", outcome: undefined }
+      ]
+    })
+  );
+  assert.deepEqual(cause(d, "council_gate")!.evidence.values.tasks, ["t2"]);
+});
+
+test("--task-id filter: respawn lease/budget only applies when the focused task matches", () => {
+  const inScope = diagnoseStall(
+    baseline({
+      scope: { taskId: "t1" },
+      respawn: { taskId: "t1", count: 8, budget: 8, leaseHeld: true, leaseOwner: "d" }
+    })
+  );
+  assert.ok(cause(inScope, "respawn_lease_held"));
+  assert.ok(cause(inScope, "respawn_budget_exhausted"));
+
+  const outOfScope = diagnoseStall(
+    baseline({
+      scope: { taskId: "t2" },
+      respawn: { taskId: "t1", count: 8, budget: 8, leaseHeld: true, leaseOwner: "d" }
+    })
+  );
+  assert.equal(causeIds(outOfScope).includes("respawn_lease_held"), false);
+  assert.equal(causeIds(outOfScope).includes("respawn_budget_exhausted"), false);
+});
+
+test("--task-id filter: hook_blocker scoped correctly", () => {
+  const outOfScope = diagnoseStall(
+    baseline({
+      scope: { taskId: "t2" },
+      sidecars: {
+        hookBlocker: { taskId: "t1", blockerKind: "generic_nonzero_bash", command: "x", summary: "y" }
+      }
+    })
+  );
+  assert.equal(causeIds(outOfScope).includes("hook_blocker"), false);
+
+  const inScope = diagnoseStall(
+    baseline({
+      scope: { taskId: "t1" },
+      sidecars: {
+        hookBlocker: { taskId: "t1", blockerKind: "generic_nonzero_bash", command: "x", summary: "y" }
+      }
+    })
+  );
+  assert.ok(cause(inScope, "hook_blocker"));
+});
+
+test("--task-id filter: context_guard_pending scoped correctly", () => {
+  const outOfScope = diagnoseStall(
+    baseline({
+      scope: { taskId: "t2" },
+      sidecars: { contextGuard: { state: "handoff_written", taskId: "t1", invocationId: "inv-1" } }
+    })
+  );
+  assert.equal(causeIds(outOfScope).includes("context_guard_pending"), false);
+});
+
+test("--task-id filter: owner_work_pending scoped correctly", () => {
+  const d = diagnoseStall(
+    baseline({
+      scope: { taskId: "t2" },
+      ownerWork: { directiveKind: "dispatch_owner", taskIds: ["t1", "t2"] }
+    })
+  );
+  assert.deepEqual(cause(d, "owner_work_pending")!.evidence.values.tasks, ["t2"]);
+});
+
+// ---------------------------------------------------------------------------
+// Determinism: identical input run twice must produce byte-identical output.
+// ---------------------------------------------------------------------------
+
+test("diagnoseStall is deterministic: same signals in, identical diagnosis out, run twice", () => {
+  const signals = baseline({
+    integrity: { status: "contradicted", contradictions: ["x"] },
+    blockedTasks: [{ taskId: "t1", reason: "r" }],
+    reviewBlockedTasks: [{ taskId: "t2", blockers: ["b"] }],
+    closureBlocks: [{ taskId: "t3", kind: "missing_review", missingRoles: ["qa_engineer"] }],
+    councilGates: [{ taskId: "t4", outcome: "rework_required" }],
+    retroSealBlocked: true,
+    sealReadyTaskIds: ["t1", "t2", "t3", "t4"],
+    respawn: { taskId: "t5", count: 8, budget: 8, leaseHeld: true, leaseOwner: "d" },
+    ownerWork: { directiveKind: "dispatch_owner", taskIds: ["t6"] },
+    sidecars: {
+      hookBlocker: { taskId: "t7", blockerKind: "generic_nonzero_bash", command: "x", summary: "y" },
+      contextGuard: { state: "handoff_written", taskId: "t8", invocationId: "inv-1" },
+      daemonHandoff: { state: "blocked", reason: "r", nextActions: ["a", "b"] },
+      daemonSupervisor: { state: "blocked", reason: "r", nextActions: ["a"] }
+    }
+  });
+  const first = diagnoseStall(signals);
+  const second = diagnoseStall(signals);
+  assert.deepEqual(first, second);
+  assert.equal(JSON.stringify(first), JSON.stringify(second));
+  assert.equal(formatStallDiagnosis(first), formatStallDiagnosis(second));
 });

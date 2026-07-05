@@ -14,33 +14,46 @@
  * ---------------------------------------------------------------------------
  * Ranking rationale (most-blocking first). The order below is deliberate, not
  * incidental — a lower `rank` number means "fix this first, it invalidates or
- * gates everything below it":
+ * gates everything below it". Every one of the six task statuses
+ * (ready/in_progress/review_blocked/approved/done/blocked) is accounted for:
+ * ready+in_progress surface as advisory owner-work, done needs no cause,
+ * review_blocked/blocked/approved each have a dedicated cause class below.
  *
  *   1. INTEGRITY CONTRADICTIONS (rank 10) — runtime truth disagrees with the
  *      local exports. Nothing downstream (gate accounting, closure, status) can
  *      be trusted until this is reconciled, so it ranks above every other cause.
- *   2. STRUCTURAL CORRUPTION — orphan/duplicate runs for one task_key (rank 15).
- *      Duplicate task rows corrupt review/approval accounting the same way a
- *      contradiction does; it sits just below explicit contradictions.
- *   3. MISSING REVIEW/APPROVAL GATES (rank 20/25) — the most common REAL stall:
- *      an `approved` task cannot close because a required review role never
- *      recorded a passed review, or no orchestrator approval exists.
- *   4. COUNCIL GATE (rank 30) — a required Design & Architecture Council review
+ *   2. TASK EXPLICITLY BLOCKED (rank 12) — a task sitting in `status: blocked`
+ *      is a hard, already-failed stop: the single most common REAL stall, and
+ *      more concrete than any governance gate below it.
+ *   3. TASK STUCK IN REVIEW (rank 14) — `status: review_blocked` with named
+ *      missing/failing reviewer roles. Equally common in practice; ranked just
+ *      below an outright failure because it is still progressing (waiting on a
+ *      reviewer), not dead.
+ *   4. STRUCTURAL CORRUPTION — orphan/duplicate runs for one task_key (rank 16).
+ *      Duplicate task rows corrupt review/approval accounting; ranked below the
+ *      two task-level stalls above (which name a concrete task) but still ahead
+ *      of the closure/governance gates it can corrupt the accounting for.
+ *   5. MISSING REVIEW/APPROVAL GATES (rank 20/25) — an `approved` task cannot
+ *      close because a required review role never recorded a passed review, or
+ *      no orchestrator approval exists (consumed from `planRunClosure`, the
+ *      single source of truth for this predicate — see why.ts).
+ *   6. COUNCIL GATE (rank 30) — a required Design & Architecture Council review
  *      with no approved-class outcome. A governance gate on the closure path.
- *   5. RETRO SEAL GATE (rank 40) — the run is seal-ready but no task recorded a
+ *   7. RETRO SEAL GATE (rank 40) — the run is seal-ready but no task recorded a
  *      retro decision. The final governance gate before a run can be sealed.
- *   6. RESPAWN LEASE / BUDGET (rank 50/55) — execution-loop stalls: a held
+ *   8. RESPAWN LEASE / BUDGET (rank 50/55) — execution-loop stalls: a held
  *      respawn lease or an exhausted per-task respawn budget. Recoverable.
- *   7. SIDECAR BLOCKERS (rank 60-75) — hook-blocker state, a pending
+ *   9. SIDECAR BLOCKERS (rank 60-75) — hook-blocker state, a pending
  *      context-guard handoff, and daemon operator-handoff / supervisor blocks.
  *      These are per-turn hook records; they may be stale, so they rank below
  *      authoritative runtime gates.
- *   8. ADVISORY (rank 90) — owner work simply in flight (a `dispatch_owner`
- *      directive / non-terminal tasks). Not a stall; surfaced last, and only
- *      when nothing more blocking is present, so `why` never cries wolf.
+ *  10. ADVISORY (rank 90) — owner work simply in flight (ready/in_progress
+ *      tasks). Not a stall; surfaced last, and only when nothing more blocking
+ *      is present, so `why` never cries wolf.
  *
- * Summary form (matches audit §3.7): integrity contradictions > missing gates >
- * retro gate > lease/budget > sidecar blockers > advisory.
+ * Summary form (matches audit §3.7): integrity contradictions > task
+ * blocked/review-blocked > structural corruption > missing gates > retro gate
+ * > lease/budget > sidecar blockers > advisory.
  * ---------------------------------------------------------------------------
  */
 
@@ -50,7 +63,9 @@
 
 export const STALL_CAUSE_RANKS = {
   integrity_contradiction: 10,
-  orphan_duplicate_runs: 15,
+  task_blocked: 12,
+  task_review_blocked: 14,
+  orphan_duplicate_runs: 16,
   review_gate_missing: 20,
   approval_missing: 25,
   council_gate: 30,
@@ -72,6 +87,23 @@ export type StallCauseId = keyof typeof STALL_CAUSE_RANKS;
 // unavailable", which the ranker treats as "this cause is not present". This is
 // the tolerate-absence contract the collector relies on for sidecar files.
 // ---------------------------------------------------------------------------
+
+/** A task sitting in `status: blocked` — an explicit, already-failed stop. */
+export interface BlockedTaskSignal {
+  taskId: string;
+  /** Human-readable failure reason — from matching seed-failure metadata when
+   * available, otherwise a generic "no metadata recorded" note. Never blank. */
+  reason: string;
+}
+
+/** A task sitting in `status: review_blocked` with named blocking reviews. */
+export interface ReviewBlockedTaskSignal {
+  taskId: string;
+  /** Blocker strings from `evaluateReviewDecision` (core/policy.ts) — e.g.
+   * "missing required review: security_reviewer" or
+   * "required review not passed: qa_engineer is blocked". */
+  blockers: string[];
+}
 
 export interface ClosureBlockSignal {
   taskId: string;
@@ -141,12 +173,19 @@ export interface StallSignals {
         contradictions: string[];
       }
     | undefined;
+  /** Tasks explicitly in `status: blocked` (an already-failed stop). */
+  blockedTasks?: BlockedTaskSignal[] | undefined;
+  /** Tasks in `status: review_blocked` with named blocking reviews. */
+  reviewBlockedTasks?: ReviewBlockedTaskSignal[] | undefined;
   /** Orphan/duplicate task_key groups (already vetted: each has a sealed twin). */
   duplicateRuns?: Array<{ taskKey: string; runIds: string[] }> | undefined;
   /** `approved` tasks that cannot close, with the typed reason. */
   closureBlocks?: ClosureBlockSignal[] | undefined;
   /** True when the run is otherwise seal-ready but no retro was recorded. */
   retroSealBlocked?: boolean | undefined;
+  /** Task ids that are terminal/seal-ready when `retroSealBlocked` is true —
+   * gives the retro-gate cause concrete evidence instead of just the run id. */
+  sealReadyTaskIds?: string[] | undefined;
   /** Council gates that are required but lack an approved-class outcome. */
   councilGates?: CouncilGateSignal[] | undefined;
   respawn?: RespawnSignal | undefined;
@@ -195,6 +234,62 @@ export interface StallDiagnosis {
 }
 
 // ---------------------------------------------------------------------------
+// Secret redaction — security control for the hook-blocker sidecar (audit F9
+// review, MEDIUM/security). hook-blocker-state.json records the raw failed
+// command plus a stdout/stderr-derived summary; an inline credential in either
+// would otherwise be reprinted verbatim on every `archon why` call, in BOTH
+// the human and --json output. Applied once here (not in the collector) so
+// every emission path is scrubbed. Mirrors the redact-don't-guess posture of
+// admin/db-error-scrub.ts's scrubPgCredentials.
+// ---------------------------------------------------------------------------
+
+const MAX_COMMAND_DISPLAY_LENGTH = 120;
+
+/**
+ * Redacts secret-shaped substrings from hook-blocker text: labeled key=value /
+ * key: value credential fields, `Authorization:` headers, `Bearer` tokens, and
+ * (fallback, coverage over precision) long opaque alnum/base64-ish runs that
+ * look like an issued token rather than a word or path segment.
+ */
+export function redactSecretLikeSubstrings(text: string): string {
+  let result = text;
+  // Labeled credential fields: token=/secret=/password=/api_key=/access_key=/
+  // auth=, with "=" or ":" separators, in any case.
+  result = result.replace(
+    /\b(token|secret|password|api[_-]?key|access[_-]?key|auth)(\s*[:=]\s*)[^\s"'`]+/gi,
+    "$1$2[redacted]"
+  );
+  // Authorization headers (value may be "Bearer xyz" or a bare token).
+  // Token components exclude quote/backtick characters so a shell-quoted
+  // header (`"Authorization: Bearer xyz"`) redacts cleanly without swallowing
+  // the closing quote into the replacement.
+  result = result.replace(
+    /\bAuthorization:\s*[^\s"'`]+(?:\s+[^\s"'`]+)?/gi,
+    "Authorization: [redacted]"
+  );
+  // Bearer tokens outside an Authorization header.
+  result = result.replace(/\bBearer\s+[^\s"'`]+/gi, "Bearer [redacted]");
+  // Fallback: long opaque token-shaped runs (>= 24 chars, alnum + common token
+  // punctuation). Errs toward over-redaction — a truncated, already-scoped
+  // display string is the trade-off accepted here, not exact evidence fidelity.
+  result = result.replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}\b/g, "[redacted]");
+  return result;
+}
+
+/** Truncates text to a safe display prefix, with an explicit ellipsis marker
+ * when truncation occurred (never silently drops characters unmarked). */
+export function truncateForDisplay(text: string, maxLength = MAX_COMMAND_DISPLAY_LENGTH): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}…`;
+}
+
+/** Applies redaction then truncation — the combined safe-display transform
+ * used for both the hook-blocker `command` and `summary` fields. */
+function sanitizeForDisplay(text: string): string {
+  return truncateForDisplay(redactSecretLikeSubstrings(text));
+}
+
+// ---------------------------------------------------------------------------
 // Ranker — pure. Given signals, emit ranked causes.
 // ---------------------------------------------------------------------------
 
@@ -227,7 +322,55 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
     });
   }
 
-  // 2. Orphan / duplicate runs for one task_key (rank 15).
+  // 2. Task explicitly blocked/failed (rank 12) — CRITICAL fix: a task sitting
+  // in `status: blocked` is the single most common real stall and MUST be
+  // surfaced, not silently passed over as "handled above".
+  const blockedInScope = (signals.blockedTasks ?? []).filter((b) => inScope(signals, b.taskId));
+  if (blockedInScope.length > 0) {
+    causes.push({
+      id: "task_blocked",
+      rank: STALL_CAUSE_RANKS.task_blocked,
+      advisory: false,
+      what:
+        "A task explicitly failed and is sitting in the `blocked` status — it will not resume on its own without operator recovery.",
+      evidence: {
+        source: "tasks.status = blocked (project_runtime_state seed-failure metadata when it matches)",
+        values: {
+          tasks: blockedInScope.map((b) => b.taskId),
+          reasons: blockedInScope.map((b) => b.reason)
+        }
+      },
+      nextCommand:
+        "npx tsx ./src/admin.ts recover --apply-safe (then re-check status; escalate to the task owner if recovery does not resolve it)"
+    });
+  }
+
+  // 3. Task stuck in review with named blocking reviews (rank 14) — CRITICAL
+  // fix: `review_blocked` is the other status the old ranker never reported.
+  const reviewBlockedInScope = (signals.reviewBlockedTasks ?? []).filter((b) =>
+    inScope(signals, b.taskId)
+  );
+  if (reviewBlockedInScope.length > 0) {
+    const allBlockers = [...new Set(reviewBlockedInScope.flatMap((b) => b.blockers))];
+    causes.push({
+      id: "task_review_blocked",
+      rank: STALL_CAUSE_RANKS.task_review_blocked,
+      advisory: false,
+      what:
+        "A task is waiting on review: at least one required reviewer role has not recorded a passing review.",
+      evidence: {
+        source: "reviews table (evaluateReviewDecision, per review_blocked task)",
+        values: {
+          tasks: reviewBlockedInScope.map((b) => b.taskId),
+          blockers: allBlockers
+        }
+      },
+      nextCommand:
+        "run the review-orchestrator flow for the listed role(s), then re-check with `npx tsx ./src/admin.ts status`"
+    });
+  }
+
+  // 4. Orphan / duplicate runs for one task_key (rank 16).
   const dupInScope = (signals.duplicateRuns ?? []).filter((group) => {
     if (!focusTask) return true;
     // task_key equals the packet task id in this codebase.
@@ -251,7 +394,9 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
     });
   }
 
-  // 3. Missing review / approval gates (rank 20 / 25).
+  // 5. Missing review / approval gates (rank 20 / 25). Signals are consumed
+  // from `planRunClosure`'s `plan.blocked` in the collector — this ranker only
+  // renders the typed detail, it does not re-derive the blocking predicate.
   const reviewBlocks = (signals.closureBlocks ?? []).filter(
     (b) => b.kind === "missing_review" && inScope(signals, b.taskId)
   );
@@ -294,7 +439,7 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
     });
   }
 
-  // 4. Council gate (rank 30).
+  // 6. Council gate (rank 30).
   const councilBlocks = (signals.councilGates ?? []).filter((g) =>
     inScope(signals, g.taskId)
   );
@@ -317,7 +462,7 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
     });
   }
 
-  // 5. Retro seal gate (rank 40).
+  // 7. Retro seal gate (rank 40).
   if (signals.retroSealBlocked === true) {
     causes.push({
       id: "retro_seal_gate",
@@ -327,14 +472,17 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
         "Every task is terminal so the run is ready to seal, but no task recorded a post-task retro decision, which the seal gate requires.",
       evidence: {
         source: "tasks.packet.retroOutcome (none recorded)",
-        values: { runId: signals.run?.id ?? "unknown" }
+        values: {
+          runId: signals.run?.id ?? "unknown",
+          tasks: signals.sealReadyTaskIds ?? []
+        }
       },
       nextCommand:
         "npx tsx ./src/admin.ts record-retro --task-id <id> --outcome <memory_promoted|skill_patched|discarded|postmortem_filed|nothing_to_promote> --source orchestrator"
     });
   }
 
-  // 6. Respawn lease / budget (rank 50 / 55).
+  // 8. Respawn lease / budget (rank 50 / 55).
   const respawn = signals.respawn;
   if (respawn) {
     const respawnTaskInScope = inScope(signals, respawn.taskId);
@@ -378,10 +526,16 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
     }
   }
 
-  // 7. Sidecar blockers (rank 60-75). Each is present only when the sidecar file
-  // existed and parsed — an absent file leaves the field undefined (tolerated).
+  // 9. Sidecar blockers (rank 60-75). Each is present only when the sidecar
+  // file existed and parsed — an absent file leaves the field undefined
+  // (tolerated). hook-blocker command/summary are sanitized before display:
+  // secret-shaped substrings redacted, then truncated to a safe prefix with a
+  // pointer to the sidecar file for the untruncated (still-scrubbed-at-source)
+  // record — never reprint the raw recorded command/summary verbatim.
   const hookBlocker = signals.sidecars.hookBlocker;
   if (hookBlocker && inScope(signals, hookBlocker.taskId)) {
+    const safeCommand = sanitizeForDisplay(hookBlocker.command);
+    const safeSummary = sanitizeForDisplay(hookBlocker.summary);
     causes.push({
       id: "hook_blocker",
       rank: STALL_CAUSE_RANKS.hook_blocker,
@@ -392,12 +546,15 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
         source: ".archon/work/daemon/hook-blocker-state.json",
         values: {
           blockerKind: hookBlocker.blockerKind,
-          command: hookBlocker.command,
-          summary: hookBlocker.summary,
+          command: safeCommand,
+          summary: safeSummary,
           ...(hookBlocker.recordedAt ? { recordedAt: hookBlocker.recordedAt } : {})
         }
       },
-      nextCommand: `re-run the failed command until it passes: ${hookBlocker.command || "<recorded command>"}`
+      nextCommand:
+        safeCommand.trim().length > 0
+          ? `re-run the failed command (see .archon/work/daemon/hook-blocker-state.json for the full recorded command): ${safeCommand}`
+          : "re-run the failed command recorded in .archon/work/daemon/hook-blocker-state.json"
     });
   }
 
@@ -424,6 +581,10 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
     });
   }
 
+  // HIGH fix: join the FULL nextActions array, not just the first entry —
+  // proven against a real 2-step array in runtime.ts's preflight nextActions
+  // (`npm run archon:doctor -- --repair` then `npm run archon:reconcile`).
+  // Truncating to [0] silently drops later steps.
   const daemonHandoff = signals.sidecars.daemonHandoff;
   if (daemonHandoff) {
     causes.push({
@@ -439,35 +600,45 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
           reason: daemonHandoff.reason
         }
       },
-      nextCommand:
-        daemonHandoff.nextActions[0] ??
+      nextCommand: joinNextActions(
+        daemonHandoff.nextActions,
         "follow the operator-handoff nextActions in `npx tsx ./src/admin.ts status`"
+      )
     });
   }
 
+  // LOW fix: also cover max_cycles_reached and invalid states, not just
+  // "blocked" — both are non-terminal-success states the supervisor stopped
+  // in without completing the loop.
   const daemonSupervisor = signals.sidecars.daemonSupervisor;
-  if (daemonSupervisor && daemonSupervisor.state === "blocked") {
+  if (daemonSupervisor && daemonSupervisor.state !== "completed") {
     causes.push({
       id: "daemon_supervisor_blocked",
       rank: STALL_CAUSE_RANKS.daemon_supervisor_blocked,
       advisory: false,
       what:
-        "The daemon supervisor stopped in a blocked state and could not advance the loop on its own.",
+        daemonSupervisor.state === "max_cycles_reached"
+          ? "The daemon supervisor hit its max-cycles limit before the loop completed."
+          : daemonSupervisor.state === "invalid"
+            ? "The daemon supervisor recorded an invalid state and could not advance the loop."
+            : "The daemon supervisor stopped in a blocked state and could not advance the loop on its own.",
       evidence: {
         source: ".archon/work/daemon/supervisor-status.json",
         values: {
+          state: daemonSupervisor.state,
           blockerKind: daemonSupervisor.blockerKind ?? "unknown",
           reason: daemonSupervisor.reason
         }
       },
-      nextCommand:
-        daemonSupervisor.nextActions[0] ??
+      nextCommand: joinNextActions(
+        daemonSupervisor.nextActions,
         "follow the supervisor nextActions in `npx tsx ./src/admin.ts status`"
+      )
     });
   }
 
-  // 8. Advisory: owner work in flight (rank 90). Only meaningful information —
-  // never a stall by itself.
+  // 10. Advisory: owner work in flight (rank 90). Only meaningful information —
+  // never a stall by itself. Covers ready + in_progress tasks.
   const ownerWork = signals.ownerWork;
   if (ownerWork && ownerWork.taskIds.length > 0) {
     const ownerTasks = focusTask
@@ -503,6 +674,14 @@ export function diagnoseStall(signals: StallSignals): StallDiagnosis {
     causes,
     healthy
   };
+}
+
+/** Joins every step in a daemon nextActions array (never just the first) so a
+ * multi-step recovery sequence is never silently truncated to one step. */
+function joinNextActions(nextActions: readonly string[], fallback: string): string {
+  const steps = nextActions.filter((step) => step.trim().length > 0);
+  if (steps.length === 0) return fallback;
+  return steps.map((step, index) => `${index + 1}) ${step}`).join(" then ");
 }
 
 // ---------------------------------------------------------------------------
@@ -559,17 +738,21 @@ export function formatStallDiagnosis(diagnosis: StallDiagnosis): string {
       lines.push(`  ${line}`);
     }
     // Advisory causes (in-flight work) are still worth a mention.
-    const advisory = diagnosis.causes.filter((c) => c.advisory);
-    if (advisory.length > 0) {
+    const advisoryOnly = diagnosis.causes.filter((c) => c.advisory);
+    if (advisoryOnly.length > 0) {
       lines.push("");
-      for (const cause of advisory) {
+      for (const cause of advisoryOnly) {
         lines.push(`  - ${cause.what}`);
       }
     }
     return `${lines.join("\n")}\n`;
   }
 
+  // MEDIUM fix: the headline count and the numbered list must agree. Number
+  // only the blocking (non-advisory) causes — advisory causes are listed
+  // separately afterward, unnumbered, exactly as the healthy path does.
   const blocking = diagnosis.causes.filter((c) => !c.advisory);
+  const advisory = diagnosis.causes.filter((c) => c.advisory);
   const headline =
     blocking.length === 1
       ? `Here's why ${scopeLabel} is stuck:`
@@ -577,13 +760,20 @@ export function formatStallDiagnosis(diagnosis: StallDiagnosis): string {
   lines.push(headline);
 
   let index = 1;
-  for (const cause of diagnosis.causes) {
+  for (const cause of blocking) {
     lines.push("");
-    const tag = cause.advisory ? " (advisory - in-flight, not a stall)" : "";
-    lines.push(`${index}. ${cause.what}${tag}`);
+    lines.push(`${index}. ${cause.what}`);
     lines.push(`   evidence: ${formatEvidence(cause.evidence)}`);
     lines.push(`   fix:      ${cause.nextCommand}`);
     index += 1;
+  }
+
+  if (advisory.length > 0) {
+    lines.push("");
+    lines.push("Also (advisory — in-flight, not a stall):");
+    for (const cause of advisory) {
+      lines.push(`  - ${cause.what}`);
+    }
   }
 
   return `${lines.join("\n")}\n`;
