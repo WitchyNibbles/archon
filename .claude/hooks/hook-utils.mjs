@@ -1268,6 +1268,173 @@ export function resolveShellWordConcatenation(text) {
 }
 
 // ---------------------------------------------------------------------------
+// Command-word tokenizer (audit auditP3Stewards, security round 3 / finding 1)
+//
+// A plain `.split(/\s+/)` on resolved text would incorrectly split INSIDE a
+// `$(...)` command-substitution or `` `...` `` backtick span whenever the
+// substituted command itself contains a space (e.g. `$(echo psql)` would
+// wrongly become two "words": `$(echo` and `psql)`), which would defeat the
+// wrapper-peel and dynamic-word checks below. This tokenizer treats a
+// balanced `$( ... )` span or a backtick-delimited span as ONE atomic word
+// regardless of internal whitespace, then splits on real whitespace outside
+// those spans. Consumers of resolveShellWordConcatenation's earlier quote
+// resolution should tokenize with this, not a bare regex split.
+function splitCommandWords(text) {
+  const words = [];
+  let current = "";
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (/\s/.test(ch)) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      i++;
+      continue;
+    }
+    if (ch === "$" && text[i + 1] === "(") {
+      const start = i;
+      i += 2;
+      let depth = 1;
+      while (i < text.length && depth > 0) {
+        if (text[i] === "(") depth++;
+        else if (text[i] === ")") depth--;
+        i++;
+      }
+      current += text.slice(start, i);
+      continue;
+    }
+    if (ch === "`") {
+      const start = i;
+      i++;
+      while (i < text.length && text[i] !== "`") i++;
+      if (i < text.length) i++; // consume closing backtick
+      current += text.slice(start, i);
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+  if (current) {
+    words.push(current);
+  }
+  return words;
+}
+
+function resolvedCommandWords(segment) {
+  const resolved = resolveShellWordConcatenation(segment).trim();
+  return resolved ? splitCommandWords(resolved) : [];
+}
+
+// A resolved word is DYNAMIC when the executed program name is itself
+// computed at runtime — `$VAR`, `$(cmd)`, or `` `cmd` `` — rather than a
+// literal string this gate can compare against a blocklist. Position matters:
+// this is checked ONLY against the effective command word (see
+// peelWrapperCommands below), never against argument words, so a dynamic
+// ARGUMENT (`git commit -m "$(date)"`, `echo $HOME`) is untouched.
+function isDynamicCommandWord(word) {
+  return typeof word === "string" && word.length > 0 && (word.startsWith("$") || word.includes("$(") || word.includes("`"));
+}
+
+// ---------------------------------------------------------------------------
+// Wrapper-peel table (audit auditP3Stewards, security round 3, finding 1 —
+// HIGH, "known-wrapper recursion")
+//
+// Security round 3 rejected the round-2 "check the first word only" design as
+// insufficient: this repo's own docker-compose.yml documents the default
+// Postgres container and the direct-psql pattern, so `docker exec <container>
+// psql` is the single most obvious bypass, not a hypothetical one — and the
+// wrapper set (docker/sudo/env/nice/timeout/xargs/command/exec) is small and
+// enumerable, unlike character-level obfuscation. This table peels each
+// wrapper (and its own flags) off the front of a tokenized segment and
+// recurses into the trailing command, so `sudo docker exec ... psql` and
+// similar nesting resolve to `psql` the same as a bare invocation.
+//
+// PROPOSED, PENDING REVIEW (not yet gate-accepted as of this round — flagging
+// per the "let the security gate rule, do not silently soften" instruction):
+// flag-VALUE skipping is a best-effort allowlist (see wrapperFlagsWithValue),
+// not a full argument grammar for each wrapper. A flag this table doesn't
+// know takes a value (e.g. an exotic `docker exec` flag) can misalign the
+// peel and produce a false negative (the "value" gets treated as the command
+// word instead of the flag's argument). This is the same class of residual
+// gap as the interpreter-access note below — surfaced for the gate to weigh,
+// not silently accepted by the author of the fix.
+const wrapperFlagsWithValue = {
+  sudo: new Set(["-u", "-g", "-h", "-p", "--user", "--group", "--host", "--prompt", "--close-from"]),
+  nice: new Set(["-n", "--adjustment"]),
+  env: new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]),
+  timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+  xargs: new Set(["-I", "-i", "-L", "-n", "-P", "-s", "-a", "-d", "-E", "--replace", "--max-args", "--max-procs", "-l"]),
+  docker: new Set(["-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file", "-H"]),
+};
+const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const dockerWrappingSubcommands = new Set(["exec", "run"]);
+
+function skipFlags(tokens, index, wrapperName) {
+  const withValue = wrapperFlagsWithValue[wrapperName];
+  let i = index;
+  while (i < tokens.length && tokens[i].startsWith("-")) {
+    const flag = tokens[i];
+    i++;
+    if (withValue && withValue.has(flag) && !flag.includes("=") && i < tokens.length) {
+      i++;
+    }
+  }
+  return i;
+}
+
+// Walks a tokenized segment, peeling recognized wrappers (and their own
+// flags/values) off the front, and returns the effective command word bash
+// would actually exec — the word the DB-client and dynamic-word checks below
+// test. Returns "" if the segment has no tokens.
+function peelWrapperCommands(tokens) {
+  let i = 0;
+  while (i < tokens.length) {
+    const word = tokens[i];
+    if (word === "env") {
+      i++;
+      while (i < tokens.length && (envAssignmentPattern.test(tokens[i]) || tokens[i].startsWith("-"))) {
+        i = tokens[i].startsWith("-") ? skipFlags(tokens, i, "env") : i + 1;
+      }
+      continue;
+    }
+    if (word === "docker") {
+      i++;
+      if (tokens[i] === "compose") {
+        i++;
+      }
+      i = skipFlags(tokens, i, "docker");
+      if (i < tokens.length && dockerWrappingSubcommands.has(tokens[i])) {
+        i++; // consume exec/run
+        i = skipFlags(tokens, i, "docker");
+        if (i < tokens.length) i++; // consume the container/service name
+        continue;
+      }
+      return "docker"; // not a wrapping invocation (e.g. `docker compose up`) — stop peeling
+    }
+    if (word === "sudo" || word === "nice" || word === "command" || word === "exec") {
+      i++;
+      i = skipFlags(tokens, i, word);
+      continue;
+    }
+    if (word === "timeout") {
+      i++;
+      i = skipFlags(tokens, i, "timeout");
+      if (i < tokens.length) i++; // consume the duration argument
+      continue;
+    }
+    if (word === "xargs") {
+      i++;
+      i = skipFlags(tokens, i, "xargs");
+      continue;
+    }
+    return word;
+  }
+  return "";
+}
+
+// ---------------------------------------------------------------------------
 // Direct DB-client invocation gate (audit auditP3Stewards, security HIGH)
 //
 // runtime-medic's repair-authority boundary ("sanctioned admin CLI only, never
@@ -1292,36 +1459,47 @@ export function resolveShellWordConcatenation(text) {
 // command string (it imports the 'pg' package internally in TypeScript
 // source, not from the shell command line), so it is never caught here.
 //
-// DETECTION RULE (round 2, position-based — resolves the round-2 false
-// positive/negative tension): resolve word-concatenation (above), split into
-// top-level pipeline segments, and check whether the FIRST resolved word of
-// each segment is exactly one of psql/pgcli/pg_dump/pg_restore. Checking the
-// FIRST word only (rather than "the word anywhere in the segment") is what
-// keeps `grep -n "psql" foo.sh` / `grep -n psql foo.sh` (psql is grep's
-// ARGUMENT, not the executed program) from false-positiving, while still
-// catching a real invocation regardless of how it's quoted or split. Scanned
-// on the same three surfaces extractBashReferencedManagedPaths already scans
-// for managed-path writes: (1) each top-level pipeline segment; (2)
-// executable heredoc bodies (`bash <<EOF` / `psql ...` / `EOF`) — a heredoc
-// body's own first line is itself a first-word check; (3) `eval`/`sh -c`/
-// `bash -c` string payloads, same reasoning.
+// DETECTION RULE (position-based — resolves the round-2 false positive/
+// negative tension): resolve word-concatenation (above), split into top-level
+// pipeline segments, PEEL recognized wrappers off the front of each segment
+// (round 3), and check whether the resulting effective word is exactly one of
+// psql/pgcli/pg_dump/pg_restore. Checking a single EFFECTIVE word (rather
+// than "the word anywhere in the segment") is what keeps `grep -n "psql"
+// foo.sh` (psql is grep's ARGUMENT, not the executed program) from
+// false-positiving, while still catching a real invocation regardless of how
+// it's quoted, split, or wrapped. Scanned on the same three surfaces
+// extractBashReferencedManagedPaths already scans for managed-path writes:
+// (1) each top-level pipeline segment; (2) executable heredoc bodies
+// (`bash <<EOF` / `psql ...` / `EOF`); (3) `eval`/`sh -c`/`bash -c` string
+// payloads, same reasoning.
 //
 // Bypass: a task packet that genuinely needs direct DB access adds the
 // literal marker `db_direct` to its `## Allowed write scope` section —
 // mirrors how a managed control-layer PATH is explicitly granted today
 // (isManagedPathAllowed), just with a non-path token instead of a path.
 //
+// DYNAMIC-WORD RULE (round 3, finding 2 — command-substitution / env-var
+// indirection): if a segment's effective command word (after wrapper-peel)
+// is DYNAMIC (see isDynamicCommandWord above — `$VAR`, `$(cmd)`, `` `cmd` ``),
+// the executed program cannot be verified at all — treat it the same as a
+// matched client word: blocked without a `db_direct` scope grant. This closes
+// `$(echo psql) -c "..."` and `VAR=psql; $VAR -c "..."` (the latter splits
+// into two segments via splitBashSegments; the second segment's effective
+// word is `$VAR`). It deliberately does NOT trigger on a dynamic ARGUMENT —
+// `echo $HOME` and `git commit -m "$(date)"` are untouched because only the
+// EFFECTIVE COMMAND WORD position is checked, never argument positions.
+// PROPOSED, PENDING REVIEW: this is a blanket, position-only rule with a real
+// false-positive cost outside the DB-client context — a legitimate idiom like
+// `$(which node) script.js` or `$(brew --prefix)/bin/foo` also has a dynamic
+// first word and would be blocked here without a scope grant, even though
+// neither invokes a DB client. Implemented literally per the finding rather
+// than narrowed unilaterally; flagging the false-positive class explicitly so
+// the security gate can rule on whether a narrower, DB-adjacency-gated
+// version is required.
+//
 // ACCEPTED LIMITATIONS (stated, not hidden — this is friction/telemetry
 // hardening per the layered-defense stance, not a complete boundary):
-//   1. Wrapper-prefixed invocations (`docker exec <container> psql`, `sudo
-//      psql`, `env FOO=bar psql`, …) are NOT parsed — the wrapper word is
-//      checked, not the word after it. Parsing wrapper argument shapes
-//      correctly (docker exec/run take a variable number of flags before the
-//      container/image name) is out of scope for this fix; the first-word
-//      rule is the simpler, more defensible policy and matches every case
-//      the finding named. Round-1 self-added coverage for this shape has
-//      been removed accordingly (see tests/hook-policy.test.ts).
-//   2. Interpreter-mediated DB access (python + psycopg2, ruby + the `pg`
+//   1. Interpreter-mediated DB access (python + psycopg2, ruby + the `pg`
 //      gem, perl + DBI, …) is NOT detected by this gate at all — an
 //      interpreter that builds the connection dynamically or imports a
 //      driver under a different invocation shape keeps the token out of the
@@ -1329,13 +1507,22 @@ export function resolveShellWordConcatenation(text) {
 //      this from a silent gap into an owned one, per the MEDIUM finding):
 //      control scope for THIS gate = direct client binaries
 //      (psql/pgcli/pg_dump/pg_restore) + the Node/npx `require('pg')`
-//      one-liner shape only. Interpreter-mediated access remains covered
-//      solely by the layered defense already in place — runtime-authoritative
-//      records, the review-identity adapter, and review-orchestrator's
-//      gate-write monopoly — not by this Bash-command gate.
-//      Owner: security_reviewer. Recorded: 2026-07-05 (audit auditP3Stewards,
-//      security round 2, finding 3). Re-triage if a real interpreter-mediated
-//      bypass is observed in practice.
+//      one-liner shape + the wrapper set peeled above. Interpreter-mediated
+//      access remains covered solely by the layered defense already in
+//      place — runtime-authoritative records, the review-identity adapter,
+//      and review-orchestrator's gate-write monopoly — not by this
+//      Bash-command gate. Owner: security_reviewer. Recorded 2026-07-05,
+//      ACCEPTED under the security round 3 gate review (audit
+//      auditP3Stewards, PR #164) — this is a retrospective citation of an
+//      actual review verdict, not a self-granted tag written ahead of
+//      review. Re-triage if a real interpreter-mediated bypass is observed
+//      in practice.
+//   2. Wrapper-flag value-skipping is a best-effort allowlist, not a full
+//      argument grammar per wrapper — see the PROPOSED note on
+//      wrapperFlagsWithValue above (not yet gate-reviewed this round).
+//   3. The dynamic-word rule's false-positive class on legitimate
+//      dynamic-path idioms (e.g. `$(which node) ...`) — see the PROPOSED
+//      note directly above (not yet gate-reviewed this round).
 const directDbClientWords = new Set(["psql", "pgcli", "pg_dump", "pg_restore"]);
 // Checked on the RESOLVED (word-concatenation-collapsed) text, not masked —
 // the quoted `'pg'`/`"pg"` string is itself the signal for a require()/import
@@ -1346,16 +1533,12 @@ const directDbClientWords = new Set(["psql", "pgcli", "pg_dump", "pg_restore"]);
 const nodeInlineEvalFlagPattern = /\b(?:node|npx)\b[^\n]*\s(?:-e|-p|--eval|--print)\b/;
 const pgPackageReferencePattern = /require\(\s*['"]pg['"]\s*\)|from\s+['"]pg['"]/;
 
-// First resolved word of a single pipeline segment — the program bash would
-// actually exec for that segment. Empty string if the segment resolves to
-// nothing (e.g. blank after redirect-stripping).
-function firstResolvedWord(segment) {
-  const resolved = resolveShellWordConcatenation(segment).trim();
-  if (!resolved) {
-    return "";
-  }
-  const match = /^\S+/.exec(resolved);
-  return match ? match[0] : "";
+// Effective command word of a single pipeline segment — the program bash
+// would actually exec for that segment, AFTER peeling any recognized wrapper
+// prefix (docker exec/run, sudo, env, nice, timeout, xargs, command, exec).
+// "" if the segment resolves to no tokens (e.g. blank after redirect-stripping).
+function effectiveCommandWord(segment) {
+  return peelWrapperCommands(resolvedCommandWords(segment));
 }
 
 function textLooksLikeDirectDbClientInvocation(text) {
@@ -1365,7 +1548,7 @@ function textLooksLikeDirectDbClientInvocation(text) {
   const segments = splitBashSegments(text)
     .map((segment) => stripIoDiscardRedirects(segment).trim())
     .filter(Boolean);
-  if (segments.some((segment) => directDbClientWords.has(firstResolvedWord(segment)))) {
+  if (segments.some((segment) => directDbClientWords.has(effectiveCommandWord(segment)))) {
     return true;
   }
   const resolvedWhole = resolveShellWordConcatenation(text);
@@ -1386,6 +1569,43 @@ export function isDirectDbClientInvocation(command) {
   }
   for (const payload of extractShellStringPayloads(command)) {
     if (textLooksLikeDirectDbClientInvocation(payload)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function textHasUnverifiableDynamicCommandWord(text) {
+  if (typeof text !== "string" || text.length === 0) {
+    return false;
+  }
+  const segments = splitBashSegments(text)
+    .map((segment) => stripIoDiscardRedirects(segment).trim())
+    .filter(Boolean);
+  return segments.some((segment) => isDynamicCommandWord(effectiveCommandWord(segment)));
+}
+
+// Separate predicate (own message, own doc contract) from
+// isDirectDbClientInvocation per security round 3 finding 2 — a dynamic
+// effective command word (`$VAR`, `$(cmd)`, `` `cmd` ``) is unverifiable
+// regardless of whether it resolves to a DB client, so it gets its own
+// "unverifiable, not verified-innocent" message rather than being folded
+// into the DB-client-specific block text. Both predicates share the same
+// `db_direct` scope bypass — see hasDbDirectScopeGrant.
+export function hasUnverifiableDynamicCommandWord(command) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return false;
+  }
+  if (textHasUnverifiableDynamicCommandWord(stripHeredocBodies(command))) {
+    return true;
+  }
+  for (const body of extractExecutableHeredocBodies(command)) {
+    if (textHasUnverifiableDynamicCommandWord(body)) {
+      return true;
+    }
+  }
+  for (const payload of extractShellStringPayloads(command)) {
+    if (textHasUnverifiableDynamicCommandWord(payload)) {
       return true;
     }
   }

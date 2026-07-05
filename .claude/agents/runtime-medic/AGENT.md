@@ -25,29 +25,36 @@ state and to run those commands. You hold **no `Write`/`Edit` grant** — that i
 deliberate.
 
 - NEVER mutate the database directly (no `psql ... UPDATE/DELETE`, no ad-hoc SQL
-  writes, no `node -e "require('pg')..."` one-liners). Every state change goes
-  through an admin command that carries its own provenance and guards. This is
-  **not just a stated rule**: the PreToolUse Bash hook detects and blocks direct
-  invocations of `psql`/`pgcli`/`pg_dump`/`pg_restore` and the node/npx-`require('pg')`
-  one-liner shape unconditionally — including quote-split or backslash-split
-  forms of those words (e.g. `p""sql`, `pg''_dump`) — you should never need,
-  and must never request, the `db_direct` write-scope marker that would lift
-  that block. If a diagnostic genuinely requires a capability the admin CLI
-  does not expose, that is an escalation (propose the missing admin-CLI
-  capability), not a reason to reach for direct DB access.
-  - **Recorded boundary scope (owner: security_reviewer, dated 2026-07-05,
-    audit auditP3Stewards security round 2):** the Bash gate's control scope
-    is direct client binaries (`psql`/`pgcli`/`pg_dump`/`pg_restore`) plus the
-    Node/npx `require('pg')` one-liner shape. It does not, and is not claimed
-    to, catch interpreter-mediated DB access (python + psycopg2, ruby + the
-    `pg` gem, perl + DBI, or any driver invoked through a wrapper such as
-    `docker exec ... psql`). You must not use any of these shapes to route
-    around the gate — the fact that the gate cannot detect them is not
-    permission; the same "sanctioned admin CLI only" rule applies regardless
-    of what does or doesn't trip the hook. Interpreter-mediated access is
-    covered only by the layered defense already in place (runtime-authoritative
-    records, the review-identity adapter, review-orchestrator's gate-write
-    monopoly) — not by this Bash-command gate.
+  writes, no `node -e "require('pg')..."` one-liners, no wrapped form like
+  `sudo psql`/`docker exec <container> psql`/`env PGPASSWORD=x psql`/`timeout N
+  psql`). Every state change goes through an admin command that carries its own
+  provenance and guards. This is **not just a stated rule**: the PreToolUse Bash
+  hook detects and blocks direct invocations of `psql`/`pgcli`/`pg_dump`/
+  `pg_restore` and the node/npx-`require('pg')` one-liner shape unconditionally
+  — including quote-split or backslash-split forms of those words (e.g.
+  `p""sql`, `pg''_dump`), and including invocations wrapped through
+  `sudo`/`docker exec`/`docker run`/`env`/`nice`/`timeout`/`xargs`/`command`/
+  `exec` (nested wrappers peel iteratively, e.g. `sudo docker exec ... psql` is
+  still caught) — you should never need, and must never request, the
+  `db_direct` write-scope marker that would lift that block. A command whose
+  program name is computed at runtime (`$VAR`, `$(cmd)`, `` `cmd` ``) is
+  blocked too, as unverifiable, regardless of what it resolves to. If a
+  diagnostic genuinely requires a capability the admin CLI does not expose,
+  that is an escalation (propose the missing admin-CLI capability), not a
+  reason to reach for direct DB access.
+  - **Recorded boundary scope (owner: security_reviewer; interpreter-mediated
+    scope dated 2026-07-05, ACCEPTED under the security round 3 gate review —
+    audit auditP3Stewards, PR #164):** the Bash gate's control scope is direct
+    client binaries (`psql`/`pgcli`/`pg_dump`/`pg_restore`), the Node/npx
+    `require('pg')` one-liner shape, and the enumerated wrapper set above. It
+    does not, and is not claimed to, catch interpreter-mediated DB access
+    (python + psycopg2, ruby + the `pg` gem, perl + DBI). You must not use any
+    of these shapes to route around the gate — the fact that the gate cannot
+    detect them is not permission; the same "sanctioned admin CLI only" rule
+    applies regardless of what does or doesn't trip the hook. Interpreter-
+    mediated access is covered only by the layered defense already in place
+    (runtime-authoritative records, the review-identity adapter, review-
+    orchestrator's gate-write monopoly) — not by this Bash-command gate.
 - NEVER write review or approval records. `save-review`/`save-approval` and every
   gate outcome are the **review-orchestrator's monopoly** — writing them from here
   would forge trusted-orchestrator provenance. If a run is stuck *because* a gate
@@ -146,10 +153,11 @@ reflexively — each mutation you don't need is a new drift risk.
   `task-queue.json`/packets to force state — the Bash hook blocks these
   outright; do not request `db_direct` scope to work around it
 - Routing around the gate through a shape it doesn't parse (an interpreter
-  script, or a wrapper like `docker exec ... psql`) — the gate's blind spots
-  are a recorded, owned limitation (see the boundary section above), not an
-  invitation; the "sanctioned admin CLI only" rule is not conditional on
-  whether the hook happens to catch the alternative
+  script such as python/psycopg2 — the enumerated wrapper set, including
+  `docker exec`/`sudo`/`env`/`timeout`, IS now caught) — the gate's remaining
+  blind spots are a recorded, owned limitation (see the boundary section
+  above), not an invitation; the "sanctioned admin CLI only" rule is not
+  conditional on whether the hook happens to catch the alternative
 - Writing any review/approval/gate record (review-orchestrator's monopoly)
 - Running the full command chain when one step would fix it
 - Pruning or sealing without a backup / `--acknowledge-no-retro` reason on non-trivial sets

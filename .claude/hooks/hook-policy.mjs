@@ -8,6 +8,7 @@ import {
   extractToolCommand,
   getBashExitCode,
   hasDbDirectScopeGrant,
+  hasUnverifiableDynamicCommandWord,
   isAllowedPath,
   isDestructiveCommand,
   isDirectDbClientInvocation,
@@ -160,7 +161,19 @@ export function evaluatePermissionRequest(payload, context) {
     return {
       decision: "deny",
       reason:
-        "approval request for a direct database-client invocation (psql/pg_dump/pg_restore, or a node/npx one-liner importing 'pg') is blocked outside a `db_direct` write-scope grant"
+        "approval request for a direct database-client invocation (psql/pgcli/pg_dump/pg_restore, or a node/npx one-liner importing 'pg') is blocked outside a `db_direct` write-scope grant"
+    };
+  }
+
+  // Audit auditP3Stewards HIGH (security round 3, finding 2): a command whose
+  // effective program name is computed at runtime ($VAR, $(cmd), `cmd`)
+  // cannot be verified as safe OR as a DB client — treat as unverifiable and
+  // block the same way, on the approval-request path too.
+  if (hasUnverifiableDynamicCommandWord(command) && !hasDbDirectScopeGrant(context.allowedWriteScope)) {
+    return {
+      decision: "deny",
+      reason:
+        "approval request for a command with a dynamic command word cannot be verified — invoke the program directly or via the admin CLI. If a task genuinely requires this, add `db_direct` to its ## Allowed write scope."
     };
   }
 
@@ -255,7 +268,20 @@ export function evaluatePreToolUse(payload, context) {
       return {
         decision: "block",
         reason:
-          "direct database-client invocation (psql/pg_dump/pg_restore, or a node/npx one-liner importing 'pg') is blocked outside a `db_direct` write-scope grant — route ALL database interaction through the sanctioned admin CLI (npx tsx ./src/admin.ts <command>) instead. If a task genuinely requires direct DB access, add `db_direct` to its ## Allowed write scope."
+          "direct database-client invocation (psql/pgcli/pg_dump/pg_restore, or a node/npx one-liner importing 'pg') is blocked outside a `db_direct` write-scope grant — route ALL database interaction through the sanctioned admin CLI (npx tsx ./src/admin.ts <command>) instead. If a task genuinely requires direct DB access, add `db_direct` to its ## Allowed write scope."
+      };
+    }
+
+    // Audit auditP3Stewards HIGH (security round 3, finding 2): the executed
+    // program name is unverifiable when it is itself computed at runtime
+    // ($VAR, $(cmd), `cmd`) — this could be psql, could be anything. Same
+    // `db_direct` bypass as the DB-client check above; own message per the
+    // finding's explicit wording requirement.
+    if (hasUnverifiableDynamicCommandWord(command) && !hasDbDirectScopeGrant(context.allowedWriteScope)) {
+      return {
+        decision: "block",
+        reason:
+          "dynamic command word cannot be verified — invoke the program directly or via the admin CLI (npx tsx ./src/admin.ts <command>). If a task genuinely requires this, add `db_direct` to its ## Allowed write scope."
       };
     }
 

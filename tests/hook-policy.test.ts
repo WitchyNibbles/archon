@@ -37,6 +37,7 @@ const {
   isHandoffArtifactPath,
   isDirectDbClientInvocation,
   hasDbDirectScopeGrant,
+  hasUnverifiableDynamicCommandWord,
   isDestructiveCommand,
   resolveShellWordConcatenation
 } = await import(`${hooksDir}/hook-utils.mjs`);
@@ -373,23 +374,45 @@ test("isDirectDbClientInvocation: pg_dump, pg_restore, and pgcli are detected", 
 });
 
 // Security round 2 (finding 1): the detection rule moved from "the word
-// appears anywhere in the segment" to "the FIRST resolved word of the
+// appears anywhere in the segment" to "the EFFECTIVE resolved word of the
 // segment IS the word" — this is what resolves the quote-splitting false
 // negative below without reintroducing a false positive on `grep -n "psql"
-// file` (psql is grep's ARGUMENT there, not the executed program). One
-// documented, accepted consequence: a wrapper-prefixed invocation like
-// `docker exec archon-postgres psql ...` is no longer caught, because the
-// first resolved word of that segment is `docker`, not `psql` — this is a
-// disclosed scope trim (see the "ACCEPTED LIMITATIONS" doc comment on
-// isDirectDbClientInvocation in hook-utils.mjs), not a regression: it was
-// never a shape any finding required, and it was only ever caught by the
-// old, broader (and, per this finding, exploitable) "anywhere in segment"
-// rule.
-test("isDirectDbClientInvocation: wrapper-prefixed invocation (docker exec ... psql) is NOT caught by the first-word rule (documented scope trim, security round 2)", () => {
+// file` (psql is grep's ARGUMENT there, not the executed program).
+//
+// Security round 3 (finding 1) rejected treating "first resolved word only"
+// (with no wrapper awareness) as sufficient — this repo's own
+// docker-compose.yml documents the default Postgres container and the
+// direct-psql pattern, making `docker exec <container> psql` the single most
+// obvious bypass, not a hypothetical one. The gate now PEELS a small,
+// enumerable wrapper set (docker exec/run, sudo, env, nice, timeout, xargs,
+// command, exec — including nested combinations) before checking the
+// effective word, so these ARE caught again, this time without
+// reintroducing the round-2 quote-splitting hole (peeling operates on
+// resolved, whitespace-tokenized words, not raw substring matching).
+test("isDirectDbClientInvocation: wrapper-prefixed invocation (docker exec ... psql) is caught via wrapper-peel (security round 3, HIGH)", () => {
   assert.equal(
     isDirectDbClientInvocation('docker exec archon-postgres psql -U archon -d archon -tAc "select 1;"'),
-    false
+    true
   );
+});
+
+test("isDirectDbClientInvocation: single-wrapper forms are all caught via wrapper-peel (security round 3, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("sudo psql"), true);
+  assert.equal(isDirectDbClientInvocation("env PGPASSWORD=x psql"), true);
+  assert.equal(isDirectDbClientInvocation("timeout 5 psql"), true);
+});
+
+test("isDirectDbClientInvocation: nested wrappers peel iteratively (sudo docker exec ... psql) (security round 3, HIGH)", () => {
+  assert.equal(
+    isDirectDbClientInvocation('sudo docker exec archon-postgres psql -c "select 1"'),
+    true
+  );
+});
+
+test("isDirectDbClientInvocation: wrapper commands with a benign target still pass (security round 3, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("docker compose up"), false);
+  assert.equal(isDirectDbClientInvocation("sudo npm test"), false);
+  assert.equal(isDirectDbClientInvocation("timeout 60 npm test"), false);
 });
 
 test("isDirectDbClientInvocation: quote-split evasion (p\"\"sql / pg''_dump) is detected (security round 2, HIGH)", () => {
@@ -467,6 +490,66 @@ test("hasDbDirectScopeGrant: true only when the literal `db_direct` marker is pr
   assert.equal(hasDbDirectScopeGrant([]), false);
   assert.equal(hasDbDirectScopeGrant(["src/archon"]), false);
   assert.equal(hasDbDirectScopeGrant(undefined), false);
+});
+
+// ─── hasUnverifiableDynamicCommandWord (security round 3, finding 2) ─────────
+// A command word computed at runtime ($VAR, $(cmd), `cmd`) cannot be
+// verified — block it the same way as a matched DB-client word, but with its
+// own message. Only the COMMAND-WORD position triggers this; a dynamic
+// ARGUMENT (already resolved inside a static command) must not.
+
+test("hasUnverifiableDynamicCommandWord: command substitution as the command word is detected (security round 3, HIGH)", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord('$(echo psql) -c "UPDATE reviews SET outcome=1"'), true);
+});
+
+test("hasUnverifiableDynamicCommandWord: env-var indirection as the command word is detected (security round 3, HIGH)", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord('VAR=psql; $VAR -c "select 1"'), true);
+});
+
+test("hasUnverifiableDynamicCommandWord: backtick command substitution as the command word is detected (security round 3, HIGH)", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord("`echo psql` --version"), true);
+});
+
+test("hasUnverifiableDynamicCommandWord: dynamic ARGUMENTS on an otherwise-static command are NOT flagged (security round 3, HIGH)", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord("echo $HOME"), false);
+  assert.equal(hasUnverifiableDynamicCommandWord('git commit -m "$(date)"'), false);
+});
+
+test("hasUnverifiableDynamicCommandWord: ordinary static commands are NOT flagged", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord("npm test"), false);
+  assert.equal(hasUnverifiableDynamicCommandWord("npx tsx ./src/admin.ts status"), false);
+});
+
+test("evaluatePreToolUse: command-substitution command word is blocked, with the dynamic-word message", () => {
+  const result = evaluatePreToolUse(bashPayload('$(echo psql) -c "select 1"'), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /dynamic command word cannot be verified/i);
+});
+
+test("evaluatePreToolUse: env-var-indirection command word is blocked", () => {
+  const result = evaluatePreToolUse(bashPayload('VAR=psql; $VAR -c "select 1"'), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /dynamic command word cannot be verified/i);
+});
+
+test("evaluatePreToolUse: dynamic-word block is lifted with `db_direct` scope", () => {
+  const ctx = contextWithScope("db_direct");
+  const result = evaluatePreToolUse(bashPayload("$(echo psql) --version"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePreToolUse: legitimate dynamic ARGUMENTS on a static command are not blocked by the dynamic-word gate", () => {
+  const result = evaluatePreToolUse(bashPayload('git commit -m "$(date)"'), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePermissionRequest: dynamic command word approval request is denied", () => {
+  const result = evaluatePermissionRequest(bashPayload("$(echo psql) --version"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "deny");
+  assert.match(result.reason, /dynamic command word cannot be verified/i);
 });
 
 // ─── resolveShellWordConcatenation / isDestructiveCommand (security round 2) ─
