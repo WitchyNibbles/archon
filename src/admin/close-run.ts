@@ -26,6 +26,7 @@ import {
   type ClosurePlan,
   type ClosureTaskEvidence
 } from "../core/closure-reconciler.ts";
+import { RETRO_OUTCOME_TOKENS } from "./record-retro.ts";
 
 export interface CloseRunDeps {
   getStatusSnapshot: (runId: string) => Promise<RunStatusSnapshot>;
@@ -111,7 +112,11 @@ const RETRO_COMMAND_HINT =
 function hasRecordedRetroDecision(tasks: readonly TaskRecord[]): boolean {
   return tasks.some((task) => {
     const outcome = task.packet.retroOutcome;
-    return typeof outcome === "string" && outcome.trim().length > 0;
+    // Validate against the actual RETRO_OUTCOME_TOKENS set, not truthy-only —
+    // a stray non-token string (future refactor, manual DB fix, copy-paste bug
+    // in some other updateTask call site) must not silently satisfy this
+    // governance gate (PR #163 round-2 review finding #2).
+    return typeof outcome === "string" && RETRO_OUTCOME_TOKENS.has(outcome);
   });
 }
 

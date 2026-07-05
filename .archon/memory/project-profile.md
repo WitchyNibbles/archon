@@ -33,12 +33,12 @@ source: CLAUDE.md §§ "Default mode" and "Manager kernel" — repo-root operati
 ```
 role: solution-architect
 domain: runtime
-scope: package.json, src/, .archon/work/audit-2026-07-debt/ecosystem-recommendations.md
+scope: package.json, src/
 status: active
 decision: TypeScript + Node 22 ESM; workflow-runtime is postgres; retrieval is pgvector; tool surface is MCP servers (@modelcontextprotocol/sdk); orchestration is Claude-Code-native (hooks, agents, skills)
-constraint: Claude-Code-native architecture — no external orchestrator wrapper (validated by 2026-04-04 Anthropic third-party-framework policy)
+constraint: Claude-Code-native architecture — no external orchestrator wrapper (package.json carries no LangChain/AutoGPT/CrewAI-style orchestration dependency)
 pattern: distributed as dist-only scoped npm package @witchynibbles/archon with a bin entrypoint
-source: .archon/work/audit-2026-07-debt/ecosystem-recommendations.md (cites the 2026-04-04 Anthropic third-party-framework policy validating the Claude-Code-native architecture, no external orchestrator wrapper); install-overhaul PRs #141-#151 (merged as v0.2.0) for the dist-only scoped-npm-package + bin-entrypoint facts
+source: package.json (dependency list — self-evidences no external orchestrator-wrapper dependency; stack facts); PRs #141-#151 (install overhaul, merged as v0.2.0) for the dist-only scoped-npm-package + bin-entrypoint facts. Previously cited an untracked, now-nonexistent .archon/work/audit-2026-07-debt/ecosystem-recommendations.md — replaced because a gitignored path (`.archon/work/*`) is not durable, reviewed provenance and won't exist for a fresh clone; the specific dated-policy claim it made ("validated by 2026-04-04 Anthropic third-party-framework policy") had no corroborating tracked source and was dropped rather than re-cited unverified.
 ```
 
 ## Non-negotiable constraints
@@ -46,10 +46,10 @@ source: .archon/work/audit-2026-07-debt/ecosystem-recommendations.md (cites the 
 ```
 role: reviewer
 domain: review
-scope: CLAUDE.md ("Operating character", "Gate rules"), .archon/rules/review-gate-policy.md
+scope: CLAUDE.md ("Operating character", "Gate rules", "Workflow contract", "Setup and memory"), .archon/rules/review-gate-policy.md
 status: active
 constraint: review_authority=runtime_orchestrated_only and review_artifact_trust=runtime_records_only — a connected runtime trusts only orchestrator-written DB review rows; self-written markdown never satisfies the gate
 constraint: runtime workflow-proof is the completion authority; exported markdown is evidence only
 constraint: never store secrets, tokens, or artifact payloads in durable-memory
-source: CLAUDE.md §§ "Operating character" and "Gate rules" (repo root) — these sections are the source of these constraints, not a downstream restatement
+source: CLAUDE.md §§ "Operating character", "Gate rules", "Workflow contract", "Setup and memory" (repo root) — precise per-fact mapping: `review_authority`/`review_artifact_trust` literal keys live under "Workflow contract"; "runtime workflow proof is the completion authority" and reviewer-identity trust live under "Gate rules"; "never store secrets, tokens, credentials, or private keys in durable memory" lives under "Setup and memory"; "Operating character" retained as the source of this entry's broader non-negotiable framing
 ```

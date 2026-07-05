@@ -169,6 +169,22 @@ test("retro gate: seal is BLOCKED when no task in the run has a recorded retro d
   );
 });
 
+test("retro gate: seal is BLOCKED when retroOutcome is a garbage/non-token string (PR #163 round-2 finding #2)", async () => {
+  // "blah" is a non-empty string but not a member of RETRO_OUTCOME_TOKENS — the
+  // gate must validate against the actual token set, not truthy-only, so a
+  // stray value from a future refactor or manual DB fix cannot silently
+  // satisfy the governance gate the same way a real record-retro call would.
+  const snap = snapshotOf([task("t1", "done", "blah"), task("t2", "done")]);
+  const lines: string[] = [];
+  const calls = { updatedRuns: [] as RunRecord[], sealed: [] as string[] };
+  const result = await reconcileRunClosure("run-1", true, collectingDeps(snap, lines, calls));
+
+  assert.equal(result.sealedRun, false, "a garbage retroOutcome must not satisfy the seal gate");
+  assert.equal(calls.updatedRuns.length, 0, "the run record must not be mutated");
+  assert.equal(calls.sealed.length, 0, "onRunSealed must not fire");
+  assert.ok(lines.some((l) => l.includes("BLOCKED") && l.includes("retro")), "must explain the block");
+});
+
 test("retro gate: seal SUCCEEDS when a task's retroOutcome is recorded", async () => {
   const snap = snapshotOf([task("t1", "done", "skill_patched"), task("t2", "done")]);
   const lines: string[] = [];
