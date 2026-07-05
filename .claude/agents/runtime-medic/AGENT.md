@@ -36,12 +36,18 @@ deliberate.
   `sudo`/`docker exec`/`docker run`/`env`/`nice`/`timeout`/`xargs`/`command`/
   `exec` (nested wrappers peel iteratively, e.g. `sudo docker exec ... psql` is
   still caught) — you should never need, and must never request, the
-  `db_direct` write-scope marker that would lift that block. A command whose
-  program name is computed at runtime (`$VAR`, `$(cmd)`, `` `cmd` ``) is
-  blocked too, as unverifiable, regardless of what it resolves to. If a
-  diagnostic genuinely requires a capability the admin CLI does not expose,
-  that is an escalation (propose the missing admin-CLI capability), not a
-  reason to reach for direct DB access.
+  `db_direct` write-scope marker that would lift that block. Wrapper-peeling
+  is **fail-closed**: any flag on the wrapper the gate cannot positively
+  classify (e.g. `docker run --name x`, `sudo --preserve-env FOO`) stops the
+  command word from being verified at all, and the whole command is blocked
+  as unverifiable — even when the trailing command is completely benign (e.g.
+  `sudo -D /tmp npm test` blocks). Don't reach for an exotic wrapper flag as a
+  way to "get past" the gate: an unrecognized flag makes things MORE blocked,
+  not less. A command whose program name is computed at runtime (`$VAR`,
+  `$(cmd)`, `` `cmd` ``) is blocked too, as unverifiable, regardless of what it
+  resolves to. If a diagnostic genuinely requires a capability the admin CLI
+  does not expose, that is an escalation (propose the missing admin-CLI
+  capability), not a reason to reach for direct DB access.
   - **Recorded boundary scope (owner: security_reviewer; interpreter-mediated
     scope dated 2026-07-05, ACCEPTED under the security round 3 gate review —
     audit auditP3Stewards, PR #164):** the Bash gate's control scope is direct

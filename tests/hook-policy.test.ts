@@ -38,6 +38,7 @@ const {
   isDirectDbClientInvocation,
   hasDbDirectScopeGrant,
   hasUnverifiableDynamicCommandWord,
+  hasAmbiguousWrapperFlag,
   isDestructiveCommand,
   resolveShellWordConcatenation
 } = await import(`${hooksDir}/hook-utils.mjs`);
@@ -413,6 +414,92 @@ test("isDirectDbClientInvocation: wrapper commands with a benign target still pa
   assert.equal(isDirectDbClientInvocation("docker compose up"), false);
   assert.equal(isDirectDbClientInvocation("sudo npm test"), false);
   assert.equal(isDirectDbClientInvocation("timeout 60 npm test"), false);
+});
+
+// ─── hasAmbiguousWrapperFlag (security round 4 — FAIL-CLOSED redesign) ───────
+// Round 3's wrapper-peel used an OPTIMISTIC "skip anything starting with -"
+// rule that silently mis-parsed ordinary shapes with an unrecognized flag,
+// letting the real command escape undetected. Round 4 requires FAIL CLOSED:
+// an unrecognized flag during peel stops immediately and is reported as
+// unverifiable via hasAmbiguousWrapperFlag, rather than guessed past.
+
+test("hasAmbiguousWrapperFlag: docker run with an unrecognized --name flag is ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker run --name pgtmp postgres psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: unrecognized docker flags (--memory, --hostname) are ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker run --memory 512m postgres psql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("docker run --hostname pg postgres psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: docker compose with an unrecognized top-level flag is ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker compose -f file exec db psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: sudo with unrecognized flags (-D, --preserve-env with a value) is ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("sudo -D dir psql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("sudo --preserve-env FOO psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: xargs with an unrecognized --arg-file flag is ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("xargs --arg-file f psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: the required benign matrix still passes (docker compose up, sudo npm test, timeout 60 npm test, env FOO=bar npm test)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker compose up"), false);
+  assert.equal(hasAmbiguousWrapperFlag("sudo npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("timeout 60 npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("env FOO=bar npm test"), false);
+});
+
+test("hasAmbiguousWrapperFlag: the recognized-flag matrix (docker exec/run's -u/-w/-e/-H, sudo's -u/-g/-h) still passes", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker exec -u root archon-postgres npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("sudo -u builder npm test"), false);
+});
+
+test("isDirectDbClientInvocation: known-wrapper recursion still resolves psql correctly when no ambiguous flag is present (regression, rounds 2-4)", () => {
+  assert.equal(
+    isDirectDbClientInvocation('docker exec archon-postgres psql -U archon -d archon -tAc "select 1;"'),
+    true
+  );
+  assert.equal(isDirectDbClientInvocation("sudo psql"), true);
+  assert.equal(isDirectDbClientInvocation("env PGPASSWORD=x psql"), true);
+  assert.equal(isDirectDbClientInvocation("timeout 5 psql"), true);
+  assert.equal(isDirectDbClientInvocation('sudo docker exec archon-postgres psql -c "select 1"'), true);
+});
+
+test("evaluatePreToolUse: docker run with an unrecognized flag is blocked, with the ambiguous-wrapper-flag message", () => {
+  const result = evaluatePreToolUse(bashPayload("docker run --name pgtmp postgres psql"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /unrecognized wrapper flag prevents command verification/i);
+});
+
+test("evaluatePreToolUse: sudo with an unrecognized flag is blocked even for a benign trailing command (accepted fail-closed friction)", () => {
+  const result = evaluatePreToolUse(bashPayload("sudo -D /tmp npm test"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /unrecognized wrapper flag prevents command verification/i);
+});
+
+test("evaluatePreToolUse: ambiguous-wrapper-flag block is lifted with `db_direct` scope", () => {
+  const ctx = contextWithScope("db_direct");
+  const result = evaluatePreToolUse(bashPayload("docker run --name pgtmp postgres psql"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePreToolUse: the benign matrix is not blocked by the ambiguous-wrapper-flag gate", () => {
+  for (const command of ["docker compose up", "sudo npm test", "timeout 60 npm test", "env FOO=bar npm test"]) {
+    const result = evaluatePreToolUse(bashPayload(command), emptyContext());
+    assert.ok(result === undefined || result.decision !== "block", `expected "${command}" to pass`);
+  }
+});
+
+test("evaluatePermissionRequest: docker run with an unrecognized flag is denied, with the ambiguous-wrapper-flag message", () => {
+  const result = evaluatePermissionRequest(bashPayload("docker run --name pgtmp postgres psql"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "deny");
+  assert.match(result.reason, /unrecognized wrapper flag prevents command verification/i);
 });
 
 test("isDirectDbClientInvocation: quote-split evasion (p\"\"sql / pg''_dump) is detected (security round 2, HIGH)", () => {

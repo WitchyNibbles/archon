@@ -7,6 +7,7 @@ import {
   extractBashWriteTargets,
   extractToolCommand,
   getBashExitCode,
+  hasAmbiguousWrapperFlag,
   hasDbDirectScopeGrant,
   hasUnverifiableDynamicCommandWord,
   isAllowedPath,
@@ -177,6 +178,18 @@ export function evaluatePermissionRequest(payload, context) {
     };
   }
 
+  // Audit auditP3Stewards HIGH (security round 4): an unrecognized flag hit
+  // while peeling a known wrapper (docker/sudo/env/nice/timeout/xargs/
+  // command/exec) makes the effective command word unverifiable — fail
+  // closed on the approval-request path too, rather than guess past it.
+  if (hasAmbiguousWrapperFlag(command) && !hasDbDirectScopeGrant(context.allowedWriteScope)) {
+    return {
+      decision: "deny",
+      reason:
+        "approval request cannot be verified: unrecognized wrapper flag prevents command verification — simplify the invocation or use the admin CLI. If a task genuinely requires this, add `db_direct` to its ## Allowed write scope."
+    };
+  }
+
   const managedTarget = extractBashReferencedManagedPaths(command, context.repoRoot).find(
     (target) => !isManagedPrefixPartiallyAllowed(target, context.allowedWriteScope)
   );
@@ -282,6 +295,22 @@ export function evaluatePreToolUse(payload, context) {
         decision: "block",
         reason:
           "dynamic command word cannot be verified — invoke the program directly or via the admin CLI (npx tsx ./src/admin.ts <command>). If a task genuinely requires this, add `db_direct` to its ## Allowed write scope."
+      };
+    }
+
+    // Audit auditP3Stewards HIGH (security round 4, "known-wrapper recursion"
+    // redesigned fail-closed): an unrecognized flag hit while peeling a known
+    // wrapper (docker/sudo/env/nice/timeout/xargs/command/exec) makes the
+    // effective command word unverifiable — probing found ordinary shapes
+    // (docker run --name ..., sudo --preserve-env ..., docker compose -f ...,
+    // xargs --arg-file ...) that an earlier optimistic flag-skip silently
+    // mis-parsed, letting the real command escape. Fail closed instead of
+    // guessing. Same `db_direct` bypass; own message per the finding.
+    if (hasAmbiguousWrapperFlag(command) && !hasDbDirectScopeGrant(context.allowedWriteScope)) {
+      return {
+        decision: "block",
+        reason:
+          "unrecognized wrapper flag prevents command verification — simplify the invocation or use the admin CLI (npx tsx ./src/admin.ts <command>). If a task genuinely requires this, add `db_direct` to its ## Allowed write scope."
       };
     }
 

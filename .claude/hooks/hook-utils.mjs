@@ -1338,64 +1338,142 @@ function isDynamicCommandWord(word) {
 }
 
 // ---------------------------------------------------------------------------
-// Wrapper-peel table (audit auditP3Stewards, security round 3, finding 1 —
-// HIGH, "known-wrapper recursion")
+// Wrapper-peel table (audit auditP3Stewards, security round 3 finding 1 HIGH
+// "known-wrapper recursion"; redesigned FAIL-CLOSED in security round 4)
 //
 // Security round 3 rejected the round-2 "check the first word only" design as
 // insufficient: this repo's own docker-compose.yml documents the default
 // Postgres container and the direct-psql pattern, so `docker exec <container>
 // psql` is the single most obvious bypass, not a hypothetical one — and the
 // wrapper set (docker/sudo/env/nice/timeout/xargs/command/exec) is small and
-// enumerable, unlike character-level obfuscation. This table peels each
-// wrapper (and its own flags) off the front of a tokenized segment and
-// recurses into the trailing command, so `sudo docker exec ... psql` and
-// similar nesting resolve to `psql` the same as a bare invocation.
+// enumerable, unlike character-level obfuscation.
 //
-// PROPOSED, PENDING REVIEW (not yet gate-accepted as of this round — flagging
-// per the "let the security gate rule, do not silently soften" instruction):
-// flag-VALUE skipping is a best-effort allowlist (see wrapperFlagsWithValue),
-// not a full argument grammar for each wrapper. A flag this table doesn't
-// know takes a value (e.g. an exotic `docker exec` flag) can misalign the
-// peel and produce a false negative (the "value" gets treated as the command
-// word instead of the flag's argument). This is the same class of residual
-// gap as the interpreter-access note below — surfaced for the gate to weigh,
-// not silently accepted by the author of the fix.
+// Security round 4 rejected the round-3 implementation of that direction:
+// probing found ordinary shapes an OPTIMISTIC "skip anything starting with -,
+// consume one extra token only for flags on a known allowlist" rule silently
+// mis-skipped — `docker run --name pgtmp postgres psql` (an unrecognized
+// `--name` swallowed as if boolean, so the real image/command shifted left
+// and `psql` slipped past unseen), `--memory`, `--hostname`, `docker compose
+// -f file exec db psql`, `sudo -D dir psql`, `sudo --preserve-env FOO psql`,
+// `xargs --arg-file f psql`. The direction the gate wants (PROPOSED here,
+// not yet ratified as of this round — recording the decision explicitly
+// rather than self-declaring it accepted): FAIL CLOSED. While peeling a
+// wrapper, a flag token this table cannot POSITIVELY classify — not a known
+// no-value boolean, not a known value-taking flag — STOPS the peel
+// immediately and marks the segment AMBIGUOUS. An ambiguous segment is
+// treated as unverifiable on the managed trust surface (see
+// hasAmbiguousWrapperFlag below) — blocked without a `db_direct` scope grant,
+// the same relief valve as every other gate in this file, rather than guessed
+// past. Consequence embraced, not a bug: `docker run --name pgtmp postgres
+// anything` now blocks even for a wholly benign trailing command — this is
+// intentional fail-closed friction, the same class of tradeoff as decision
+// (b) on interpreter-mediated access below, relieved by the scope grant or by
+// simplifying the invocation.
+//
+// The boolean/value tables below are deliberately NOT exhaustive of each
+// wrapper's real flag set — that is the point. A flag absent from both is
+// unrecognized by design and drives the fail-closed path, not a gap to keep
+// closing reactively. Only flags actually exercised by the required pass
+// matrix (docker exec/run's -u/-w/-e/-H family, env's VAR=val + -u/-i, sudo's
+// -u/-g/-h, timeout's duration argument, xargs's common batching flags) are
+// enumerated; anything else — including common real-world flags like
+// docker's `--name`/`--memory`/`--hostname` or sudo's `--preserve-env`/`-D` —
+// is deliberately left unclassified so it blocks rather than silently passes.
+const wrapperBooleanFlags = {
+  sudo: new Set([
+    "-A", "--askpass", "-b", "--background", "-E", "-H", "-i", "-k", "-K",
+    "-n", "-N", "-S", "-s", "-v", "-V", "--stdin", "--login", "--set-home",
+    "--validate", "--reset-timestamp", "--remove-timestamp"
+  ]),
+  nice: new Set([]),
+  env: new Set(["-i", "--ignore-environment", "-0", "--null", "-v", "--verbose"]),
+  timeout: new Set(["--preserve-status", "--foreground", "-v", "--verbose"]),
+  xargs: new Set(["-0", "--null", "-r", "--no-run-if-empty", "-t", "--verbose", "-p", "--interactive", "-x", "--exit"]),
+  docker: new Set([]),
+  command: new Set(["-p", "-v", "-V"]),
+  exec: new Set([]),
+};
 const wrapperFlagsWithValue = {
-  sudo: new Set(["-u", "-g", "-h", "-p", "--user", "--group", "--host", "--prompt", "--close-from"]),
+  sudo: new Set(["-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"]),
   nice: new Set(["-n", "--adjustment"]),
   env: new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]),
   timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
   xargs: new Set(["-I", "-i", "-L", "-n", "-P", "-s", "-a", "-d", "-E", "--replace", "--max-args", "--max-procs", "-l"]),
   docker: new Set(["-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file", "-H"]),
+  command: new Set([]),
+  exec: new Set([]),
 };
 const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const dockerWrappingSubcommands = new Set(["exec", "run"]);
 
+// Positively classifies one flag token for one wrapper: "boolean" (consumes
+// only itself), "value" (consumes itself + the next token), or "unrecognized"
+// (fail-closed — the caller must stop peeling, not guess). A known
+// value-taking flag with its value inline (`--user=root`) is boolean-shaped
+// at the token level — nothing further to consume.
+function classifyWrapperFlag(wrapperName, flag) {
+  const valueSet = wrapperFlagsWithValue[wrapperName];
+  const boolSet = wrapperBooleanFlags[wrapperName];
+  if (valueSet && valueSet.has(flag)) {
+    return "value";
+  }
+  if (boolSet && boolSet.has(flag)) {
+    return "boolean";
+  }
+  const eqIndex = flag.indexOf("=");
+  if (eqIndex > 0 && valueSet && valueSet.has(flag.slice(0, eqIndex))) {
+    return "boolean"; // inline value form, e.g. --user=root — nothing more to consume
+  }
+  return "unrecognized";
+}
+
+// Skips a run of positively-classified flags starting at `index`. Stops the
+// instant an unrecognized flag token is seen — `ambiguous: true`, index left
+// AT the ambiguous token (not advanced past it) so the caller can report it.
 function skipFlags(tokens, index, wrapperName) {
-  const withValue = wrapperFlagsWithValue[wrapperName];
   let i = index;
   while (i < tokens.length && tokens[i].startsWith("-")) {
-    const flag = tokens[i];
+    const classification = classifyWrapperFlag(wrapperName, tokens[i]);
+    if (classification === "unrecognized") {
+      return { index: i, ambiguous: true };
+    }
     i++;
-    if (withValue && withValue.has(flag) && !flag.includes("=") && i < tokens.length) {
+    if (classification === "value" && i < tokens.length) {
       i++;
     }
   }
-  return i;
+  return { index: i, ambiguous: false };
 }
 
 // Walks a tokenized segment, peeling recognized wrappers (and their own
-// flags/values) off the front, and returns the effective command word bash
-// would actually exec — the word the DB-client and dynamic-word checks below
-// test. Returns "" if the segment has no tokens.
+// positively-classified flags/values) off the front, and returns
+// `{ word, ambiguous }` — `word` is the effective command word bash would
+// actually exec (checked by the DB-client and dynamic-word gates below), and
+// `ambiguous` is true the moment an unrecognized wrapper flag is hit, at
+// which point peeling stops immediately (fail-closed — see the doc comment
+// above). Callers must treat `ambiguous: true` as unverifiable regardless of
+// what `word` happens to be. `word: ""` with `ambiguous: false` means the
+// segment had no tokens.
 function peelWrapperCommands(tokens) {
   let i = 0;
   while (i < tokens.length) {
     const word = tokens[i];
     if (word === "env") {
       i++;
-      while (i < tokens.length && (envAssignmentPattern.test(tokens[i]) || tokens[i].startsWith("-"))) {
-        i = tokens[i].startsWith("-") ? skipFlags(tokens, i, "env") : i + 1;
+      while (i < tokens.length) {
+        if (envAssignmentPattern.test(tokens[i])) {
+          i++;
+          continue;
+        }
+        if (tokens[i].startsWith("-")) {
+          const skip = skipFlags(tokens, i, "env");
+          if (skip.ambiguous) {
+            return { word: tokens[skip.index], ambiguous: true };
+          }
+          i = skip.index;
+          continue;
+        }
+        break;
       }
       continue;
     }
@@ -1404,34 +1482,54 @@ function peelWrapperCommands(tokens) {
       if (tokens[i] === "compose") {
         i++;
       }
-      i = skipFlags(tokens, i, "docker");
+      const preSkip = skipFlags(tokens, i, "docker");
+      if (preSkip.ambiguous) {
+        return { word: tokens[preSkip.index], ambiguous: true };
+      }
+      i = preSkip.index;
       if (i < tokens.length && dockerWrappingSubcommands.has(tokens[i])) {
         i++; // consume exec/run
-        i = skipFlags(tokens, i, "docker");
+        const postSkip = skipFlags(tokens, i, "docker");
+        if (postSkip.ambiguous) {
+          return { word: tokens[postSkip.index], ambiguous: true };
+        }
+        i = postSkip.index;
         if (i < tokens.length) i++; // consume the container/service name
         continue;
       }
-      return "docker"; // not a wrapping invocation (e.g. `docker compose up`) — stop peeling
+      return { word: "docker", ambiguous: false }; // not a wrapping invocation (e.g. `docker compose up`)
     }
     if (word === "sudo" || word === "nice" || word === "command" || word === "exec") {
       i++;
-      i = skipFlags(tokens, i, word);
+      const skip = skipFlags(tokens, i, word);
+      if (skip.ambiguous) {
+        return { word: tokens[skip.index], ambiguous: true };
+      }
+      i = skip.index;
       continue;
     }
     if (word === "timeout") {
       i++;
-      i = skipFlags(tokens, i, "timeout");
+      const skip = skipFlags(tokens, i, "timeout");
+      if (skip.ambiguous) {
+        return { word: tokens[skip.index], ambiguous: true };
+      }
+      i = skip.index;
       if (i < tokens.length) i++; // consume the duration argument
       continue;
     }
     if (word === "xargs") {
       i++;
-      i = skipFlags(tokens, i, "xargs");
+      const skip = skipFlags(tokens, i, "xargs");
+      if (skip.ambiguous) {
+        return { word: tokens[skip.index], ambiguous: true };
+      }
+      i = skip.index;
       continue;
     }
-    return word;
+    return { word, ambiguous: false };
   }
-  return "";
+  return { word: "", ambiguous: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -1517,12 +1615,17 @@ function peelWrapperCommands(tokens) {
 //      actual review verdict, not a self-granted tag written ahead of
 //      review. Re-triage if a real interpreter-mediated bypass is observed
 //      in practice.
-//   2. Wrapper-flag value-skipping is a best-effort allowlist, not a full
-//      argument grammar per wrapper — see the PROPOSED note on
-//      wrapperFlagsWithValue above (not yet gate-reviewed this round).
-//   3. The dynamic-word rule's false-positive class on legitimate
+//   2. The dynamic-word rule's false-positive class on legitimate
 //      dynamic-path idioms (e.g. `$(which node) ...`) — see the PROPOSED
 //      note directly above (not yet gate-reviewed this round).
+//   3. Wrapper-flag classification is a positive allowlist, not a full
+//      argument grammar per wrapper — see the FAIL-CLOSED redesign note on
+//      the wrapper-peel table above (PROPOSED, not yet gate-ratified this
+//      round). An unrecognized flag now blocks the segment (hasAmbiguousWrapperFlag)
+//      rather than being silently skipped, so the residual gap from round 3
+//      (guessed-past flags letting the real command escape) is closed by
+//      erring toward friction, not by enumerating every wrapper's real
+//      grammar — that remains intentionally incomplete.
 const directDbClientWords = new Set(["psql", "pgcli", "pg_dump", "pg_restore"]);
 // Checked on the RESOLVED (word-concatenation-collapsed) text, not masked —
 // the quoted `'pg'`/`"pg"` string is itself the signal for a require()/import
@@ -1533,10 +1636,10 @@ const directDbClientWords = new Set(["psql", "pgcli", "pg_dump", "pg_restore"]);
 const nodeInlineEvalFlagPattern = /\b(?:node|npx)\b[^\n]*\s(?:-e|-p|--eval|--print)\b/;
 const pgPackageReferencePattern = /require\(\s*['"]pg['"]\s*\)|from\s+['"]pg['"]/;
 
-// Effective command word of a single pipeline segment — the program bash
-// would actually exec for that segment, AFTER peeling any recognized wrapper
-// prefix (docker exec/run, sudo, env, nice, timeout, xargs, command, exec).
-// "" if the segment resolves to no tokens (e.g. blank after redirect-stripping).
+// Effective command word of a single pipeline segment — `{ word, ambiguous }`
+// from peelWrapperCommands (see its doc comment). `ambiguous: true` means an
+// unrecognized wrapper flag was hit and `word` must NOT be trusted as the
+// real command word by callers other than hasAmbiguousWrapperFlag itself.
 function effectiveCommandWord(segment) {
   return peelWrapperCommands(resolvedCommandWords(segment));
 }
@@ -1548,7 +1651,12 @@ function textLooksLikeDirectDbClientInvocation(text) {
   const segments = splitBashSegments(text)
     .map((segment) => stripIoDiscardRedirects(segment).trim())
     .filter(Boolean);
-  if (segments.some((segment) => directDbClientWords.has(effectiveCommandWord(segment)))) {
+  if (
+    segments.some((segment) => {
+      const { word, ambiguous } = effectiveCommandWord(segment);
+      return !ambiguous && directDbClientWords.has(word);
+    })
+  ) {
     return true;
   }
   const resolvedWhole = resolveShellWordConcatenation(text);
@@ -1582,7 +1690,47 @@ function textHasUnverifiableDynamicCommandWord(text) {
   const segments = splitBashSegments(text)
     .map((segment) => stripIoDiscardRedirects(segment).trim())
     .filter(Boolean);
-  return segments.some((segment) => isDynamicCommandWord(effectiveCommandWord(segment)));
+  return segments.some((segment) => {
+    const { word, ambiguous } = effectiveCommandWord(segment);
+    return !ambiguous && isDynamicCommandWord(word);
+  });
+}
+
+// Security round 4, finding (HIGH): probing the round-3 wrapper-peel found
+// ordinary shapes an optimistic flag-skip silently mis-parsed, letting the
+// real command escape undetected (see the FAIL-CLOSED redesign note on the
+// wrapper-peel table above). A segment where peeling hit an unrecognized
+// wrapper flag is unverifiable — this predicate reports that condition with
+// its own message, distinct from the dynamic-word gate, per the finding's
+// explicit wording requirement.
+function textHasAmbiguousWrapperFlag(text) {
+  if (typeof text !== "string" || text.length === 0) {
+    return false;
+  }
+  const segments = splitBashSegments(text)
+    .map((segment) => stripIoDiscardRedirects(segment).trim())
+    .filter(Boolean);
+  return segments.some((segment) => effectiveCommandWord(segment).ambiguous);
+}
+
+export function hasAmbiguousWrapperFlag(command) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return false;
+  }
+  if (textHasAmbiguousWrapperFlag(stripHeredocBodies(command))) {
+    return true;
+  }
+  for (const body of extractExecutableHeredocBodies(command)) {
+    if (textHasAmbiguousWrapperFlag(body)) {
+      return true;
+    }
+  }
+  for (const payload of extractShellStringPayloads(command)) {
+    if (textHasAmbiguousWrapperFlag(payload)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Separate predicate (own message, own doc contract) from
