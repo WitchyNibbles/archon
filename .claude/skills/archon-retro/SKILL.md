@@ -73,6 +73,20 @@ End every retro with an explicit promotion decision, one of:
 - **Nothing to promote** — state it plainly and why (e.g. "trivial fix, no reusable
   fact; no process correction"). This is a valid, complete outcome — silence is not.
 
+Record the decision in the runtime, not just in prose: run
+
+```
+npx tsx ./src/admin.ts record-retro --task-id <id> \
+  --outcome <memory_promoted|skill_patched|discarded|postmortem_filed|nothing_to_promote> \
+  --source orchestrator
+```
+
+This is the real, auditable recording primitive (auditP3RetroLoop fix #1) — it
+writes `packet.retroOutcome` + `packet.retroDecidedAt` on the task record, which
+`close-run`'s seal gate reads before it will seal a run. A retro pass that only
+writes prose and never runs `record-retro` has not actually recorded anything the
+runtime can verify.
+
 Never leave a closed task with no recorded retro decision. That silent gap is the
 exact failure (F5) this skill exists to close.
 
@@ -91,3 +105,11 @@ exact failure (F5) this skill exists to close.
 - the retro decision is recorded (promoted list OR explicit "nothing to promote")
 - process lessons were routed to `/archon-skill-evolution`, not written inline
 - substantive initiatives have a filled `postmortem.md`
+
+## Output
+
+Return the classification decision for each candidate lesson (repo fact / process
+lesson / one-off and its destination), the outcome token recorded (one of
+`memory_promoted`, `skill_patched`, `discarded`, `postmortem_filed`,
+`nothing_to_promote`), and confirmation that `record-retro --task-id <id> --outcome
+<token> --source orchestrator` was actually run — not just described.

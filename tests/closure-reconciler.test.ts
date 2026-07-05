@@ -88,7 +88,17 @@ test("planRunClosure: a reduced floor (e.g. reviewer-only) is honored", () => {
 // Evidence builder
 // ---------------------------------------------------------------------------
 
-function task(taskId: string, status: string, requiredReviews: string[] = ["reviewer", "qa_engineer", "security_reviewer"]): TaskRecord {
+// retroOutcome defaults to a recorded decision so pre-existing provenance/sealing
+// tests in this file (predating the retro-required seal gate, auditP3RetroLoop
+// fix #1) keep testing provenance logic in isolation. Tests that specifically
+// exercise the retro gate itself live in tests/close-run-retro-gate.test.ts and
+// construct tasks without a retroOutcome explicitly.
+function task(
+  taskId: string,
+  status: string,
+  requiredReviews: string[] = ["reviewer", "qa_engineer", "security_reviewer"],
+  retroOutcome: string | undefined = "nothing_to_promote"
+): TaskRecord {
   return {
     id: `uuid-${taskId}`,
     runId: "run-1",
@@ -118,7 +128,8 @@ function task(taskId: string, status: string, requiredReviews: string[] = ["revi
       securityChecks: [],
       antiPatterns: [],
       rollbackNotes: "",
-      handoffFormat: ""
+      handoffFormat: "",
+      ...(retroOutcome !== undefined ? { retroOutcome } : {})
     }
   };
 }

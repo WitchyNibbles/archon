@@ -1,6 +1,6 @@
 /**
  * Regression tests for closureLoop bug 3 + the --confirm/--apply alias paper cut
- * (audit auditDebt202607).
+ * (audit auditDebt202607, PR #154).
  *
  * Bug 3: close-run's onRunSealed cleared the dangling active-task pointer only
  * when the pointer's run == the sealed run. When a duplicate had moved the pointer
@@ -10,6 +10,10 @@
  *
  * Paper cut: close-run (--confirm) and reconcile-runtime-state (--apply) now
  * accept BOTH mutate flags (alias, no break).
+ *
+ * Split from tests/close-run-pointer-clear.test.ts (auditP3RetroLoop review
+ * finding — this file previously bundled these PR #154 tests with the unrelated
+ * retro-nudge/seal-gate tests, which now live in tests/close-run-retro-gate.test.ts).
  */
 
 import test from "node:test";
@@ -116,7 +120,11 @@ function task(id: string, status: TaskRecord["status"]): TaskRecord {
       securityChecks: [],
       antiPatterns: [],
       rollbackNotes: "",
-      handoffFormat: ""
+      handoffFormat: "",
+      // Recorded so this test seals purely on task-terminality, independent of
+      // the retro-required seal gate (auditP3RetroLoop fix #1) — that gate has
+      // its own dedicated coverage in tests/close-run-retro-gate.test.ts.
+      retroOutcome: "nothing_to_promote"
     }
   };
 }
@@ -160,62 +168,6 @@ test("reconcileRunClosure: onRunSealed receives the sealed run's terminal task k
   assert.equal(sealedCalls.length, 1);
   assert.equal(sealedCalls[0]!.runId, "run-1");
   assert.deepEqual([...sealedCalls[0]!.keys].sort(), ["t1", "t2"], "all terminal task keys are forwarded");
-});
-
-// ---------------------------------------------------------------------------
-// Retro nudge (audit F5 learning loop) — printed ONLY on an actual seal
-// ---------------------------------------------------------------------------
-
-const RETRO_NUDGE = "/archon-retro";
-
-function collectingDeps(snap: RunStatusSnapshot, lines: string[]): CloseRunDeps {
-  return {
-    getStatusSnapshot: async () => snap,
-    getReviews: async (): Promise<ReviewRecord[]> => [],
-    getApprovals: async (): Promise<ApprovalRecord[]> => [],
-    getReviewFloorReductions: async () => [],
-    updateTask: async () => {},
-    updateRun: async () => {},
-    now: () => "2026-07-04T00:00:00.000Z",
-    writeLine: (line) => lines.push(line)
-  };
-}
-
-test("retro nudge: emitted when a run is actually sealed (--confirm, all tasks terminal)", async () => {
-  const snap = snapshotOf([task("t1", "done"), task("t2", "done")]);
-  const lines: string[] = [];
-  const result = await reconcileRunClosure("run-1", true, collectingDeps(snap, lines));
-  assert.equal(result.sealedRun, true);
-  assert.ok(
-    lines.some((l) => l.includes(RETRO_NUDGE)),
-    "a sealed run must nudge the operator to run the retro"
-  );
-});
-
-test("retro nudge: NOT emitted on dry-run even when the run is seal-ready", async () => {
-  const snap = snapshotOf([task("t1", "done"), task("t2", "done")]);
-  const lines: string[] = [];
-  const result = await reconcileRunClosure("run-1", false, collectingDeps(snap, lines));
-  assert.equal(result.sealedRun, false);
-  assert.ok(
-    lines.some((l) => l.includes("seal run: yes")),
-    "dry-run still reports the run is seal-ready"
-  );
-  assert.ok(
-    !lines.some((l) => l.includes(RETRO_NUDGE)),
-    "dry-run must not fire the retro nudge — only an actual seal does"
-  );
-});
-
-test("retro nudge: NOT emitted when the run is not sealable (non-terminal task remains)", async () => {
-  const snap = snapshotOf([task("t1", "done"), task("t2", "in_progress")]);
-  const lines: string[] = [];
-  const result = await reconcileRunClosure("run-1", true, collectingDeps(snap, lines));
-  assert.equal(result.sealedRun, false);
-  assert.ok(
-    !lines.some((l) => l.includes(RETRO_NUDGE)),
-    "an unsealed run must not fire the retro nudge"
-  );
 });
 
 // ---------------------------------------------------------------------------
