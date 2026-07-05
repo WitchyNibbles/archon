@@ -36,7 +36,9 @@ const {
   parseCouncilReview,
   isHandoffArtifactPath,
   isDirectDbClientInvocation,
-  hasDbDirectScopeGrant
+  hasDbDirectScopeGrant,
+  isDestructiveCommand,
+  resolveShellWordConcatenation
 } = await import(`${hooksDir}/hook-utils.mjs`);
 const {
   evaluatePreToolUse,
@@ -364,16 +366,47 @@ test("isDirectDbClientInvocation: psql --version and read-only psql -c \"SELECT 
   assert.equal(isDirectDbClientInvocation('psql -U archon -d archon -tAc "select 1;"'), true);
 });
 
-test("isDirectDbClientInvocation: pg_dump and pg_restore are detected", () => {
+test("isDirectDbClientInvocation: pg_dump, pg_restore, and pgcli are detected", () => {
   assert.equal(isDirectDbClientInvocation("pg_dump -U archon archon > backup.sql"), true);
   assert.equal(isDirectDbClientInvocation("pg_restore -U archon -d archon backup.dump"), true);
+  assert.equal(isDirectDbClientInvocation('pgcli "$ARCHON_CORE_DATABASE_URL"'), true);
 });
 
-test("isDirectDbClientInvocation: wrapped invocation (docker exec ... psql) is detected", () => {
+// Security round 2 (finding 1): the detection rule moved from "the word
+// appears anywhere in the segment" to "the FIRST resolved word of the
+// segment IS the word" — this is what resolves the quote-splitting false
+// negative below without reintroducing a false positive on `grep -n "psql"
+// file` (psql is grep's ARGUMENT there, not the executed program). One
+// documented, accepted consequence: a wrapper-prefixed invocation like
+// `docker exec archon-postgres psql ...` is no longer caught, because the
+// first resolved word of that segment is `docker`, not `psql` — this is a
+// disclosed scope trim (see the "ACCEPTED LIMITATIONS" doc comment on
+// isDirectDbClientInvocation in hook-utils.mjs), not a regression: it was
+// never a shape any finding required, and it was only ever caught by the
+// old, broader (and, per this finding, exploitable) "anywhere in segment"
+// rule.
+test("isDirectDbClientInvocation: wrapper-prefixed invocation (docker exec ... psql) is NOT caught by the first-word rule (documented scope trim, security round 2)", () => {
   assert.equal(
     isDirectDbClientInvocation('docker exec archon-postgres psql -U archon -d archon -tAc "select 1;"'),
+    false
+  );
+});
+
+test("isDirectDbClientInvocation: quote-split evasion (p\"\"sql / pg''_dump) is detected (security round 2, HIGH)", () => {
+  assert.equal(
+    isDirectDbClientInvocation('p""sql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE reviews SET outcome=1"'),
     true
   );
+  assert.equal(isDirectDbClientInvocation("pg''_dump -U archon archon > backup.sql"), true);
+});
+
+test("isDirectDbClientInvocation: legitimate quoted fragments that do NOT form a client word still pass (security round 2, HIGH)", () => {
+  // Two separate shell ARGUMENTS ("p" and "sql"), not one concatenated word —
+  // there is real whitespace between them, so this must not resolve to "psql".
+  assert.equal(isDirectDbClientInvocation('echo "p" "sql"'), false);
+  // A single quoted argument containing the literal text p"sql is DATA being
+  // searched for, not an invocation of a client binary named psql.
+  assert.equal(isDirectDbClientInvocation("grep 'p\"sql' foo.sh"), false);
 });
 
 test("isDirectDbClientInvocation: psql piped as the second stage of a pipeline is detected", () => {
@@ -434,6 +467,37 @@ test("hasDbDirectScopeGrant: true only when the literal `db_direct` marker is pr
   assert.equal(hasDbDirectScopeGrant([]), false);
   assert.equal(hasDbDirectScopeGrant(["src/archon"]), false);
   assert.equal(hasDbDirectScopeGrant(undefined), false);
+});
+
+// ─── resolveShellWordConcatenation / isDestructiveCommand (security round 2) ─
+// Finding 1 required the tokenization-layer fix to be mirrored into
+// isDestructiveCommand, since it shares the identical pre-existing flaw
+// (tested against raw, unmasked command text with zero quote-awareness).
+
+test("resolveShellWordConcatenation: collapses adjacent quote fragments and unquoted backslash-escapes into one literal word", () => {
+  assert.equal(resolveShellWordConcatenation('p""sql'), "psql");
+  assert.equal(resolveShellWordConcatenation("pg''_dump"), "pg_dump");
+  assert.equal(resolveShellWordConcatenation("p\\s\\q\\l"), "psql");
+});
+
+test("resolveShellWordConcatenation: preserves real whitespace between distinct words", () => {
+  assert.equal(resolveShellWordConcatenation('"p" "sql"'), "p sql");
+});
+
+test("resolveShellWordConcatenation: a foreign quote character nested inside an outer quoted span survives as a literal character (does not toggle quoting)", () => {
+  // The inner single-quotes around 'pg' must remain literal apostrophes once
+  // the outer double-quotes are resolved, so pgPackageReferencePattern can
+  // still match require('pg') in the resolved text.
+  assert.equal(resolveShellWordConcatenation('"require(\'pg\').Client"'), "require('pg').Client");
+});
+
+test("isDestructiveCommand: quote-split evasion of a destructive phrase is detected (security round 2, mirrored fix)", () => {
+  assert.equal(isDestructiveCommand('g""it reset --hard'), true);
+});
+
+test("isDestructiveCommand: the plain phrase is still detected after the mirrored fix", () => {
+  assert.equal(isDestructiveCommand("git reset --hard HEAD~1"), true);
+  assert.equal(isDestructiveCommand("some-other-command --flag value"), false);
 });
 
 test("evaluatePreToolUse: raw psql UPDATE with no active task is blocked", () => {
