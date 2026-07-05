@@ -1868,6 +1868,33 @@ const directDbClientWords = new Set(["psql", "pgcli", "pg_dump", "pg_restore"]);
 const nodeInlineEvalFlagPattern = /\b(?:node|npx)\b[^\n]*\s(?:-e|-p|--eval|--print)\b/;
 const pgPackageReferencePattern = /require\(\s*['"]pg['"]\s*\)|from\s+['"]pg['"]/;
 
+// Security round 8 finding (HIGH): the gate's final-ratification probe found
+// that `/usr/bin/psql`, `../bin/psql`, and `./psql` all launch the exact same
+// binary as bare `psql`, but the DB-client check above (`directDbClientWords
+// .has(word)`) only ever matched a bare literal word — a path-prefixed
+// invocation was never a Set member and slipped through undetected, present
+// since round 2. This is a strict basename extraction, applied ONLY to the
+// resolved command word coming out of effectiveCommandWord (i.e. after
+// quote-resolution and wrapper-peeling have already run) — never to
+// arbitrary substrings elsewhere in the command text. It strips a leading
+// directory prefix up to and including the LAST `/` or `\` separator (both
+// handled — a Windows-style backslash path is just as real a bypass vector
+// as a POSIX one) and does an EXACT Set-membership check on what remains.
+// Exact-equality is the deliberate guard against a false positive on a
+// longer basename that merely CONTAINS a client name: `not-psql` and
+// `my_psql_wrapper` each have themselves (not `psql`) as their own
+// basename, so they correctly do not match. A bare word with no separator
+// (`psql`) is returned unchanged — this function is a superset of the old
+// bare-word check, not a replacement with different behavior on the
+// already-working case.
+function commandWordBasename(word) {
+  if (typeof word !== "string" || word.length === 0) {
+    return word;
+  }
+  const lastSeparator = Math.max(word.lastIndexOf("/"), word.lastIndexOf("\\"));
+  return lastSeparator === -1 ? word : word.slice(lastSeparator + 1);
+}
+
 // Effective command word of a single pipeline segment — `{ word, ambiguous }`
 // from peelWrapperCommands (see its doc comment). `ambiguous: true` means an
 // unrecognized wrapper flag was hit and `word` must NOT be trusted as the
@@ -1886,7 +1913,7 @@ function textLooksLikeDirectDbClientInvocation(text) {
   if (
     segments.some((segment) => {
       const { word, ambiguous } = effectiveCommandWord(segment);
-      return !ambiguous && directDbClientWords.has(word);
+      return !ambiguous && directDbClientWords.has(commandWordBasename(word));
     })
   ) {
     return true;

@@ -418,6 +418,53 @@ test("isDirectDbClientInvocation: wrapper commands with a benign target still pa
   assert.equal(isDirectDbClientInvocation("timeout 60 npm test"), false);
 });
 
+// ─── path-prefixed client basename matching (security round 8, HIGH) ────────
+// Present since round 2: the DB-client check only ever matched a bare
+// literal word against directDbClientWords, so `/usr/bin/psql`, `../bin/
+// psql`, and `./psql` — which all launch the exact same binary as bare
+// `psql` — were never Set members and slipped through undetected. Fixed by
+// extracting the PATH BASENAME (strip up to and including the last `/` or
+// `\` separator) off the resolved command word before the Set-membership
+// check. Exact basename equality only — a longer basename that merely
+// CONTAINS a client name (`not-psql`, `my_psql_wrapper`) has ITSELF, not
+// `psql`, as its own basename, so it correctly does not match.
+
+test("isDirectDbClientInvocation: absolute-path invocation of every recognized client is detected (security round 8, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("/usr/bin/psql -c 'select 1'"), true);
+  assert.equal(isDirectDbClientInvocation("/usr/bin/pgcli"), true);
+  assert.equal(isDirectDbClientInvocation("/usr/local/bin/pg_dump -U archon archon > backup.sql"), true);
+  assert.equal(isDirectDbClientInvocation("/usr/bin/pg_restore -d archon dump.sql"), true);
+});
+
+test("isDirectDbClientInvocation: relative-path invocation of every recognized client is detected (security round 8, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("../bin/psql -c 'select 1'"), true);
+  assert.equal(isDirectDbClientInvocation("./psql"), true);
+  assert.equal(isDirectDbClientInvocation("./pgcli"), true);
+  assert.equal(isDirectDbClientInvocation("../tools/pg_dump -U archon archon > backup.sql"), true);
+  assert.equal(isDirectDbClientInvocation("./pg_restore -d archon dump.sql"), true);
+});
+
+test("isDirectDbClientInvocation: a longer basename that merely CONTAINS a client name is NOT detected (security round 8, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("/usr/bin/not-psql --version"), false);
+  assert.equal(isDirectDbClientInvocation("./my_psql_wrapper --version"), false);
+  assert.equal(isDirectDbClientInvocation("/opt/tools/pg_dump_backup.sh"), false);
+});
+
+test("isDirectDbClientInvocation: path-prefixed client is still detected through wrapper-peel composition (security round 8, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("sudo /usr/bin/psql -c 'select 1'"), true);
+  assert.equal(
+    isDirectDbClientInvocation("docker exec archon-postgres /usr/bin/psql -U archon -d archon -c 'select 1'"),
+    true
+  );
+});
+
+test("evaluatePreToolUse: an absolute-path psql invocation blocks via the DB-client gate (security round 8, HIGH)", () => {
+  const result = evaluatePreToolUse(bashPayload("/usr/bin/psql -c 'select 1'"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /direct database-client invocation/i);
+});
+
 // ─── hasAmbiguousWrapperFlag (security round 4 — FAIL-CLOSED redesign) ───────
 // Round 3's wrapper-peel used an OPTIMISTIC "skip anything starting with -"
 // rule that silently mis-parsed ordinary shapes with an unrecognized flag,
