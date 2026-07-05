@@ -397,6 +397,87 @@ test("round-9 HIGH: the same vocabulary-blindness fix holds for a colon-joined l
 });
 
 // ---------------------------------------------------------------------------
+// Round-10 MEDIUM: the round-9 vocabulary-threading fix was applied to all 6
+// stage-1 value-capturing rules, but only 2 of them (PROSE_SECRET_KEYWORD_
+// PATTERN, LABELED_FIELD_PATTERN) got dedicated regression tests. These 4
+// tests close the gap for the remaining sites — SPACE_SEPARATED_SECRET_FLAG,
+// LABELED_CODE_PHRASE_PATTERN, SPACE_SEPARATED_CODE_PHRASE_PATTERN, and
+// MYSQL_CONCAT_PASSWORD_FLAG — each proven both directions on the same text.
+// ---------------------------------------------------------------------------
+
+test("round-10 MEDIUM: SPACE_SEPARATED_SECRET_FLAG is vocabulary-aware, both directions", () => {
+  const noVocab = sanitizeFreeText("--token task-abc123");
+  assert.equal(noVocab.includes("task-abc123"), false, "no vocabulary → the value still redacts");
+  const vocab = sanitizeFreeText("--token task-abc123", new Set(["task-abc123"]));
+  assert.equal(vocab, "--token task-abc123", "a vocabulary-member value survives the space-separated flag rule");
+});
+
+test("round-10 MEDIUM: LABELED_CODE_PHRASE_PATTERN is vocabulary-aware, both directions", () => {
+  const noVocab = sanitizeFreeText("pin code: task-abc123");
+  assert.equal(noVocab.includes("task-abc123"), false, "no vocabulary → the value still redacts");
+  const vocab = sanitizeFreeText("pin code: task-abc123", new Set(["task-abc123"]));
+  assert.equal(vocab.endsWith("task-abc123"), true, "a vocabulary-member value survives the colon-joined code-phrase rule");
+});
+
+test("round-10 MEDIUM: SPACE_SEPARATED_CODE_PHRASE_PATTERN is vocabulary-aware, both directions", () => {
+  const noVocab = sanitizeFreeText("pin code task-abc123");
+  assert.equal(noVocab.includes("task-abc123"), false, "no vocabulary → the value still redacts");
+  const vocab = sanitizeFreeText("pin code task-abc123", new Set(["task-abc123"]));
+  assert.equal(vocab.endsWith("task-abc123"), true, "a vocabulary-member value survives the space-separated code-phrase rule");
+});
+
+test("round-10 MEDIUM: MYSQL_CONCAT_PASSWORD_FLAG is vocabulary-aware, both directions", () => {
+  const noVocab = sanitizeFreeText("mysqldump -ptask-abc123 -u root");
+  assert.equal(noVocab.includes("task-abc123"), false, "no vocabulary → the concatenated -p value still redacts");
+  const vocab = sanitizeFreeText("mysqldump -ptask-abc123 -u root", new Set(["task-abc123"]));
+  assert.equal(vocab.includes("-ptask-abc123"), true, "a vocabulary-member value survives mysqldump's concatenated -p flag");
+});
+
+// ---------------------------------------------------------------------------
+// Round-10 CRITICAL: `--firstSecretHere123-password verysecretvalue` glues a
+// live secret to a recognized keyword via a hyphen, landing inside what used
+// to be an UNBOUNDED label-capture prefix in stage 1 (never re-examined) and
+// then trusted unconditionally by the old `SAFE_FLAG_NAME`'s dash-prefix-
+// shape-alone grant at stage 2. Fixed on both ends: (a) the compound-keyword
+// capture groups in LABELED_FIELD_PATTERN/SPACE_SEPARATED_SECRET_FLAG are now
+// bounded to 12 chars each side, so an attempt to glue this much extra
+// content simply fails to match at all (falls through untouched); (b)
+// `isSafeFlagName` no longer blanket-trusts any dash-prefixed alnum-hyphen
+// blob — a flag body is safe only if it IS, exactly, one recognized keyword
+// (the designed `--token <value>` case) or contains no keyword substring at
+// all. Anything else (a keyword with extra glued content on either side)
+// falls through to ordinary default-deny.
+// ---------------------------------------------------------------------------
+
+test("round-10 CRITICAL: the gate's own live repro — a secret glued to a keyword via hyphen, inside what used to be an unbounded label prefix", () => {
+  const result = sanitizeFreeText("--firstSecretHere123-password verysecretvalue");
+  assert.equal(result.includes("firstSecretHere123"), false, `the glued-into-the-label secret must not survive: ${result}`);
+  assert.equal(result.includes("verysecretvalue"), false, `the ordinary value-position secret must not survive either: ${result}`);
+});
+
+test("round-10 CRITICAL: hyphen-glued-AFTER variant — the secret trails the keyword instead of leading it", () => {
+  const result = sanitizeFreeText("--password-secretHere value");
+  assert.equal(result.includes("secretHere"), false, `the glued-after secret must not survive: ${result}`);
+});
+
+test("round-10 CRITICAL: legitimate long flags with no embedded keyword still survive unchanged", () => {
+  assert.equal(sanitizeFreeText("--experimental-strip-types"), "--experimental-strip-types");
+  assert.equal(sanitizeFreeText("--max-warnings"), "--max-warnings");
+  assert.equal(sanitizeFreeText("--preserve-env"), "--preserve-env");
+  assert.equal(
+    sanitizeFreeText("node --experimental-strip-types --test tests/admin-why-redaction.test.ts", new Set(["node", "--test", "tests/admin-why-redaction.test.ts"])),
+    "node --experimental-strip-types --test tests/admin-why-redaction.test.ts"
+  );
+});
+
+test("round-10 CRITICAL: a flag that IS exactly a recognized keyword still survives — the designed labeled-flag case is unaffected", () => {
+  assert.equal(sanitizeFreeText("--token"), "--token");
+  assert.equal(sanitizeFreeText("--password"), "--password");
+  assert.equal(sanitizeFreeText("--api-key"), "--api-key");
+  assert.equal(sanitizeFreeText("--pin 482913").startsWith("--pin "), true);
+});
+
+// ---------------------------------------------------------------------------
 // Round-8 finding 1 (terminal design): the free-text numeric shape-exemption
 // is GONE. A bare number now survives ONLY as an exact vocabulary member —
 // never by shape alone, regardless of how short it is. Both directions on

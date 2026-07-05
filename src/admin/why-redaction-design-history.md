@@ -231,3 +231,56 @@ HIGH gap in the surrounding machinery, not in the terminal design itself:
    complexity, and so a future reader doesn't have to wade through eight
    rounds of history to find the two paragraphs describing the CURRENT
    design.
+
+## Round 10 — flag-shape trust and unbounded label capture
+
+Round 9's short-circuit fix held under harder probing (three-secret gluing,
+nested URLs, off-by-one boundaries), and vocabulary threading held at all
+6 stage-1 sites. Round 10 found one CRITICAL bug via a different angle —
+not the substring short-circuit, but the LABEL half of a keyword-adjacent
+match, and the flag-name grant that trusted it — plus one MEDIUM test gap:
+
+1. **CRITICAL — flag-shape trust + unbounded label capture.**
+   `--firstSecretHere123-password verysecretvalue` glues a live secret to
+   the recognized keyword `password` via a hyphen. `LABELED_FIELD_PATTERN`
+   and `SPACE_SEPARATED_SECRET_FLAG` captured the text before AND after the
+   keyword with an UNBOUNDED `[\w-]*`, so `firstSecretHere123-` landed
+   entirely inside the "label" half of the match — which stage 1 always
+   re-emits unchanged (only the value half is ever substituted). Then, at
+   stage 2, the old `SAFE_FLAG_NAME` trusted ANY dash-prefixed alnum-hyphen
+   blob as a flag purely by shape, with no length bound and no awareness
+   that its body contained a keyword at all — so the untouched, secret-
+   bearing "label" sailed through as an inert, safe-looking flag name. Two
+   fixes closed both ends:
+   - The compound-keyword capture groups in `LABELED_FIELD_PATTERN` and
+     `SPACE_SEPARATED_SECRET_FLAG` are now bounded to `{0,12}` characters
+     each side of the keyword — generous enough for the real compound
+     identifiers this rule exists to catch (`PG`+`PASSWORD`, `MYSQL_`+`PWD`,
+     `AWS_`+`SECRET`+`_ACCESS_KEY`, all well under 12 chars), but too tight
+     to reach an actual `:`/`=`/whitespace boundary while also absorbing a
+     19-character glued secret fragment — the match simply fails, and the
+     token falls through untouched to stage 2's default-deny instead of
+     being partially (and wrongly) "handled" by stage 1.
+   - `SAFE_FLAG_NAME` became `isSafeFlagName`: a flag body is still safe by
+     shape alone if it IS, exactly, one recognized keyword — `--token`,
+     `--password`, `--api-key` — the designed labeled-flag case round 6
+     built this mechanism for. Any OTHER keyword-substring embedding (a
+     prefix or suffix glued to the keyword, however short) is no longer
+     blanket-trusted; the token falls through to ordinary default-deny.
+     The same check now also gates the flag HALF of a `--flag=value` split,
+     which previously echoed back unconditionally with no validation at
+     all — a second, independent leak path the gate's live repro exposed.
+   Verified against the gate's exact two-secret repro (glued before the
+   keyword), a hyphen-glued-AFTER variant (glued after the keyword,
+   `--password-secretHere value`), and a battery of legitimate long flags
+   (`--experimental-strip-types`, `--max-warnings`, `--preserve-env`) that
+   must keep surviving unchanged since they embed no keyword at all.
+2. **MEDIUM — 4 untested vocabulary-threading call sites.** Round 9's fix
+   threaded `knownSafeTokens` through all 6 stage-1 value-capturing rules,
+   but only 2 of them got dedicated regression tests
+   (`PROSE_SECRET_KEYWORD_PATTERN`, `LABELED_FIELD_PATTERN`'s colon form).
+   The code was already correct; the remaining 4 sites
+   (`SPACE_SEPARATED_SECRET_FLAG`, `LABELED_CODE_PHRASE_PATTERN`,
+   `SPACE_SEPARATED_CODE_PHRASE_PATTERN`, `MYSQL_CONCAT_PASSWORD_FLAG`)
+   were untested — exactly where the gate warned the next gap would hide
+   in this file. Added both-direction tests for each.
