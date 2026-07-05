@@ -28,6 +28,8 @@ export default {
   "src/admin/secret.ts": 525,
   "src/admin/status.ts": 525,
   "src/admin/sweep-orphans.ts": 575,
+  "src/admin/why-diagnosis.ts": 625,
+  "src/admin/why.ts": 450,
   "src/archon/agent-artifact-verifier.ts": 275,
   "src/archon/agent-catalog.ts": 200,
   "src/archon/agent-frontmatter-safety.ts": 50,
