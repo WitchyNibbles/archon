@@ -45,14 +45,25 @@ deliberate.
   way to "get past" the gate: an unrecognized flag makes things MORE blocked,
   not less. That guarantee is about *unrecognized* flags, not a claim that the
   flag table can never be wrong: an *enumerated* flag whose argument shape was
-  recorded incorrectly (e.g. round 5's xargs `-i`/`-I`/`-l`, fixed round 6) can
-  still misparse rather than block — that residual risk is mitigated by the
-  audited, sourced flag table in `hook-utils.mjs` (not eliminated by it), and
-  any change to that table requires gate review before it ships. A command
-  whose program name is computed at runtime (`$VAR`, `$(cmd)`, `` `cmd` ``) is
-  blocked too, as unverifiable, regardless of what it resolves to. If a
-  diagnostic genuinely requires a capability the admin CLI does not expose,
-  that is an escalation (propose the missing admin-CLI
+  recorded incorrectly (e.g. round 5's xargs `-i`/`-I`/`-l`, and round 6's own
+  fix for that, which itself mis-bucketed `-I` and let `xargs -I {} psql -f
+  {}` slip through) can still misparse rather than block — that residual risk
+  is mitigated by the audited, sourced flag table in `hook-utils.mjs` (not
+  eliminated by it), and any change to that table requires gate review before
+  it ships. `xargs` specifically is no longer part of that residual risk at
+  all: after three rounds of table-precision bugs on xargs's own flag
+  grammar, it was retired from per-flag modeling entirely (security round 7).
+  `xargs <command> ...` (no flags) still recurses into `<command>` exactly
+  like every other wrapper, but `xargs` carrying **any** flag at all —
+  `-i`/`-I`/`-P4`/anything — makes the whole segment unverifiable and blocks,
+  even for a wholly benign flag on a benign trailing command (e.g. `xargs -P4
+  npm test` blocks). If a diagnostic genuinely needs a flagged `xargs`
+  invocation, simplify it to the zero-flag form or use the admin CLI — do not
+  request `db_direct` to route around this by habit. A command whose program
+  name is computed at runtime (`$VAR`, `$(cmd)`, `` `cmd` ``) is blocked too,
+  as unverifiable, regardless of what it resolves to. If a diagnostic
+  genuinely requires a capability the admin CLI does not expose, that is an
+  escalation (propose the missing admin-CLI
   capability), not a reason to reach for direct DB access.
   - **Recorded boundary scope (owner: security_reviewer; interpreter-mediated
     scope dated 2026-07-05, ACCEPTED under the security round 3 gate review —

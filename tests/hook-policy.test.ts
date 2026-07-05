@@ -40,7 +40,9 @@ const {
   hasUnverifiableDynamicCommandWord,
   hasAmbiguousWrapperFlag,
   isDestructiveCommand,
-  resolveShellWordConcatenation
+  resolveShellWordConcatenation,
+  getWrapperFlagAuditTableForConsistencyTest,
+  getWrapperFlagTablesForConsistencyTest
 } = await import(`${hooksDir}/hook-utils.mjs`);
 const {
   evaluatePreToolUse,
@@ -452,54 +454,67 @@ test("hasAmbiguousWrapperFlag: the required benign matrix still passes (docker c
   assert.equal(hasAmbiguousWrapperFlag("env FOO=bar npm test"), false);
 });
 
-test("hasAmbiguousWrapperFlag: the recognized-flag matrix (docker exec/run's -u/-w/-e/-H, sudo's -u/-g/-h) still passes", () => {
+test("hasAmbiguousWrapperFlag: the recognized-flag matrix (docker exec/run's -u/-w/-e, docker-global -H, sudo's -u/-g/-h) still passes", () => {
   assert.equal(hasAmbiguousWrapperFlag("docker exec -u root archon-postgres npm test"), false);
   assert.equal(hasAmbiguousWrapperFlag("sudo -u builder npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("docker -H unix:///var/run/docker.sock exec archon-postgres npm test"), false);
 });
 
-// ─── xargs -i/-I/-l optional-attached fix (security round 6 — table
-// misclassification) ──────────────────────────────────────────────────────
-// Round 5's table wrongly classified xargs's -i/-I/-l as mandatory
-// separate-token value flags. That silently swallowed the REAL command as
-// the flag's "value" (a false negative, not merely an imprecise block) and
-// separately caused benign attached forms to be misflagged as ambiguous (a
-// false positive). Both halves are fixed by treating -i/-I/-l (and their
-// --replace/--max-lines long forms) as optional-attached: never consuming a
-// separate following token.
+// ─── xargs flag-modeling retirement (security round 7 — design simplification) ───
+// Three consecutive rounds (4, 5, 6) each found a DIFFERENT specific
+// misclassification of xargs's own flag grammar (round 4: optimistic-skip;
+// round 5: mandatory-vs-optional; round 6: its own -I fix uniformly treated
+// -I as optional/attached-only, when GNU xargs documents -I as taking a
+// MANDATORY argument that may be given attached OR as a separate token —
+// `xargs -I {} psql -f {}` resolved the command word to the literal
+// replace-string `{}` and reported clean). Round 7 retires xargs from
+// per-flag modeling entirely: only the zero-flag form is peeled
+// (`xargs psql ...` -> recurse into psql); ANY flag on xargs — attached,
+// separate, real, or fictitious — makes the segment unverifiable.
 
-test("isDirectDbClientInvocation: xargs -i with no attached value no longer silently swallows the real command as its argument (security round 6, HIGH)", () => {
-  assert.equal(isDirectDbClientInvocation("xargs -i psql"), true);
-  assert.equal(isDirectDbClientInvocation('ls | xargs -i psql -c "UPDATE reviews SET outcome=1"'), true);
+test("isDirectDbClientInvocation: xargs zero-flag form still recurses into the real command (security round 7)", () => {
+  assert.equal(isDirectDbClientInvocation("xargs psql"), true);
+  assert.equal(isDirectDbClientInvocation('ls | xargs psql -c "UPDATE reviews SET outcome=1"'), true);
+  assert.equal(isDirectDbClientInvocation("xargs pg_restore -d archon dump.sql"), true);
 });
 
-test("isDirectDbClientInvocation: xargs -I{} / -l attached forms still resolve the real command correctly (security round 6, HIGH)", () => {
-  assert.equal(isDirectDbClientInvocation("xargs -I{} pg_restore -d archon dump.sql"), true);
-  assert.equal(isDirectDbClientInvocation("xargs -l psql"), true);
+test("hasAmbiguousWrapperFlag: xargs with ANY flag is ambiguous, regardless of attached/separate form or trailing command (security round 7, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("xargs -i psql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -I{} pg_restore -d archon dump.sql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -l psql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -I{} npm test"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -i echo {}"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -L 1 npm test"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs --arg-file f psql"), true); // regression: round 4 required block, unchanged
+  assert.equal(hasAmbiguousWrapperFlag("xargs -P4 npm test"), true); // accepted fail-closed friction on a benign flag
 });
 
-test("hasAmbiguousWrapperFlag: xargs -i/-I/-l are NOT flagged ambiguous — they resolve the next word instead of guessing (security round 6, HIGH)", () => {
-  assert.equal(hasAmbiguousWrapperFlag("xargs -i psql"), false);
-  assert.equal(hasAmbiguousWrapperFlag("xargs -I{} pg_restore -d archon dump.sql"), false);
-  assert.equal(hasAmbiguousWrapperFlag("xargs -l psql"), false);
+test("hasAmbiguousWrapperFlag: xargs -I with a SEPARATE-token argument is now caught — the exact round-6 regression (security round 7, HIGH)", () => {
+  // GNU xargs documents -I as a MANDATORY argument that may be attached
+  // (`-I{}`) or given as a separate following token (`-I {}`). Round 6's
+  // fix modeled -I as always-optional-attached and never checked the
+  // separated form, so `xargs -I {} psql -f {}` resolved the effective
+  // command word to the literal replace-string token `{}` instead of
+  // `psql` — a real bypass reported clean. Under round 7's fail-closed
+  // rule, xargs carrying ANY flag (space-separated or not) is unverifiable
+  // by construction, so this class can never recur regardless of the
+  // flag's true argument shape.
+  assert.equal(isDirectDbClientInvocation("xargs -I {} psql -f {}"), false); // no longer resolved via the DB-client gate at all
+  assert.equal(hasAmbiguousWrapperFlag("xargs -I {} psql -f {}"), true);
 });
 
-test("hasAmbiguousWrapperFlag: xargs -I{} / -i attached-form false positive is fixed — benign commands pass (security round 6, HIGH)", () => {
-  assert.equal(hasAmbiguousWrapperFlag("xargs -I{} npm test"), false);
-  assert.equal(hasAmbiguousWrapperFlag("xargs -i echo {}"), false);
-  assert.equal(isDirectDbClientInvocation("xargs -I{} npm test"), false);
-  assert.equal(isDirectDbClientInvocation("xargs -i echo {}"), false);
-});
-
-test("hasAmbiguousWrapperFlag: xargs -L (uppercase, mandatory-argument) is unaffected by the -l optional-attached fix", () => {
-  assert.equal(hasAmbiguousWrapperFlag("xargs -L 1 npm test"), false);
-  assert.equal(hasAmbiguousWrapperFlag("xargs --arg-file f psql"), true); // regression: round 4/5 required block, unchanged
-});
-
-test("evaluatePreToolUse: xargs -i psql is blocked as a direct DB-client invocation, not the ambiguous-wrapper-flag gate (security round 6, HIGH)", () => {
-  const result = evaluatePreToolUse(bashPayload("xargs -i psql"), emptyContext());
+test("evaluatePreToolUse: xargs with any flag blocks via the ambiguous-wrapper-flag gate, with its own message (security round 7)", () => {
+  const result = evaluatePreToolUse(bashPayload("xargs -I {} psql -f {}"), emptyContext());
   assert.ok(result);
   assert.equal(result.decision, "block");
-  assert.match(result.reason, /direct .*(psql|database)|db.?client/i);
+  assert.match(result.reason, /unrecognized wrapper flag prevents command verification/i);
+});
+
+test("evaluatePreToolUse: xargs zero-flag form recurses and blocks via the DB-client gate, not the ambiguous-wrapper-flag gate (security round 7)", () => {
+  const result = evaluatePreToolUse(bashPayload("xargs psql"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /direct database-client invocation/i);
 });
 
 test("isDirectDbClientInvocation: known-wrapper recursion still resolves psql correctly when no ambiguous flag is present (regression, rounds 2-4)", () => {
@@ -545,6 +560,85 @@ test("evaluatePermissionRequest: docker run with an unrecognized flag is denied,
   assert.ok(result);
   assert.equal(result.decision, "deny");
   assert.match(result.reason, /unrecognized wrapper flag prevents command verification/i);
+});
+
+// ─── Wrapper-flag table internal consistency (security round 7 — required
+// by the gate: three rounds of table-precision bugs is a pattern, so the
+// audit table now has to prove itself against the live code, not just read
+// convincingly) ─────────────────────────────────────────────────────────
+// Covers the REMAINING wrapper tables (docker-global/docker-exec, sudo, env,
+// nice, timeout, command, exec) — xargs is deliberately excluded, since
+// security round 7 retired it from per-flag modeling entirely (no table to
+// check consistency against).
+
+const CONSISTENCY_CHECKED_WRAPPERS = [
+  "sudo", "env", "nice", "timeout", "command", "exec", "docker-global", "docker-exec"
+];
+
+test("wrapper-flag tables: no flag appears in both the boolean and value bucket for the same wrapper", () => {
+  const { boolean: boolTables, value: valueTables } = getWrapperFlagTablesForConsistencyTest();
+  for (const wrapperName of CONSISTENCY_CHECKED_WRAPPERS) {
+    const boolSet = boolTables[wrapperName];
+    const valueSet = valueTables[wrapperName];
+    assert.ok(boolSet, `expected a boolean-flag Set for "${wrapperName}"`);
+    assert.ok(valueSet, `expected a value-flag Set for "${wrapperName}"`);
+    for (const flag of boolSet) {
+      assert.ok(
+        !valueSet.has(flag),
+        `"${flag}" is classified as BOTH boolean and value for wrapper "${wrapperName}"`
+      );
+    }
+  }
+});
+
+test("wrapper-flag tables: xargs is retired — it carries no entries in either bucket (security round 7)", () => {
+  const { boolean: boolTables, value: valueTables } = getWrapperFlagTablesForConsistencyTest();
+  assert.equal(boolTables.xargs, undefined);
+  assert.equal(valueTables.xargs, undefined);
+});
+
+test("wrapper-flag tables: no per-wrapper classifier is pattern-swept (regex) — every bucket is a plain Set of exact-match strings", () => {
+  const { boolean: boolTables, value: valueTables } = getWrapperFlagTablesForConsistencyTest();
+  for (const wrapperName of CONSISTENCY_CHECKED_WRAPPERS) {
+    for (const table of [boolTables[wrapperName], valueTables[wrapperName]]) {
+      assert.ok(table instanceof Set, `expected "${wrapperName}" bucket to be a Set, not a pattern-swept classifier`);
+      for (const flag of table) {
+        assert.equal(typeof flag, "string");
+      }
+    }
+  }
+});
+
+test("wrapper-flag audit table matches the live code tables 1:1 — the doc comment cannot drift from the code (security round 7)", () => {
+  const auditTable = getWrapperFlagAuditTableForConsistencyTest();
+  const { boolean: boolTables, value: valueTables } = getWrapperFlagTablesForConsistencyTest();
+
+  assert.deepEqual(
+    Object.keys(auditTable).sort(),
+    CONSISTENCY_CHECKED_WRAPPERS.slice().sort(),
+    "audit table's wrapper set must exactly match the wrappers this test checks"
+  );
+
+  for (const wrapperName of CONSISTENCY_CHECKED_WRAPPERS) {
+    const auditEntry = auditTable[wrapperName];
+    assert.ok(auditEntry, `expected an audit-table entry for "${wrapperName}"`);
+
+    const auditBoolean = new Set(auditEntry.boolean);
+    const auditValue = new Set(auditEntry.value);
+    const codeBoolean = boolTables[wrapperName];
+    const codeValue = valueTables[wrapperName];
+
+    assert.deepEqual(
+      [...auditBoolean].sort(),
+      [...codeBoolean].sort(),
+      `boolean-flag set for "${wrapperName}" drifted between the audit table and wrapperBooleanFlags`
+    );
+    assert.deepEqual(
+      [...auditValue].sort(),
+      [...codeValue].sort(),
+      `value-flag set for "${wrapperName}" drifted between the audit table and wrapperFlagsWithValue`
+    );
+  }
 });
 
 test("isDirectDbClientInvocation: quote-split evasion (p\"\"sql / pg''_dump) is detected (security round 2, HIGH)", () => {

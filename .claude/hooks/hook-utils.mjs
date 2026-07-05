@@ -1339,7 +1339,8 @@ function isDynamicCommandWord(word) {
 
 // ---------------------------------------------------------------------------
 // Wrapper-peel table (audit auditP3Stewards, security round 3 finding 1 HIGH
-// "known-wrapper recursion"; redesigned FAIL-CLOSED in security round 4)
+// "known-wrapper recursion"; redesigned FAIL-CLOSED in security round 4; xargs
+// flag-modeling RETIRED in security round 7)
 //
 // Security round 3 rejected the round-2 "check the first word only" design as
 // insufficient: this repo's own docker-compose.yml documents the default
@@ -1355,62 +1356,79 @@ function isDynamicCommandWord(word) {
 // `--name` swallowed as if boolean, so the real image/command shifted left
 // and `psql` slipped past unseen), `--memory`, `--hostname`, `docker compose
 // -f file exec db psql`, `sudo -D dir psql`, `sudo --preserve-env FOO psql`,
-// `xargs --arg-file f psql`. The direction the gate wants (PROPOSED here,
-// not yet ratified as of this round — recording the decision explicitly
-// rather than self-declaring it accepted): FAIL CLOSED. While peeling a
-// wrapper, a flag token this table cannot POSITIVELY classify — not a known
-// no-value boolean, not a known value-taking flag — STOPS the peel
-// immediately and marks the segment AMBIGUOUS. An ambiguous segment is
-// treated as unverifiable on the managed trust surface (see
-// hasAmbiguousWrapperFlag below) — blocked without a `db_direct` scope grant,
-// the same relief valve as every other gate in this file, rather than guessed
-// past. Consequence embraced, not a bug: `docker run --name pgtmp postgres
-// anything` now blocks even for a wholly benign trailing command — this is
-// intentional fail-closed friction, the same class of tradeoff as decision
-// (b) on interpreter-mediated access below, relieved by the scope grant or by
+// `xargs --arg-file f psql`. FAIL CLOSED: while peeling a wrapper, a flag
+// token this table cannot POSITIVELY classify — not a known no-value
+// boolean, not a known value-taking flag — STOPS the peel immediately and
+// marks the segment AMBIGUOUS. An ambiguous segment is treated as
+// unverifiable on the managed trust surface (see hasAmbiguousWrapperFlag
+// below) — blocked without a `db_direct` scope grant, the same relief valve
+// as every other gate in this file, rather than guessed past. Consequence
+// embraced, not a bug: `docker run --name pgtmp postgres anything` now
+// blocks even for a wholly benign trailing command — this is intentional
+// fail-closed friction, the same class of tradeoff as decision (b) on
+// interpreter-mediated access below, relieved by the scope grant or by
 // simplifying the invocation. This fail-closed direction was ACCEPTED under
 // the security round 5 gate review (audit auditP3Stewards, PR #164): their
 // probing confirmed the redesign held against the round-4 probe list and the
 // friction is the intended tradeoff.
 //
 // Security round 6 found the failure class had RELOCATED rather than closed:
-// round 5's probing showed a table can also be MISCLASSIFIED (a flag present
-// with the wrong shape), not just absent — xargs's -i/-I/-l (replace-string
-// and max-lines forms) were recorded as mandatory separate-token value
-// flags when they are actually GNU getopt-style OPTIONAL, attached-only
-// arguments, so `xargs -i psql` silently swallowed `psql` as -i's "value"
-// instead of ever checking it. Fixed via `wrapperOptionalAttachedFlags` /
-// `xargsOptionalAttachedFlagPattern` below, backed by a full man-page audit
-// of every flag in every wrapper table (see the audit comment above
-// `wrapperBooleanFlags`) so future edits inherit the classification method
-// instead of re-deriving it ad hoc.
+// a table can also be MISCLASSIFIED (a flag present with the wrong shape),
+// not just absent — xargs's -i/-I/-l were recorded as mandatory
+// separate-token value flags when -i/-l are actually GNU getopt-style
+// OPTIONAL, attached-only arguments, so `xargs -i psql` silently swallowed
+// `psql` as -i's "value". Round 6's own fix (an "optional-attached" pattern
+// covering -i/-I/-l uniformly) was ITSELF a misclassification: GNU xargs
+// documents `-I` (uppercase) as taking a MANDATORY argument that may be
+// given attached OR as a separate following token — unlike `-i`/`-l`, which
+// really are optional/attached-only. Round 6's uniform pattern never
+// checked the separated form, so `xargs -I {} psql -f {}` resolved the
+// effective command word to the literal replace-string `{}` and reported
+// clean — a real bypass, the third consecutive round of table-precision
+// failure on xargs specifically.
+//
+// Security round 7 design decision (directed by the gate, not another
+// patch): STOP MODELING XARGS FLAGS ENTIRELY. xargs is a command RUNNER
+// whose effective command position is inherently flag-dependent — that is
+// exactly the property that has burned three rounds (4, 5, 6) of
+// table-precision bugs, each one a different specific mistake but all in
+// the same class (guessing xargs's own argument-taking grammar). The table
+// for xargs is retired: `xargs` is peeled ONLY in its zero-flag form
+// (`xargs psql ...` -> recurse into psql, exactly like every other
+// wrapper); if xargs carries ANY flag token at all — attached, separate,
+// real, or fictitious — the segment is unverifiable and fails closed with
+// the same `hasAmbiguousWrapperFlag` message and `db_direct` relief valve as
+// every other ambiguous case. Accepted friction: `xargs -P4 npm test` (a
+// wholly benign parallel-xargs invocation) now blocks too. This is the
+// deliberate tradeoff — the fail-closed friction removes the CLASS of bug
+// (any future xargs flag, whatever its true grammar, can never again be
+// silently misparsed) rather than chasing the next instance of it.
 //
 // The boolean/value tables below are deliberately NOT exhaustive of each
 // wrapper's real flag set — that is the point. A flag absent from both is
 // unrecognized by design and drives the fail-closed path, not a gap to keep
 // closing reactively. Only flags actually exercised by the required pass
-// matrix (docker exec/run's -u/-w/-e/-H family, env's VAR=val + -u/-i, sudo's
-// -u/-g/-h, timeout's duration argument, xargs's common batching flags) are
+// matrix (docker exec/run's -u/-w/-e family plus the docker-global -H,
+// env's VAR=val + -u/-i, sudo's -u/-g/-h, timeout's duration argument) are
 // enumerated; anything else — including common real-world flags like
 // docker's `--name`/`--memory`/`--hostname` or sudo's `--preserve-env`/`-D` —
 // is deliberately left unclassified so it blocks rather than silently passes.
 //
 // ---------------------------------------------------------------------------
-// Wrapper-flag audit (security round 6) — full man-page cross-check of every
-// flag enumerated below, run once and recorded so future edits inherit the
-// method rather than re-deriving it from scratch. Shape values: `boolean`
-// (never takes an argument) | `value` (MANDATORY argument — may be attached
-// to the flag or given as a separate following token, standard getopt
-// convention for short options with a required argument) | `optional-attached`
-// (argument is OPTIONAL and, per getopt convention for short/long options
-// with an optional argument, MUST be attached if present — a separate
-// following token is NEVER consumed as the value; it is the next word in the
-// command). A flag NOT listed for an audited wrapper is deliberately left
+// Wrapper-flag audit (security rounds 6-7) — full man-page cross-check of
+// every flag enumerated below, kept in sync with the DATA in
+// `wrapperFlagAuditTable` further down (a real object, not just this prose
+// comment) so a consistency test can assert the two can never drift apart.
+// Shape values: `boolean` (never takes an argument) | `value` (MANDATORY
+// argument — may be attached to the flag or given as a separate following
+// token, standard getopt convention for short options with a required
+// argument). A flag NOT listed for an audited wrapper is deliberately left
 // unclassified: it fails closed (hasAmbiguousWrapperFlag) rather than being
 // guessed. Where a flag's shape differs across implementations, or the
 // documentation itself is ambiguous, the table intentionally leaves it
 // unclassified (the safer, blocking direction) rather than committing to a
-// guess.
+// guess. xargs carries NO entries at all as of security round 7 — see the
+// retirement note above; it is deliberately absent from every bucket.
 //
 //   sudo (GNU sudo):
 //     -A --askpass          boolean  sudo(8): no argument
@@ -1424,6 +1442,13 @@ function isDynamicCommandWord(word) {
 //     -k --reset-timestamp  boolean  sudo(8): no argument
 //     -K --remove-timestamp boolean  sudo(8): no argument
 //     -n --non-interactive  boolean  sudo(8): no argument
+//     -N --no-update        boolean  sudo(8), sudo 1.9+: no argument —
+//                                    suppresses updating the cached-
+//                                    credential timestamp on this run.
+//                                    Round-6 correction reversed: `-N` WAS
+//                                    wrongly removed as "not a real flag" —
+//                                    it is documented in man sudo. Restored
+//                                    this round with the correct citation.
 //     -S --stdin            boolean  sudo(8): no argument
 //     -s --shell            boolean  sudo(8): no argument
 //     -v --validate         boolean  sudo(8): no argument
@@ -1437,8 +1462,6 @@ function isDynamicCommandWord(word) {
 //                           arguments too, but sit outside the currently-
 //                           required pass matrix; left unclassified (fails
 //                           closed) rather than added speculatively.
-//     Round-6 correction: `-N` was previously listed as a boolean sudo flag
-//     but does not exist in sudo(8) — removed as dead/inaccurate.
 //
 //   env (GNU coreutils env(1)):
 //     -i --ignore-environment  boolean  no argument
@@ -1458,39 +1481,12 @@ function isDynamicCommandWord(word) {
 //     -s --signal=SIGNAL value    mandatory argument
 //     -k --kill-after=D  value    mandatory argument
 //
-//   xargs (GNU findutils xargs(1)) — THIS ROUND'S FIX:
-//     -i[replace-str] --replace[=replace-str]  optional-attached  Deprecated
-//         synonym for -I; the argument is OPTIONAL, and per getopt
-//         convention for an optional-argument option it must be ATTACHED
-//         (`-ifoo`) or omitted (`-i` alone, defaults to `{}`) — xargs never
-//         reads a separate following word as -i's value. Round 5's table
-//         WRONGLY classified this as a mandatory separate-token value flag,
-//         so `xargs -i psql` silently swallowed `psql` as -i's "value" and
-//         the effective command word resolved to "" — the real command
-//         escaped undetected. Fixed this round via
-//         xargsOptionalAttachedFlagPattern.
-//     -I replace-str --replace=replace-str     optional-attached  Same
-//         optional/attached-only shape and same round-5 misclassification
-//         and fix as -i above.
-//     -l[max-lines] --max-lines[=max-lines]    optional-attached  Deprecated
-//         synonym for -L; optional argument, attached-only — same shape and
-//         same round-5 misclassification and fix as -i/-I.
-//     -L max-lines --max-lines=max-lines       value   The UPPERCASE,
-//         non-deprecated form takes a MANDATORY argument (attached or
-//         separate) — a DIFFERENT flag from lowercase -l above; case matters
-//         and is preserved by xargsOptionalAttachedFlagPattern (its
-//         character class matches lowercase `l` only).
-//     -n --max-args=max-args   value   mandatory argument
-//     -P --max-procs=max-procs value   mandatory argument
-//     -s --max-chars=max-chars value   mandatory argument
-//     -a --arg-file=file       value   mandatory argument (short form only —
-//         the long form `--arg-file` is deliberately NOT enumerated, so it
-//         stays unclassified/blocked; this preserves the round-4/5 required
-//         blocked-direction test for `xargs --arg-file f psql`)
-//     -d --delimiter=delim     value   mandatory argument
-//     -E eof-str               value   mandatory argument
-//     -0 --null, -r --no-run-if-empty, -t --verbose, -p --interactive,
-//     -x --exit                boolean  no argument (unchanged this round)
+//   xargs (GNU findutils xargs(1)) — RETIRED this round, no entries. Three
+//     consecutive rounds (4, 5, 6) each found a different specific
+//     misclassification of xargs's own flag grammar. Rather than keep
+//     chasing individual flags, ANY flag on xargs now fails the whole
+//     segment closed (see peelWrapperCommands below) — there is no
+//     boolean/value table for xargs to audit anymore.
 //
 //   command(1) (bash builtin): -p/-v/-V   boolean   no argument (unchanged)
 //
@@ -1499,24 +1495,54 @@ function isDynamicCommandWord(word) {
 //     deliberately left unclassified (fails closed); not required by the
 //     current pass matrix.
 //
-//   docker exec/run/compose-exec: -u/--user, -w/--workdir, -e/--env,
-//     --env-file, -H/--host are all real, mandatory-argument flags — matches
-//     the current table exactly, no changes this round. Boolean docker
-//     flags (-d/-i/-t/--rm/--privileged/etc.) remain unclassified on
-//     purpose: none are required by the pass matrix, and leaving them
-//     unclassified fails closed rather than guessed.
+//   docker — SPLIT this round into two distinct classification buckets,
+//     because they are genuinely different flag namespaces that the
+//     round-6 table wrongly shared:
+//     docker-global (flags BEFORE the exec/run subcommand — top-level
+//       `docker [OPTIONS] COMMAND`):
+//       -H --host=host   value   docker(1): mandatory argument (daemon
+//                                socket) — this is a GLOBAL flag only; it
+//                                does NOT exist as a `docker exec`/`docker
+//                                run` flag. Round-6 misfiling: `-H` was
+//                                classified under a single shared "docker"
+//                                bucket checked in BOTH the pre-subcommand
+//                                and post-subcommand position, so `docker
+//                                exec -H ... psql` would have wrongly
+//                                accepted `-H` as if it were a real exec
+//                                flag. Fixed by scoping `-H` to
+//                                docker-global only.
+//     docker-exec (flags AFTER the exec/run subcommand — `docker exec/run
+//       [OPTIONS] container/image ...`):
+//       -u --user=user       value   docker(1) exec/run: mandatory argument
+//       -w --workdir=dir     value   docker(1) exec/run: mandatory argument
+//       -e --env=KEY=VAL     value   docker(1) exec/run: mandatory argument,
+//                                    repeatable
+//       --env-file=file      value   docker(1) exec/run: mandatory argument
+//       Round-6 misfiling (the other half): `-u`/`-w`/`-e`/`--env-file` were
+//       classified under the same shared "docker" bucket also checked in
+//       the PRE-subcommand (global) position, so `docker -u root exec ...`
+//       would have wrongly accepted `-u` as a real top-level docker flag —
+//       it is not; `-u` only exists post-subcommand. Fixed by scoping these
+//       to docker-exec only. Boolean docker flags (-d/-i/-t/--rm/
+//       --privileged/etc., in either position) remain unclassified on
+//       purpose: none are required by the pass matrix, and leaving them
+//       unclassified fails closed rather than guessed.
 // ---------------------------------------------------------------------------
 const wrapperBooleanFlags = {
   sudo: new Set([
     "-A", "--askpass", "-b", "--background", "-E", "-H", "-i", "-k", "-K",
-    "-n", "-S", "-s", "-v", "-V", "--stdin", "--login", "--set-home",
-    "--validate", "--reset-timestamp", "--remove-timestamp"
+    "-n", "-N", "--no-update", "-S", "-s", "-v", "-V", "--stdin", "--login",
+    "--set-home", "--validate", "--reset-timestamp", "--remove-timestamp"
   ]),
   nice: new Set([]),
   env: new Set(["-i", "--ignore-environment", "-0", "--null", "-v", "--verbose"]),
   timeout: new Set(["--preserve-status", "--foreground", "-v", "--verbose"]),
-  xargs: new Set(["-0", "--null", "-r", "--no-run-if-empty", "-t", "--verbose", "-p", "--interactive", "-x", "--exit"]),
-  docker: new Set([]),
+  // Security round 7: xargs retired from per-flag modeling entirely — see
+  // the retirement note above. No boolean or value entries for xargs
+  // remain; ANY flag on xargs fails the segment closed (peelWrapperCommands
+  // below never calls classifyWrapperFlag with wrapperName "xargs" anymore).
+  "docker-global": new Set([]),
+  "docker-exec": new Set([]),
   command: new Set(["-p", "-v", "-V"]),
   exec: new Set([]),
 };
@@ -1525,34 +1551,54 @@ const wrapperFlagsWithValue = {
   nice: new Set(["-n", "--adjustment"]),
   env: new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]),
   timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
-  // Security round 6: -I/-i/-l/--replace REMOVED from this set — they take
-  // an OPTIONAL argument (see wrapperOptionalAttachedFlags below), not a
-  // mandatory separate-token value. Leaving them here was the round-6
-  // misclassification: `xargs -i psql` silently consumed `psql` as -i's
-  // "value", resolving the effective command word to "" and missing the
-  // invocation entirely. See the audit comment above this table.
-  xargs: new Set(["-L", "-n", "-P", "-s", "-a", "-d", "-E", "--max-args", "--max-procs"]),
-  docker: new Set(["-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file", "-H"]),
+  // Security round 7: docker's shared "docker" bucket split into
+  // docker-global (pre-subcommand) and docker-exec (post-subcommand) — see
+  // the audit comment above. `-H`/`--host` is global-only; `-u`/`--user`,
+  // `-w`/`--workdir`, `-e`/`--env`, `--env-file` are exec/run-only. Sharing
+  // one bucket for both positions (the round-6 shape) let each position
+  // wrongly accept the other's flags.
+  "docker-global": new Set(["-H", "--host"]),
+  "docker-exec": new Set(["-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file"]),
   command: new Set([]),
   exec: new Set([]),
 };
-// Security round 6 (HIGH: "table misclassification"): GNU xargs's -i/-I/-l
-// (and long forms --replace/--max-lines) take an OPTIONAL argument that, per
-// getopt convention, must be ATTACHED if present (`-i{}`, `-Ifoo`, `-l5`,
-// `--replace={}`) or omitted (`-i`, `-I`, `-l` alone) — never given as a
-// separate following token. A token matching this pattern is "boolean"-
-// shaped at the peel level: it never consumes a following token (attached
-// argument or not), so the NEXT token is always evaluated as the potential
-// command word — closing both the false-negative (`xargs -i psql` silently
-// missed) and the false-positive (`xargs -I{} npm test` wrongly blocked as
-// "unrecognized") halves of the round-5 misclassification. `-L` (uppercase)
-// is a DIFFERENT xargs(1) flag taking a MANDATORY argument — the character
-// class here is deliberately lowercase-only so it never matches `-L`, which
-// stays governed by wrapperFlagsWithValue.
-const xargsOptionalAttachedFlagPattern = /^(-[iIl].*|--replace(?:=.*)?|--max-lines(?:=.*)?)$/;
-const wrapperOptionalAttachedFlags = {
-  xargs: xargsOptionalAttachedFlagPattern
+// Security round 7: the audit table as DATA, not just prose — the
+// consistency test in tests/hook-policy.test.ts asserts this object's flag
+// sets match wrapperBooleanFlags / wrapperFlagsWithValue 1:1 for every
+// wrapper below, so the prose comment above and the executable tables can
+// never silently drift apart the way earlier rounds' tables did. Only
+// wrappers WITHOUT a per-invocation position split are listed (xargs is
+// intentionally absent — it has no entries to audit; docker is split into
+// its two real positional buckets, matching the live tables above).
+const wrapperFlagAuditTable = {
+  sudo: {
+    boolean: [
+      "-A", "--askpass", "-b", "--background", "-E", "-H", "-i", "-k", "-K",
+      "-n", "-N", "--no-update", "-S", "-s", "-v", "-V", "--stdin", "--login",
+      "--set-home", "--validate", "--reset-timestamp", "--remove-timestamp"
+    ],
+    value: ["-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"]
+  },
+  env: {
+    boolean: ["-i", "--ignore-environment", "-0", "--null", "-v", "--verbose"],
+    value: ["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]
+  },
+  nice: { boolean: [], value: ["-n", "--adjustment"] },
+  timeout: {
+    boolean: ["--preserve-status", "--foreground", "-v", "--verbose"],
+    value: ["-s", "--signal", "-k", "--kill-after"]
+  },
+  command: { boolean: ["-p", "-v", "-V"], value: [] },
+  exec: { boolean: [], value: [] },
+  "docker-global": { boolean: [], value: ["-H", "--host"] },
+  "docker-exec": { boolean: [], value: ["-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file"] }
 };
+export function getWrapperFlagAuditTableForConsistencyTest() {
+  return wrapperFlagAuditTable;
+}
+export function getWrapperFlagTablesForConsistencyTest() {
+  return { boolean: wrapperBooleanFlags, value: wrapperFlagsWithValue };
+}
 const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const dockerWrappingSubcommands = new Set(["exec", "run"]);
 
@@ -1560,16 +1606,8 @@ const dockerWrappingSubcommands = new Set(["exec", "run"]);
 // only itself), "value" (consumes itself + the next token), or "unrecognized"
 // (fail-closed — the caller must stop peeling, not guess). A known
 // value-taking flag with its value inline (`--user=root`) is boolean-shaped
-// at the token level — nothing further to consume. Optional-attached flags
-// (wrapperOptionalAttachedFlags above) are checked FIRST and always classify
-// as "boolean" — for that shape, "boolean" means "never consumes a SEPARATE
-// token", not "takes no argument", which is exactly the property peeling
-// needs (see the security-round-6 comment above the pattern definition).
+// at the token level — nothing further to consume.
 function classifyWrapperFlag(wrapperName, flag) {
-  const optionalAttachedPattern = wrapperOptionalAttachedFlags[wrapperName];
-  if (optionalAttachedPattern && optionalAttachedPattern.test(flag)) {
-    return "boolean";
-  }
   const valueSet = wrapperFlagsWithValue[wrapperName];
   const boolSet = wrapperBooleanFlags[wrapperName];
   if (valueSet && valueSet.has(flag)) {
@@ -1640,14 +1678,14 @@ function peelWrapperCommands(tokens) {
       if (tokens[i] === "compose") {
         i++;
       }
-      const preSkip = skipFlags(tokens, i, "docker");
+      const preSkip = skipFlags(tokens, i, "docker-global");
       if (preSkip.ambiguous) {
         return { word: tokens[preSkip.index], ambiguous: true };
       }
       i = preSkip.index;
       if (i < tokens.length && dockerWrappingSubcommands.has(tokens[i])) {
         i++; // consume exec/run
-        const postSkip = skipFlags(tokens, i, "docker");
+        const postSkip = skipFlags(tokens, i, "docker-exec");
         if (postSkip.ambiguous) {
           return { word: tokens[postSkip.index], ambiguous: true };
         }
@@ -1677,12 +1715,17 @@ function peelWrapperCommands(tokens) {
       continue;
     }
     if (word === "xargs") {
+      // Security round 7: xargs is retired from per-flag modeling entirely
+      // (see the retirement note in the doc comment above). Peel ONLY the
+      // zero-flag form — `xargs psql ...` recurses into psql exactly like
+      // every other wrapper. The instant xargs carries ANY flag token
+      // (attached, separate, real, or fictitious), the segment is
+      // unverifiable: return ambiguous immediately, without ever consulting
+      // a flag table for xargs (there is none to consult).
       i++;
-      const skip = skipFlags(tokens, i, "xargs");
-      if (skip.ambiguous) {
-        return { word: tokens[skip.index], ambiguous: true };
+      if (i < tokens.length && tokens[i].startsWith("-")) {
+        return { word: tokens[i], ambiguous: true };
       }
-      i = skip.index;
       continue;
     }
     return { word, ambiguous: false };
@@ -1786,15 +1829,33 @@ function peelWrapperCommands(tokens) {
 //      second-order failure class: a flag can be MISCLASSIFIED (present in
 //      the table but with the wrong shape) rather than merely absent, and a
 //      misclassified flag can silently swallow the real command as its
-//      "value" instead of being flagged unverifiable — see the
-//      xargs -i/-I/-l fix and the full man-page audit table above
-//      (security round 6). The residual risk after that audit is NOT
-//      "unenumerated flags" (those already fail closed by construction) — it
-//      is "an enumerated flag whose shape was recorded wrong." That risk is
-//      mitigated, not eliminated, by: (a) the audit table itself, which
-//      requires every future addition to cite a source and a shape
-//      (boolean/value/optional-attached) before being added; and (b) gate
-//      review of any table change, the same way this round's fix was gated.
+//      "value" instead of being flagged unverifiable. Round 6's own fix for
+//      this class was ITSELF a misclassification of xargs's `-I` (a
+//      mandatory, separate-or-attached argument treated uniformly as
+//      optional/attached-only) — three consecutive rounds of table-precision
+//      bugs, all on xargs specifically. Security round 7's response is a
+//      DESIGN change, not another patch: xargs is retired from per-flag
+//      modeling entirely (see the retirement note on the wrapper-peel table
+//      above) — only its zero-flag form is peeled, and any flag on xargs
+//      fails the segment closed regardless of the flag's true grammar. This
+//      removes the CLASS of misclassification risk for xargs by construction
+//      rather than requiring a fourth round to get the table right. The
+//      remaining wrappers (docker/sudo/env/nice/timeout/command/exec) still
+//      carry positive-allowlist tables and so still carry the residual risk
+//      of an enumerated-but-wrongly-shaped flag — mitigated, not eliminated,
+//      by: (a) the audit table now existing as executable DATA
+//      (`wrapperFlagAuditTable`, cross-checked against the live
+//      classification tables by an automated consistency test — see
+//      `getWrapperFlagAuditTableForConsistencyTest` /
+//      `getWrapperFlagTablesForConsistencyTest`), so the prose comment and
+//      the code can no longer silently drift apart the way the round-6
+//      xargs table did; and (b) gate review of any table change. Two audit
+//      corrections landed this round on top of the design change: sudo's
+//      `-N`/`--no-update` was wrongly REMOVED in round 6 (it is a real,
+//      documented sudo 1.9+ flag) and is restored; docker's shared flag
+//      bucket wrongly let global-only (`-H`) and exec/run-only
+//      (`-u`/`-w`/`-e`/`--env-file`) flags each leak into the other
+//      position — split into `docker-global` and `docker-exec` buckets.
 //      This is an owned, recorded residual — not a gap papered over as
 //      "complete."
 const directDbClientWords = new Set(["psql", "pgcli", "pg_dump", "pg_restore"]);
