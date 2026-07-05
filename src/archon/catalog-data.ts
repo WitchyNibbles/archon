@@ -454,7 +454,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["archon-infra-ops", "archon-setup", "archon-release-readiness", "ecc:deployment-patterns", "ecc:docker-patterns"],
+    defaultSkillIds: ["archon-infra-ops", "archon-setup", "archon-release-readiness", "archon-dependency-triage", "ecc:deployment-patterns", "ecc:docker-patterns"],
     retrievalGuidance: ["approved memory", "repo rules", "setup notes", "runbooks", "incident learnings"],
     spawnPolicy: {
       canSpawnSubagents: true,
@@ -1222,7 +1222,7 @@ export const agentCatalog = {
     effort: "high",
     canOwnTasks: true,
     canSatisfySpecialistRequirement: true,
-    defaultSkillIds: ["caveman", "archon-performance", "verification-loop", "ecc:backend-patterns"],
+    defaultSkillIds: ["caveman", "archon-observability", "verification-loop", "ecc:backend-patterns"],
     retrievalGuidance: ["approved memory", "repo rules", "reviewed plans", "runbooks", "benchmark artifacts", "Grafana config at src/grafana/"]
   },
   review_orchestrator: {
@@ -1241,5 +1241,39 @@ export const agentCatalog = {
     canSatisfySpecialistRequirement: false,
     defaultSkillIds: ["archon-review", "archon-qa-verification", "verification-loop"],
     retrievalGuidance: ["approved memory", "repo rules", "task packets", "review artifacts"]
+  },
+  runtime_medic: {
+    label: "Runtime Medic",
+    description: "Diagnoses and repairs stuck autonomous runs via sanctioned admin commands; the self-unblock mandate's staffed owner.",
+    class: "delivery",
+    availability: "core_optional",
+    shipsAgentArtifact: true,
+    artifactPath: ".claude/agents/runtime-medic/AGENT.md",
+    routerDescription:
+      "Diagnoses and repairs stuck autonomous runs — stale ACTIVE pointers, scope locks, orphaned tasks/runs, gate deadlocks, lease contention, blocked hook states — using sanctioned admin CLI commands only (reconcile-runtime-state, recover, prune-orphans, close-run), never direct DB or gate-record writes.",
+    tools: ["Read", "Grep", "Glob", "Bash"],
+    model: "sonnet",
+    effort: "high",
+    canOwnTasks: true,
+    canSatisfySpecialistRequirement: false,
+    defaultSkillIds: ["caveman", "archon-repair-loop", "archon-debugging", "verification-loop"],
+    retrievalGuidance: ["approved memory", "repo rules", "runtime traces", "closure-log", "incident learnings"]
+  },
+  code_health_steward: {
+    label: "Code Health Steward",
+    description: "Owns dead-code, monolith-watch, duplicate-pattern, and import-cycle debt; produces prioritized debt reports and queue-ready proposals — never refactors directly.",
+    class: "quality",
+    availability: "core_optional",
+    shipsAgentArtifact: true,
+    artifactPath: ".claude/agents/code-health-steward/AGENT.md",
+    routerDescription:
+      "Owns ongoing code-health debt: dead-code detection (knip/ts-prune/depcheck via npx), monolith/max-lines-ratchet watch, duplicate-pattern and import-cycle analysis. Emits a prioritized debt report plus queue-ready task proposals for the planner — proposals only, never direct refactors.",
+    tools: ["Read", "Grep", "Glob", "Bash"],
+    model: "sonnet",
+    effort: "medium",
+    canOwnTasks: true,
+    canSatisfySpecialistRequirement: false,
+    defaultSkillIds: ["caveman", "verification-loop"],
+    retrievalGuidance: ["approved memory", "repo rules", "max-lines ratchet", "prior debt reports"]
   }
 } as const satisfies Record<string, AgentCatalogEntryV2>;

@@ -34,7 +34,15 @@ const {
   extractBashWriteTargets,
   validateReviewArtifact,
   parseCouncilReview,
-  isHandoffArtifactPath
+  isHandoffArtifactPath,
+  isDirectDbClientInvocation,
+  hasDbDirectScopeGrant,
+  hasUnverifiableDynamicCommandWord,
+  hasAmbiguousWrapperFlag,
+  isDestructiveCommand,
+  resolveShellWordConcatenation,
+  getWrapperFlagAuditTableForConsistencyTest,
+  getWrapperFlagTablesForConsistencyTest
 } = await import(`${hooksDir}/hook-utils.mjs`);
 const {
   evaluatePreToolUse,
@@ -340,6 +348,566 @@ test("PermissionRequest: read-only Bash referencing .claude/ with no task is not
     bashPayload("cat .claude/settings.json"),
     emptyContext()
   );
+  assert.ok(result === undefined || result.decision !== "deny");
+});
+
+// ─── isDirectDbClientInvocation / hasDbDirectScopeGrant ──────────────────────
+// Audit auditP3Stewards HIGH (security): runtime-medic's "sanctioned admin CLI
+// only, never direct DB writes" boundary was prose-only. These tests prove
+// both directions: the named bypass shape is blocked, and the sanctioned admin
+// CLI (and ordinary read-only commands that merely mention "psql" as text)
+// pass through unaffected.
+
+test("isDirectDbClientInvocation: raw psql UPDATE is detected", () => {
+  assert.equal(
+    isDirectDbClientInvocation('psql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE reviews SET outcome=1"'),
+    true
+  );
+});
+
+test("isDirectDbClientInvocation: psql --version and read-only psql -c \"SELECT 1\" are ALSO detected (documented decision: block psql entirely, not just writes)", () => {
+  assert.equal(isDirectDbClientInvocation("psql --version"), true);
+  assert.equal(isDirectDbClientInvocation('psql -U archon -d archon -tAc "select 1;"'), true);
+});
+
+test("isDirectDbClientInvocation: pg_dump, pg_restore, and pgcli are detected", () => {
+  assert.equal(isDirectDbClientInvocation("pg_dump -U archon archon > backup.sql"), true);
+  assert.equal(isDirectDbClientInvocation("pg_restore -U archon -d archon backup.dump"), true);
+  assert.equal(isDirectDbClientInvocation('pgcli "$ARCHON_CORE_DATABASE_URL"'), true);
+});
+
+// Security round 2 (finding 1): the detection rule moved from "the word
+// appears anywhere in the segment" to "the EFFECTIVE resolved word of the
+// segment IS the word" — this is what resolves the quote-splitting false
+// negative below without reintroducing a false positive on `grep -n "psql"
+// file` (psql is grep's ARGUMENT there, not the executed program).
+//
+// Security round 3 (finding 1) rejected treating "first resolved word only"
+// (with no wrapper awareness) as sufficient — this repo's own
+// docker-compose.yml documents the default Postgres container and the
+// direct-psql pattern, making `docker exec <container> psql` the single most
+// obvious bypass, not a hypothetical one. The gate now PEELS a small,
+// enumerable wrapper set (docker exec/run, sudo, env, nice, timeout, xargs,
+// command, exec — including nested combinations) before checking the
+// effective word, so these ARE caught again, this time without
+// reintroducing the round-2 quote-splitting hole (peeling operates on
+// resolved, whitespace-tokenized words, not raw substring matching).
+test("isDirectDbClientInvocation: wrapper-prefixed invocation (docker exec ... psql) is caught via wrapper-peel (security round 3, HIGH)", () => {
+  assert.equal(
+    isDirectDbClientInvocation('docker exec archon-postgres psql -U archon -d archon -tAc "select 1;"'),
+    true
+  );
+});
+
+test("isDirectDbClientInvocation: single-wrapper forms are all caught via wrapper-peel (security round 3, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("sudo psql"), true);
+  assert.equal(isDirectDbClientInvocation("env PGPASSWORD=x psql"), true);
+  assert.equal(isDirectDbClientInvocation("timeout 5 psql"), true);
+});
+
+test("isDirectDbClientInvocation: nested wrappers peel iteratively (sudo docker exec ... psql) (security round 3, HIGH)", () => {
+  assert.equal(
+    isDirectDbClientInvocation('sudo docker exec archon-postgres psql -c "select 1"'),
+    true
+  );
+});
+
+test("isDirectDbClientInvocation: wrapper commands with a benign target still pass (security round 3, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("docker compose up"), false);
+  assert.equal(isDirectDbClientInvocation("sudo npm test"), false);
+  assert.equal(isDirectDbClientInvocation("timeout 60 npm test"), false);
+});
+
+// ─── path-prefixed client basename matching (security round 8, HIGH) ────────
+// Present since round 2: the DB-client check only ever matched a bare
+// literal word against directDbClientWords, so `/usr/bin/psql`, `../bin/
+// psql`, and `./psql` — which all launch the exact same binary as bare
+// `psql` — were never Set members and slipped through undetected. Fixed by
+// extracting the PATH BASENAME (strip up to and including the last `/` or
+// `\` separator) off the resolved command word before the Set-membership
+// check. Exact basename equality only — a longer basename that merely
+// CONTAINS a client name (`not-psql`, `my_psql_wrapper`) has ITSELF, not
+// `psql`, as its own basename, so it correctly does not match.
+
+test("isDirectDbClientInvocation: absolute-path invocation of every recognized client is detected (security round 8, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("/usr/bin/psql -c 'select 1'"), true);
+  assert.equal(isDirectDbClientInvocation("/usr/bin/pgcli"), true);
+  assert.equal(isDirectDbClientInvocation("/usr/local/bin/pg_dump -U archon archon > backup.sql"), true);
+  assert.equal(isDirectDbClientInvocation("/usr/bin/pg_restore -d archon dump.sql"), true);
+});
+
+test("isDirectDbClientInvocation: relative-path invocation of every recognized client is detected (security round 8, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("../bin/psql -c 'select 1'"), true);
+  assert.equal(isDirectDbClientInvocation("./psql"), true);
+  assert.equal(isDirectDbClientInvocation("./pgcli"), true);
+  assert.equal(isDirectDbClientInvocation("../tools/pg_dump -U archon archon > backup.sql"), true);
+  assert.equal(isDirectDbClientInvocation("./pg_restore -d archon dump.sql"), true);
+});
+
+test("isDirectDbClientInvocation: a longer basename that merely CONTAINS a client name is NOT detected (security round 8, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("/usr/bin/not-psql --version"), false);
+  assert.equal(isDirectDbClientInvocation("./my_psql_wrapper --version"), false);
+  assert.equal(isDirectDbClientInvocation("/opt/tools/pg_dump_backup.sh"), false);
+});
+
+test("isDirectDbClientInvocation: path-prefixed client is still detected through wrapper-peel composition (security round 8, HIGH)", () => {
+  assert.equal(isDirectDbClientInvocation("sudo /usr/bin/psql -c 'select 1'"), true);
+  assert.equal(
+    isDirectDbClientInvocation("docker exec archon-postgres /usr/bin/psql -U archon -d archon -c 'select 1'"),
+    true
+  );
+});
+
+test("evaluatePreToolUse: an absolute-path psql invocation blocks via the DB-client gate (security round 8, HIGH)", () => {
+  const result = evaluatePreToolUse(bashPayload("/usr/bin/psql -c 'select 1'"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /direct database-client invocation/i);
+});
+
+// ─── hasAmbiguousWrapperFlag (security round 4 — FAIL-CLOSED redesign) ───────
+// Round 3's wrapper-peel used an OPTIMISTIC "skip anything starting with -"
+// rule that silently mis-parsed ordinary shapes with an unrecognized flag,
+// letting the real command escape undetected. Round 4 requires FAIL CLOSED:
+// an unrecognized flag during peel stops immediately and is reported as
+// unverifiable via hasAmbiguousWrapperFlag, rather than guessed past.
+
+test("hasAmbiguousWrapperFlag: docker run with an unrecognized --name flag is ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker run --name pgtmp postgres psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: unrecognized docker flags (--memory, --hostname) are ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker run --memory 512m postgres psql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("docker run --hostname pg postgres psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: docker compose with an unrecognized top-level flag is ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker compose -f file exec db psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: sudo with unrecognized flags (-D, --preserve-env with a value) is ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("sudo -D dir psql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("sudo --preserve-env FOO psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: xargs with an unrecognized --arg-file flag is ambiguous (security round 4, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("xargs --arg-file f psql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: the required benign matrix still passes (docker compose up, sudo npm test, timeout 60 npm test, env FOO=bar npm test)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker compose up"), false);
+  assert.equal(hasAmbiguousWrapperFlag("sudo npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("timeout 60 npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("env FOO=bar npm test"), false);
+});
+
+test("hasAmbiguousWrapperFlag: the recognized-flag matrix (docker exec/run's -u/-w/-e, docker-global -H, sudo's -u/-g/-h) still passes", () => {
+  assert.equal(hasAmbiguousWrapperFlag("docker exec -u root archon-postgres npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("sudo -u builder npm test"), false);
+  assert.equal(hasAmbiguousWrapperFlag("docker -H unix:///var/run/docker.sock exec archon-postgres npm test"), false);
+});
+
+// ─── xargs flag-modeling retirement (security round 7 — design simplification) ───
+// Three consecutive rounds (4, 5, 6) each found a DIFFERENT specific
+// misclassification of xargs's own flag grammar (round 4: optimistic-skip;
+// round 5: mandatory-vs-optional; round 6: its own -I fix uniformly treated
+// -I as optional/attached-only, when GNU xargs documents -I as taking a
+// MANDATORY argument that may be given attached OR as a separate token —
+// `xargs -I {} psql -f {}` resolved the command word to the literal
+// replace-string `{}` and reported clean). Round 7 retires xargs from
+// per-flag modeling entirely: only the zero-flag form is peeled
+// (`xargs psql ...` -> recurse into psql); ANY flag on xargs — attached,
+// separate, real, or fictitious — makes the segment unverifiable.
+
+test("isDirectDbClientInvocation: xargs zero-flag form still recurses into the real command (security round 7)", () => {
+  assert.equal(isDirectDbClientInvocation("xargs psql"), true);
+  assert.equal(isDirectDbClientInvocation('ls | xargs psql -c "UPDATE reviews SET outcome=1"'), true);
+  assert.equal(isDirectDbClientInvocation("xargs pg_restore -d archon dump.sql"), true);
+});
+
+test("hasAmbiguousWrapperFlag: xargs with ANY flag is ambiguous, regardless of attached/separate form or trailing command (security round 7, HIGH)", () => {
+  assert.equal(hasAmbiguousWrapperFlag("xargs -i psql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -I{} pg_restore -d archon dump.sql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -l psql"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -I{} npm test"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -i echo {}"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs -L 1 npm test"), true);
+  assert.equal(hasAmbiguousWrapperFlag("xargs --arg-file f psql"), true); // regression: round 4 required block, unchanged
+  assert.equal(hasAmbiguousWrapperFlag("xargs -P4 npm test"), true); // accepted fail-closed friction on a benign flag
+});
+
+test("hasAmbiguousWrapperFlag: xargs -I with a SEPARATE-token argument is now caught — the exact round-6 regression (security round 7, HIGH)", () => {
+  // GNU xargs documents -I as a MANDATORY argument that may be attached
+  // (`-I{}`) or given as a separate following token (`-I {}`). Round 6's
+  // fix modeled -I as always-optional-attached and never checked the
+  // separated form, so `xargs -I {} psql -f {}` resolved the effective
+  // command word to the literal replace-string token `{}` instead of
+  // `psql` — a real bypass reported clean. Under round 7's fail-closed
+  // rule, xargs carrying ANY flag (space-separated or not) is unverifiable
+  // by construction, so this class can never recur regardless of the
+  // flag's true argument shape.
+  assert.equal(isDirectDbClientInvocation("xargs -I {} psql -f {}"), false); // no longer resolved via the DB-client gate at all
+  assert.equal(hasAmbiguousWrapperFlag("xargs -I {} psql -f {}"), true);
+});
+
+test("evaluatePreToolUse: xargs with any flag blocks via the ambiguous-wrapper-flag gate, with its own message (security round 7)", () => {
+  const result = evaluatePreToolUse(bashPayload("xargs -I {} psql -f {}"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /unrecognized wrapper flag prevents command verification/i);
+});
+
+test("evaluatePreToolUse: xargs zero-flag form recurses and blocks via the DB-client gate, not the ambiguous-wrapper-flag gate (security round 7)", () => {
+  const result = evaluatePreToolUse(bashPayload("xargs psql"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /direct database-client invocation/i);
+});
+
+test("isDirectDbClientInvocation: known-wrapper recursion still resolves psql correctly when no ambiguous flag is present (regression, rounds 2-4)", () => {
+  assert.equal(
+    isDirectDbClientInvocation('docker exec archon-postgres psql -U archon -d archon -tAc "select 1;"'),
+    true
+  );
+  assert.equal(isDirectDbClientInvocation("sudo psql"), true);
+  assert.equal(isDirectDbClientInvocation("env PGPASSWORD=x psql"), true);
+  assert.equal(isDirectDbClientInvocation("timeout 5 psql"), true);
+  assert.equal(isDirectDbClientInvocation('sudo docker exec archon-postgres psql -c "select 1"'), true);
+});
+
+test("evaluatePreToolUse: docker run with an unrecognized flag is blocked, with the ambiguous-wrapper-flag message", () => {
+  const result = evaluatePreToolUse(bashPayload("docker run --name pgtmp postgres psql"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /unrecognized wrapper flag prevents command verification/i);
+});
+
+test("evaluatePreToolUse: sudo with an unrecognized flag is blocked even for a benign trailing command (accepted fail-closed friction)", () => {
+  const result = evaluatePreToolUse(bashPayload("sudo -D /tmp npm test"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /unrecognized wrapper flag prevents command verification/i);
+});
+
+test("evaluatePreToolUse: ambiguous-wrapper-flag block is lifted with `db_direct` scope", () => {
+  const ctx = contextWithScope("db_direct");
+  const result = evaluatePreToolUse(bashPayload("docker run --name pgtmp postgres psql"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePreToolUse: the benign matrix is not blocked by the ambiguous-wrapper-flag gate", () => {
+  for (const command of ["docker compose up", "sudo npm test", "timeout 60 npm test", "env FOO=bar npm test"]) {
+    const result = evaluatePreToolUse(bashPayload(command), emptyContext());
+    assert.ok(result === undefined || result.decision !== "block", `expected "${command}" to pass`);
+  }
+});
+
+test("evaluatePermissionRequest: docker run with an unrecognized flag is denied, with the ambiguous-wrapper-flag message", () => {
+  const result = evaluatePermissionRequest(bashPayload("docker run --name pgtmp postgres psql"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "deny");
+  assert.match(result.reason, /unrecognized wrapper flag prevents command verification/i);
+});
+
+// ─── Wrapper-flag table internal consistency (security round 7 — required
+// by the gate: three rounds of table-precision bugs is a pattern, so the
+// audit table now has to prove itself against the live code, not just read
+// convincingly) ─────────────────────────────────────────────────────────
+// Covers the REMAINING wrapper tables (docker-global/docker-exec, sudo, env,
+// nice, timeout, command, exec) — xargs is deliberately excluded, since
+// security round 7 retired it from per-flag modeling entirely (no table to
+// check consistency against).
+
+const CONSISTENCY_CHECKED_WRAPPERS = [
+  "sudo", "env", "nice", "timeout", "command", "exec", "docker-global", "docker-exec"
+];
+
+test("wrapper-flag tables: no flag appears in both the boolean and value bucket for the same wrapper", () => {
+  const { boolean: boolTables, value: valueTables } = getWrapperFlagTablesForConsistencyTest();
+  for (const wrapperName of CONSISTENCY_CHECKED_WRAPPERS) {
+    const boolSet = boolTables[wrapperName];
+    const valueSet = valueTables[wrapperName];
+    assert.ok(boolSet, `expected a boolean-flag Set for "${wrapperName}"`);
+    assert.ok(valueSet, `expected a value-flag Set for "${wrapperName}"`);
+    for (const flag of boolSet) {
+      assert.ok(
+        !valueSet.has(flag),
+        `"${flag}" is classified as BOTH boolean and value for wrapper "${wrapperName}"`
+      );
+    }
+  }
+});
+
+test("wrapper-flag tables: xargs is retired — it carries no entries in either bucket (security round 7)", () => {
+  const { boolean: boolTables, value: valueTables } = getWrapperFlagTablesForConsistencyTest();
+  assert.equal(boolTables.xargs, undefined);
+  assert.equal(valueTables.xargs, undefined);
+});
+
+test("wrapper-flag tables: no per-wrapper classifier is pattern-swept (regex) — every bucket is a plain Set of exact-match strings", () => {
+  const { boolean: boolTables, value: valueTables } = getWrapperFlagTablesForConsistencyTest();
+  for (const wrapperName of CONSISTENCY_CHECKED_WRAPPERS) {
+    for (const table of [boolTables[wrapperName], valueTables[wrapperName]]) {
+      assert.ok(table instanceof Set, `expected "${wrapperName}" bucket to be a Set, not a pattern-swept classifier`);
+      for (const flag of table) {
+        assert.equal(typeof flag, "string");
+      }
+    }
+  }
+});
+
+test("wrapper-flag audit table matches the live code tables 1:1 — the doc comment cannot drift from the code (security round 7)", () => {
+  const auditTable = getWrapperFlagAuditTableForConsistencyTest();
+  const { boolean: boolTables, value: valueTables } = getWrapperFlagTablesForConsistencyTest();
+
+  assert.deepEqual(
+    Object.keys(auditTable).sort(),
+    CONSISTENCY_CHECKED_WRAPPERS.slice().sort(),
+    "audit table's wrapper set must exactly match the wrappers this test checks"
+  );
+
+  for (const wrapperName of CONSISTENCY_CHECKED_WRAPPERS) {
+    const auditEntry = auditTable[wrapperName];
+    assert.ok(auditEntry, `expected an audit-table entry for "${wrapperName}"`);
+
+    const auditBoolean = new Set(auditEntry.boolean);
+    const auditValue = new Set(auditEntry.value);
+    const codeBoolean = boolTables[wrapperName];
+    const codeValue = valueTables[wrapperName];
+
+    assert.deepEqual(
+      [...auditBoolean].sort(),
+      [...codeBoolean].sort(),
+      `boolean-flag set for "${wrapperName}" drifted between the audit table and wrapperBooleanFlags`
+    );
+    assert.deepEqual(
+      [...auditValue].sort(),
+      [...codeValue].sort(),
+      `value-flag set for "${wrapperName}" drifted between the audit table and wrapperFlagsWithValue`
+    );
+  }
+});
+
+test("isDirectDbClientInvocation: quote-split evasion (p\"\"sql / pg''_dump) is detected (security round 2, HIGH)", () => {
+  assert.equal(
+    isDirectDbClientInvocation('p""sql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE reviews SET outcome=1"'),
+    true
+  );
+  assert.equal(isDirectDbClientInvocation("pg''_dump -U archon archon > backup.sql"), true);
+});
+
+test("isDirectDbClientInvocation: legitimate quoted fragments that do NOT form a client word still pass (security round 2, HIGH)", () => {
+  // Two separate shell ARGUMENTS ("p" and "sql"), not one concatenated word —
+  // there is real whitespace between them, so this must not resolve to "psql".
+  assert.equal(isDirectDbClientInvocation('echo "p" "sql"'), false);
+  // A single quoted argument containing the literal text p"sql is DATA being
+  // searched for, not an invocation of a client binary named psql.
+  assert.equal(isDirectDbClientInvocation("grep 'p\"sql' foo.sh"), false);
+});
+
+test("isDirectDbClientInvocation: psql piped as the second stage of a pipeline is detected", () => {
+  assert.equal(isDirectDbClientInvocation('cat query.sql | psql "$ARCHON_CORE_DATABASE_URL"'), true);
+});
+
+test("isDirectDbClientInvocation: psql wrapped in eval/bash -c is detected", () => {
+  assert.equal(isDirectDbClientInvocation("eval \"psql -c 'select 1'\""), true);
+  assert.equal(isDirectDbClientInvocation('bash -c "psql -c \'select 1\'"'), true);
+});
+
+test("isDirectDbClientInvocation: psql inside an executable heredoc body is detected", () => {
+  assert.equal(
+    isDirectDbClientInvocation('bash <<EOF\npsql -c "select 1"\nEOF'),
+    true
+  );
+});
+
+test("isDirectDbClientInvocation: node/npx one-liner requiring 'pg' is detected", () => {
+  assert.equal(isDirectDbClientInvocation("node -e \"require('pg').Client\""), true);
+  assert.equal(isDirectDbClientInvocation('npx -e "import { Client } from \'pg\'"'), true);
+});
+
+test("isDirectDbClientInvocation: sanctioned admin CLI commands are NEVER detected", () => {
+  assert.equal(isDirectDbClientInvocation("npx tsx ./src/admin.ts status --run-id latest"), false);
+  assert.equal(
+    isDirectDbClientInvocation(
+      "ARCHON_CORE_DATABASE_URL=postgresql://x npx tsx src/admin.ts init-task --id foo"
+    ),
+    false
+  );
+  assert.equal(
+    isDirectDbClientInvocation("node --experimental-strip-types src/admin.ts recover --run-id latest"),
+    false
+  );
+  assert.equal(isDirectDbClientInvocation("npx tsx src/admin.ts reconcile-runtime-state --apply"), false);
+});
+
+test("isDirectDbClientInvocation: a mere TEXT MENTION of psql (not an invocation) is NOT detected", () => {
+  assert.equal(isDirectDbClientInvocation('grep -n "psql" .claude/hooks/hook-utils.mjs'), false);
+  assert.equal(isDirectDbClientInvocation("cat migration.sql"), false);
+  assert.equal(isDirectDbClientInvocation('echo "run psql to inspect the db"'), false);
+});
+
+test("isDirectDbClientInvocation: node -e with no 'pg' reference is NOT detected", () => {
+  assert.equal(isDirectDbClientInvocation('node -e "console.log(1)"'), false);
+});
+
+test("isDirectDbClientInvocation: ordinary non-DB commands are NOT detected", () => {
+  assert.equal(isDirectDbClientInvocation("npm test"), false);
+  assert.equal(isDirectDbClientInvocation("npm run build:dist && npm test"), false);
+  assert.equal(isDirectDbClientInvocation("npx tsc --noEmit"), false);
+});
+
+test("hasDbDirectScopeGrant: true only when the literal `db_direct` marker is present", () => {
+  assert.equal(hasDbDirectScopeGrant(["db_direct"]), true);
+  assert.equal(hasDbDirectScopeGrant(["src/archon", "db_direct", "tests"]), true);
+  assert.equal(hasDbDirectScopeGrant([]), false);
+  assert.equal(hasDbDirectScopeGrant(["src/archon"]), false);
+  assert.equal(hasDbDirectScopeGrant(undefined), false);
+});
+
+// ─── hasUnverifiableDynamicCommandWord (security round 3, finding 2) ─────────
+// A command word computed at runtime ($VAR, $(cmd), `cmd`) cannot be
+// verified — block it the same way as a matched DB-client word, but with its
+// own message. Only the COMMAND-WORD position triggers this; a dynamic
+// ARGUMENT (already resolved inside a static command) must not.
+
+test("hasUnverifiableDynamicCommandWord: command substitution as the command word is detected (security round 3, HIGH)", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord('$(echo psql) -c "UPDATE reviews SET outcome=1"'), true);
+});
+
+test("hasUnverifiableDynamicCommandWord: env-var indirection as the command word is detected (security round 3, HIGH)", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord('VAR=psql; $VAR -c "select 1"'), true);
+});
+
+test("hasUnverifiableDynamicCommandWord: backtick command substitution as the command word is detected (security round 3, HIGH)", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord("`echo psql` --version"), true);
+});
+
+test("hasUnverifiableDynamicCommandWord: dynamic ARGUMENTS on an otherwise-static command are NOT flagged (security round 3, HIGH)", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord("echo $HOME"), false);
+  assert.equal(hasUnverifiableDynamicCommandWord('git commit -m "$(date)"'), false);
+});
+
+test("hasUnverifiableDynamicCommandWord: ordinary static commands are NOT flagged", () => {
+  assert.equal(hasUnverifiableDynamicCommandWord("npm test"), false);
+  assert.equal(hasUnverifiableDynamicCommandWord("npx tsx ./src/admin.ts status"), false);
+});
+
+test("evaluatePreToolUse: command-substitution command word is blocked, with the dynamic-word message", () => {
+  const result = evaluatePreToolUse(bashPayload('$(echo psql) -c "select 1"'), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /dynamic command word cannot be verified/i);
+});
+
+test("evaluatePreToolUse: env-var-indirection command word is blocked", () => {
+  const result = evaluatePreToolUse(bashPayload('VAR=psql; $VAR -c "select 1"'), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /dynamic command word cannot be verified/i);
+});
+
+test("evaluatePreToolUse: dynamic-word block is lifted with `db_direct` scope", () => {
+  const ctx = contextWithScope("db_direct");
+  const result = evaluatePreToolUse(bashPayload("$(echo psql) --version"), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePreToolUse: legitimate dynamic ARGUMENTS on a static command are not blocked by the dynamic-word gate", () => {
+  const result = evaluatePreToolUse(bashPayload('git commit -m "$(date)"'), emptyContext());
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePermissionRequest: dynamic command word approval request is denied", () => {
+  const result = evaluatePermissionRequest(bashPayload("$(echo psql) --version"), emptyContext());
+  assert.ok(result);
+  assert.equal(result.decision, "deny");
+  assert.match(result.reason, /dynamic command word cannot be verified/i);
+});
+
+// ─── resolveShellWordConcatenation / isDestructiveCommand (security round 2) ─
+// Finding 1 required the tokenization-layer fix to be mirrored into
+// isDestructiveCommand, since it shares the identical pre-existing flaw
+// (tested against raw, unmasked command text with zero quote-awareness).
+
+test("resolveShellWordConcatenation: collapses adjacent quote fragments and unquoted backslash-escapes into one literal word", () => {
+  assert.equal(resolveShellWordConcatenation('p""sql'), "psql");
+  assert.equal(resolveShellWordConcatenation("pg''_dump"), "pg_dump");
+  assert.equal(resolveShellWordConcatenation("p\\s\\q\\l"), "psql");
+});
+
+test("resolveShellWordConcatenation: preserves real whitespace between distinct words", () => {
+  assert.equal(resolveShellWordConcatenation('"p" "sql"'), "p sql");
+});
+
+test("resolveShellWordConcatenation: a foreign quote character nested inside an outer quoted span survives as a literal character (does not toggle quoting)", () => {
+  // The inner single-quotes around 'pg' must remain literal apostrophes once
+  // the outer double-quotes are resolved, so pgPackageReferencePattern can
+  // still match require('pg') in the resolved text.
+  assert.equal(resolveShellWordConcatenation('"require(\'pg\').Client"'), "require('pg').Client");
+});
+
+test("isDestructiveCommand: quote-split evasion of a destructive phrase is detected (security round 2, mirrored fix)", () => {
+  assert.equal(isDestructiveCommand('g""it reset --hard'), true);
+});
+
+test("isDestructiveCommand: the plain phrase is still detected after the mirrored fix", () => {
+  assert.equal(isDestructiveCommand("git reset --hard HEAD~1"), true);
+  assert.equal(isDestructiveCommand("some-other-command --flag value"), false);
+});
+
+test("evaluatePreToolUse: raw psql UPDATE with no active task is blocked", () => {
+  const result = evaluatePreToolUse(
+    bashPayload('psql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE reviews SET outcome=1"'),
+    emptyContext()
+  );
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /direct database-client invocation/i);
+});
+
+test("evaluatePreToolUse: sanctioned admin CLI command is NOT blocked by the DB-direct gate", () => {
+  const result = evaluatePreToolUse(
+    bashPayload("npx tsx ./src/admin.ts status --run-id latest"),
+    emptyContext()
+  );
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePreToolUse: psql is allowed when the task packet grants `db_direct` scope", () => {
+  const ctx = contextWithScope("db_direct");
+  const result = evaluatePreToolUse(bashPayload('psql -c "select 1"'), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePreToolUse: an unrelated grant (e.g. src/archon) does NOT satisfy the db_direct gate", () => {
+  const ctx = contextWithScope("src/archon");
+  const result = evaluatePreToolUse(bashPayload('psql -c "select 1"'), ctx);
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+});
+
+test("evaluatePreToolUse: read-only grep for the word psql is NOT blocked (normal workflow preserved)", () => {
+  const result = evaluatePreToolUse(
+    bashPayload('grep -rn "psql" .claude/hooks/hook-utils.mjs'),
+    emptyContext()
+  );
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePermissionRequest: raw psql UPDATE approval request with no task is denied", () => {
+  const result = evaluatePermissionRequest(
+    bashPayload('psql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE reviews SET outcome=1"'),
+    emptyContext()
+  );
+  assert.ok(result);
+  assert.equal(result.decision, "deny");
+  assert.match(result.reason, /direct database-client invocation/i);
+});
+
+test("evaluatePermissionRequest: psql approval request is allowed with `db_direct` scope granted", () => {
+  const ctx = contextWithScope("db_direct");
+  const result = evaluatePermissionRequest(bashPayload('psql -c "select 1"'), ctx);
   assert.ok(result === undefined || result.decision !== "deny");
 });
 

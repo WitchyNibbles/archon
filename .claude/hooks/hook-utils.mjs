@@ -1193,6 +1193,842 @@ export function isManagedPrefixPartiallyAllowed(managedPrefix, allowedWriteScope
   });
 }
 
+// ---------------------------------------------------------------------------
+// Shell word-concatenation resolver (audit auditP3Stewards, security HIGH,
+// round 2)
+//
+// Bash builds ONE token by concatenating adjacent quoted and unquoted
+// fragments with NO separating whitespace: `p""sql`, `pg''_dump`, and
+// `p\s\q\l` (unquoted backslash-escapes) all resolve to the literal words
+// `psql` / `pg_dump` / `psql` at execution time. The per-character masking
+// used elsewhere in this file (maskQuotedSpans) BLANKS quoted spans to
+// spaces specifically so word-pattern checks don't misfire on inert DATA
+// mentioned inside a quoted argument (e.g. `grep -n "a > b" file` must not
+// look like a write redirect) — but that same blanking is what let
+// `p""sql` slip past a `\bpsql\b` check: the inserted spaces split what bash
+// treats as ONE token into two non-matching fragments. Security round 2
+// caught this as a real bypass.
+//
+// This resolver performs actual bash quote-removal instead of blanking:
+// quoted content (single- or double-quoted, with correct nesting — a `'`
+// encountered while inside a `"..."` span is just a literal character, never
+// a nested quote toggle) is emitted literally with the quote delimiters
+// stripped, and unquoted backslash-escapes are resolved to their literal
+// character too (the same adjacency-hiding trick, closed the same way). Real
+// (unquoted) whitespace is preserved, so two genuinely distinct words
+// separated by an actual space (`echo "p" "sql"`) remain distinct — only
+// adjacency-based concatenation is collapsed.
+//
+// Used ONLY by consumers that need the true executed WORD content (the
+// direct DB-client gate below, and isDestructiveCommand) — NOT by the
+// read-only/write-like keyword classifiers or the write-redirect scan, which
+// intentionally rely on maskQuotedSpans' blanking to avoid false-positiving
+// on inert quoted data (e.g. a literal `>` inside a quoted argument must stay
+// inert). Swapping those to word-resolution would leak quoted special
+// characters into contexts that assume "quoted means inert" — a deliberate,
+// separate scope boundary for this fix, not an oversight.
+export function resolveShellWordConcatenation(text) {
+  if (typeof text !== "string" || text.length === 0) {
+    return "";
+  }
+  let out = "";
+  let quote = null; // "'" or '"' when inside a quoted span
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) {
+        quote = null; // closing delimiter — contents already emitted, drop the quote char itself
+        continue;
+      }
+      if (quote === '"' && ch === "\\" && i + 1 < text.length) {
+        // Double-quote backslash-escape: emit the escaped character literally.
+        out += text[i + 1];
+        i++;
+        continue;
+      }
+      // Literal content inside quotes, including a foreign quote char (e.g. a
+      // "'" encountered while quote === '"' is just a plain character here).
+      out += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch; // opening delimiter — emit nothing, contents follow literally
+      continue;
+    }
+    if (ch === "\\" && i + 1 < text.length) {
+      // Unquoted backslash-escape (e.g. p\s\q\l): emit the escaped character
+      // literally — the same adjacency-hiding trick as split-quotes.
+      out += text[i + 1];
+      i++;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Command-word tokenizer (audit auditP3Stewards, security round 3 / finding 1)
+//
+// A plain `.split(/\s+/)` on resolved text would incorrectly split INSIDE a
+// `$(...)` command-substitution or `` `...` `` backtick span whenever the
+// substituted command itself contains a space (e.g. `$(echo psql)` would
+// wrongly become two "words": `$(echo` and `psql)`), which would defeat the
+// wrapper-peel and dynamic-word checks below. This tokenizer treats a
+// balanced `$( ... )` span or a backtick-delimited span as ONE atomic word
+// regardless of internal whitespace, then splits on real whitespace outside
+// those spans. Consumers of resolveShellWordConcatenation's earlier quote
+// resolution should tokenize with this, not a bare regex split.
+function splitCommandWords(text) {
+  const words = [];
+  let current = "";
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (/\s/.test(ch)) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      i++;
+      continue;
+    }
+    if (ch === "$" && text[i + 1] === "(") {
+      const start = i;
+      i += 2;
+      let depth = 1;
+      while (i < text.length && depth > 0) {
+        if (text[i] === "(") depth++;
+        else if (text[i] === ")") depth--;
+        i++;
+      }
+      current += text.slice(start, i);
+      continue;
+    }
+    if (ch === "`") {
+      const start = i;
+      i++;
+      while (i < text.length && text[i] !== "`") i++;
+      if (i < text.length) i++; // consume closing backtick
+      current += text.slice(start, i);
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+  if (current) {
+    words.push(current);
+  }
+  return words;
+}
+
+function resolvedCommandWords(segment) {
+  const resolved = resolveShellWordConcatenation(segment).trim();
+  return resolved ? splitCommandWords(resolved) : [];
+}
+
+// A resolved word is DYNAMIC when the executed program name is itself
+// computed at runtime — `$VAR`, `$(cmd)`, or `` `cmd` `` — rather than a
+// literal string this gate can compare against a blocklist. Position matters:
+// this is checked ONLY against the effective command word (see
+// peelWrapperCommands below), never against argument words, so a dynamic
+// ARGUMENT (`git commit -m "$(date)"`, `echo $HOME`) is untouched.
+function isDynamicCommandWord(word) {
+  return typeof word === "string" && word.length > 0 && (word.startsWith("$") || word.includes("$(") || word.includes("`"));
+}
+
+// ---------------------------------------------------------------------------
+// Wrapper-peel table (audit auditP3Stewards, security round 3 finding 1 HIGH
+// "known-wrapper recursion"; redesigned FAIL-CLOSED in security round 4; xargs
+// flag-modeling RETIRED in security round 7)
+//
+// Security round 3 rejected the round-2 "check the first word only" design as
+// insufficient: this repo's own docker-compose.yml documents the default
+// Postgres container and the direct-psql pattern, so `docker exec <container>
+// psql` is the single most obvious bypass, not a hypothetical one — and the
+// wrapper set (docker/sudo/env/nice/timeout/xargs/command/exec) is small and
+// enumerable, unlike character-level obfuscation.
+//
+// Security round 4 rejected the round-3 implementation of that direction:
+// probing found ordinary shapes an OPTIMISTIC "skip anything starting with -,
+// consume one extra token only for flags on a known allowlist" rule silently
+// mis-skipped — `docker run --name pgtmp postgres psql` (an unrecognized
+// `--name` swallowed as if boolean, so the real image/command shifted left
+// and `psql` slipped past unseen), `--memory`, `--hostname`, `docker compose
+// -f file exec db psql`, `sudo -D dir psql`, `sudo --preserve-env FOO psql`,
+// `xargs --arg-file f psql`. FAIL CLOSED: while peeling a wrapper, a flag
+// token this table cannot POSITIVELY classify — not a known no-value
+// boolean, not a known value-taking flag — STOPS the peel immediately and
+// marks the segment AMBIGUOUS. An ambiguous segment is treated as
+// unverifiable on the managed trust surface (see hasAmbiguousWrapperFlag
+// below) — blocked without a `db_direct` scope grant, the same relief valve
+// as every other gate in this file, rather than guessed past. Consequence
+// embraced, not a bug: `docker run --name pgtmp postgres anything` now
+// blocks even for a wholly benign trailing command — this is intentional
+// fail-closed friction, the same class of tradeoff as decision (b) on
+// interpreter-mediated access below, relieved by the scope grant or by
+// simplifying the invocation. This fail-closed direction was ACCEPTED under
+// the security round 5 gate review (audit auditP3Stewards, PR #164): their
+// probing confirmed the redesign held against the round-4 probe list and the
+// friction is the intended tradeoff.
+//
+// Security round 6 found the failure class had RELOCATED rather than closed:
+// a table can also be MISCLASSIFIED (a flag present with the wrong shape),
+// not just absent — xargs's -i/-I/-l were recorded as mandatory
+// separate-token value flags when -i/-l are actually GNU getopt-style
+// OPTIONAL, attached-only arguments, so `xargs -i psql` silently swallowed
+// `psql` as -i's "value". Round 6's own fix (an "optional-attached" pattern
+// covering -i/-I/-l uniformly) was ITSELF a misclassification: GNU xargs
+// documents `-I` (uppercase) as taking a MANDATORY argument that may be
+// given attached OR as a separate following token — unlike `-i`/`-l`, which
+// really are optional/attached-only. Round 6's uniform pattern never
+// checked the separated form, so `xargs -I {} psql -f {}` resolved the
+// effective command word to the literal replace-string `{}` and reported
+// clean — a real bypass, the third consecutive round of table-precision
+// failure on xargs specifically.
+//
+// Security round 7 design decision (directed by the gate, not another
+// patch): STOP MODELING XARGS FLAGS ENTIRELY. xargs is a command RUNNER
+// whose effective command position is inherently flag-dependent — that is
+// exactly the property that has burned three rounds (4, 5, 6) of
+// table-precision bugs, each one a different specific mistake but all in
+// the same class (guessing xargs's own argument-taking grammar). The table
+// for xargs is retired: `xargs` is peeled ONLY in its zero-flag form
+// (`xargs psql ...` -> recurse into psql, exactly like every other
+// wrapper); if xargs carries ANY flag token at all — attached, separate,
+// real, or fictitious — the segment is unverifiable and fails closed with
+// the same `hasAmbiguousWrapperFlag` message and `db_direct` relief valve as
+// every other ambiguous case. Accepted friction: `xargs -P4 npm test` (a
+// wholly benign parallel-xargs invocation) now blocks too. This is the
+// deliberate tradeoff — the fail-closed friction removes the CLASS of bug
+// (any future xargs flag, whatever its true grammar, can never again be
+// silently misparsed) rather than chasing the next instance of it.
+//
+// The boolean/value tables below are deliberately NOT exhaustive of each
+// wrapper's real flag set — that is the point. A flag absent from both is
+// unrecognized by design and drives the fail-closed path, not a gap to keep
+// closing reactively. Only flags actually exercised by the required pass
+// matrix (docker exec/run's -u/-w/-e family plus the docker-global -H,
+// env's VAR=val + -u/-i, sudo's -u/-g/-h, timeout's duration argument) are
+// enumerated; anything else — including common real-world flags like
+// docker's `--name`/`--memory`/`--hostname` or sudo's `--preserve-env`/`-D` —
+// is deliberately left unclassified so it blocks rather than silently passes.
+//
+// ---------------------------------------------------------------------------
+// Wrapper-flag audit (security rounds 6-7) — full man-page cross-check of
+// every flag enumerated below, kept in sync with the DATA in
+// `wrapperFlagAuditTable` further down (a real object, not just this prose
+// comment) so a consistency test can assert the two can never drift apart.
+// Shape values: `boolean` (never takes an argument) | `value` (MANDATORY
+// argument — may be attached to the flag or given as a separate following
+// token, standard getopt convention for short options with a required
+// argument). A flag NOT listed for an audited wrapper is deliberately left
+// unclassified: it fails closed (hasAmbiguousWrapperFlag) rather than being
+// guessed. Where a flag's shape differs across implementations, or the
+// documentation itself is ambiguous, the table intentionally leaves it
+// unclassified (the safer, blocking direction) rather than committing to a
+// guess. xargs carries NO entries at all as of security round 7 — see the
+// retirement note above; it is deliberately absent from every bucket.
+//
+//   sudo (GNU sudo):
+//     -A --askpass          boolean  sudo(8): no argument
+//     -b --background       boolean  sudo(8): no argument
+//     -E                    boolean  sudo(8): short form takes no argument
+//                                    (only the long `--preserve-env=list`
+//                                    form takes one, and only via `=`, which
+//                                    the inline-`=` check already covers)
+//     -H --set-home         boolean  sudo(8): no argument
+//     -i --login            boolean  sudo(8): no argument
+//     -k --reset-timestamp  boolean  sudo(8): no argument
+//     -K --remove-timestamp boolean  sudo(8): no argument
+//     -n --non-interactive  boolean  sudo(8): no argument
+//     -N --no-update        boolean  sudo(8), sudo 1.9+: no argument —
+//                                    suppresses updating the cached-
+//                                    credential timestamp on this run.
+//                                    Round-6 correction reversed: `-N` WAS
+//                                    wrongly removed as "not a real flag" —
+//                                    it is documented in man sudo. Restored
+//                                    this round with the correct citation.
+//     -S --stdin            boolean  sudo(8): no argument
+//     -s --shell            boolean  sudo(8): no argument
+//     -v --validate         boolean  sudo(8): no argument
+//     -V --version          boolean  sudo(8): no argument
+//     -u --user=user        value    sudo(8): mandatory argument
+//     -g --group=group      value    sudo(8): mandatory argument
+//     -h --host=host        value    sudo(8): mandatory argument
+//     -p --prompt=prompt    value    sudo(8): mandatory argument
+//     -C/-D/-R/-T/-U        (unclassified) — --close-from/--chdir/--chroot/
+//                           --command-timeout/--other-user all take mandatory
+//                           arguments too, but sit outside the currently-
+//                           required pass matrix; left unclassified (fails
+//                           closed) rather than added speculatively.
+//
+//   env (GNU coreutils env(1)):
+//     -i --ignore-environment  boolean  no argument
+//     -0 --null                boolean  no argument
+//     -v --verbose             boolean  no argument (GNU extension)
+//     -u --unset=NAME          value    mandatory argument, repeatable
+//     -C --chdir=DIR           value    mandatory argument
+//     -S --split-string=S      value    mandatory argument (GNU extension)
+//
+//   nice(1): -n --adjustment=N   value   mandatory argument (no boolean
+//            short flags in scope)
+//
+//   timeout (GNU coreutils timeout(1)):
+//     --preserve-status  boolean  no argument (long-only)
+//     --foreground       boolean  no argument (long-only)
+//     -v --verbose       boolean  no argument
+//     -s --signal=SIGNAL value    mandatory argument
+//     -k --kill-after=D  value    mandatory argument
+//
+//   xargs (GNU findutils xargs(1)) — RETIRED this round, no entries. Three
+//     consecutive rounds (4, 5, 6) each found a different specific
+//     misclassification of xargs's own flag grammar. Rather than keep
+//     chasing individual flags, ANY flag on xargs now fails the whole
+//     segment closed (see peelWrapperCommands below) — there is no
+//     boolean/value table for xargs to audit anymore.
+//
+//   command(1) (bash builtin): -p/-v/-V   boolean   no argument (unchanged)
+//
+//   exec (bash builtin): -a name (value, mandatory), -c/-l (boolean) are
+//     real shapes, but none are currently enumerated — every exec flag is
+//     deliberately left unclassified (fails closed); not required by the
+//     current pass matrix.
+//
+//   docker — SPLIT this round into two distinct classification buckets,
+//     because they are genuinely different flag namespaces that the
+//     round-6 table wrongly shared:
+//     docker-global (flags BEFORE the exec/run subcommand — top-level
+//       `docker [OPTIONS] COMMAND`):
+//       -H --host=host   value   docker(1): mandatory argument (daemon
+//                                socket) — this is a GLOBAL flag only; it
+//                                does NOT exist as a `docker exec`/`docker
+//                                run` flag. Round-6 misfiling: `-H` was
+//                                classified under a single shared "docker"
+//                                bucket checked in BOTH the pre-subcommand
+//                                and post-subcommand position, so `docker
+//                                exec -H ... psql` would have wrongly
+//                                accepted `-H` as if it were a real exec
+//                                flag. Fixed by scoping `-H` to
+//                                docker-global only.
+//     docker-exec (flags AFTER the exec/run subcommand — `docker exec/run
+//       [OPTIONS] container/image ...`):
+//       -u --user=user       value   docker(1) exec/run: mandatory argument
+//       -w --workdir=dir     value   docker(1) exec/run: mandatory argument
+//       -e --env=KEY=VAL     value   docker(1) exec/run: mandatory argument,
+//                                    repeatable
+//       --env-file=file      value   docker(1) exec/run: mandatory argument
+//       Round-6 misfiling (the other half): `-u`/`-w`/`-e`/`--env-file` were
+//       classified under the same shared "docker" bucket also checked in
+//       the PRE-subcommand (global) position, so `docker -u root exec ...`
+//       would have wrongly accepted `-u` as a real top-level docker flag —
+//       it is not; `-u` only exists post-subcommand. Fixed by scoping these
+//       to docker-exec only. Boolean docker flags (-d/-i/-t/--rm/
+//       --privileged/etc., in either position) remain unclassified on
+//       purpose: none are required by the pass matrix, and leaving them
+//       unclassified fails closed rather than guessed.
+// ---------------------------------------------------------------------------
+const wrapperBooleanFlags = {
+  sudo: new Set([
+    "-A", "--askpass", "-b", "--background", "-E", "-H", "-i", "-k", "-K",
+    "-n", "-N", "--no-update", "-S", "-s", "-v", "-V", "--stdin", "--login",
+    "--set-home", "--validate", "--reset-timestamp", "--remove-timestamp"
+  ]),
+  nice: new Set([]),
+  env: new Set(["-i", "--ignore-environment", "-0", "--null", "-v", "--verbose"]),
+  timeout: new Set(["--preserve-status", "--foreground", "-v", "--verbose"]),
+  // Security round 7: xargs retired from per-flag modeling entirely — see
+  // the retirement note above. No boolean or value entries for xargs
+  // remain; ANY flag on xargs fails the segment closed (peelWrapperCommands
+  // below never calls classifyWrapperFlag with wrapperName "xargs" anymore).
+  "docker-global": new Set([]),
+  "docker-exec": new Set([]),
+  command: new Set(["-p", "-v", "-V"]),
+  exec: new Set([]),
+};
+const wrapperFlagsWithValue = {
+  sudo: new Set(["-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"]),
+  nice: new Set(["-n", "--adjustment"]),
+  env: new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]),
+  timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+  // Security round 7: docker's shared "docker" bucket split into
+  // docker-global (pre-subcommand) and docker-exec (post-subcommand) — see
+  // the audit comment above. `-H`/`--host` is global-only; `-u`/`--user`,
+  // `-w`/`--workdir`, `-e`/`--env`, `--env-file` are exec/run-only. Sharing
+  // one bucket for both positions (the round-6 shape) let each position
+  // wrongly accept the other's flags.
+  "docker-global": new Set(["-H", "--host"]),
+  "docker-exec": new Set(["-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file"]),
+  command: new Set([]),
+  exec: new Set([]),
+};
+// Security round 7: the audit table as DATA, not just prose — the
+// consistency test in tests/hook-policy.test.ts asserts this object's flag
+// sets match wrapperBooleanFlags / wrapperFlagsWithValue 1:1 for every
+// wrapper below, so the prose comment above and the executable tables can
+// never silently drift apart the way earlier rounds' tables did. Only
+// wrappers WITHOUT a per-invocation position split are listed (xargs is
+// intentionally absent — it has no entries to audit; docker is split into
+// its two real positional buckets, matching the live tables above).
+const wrapperFlagAuditTable = {
+  sudo: {
+    boolean: [
+      "-A", "--askpass", "-b", "--background", "-E", "-H", "-i", "-k", "-K",
+      "-n", "-N", "--no-update", "-S", "-s", "-v", "-V", "--stdin", "--login",
+      "--set-home", "--validate", "--reset-timestamp", "--remove-timestamp"
+    ],
+    value: ["-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"]
+  },
+  env: {
+    boolean: ["-i", "--ignore-environment", "-0", "--null", "-v", "--verbose"],
+    value: ["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]
+  },
+  nice: { boolean: [], value: ["-n", "--adjustment"] },
+  timeout: {
+    boolean: ["--preserve-status", "--foreground", "-v", "--verbose"],
+    value: ["-s", "--signal", "-k", "--kill-after"]
+  },
+  command: { boolean: ["-p", "-v", "-V"], value: [] },
+  exec: { boolean: [], value: [] },
+  "docker-global": { boolean: [], value: ["-H", "--host"] },
+  "docker-exec": { boolean: [], value: ["-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file"] }
+};
+export function getWrapperFlagAuditTableForConsistencyTest() {
+  return wrapperFlagAuditTable;
+}
+export function getWrapperFlagTablesForConsistencyTest() {
+  return { boolean: wrapperBooleanFlags, value: wrapperFlagsWithValue };
+}
+const envAssignmentPattern = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const dockerWrappingSubcommands = new Set(["exec", "run"]);
+
+// Positively classifies one flag token for one wrapper: "boolean" (consumes
+// only itself), "value" (consumes itself + the next token), or "unrecognized"
+// (fail-closed — the caller must stop peeling, not guess). A known
+// value-taking flag with its value inline (`--user=root`) is boolean-shaped
+// at the token level — nothing further to consume.
+function classifyWrapperFlag(wrapperName, flag) {
+  const valueSet = wrapperFlagsWithValue[wrapperName];
+  const boolSet = wrapperBooleanFlags[wrapperName];
+  if (valueSet && valueSet.has(flag)) {
+    return "value";
+  }
+  if (boolSet && boolSet.has(flag)) {
+    return "boolean";
+  }
+  const eqIndex = flag.indexOf("=");
+  if (eqIndex > 0 && valueSet && valueSet.has(flag.slice(0, eqIndex))) {
+    return "boolean"; // inline value form, e.g. --user=root — nothing more to consume
+  }
+  return "unrecognized";
+}
+
+// Skips a run of positively-classified flags starting at `index`. Stops the
+// instant an unrecognized flag token is seen — `ambiguous: true`, index left
+// AT the ambiguous token (not advanced past it) so the caller can report it.
+function skipFlags(tokens, index, wrapperName) {
+  let i = index;
+  while (i < tokens.length && tokens[i].startsWith("-")) {
+    const classification = classifyWrapperFlag(wrapperName, tokens[i]);
+    if (classification === "unrecognized") {
+      return { index: i, ambiguous: true };
+    }
+    i++;
+    if (classification === "value" && i < tokens.length) {
+      i++;
+    }
+  }
+  return { index: i, ambiguous: false };
+}
+
+// Walks a tokenized segment, peeling recognized wrappers (and their own
+// positively-classified flags/values) off the front, and returns
+// `{ word, ambiguous }` — `word` is the effective command word bash would
+// actually exec (checked by the DB-client and dynamic-word gates below), and
+// `ambiguous` is true the moment an unrecognized wrapper flag is hit, at
+// which point peeling stops immediately (fail-closed — see the doc comment
+// above). Callers must treat `ambiguous: true` as unverifiable regardless of
+// what `word` happens to be. `word: ""` with `ambiguous: false` means the
+// segment had no tokens.
+function peelWrapperCommands(tokens) {
+  let i = 0;
+  while (i < tokens.length) {
+    const word = tokens[i];
+    if (word === "env") {
+      i++;
+      while (i < tokens.length) {
+        if (envAssignmentPattern.test(tokens[i])) {
+          i++;
+          continue;
+        }
+        if (tokens[i].startsWith("-")) {
+          const skip = skipFlags(tokens, i, "env");
+          if (skip.ambiguous) {
+            return { word: tokens[skip.index], ambiguous: true };
+          }
+          i = skip.index;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+    if (word === "docker") {
+      i++;
+      if (tokens[i] === "compose") {
+        i++;
+      }
+      const preSkip = skipFlags(tokens, i, "docker-global");
+      if (preSkip.ambiguous) {
+        return { word: tokens[preSkip.index], ambiguous: true };
+      }
+      i = preSkip.index;
+      if (i < tokens.length && dockerWrappingSubcommands.has(tokens[i])) {
+        i++; // consume exec/run
+        const postSkip = skipFlags(tokens, i, "docker-exec");
+        if (postSkip.ambiguous) {
+          return { word: tokens[postSkip.index], ambiguous: true };
+        }
+        i = postSkip.index;
+        if (i < tokens.length) i++; // consume the container/service name
+        continue;
+      }
+      return { word: "docker", ambiguous: false }; // not a wrapping invocation (e.g. `docker compose up`)
+    }
+    if (word === "sudo" || word === "nice" || word === "command" || word === "exec") {
+      i++;
+      const skip = skipFlags(tokens, i, word);
+      if (skip.ambiguous) {
+        return { word: tokens[skip.index], ambiguous: true };
+      }
+      i = skip.index;
+      continue;
+    }
+    if (word === "timeout") {
+      i++;
+      const skip = skipFlags(tokens, i, "timeout");
+      if (skip.ambiguous) {
+        return { word: tokens[skip.index], ambiguous: true };
+      }
+      i = skip.index;
+      if (i < tokens.length) i++; // consume the duration argument
+      continue;
+    }
+    if (word === "xargs") {
+      // Security round 7: xargs is retired from per-flag modeling entirely
+      // (see the retirement note in the doc comment above). Peel ONLY the
+      // zero-flag form — `xargs psql ...` recurses into psql exactly like
+      // every other wrapper. The instant xargs carries ANY flag token
+      // (attached, separate, real, or fictitious), the segment is
+      // unverifiable: return ambiguous immediately, without ever consulting
+      // a flag table for xargs (there is none to consult).
+      i++;
+      if (i < tokens.length && tokens[i].startsWith("-")) {
+        return { word: tokens[i], ambiguous: true };
+      }
+      continue;
+    }
+    return { word, ambiguous: false };
+  }
+  return { word: "", ambiguous: false };
+}
+
+// ---------------------------------------------------------------------------
+// Direct DB-client invocation gate (audit auditP3Stewards, security HIGH)
+//
+// runtime-medic's repair-authority boundary ("sanctioned admin CLI only, never
+// direct DB writes") was prose-only: the Bash gate had zero awareness of
+// DB-client processes, so a raw `psql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE
+// reviews ..."` bypassed the review-identity adapter completely undetected —
+// and since ARCHON_CORE_DATABASE_URL is routinely in-session for the
+// sanctioned admin commands too, this was reachable by any agent, not only
+// runtime-medic.
+//
+// DECISION (documented, not a perfect boundary): block EVERY direct
+// invocation of psql / pgcli / pg_dump / pg_restore, and the cheap `node -e
+// "require('pg')..."` / `npx -e ...` one-liner shape, regardless of read vs
+// write intent. Sniffing the SQL statement for read/write is fragile
+// (multi-statement bodies, `\i file.sql`, a script-wrapped `-c`, …) and misses
+// the point anyway: the sanctioned admin CLI (`npx tsx ./src/admin.ts
+// <command>`) is the ONLY route runtime-medic's contract permits for ANY DB
+// interaction — read or write — so a blanket block is the simpler AND more
+// defensible policy, not a narrower "block writes only" carve-out. The
+// sanctioned admin CLI never invokes any of these client binaries and never
+// contains a bare `require('pg')`/`from 'pg'` reference in the Bash-visible
+// command string (it imports the 'pg' package internally in TypeScript
+// source, not from the shell command line), so it is never caught here.
+//
+// DETECTION RULE (position-based — resolves the round-2 false positive/
+// negative tension): resolve word-concatenation (above), split into top-level
+// pipeline segments, PEEL recognized wrappers off the front of each segment
+// (round 3), and check whether the resulting effective word is exactly one of
+// psql/pgcli/pg_dump/pg_restore. Checking a single EFFECTIVE word (rather
+// than "the word anywhere in the segment") is what keeps `grep -n "psql"
+// foo.sh` (psql is grep's ARGUMENT, not the executed program) from
+// false-positiving, while still catching a real invocation regardless of how
+// it's quoted, split, or wrapped. Scanned on the same three surfaces
+// extractBashReferencedManagedPaths already scans for managed-path writes:
+// (1) each top-level pipeline segment; (2) executable heredoc bodies
+// (`bash <<EOF` / `psql ...` / `EOF`); (3) `eval`/`sh -c`/`bash -c` string
+// payloads, same reasoning.
+//
+// Bypass: a task packet that genuinely needs direct DB access adds the
+// literal marker `db_direct` to its `## Allowed write scope` section —
+// mirrors how a managed control-layer PATH is explicitly granted today
+// (isManagedPathAllowed), just with a non-path token instead of a path.
+//
+// DYNAMIC-WORD RULE (round 3, finding 2 — command-substitution / env-var
+// indirection): if a segment's effective command word (after wrapper-peel)
+// is DYNAMIC (see isDynamicCommandWord above — `$VAR`, `$(cmd)`, `` `cmd` ``),
+// the executed program cannot be verified at all — treat it the same as a
+// matched client word: blocked without a `db_direct` scope grant. This closes
+// `$(echo psql) -c "..."` and `VAR=psql; $VAR -c "..."` (the latter splits
+// into two segments via splitBashSegments; the second segment's effective
+// word is `$VAR`). It deliberately does NOT trigger on a dynamic ARGUMENT —
+// `echo $HOME` and `git commit -m "$(date)"` are untouched because only the
+// EFFECTIVE COMMAND WORD position is checked, never argument positions.
+// PROPOSED, PENDING REVIEW: this is a blanket, position-only rule with a real
+// false-positive cost outside the DB-client context — a legitimate idiom like
+// `$(which node) script.js` or `$(brew --prefix)/bin/foo` also has a dynamic
+// first word and would be blocked here without a scope grant, even though
+// neither invokes a DB client. Implemented literally per the finding rather
+// than narrowed unilaterally; flagging the false-positive class explicitly so
+// the security gate can rule on whether a narrower, DB-adjacency-gated
+// version is required.
+//
+// ACCEPTED LIMITATIONS (stated, not hidden — this is friction/telemetry
+// hardening per the layered-defense stance, not a complete boundary):
+//   1. Interpreter-mediated DB access (python + psycopg2, ruby + the `pg`
+//      gem, perl + DBI, …) is NOT detected by this gate at all — an
+//      interpreter that builds the connection dynamically or imports a
+//      driver under a different invocation shape keeps the token out of the
+//      Bash-visible command string entirely. Recorded decision (converts
+//      this from a silent gap into an owned one, per the MEDIUM finding):
+//      control scope for THIS gate = direct client binaries
+//      (psql/pgcli/pg_dump/pg_restore) + the Node/npx `require('pg')`
+//      one-liner shape + the wrapper set peeled above. Interpreter-mediated
+//      access remains covered solely by the layered defense already in
+//      place — runtime-authoritative records, the review-identity adapter,
+//      and review-orchestrator's gate-write monopoly — not by this
+//      Bash-command gate. Owner: security_reviewer. Recorded 2026-07-05,
+//      ACCEPTED under the security round 3 gate review (audit
+//      auditP3Stewards, PR #164) — this is a retrospective citation of an
+//      actual review verdict, not a self-granted tag written ahead of
+//      review. Re-triage if a real interpreter-mediated bypass is observed
+//      in practice.
+//   2. The dynamic-word rule's false-positive class on legitimate
+//      dynamic-path idioms (e.g. `$(which node) ...`) — see the PROPOSED
+//      note directly above (not yet gate-reviewed this round).
+//   3. Wrapper-flag classification is a positive allowlist, not a full
+//      argument grammar per wrapper. The FAIL-CLOSED design (an unrecognized
+//      flag blocks the segment via hasAmbiguousWrapperFlag rather than being
+//      silently skipped) was ACCEPTED under the security round 5 gate review
+//      (audit auditP3Stewards, PR #164) — round 5 confirmed the fail-closed
+//      friction (e.g. `docker run --name x` blocking even a benign trailing
+//      command) is the intended tradeoff, not a bug. Round 5 also surfaced a
+//      second-order failure class: a flag can be MISCLASSIFIED (present in
+//      the table but with the wrong shape) rather than merely absent, and a
+//      misclassified flag can silently swallow the real command as its
+//      "value" instead of being flagged unverifiable. Round 6's own fix for
+//      this class was ITSELF a misclassification of xargs's `-I` (a
+//      mandatory, separate-or-attached argument treated uniformly as
+//      optional/attached-only) — three consecutive rounds of table-precision
+//      bugs, all on xargs specifically. Security round 7's response is a
+//      DESIGN change, not another patch: xargs is retired from per-flag
+//      modeling entirely (see the retirement note on the wrapper-peel table
+//      above) — only its zero-flag form is peeled, and any flag on xargs
+//      fails the segment closed regardless of the flag's true grammar. This
+//      removes the CLASS of misclassification risk for xargs by construction
+//      rather than requiring a fourth round to get the table right. The
+//      remaining wrappers (docker/sudo/env/nice/timeout/command/exec) still
+//      carry positive-allowlist tables and so still carry the residual risk
+//      of an enumerated-but-wrongly-shaped flag — mitigated, not eliminated,
+//      by: (a) the audit table now existing as executable DATA
+//      (`wrapperFlagAuditTable`, cross-checked against the live
+//      classification tables by an automated consistency test — see
+//      `getWrapperFlagAuditTableForConsistencyTest` /
+//      `getWrapperFlagTablesForConsistencyTest`), so the prose comment and
+//      the code can no longer silently drift apart the way the round-6
+//      xargs table did; and (b) gate review of any table change. Two audit
+//      corrections landed this round on top of the design change: sudo's
+//      `-N`/`--no-update` was wrongly REMOVED in round 6 (it is a real,
+//      documented sudo 1.9+ flag) and is restored; docker's shared flag
+//      bucket wrongly let global-only (`-H`) and exec/run-only
+//      (`-u`/`-w`/`-e`/`--env-file`) flags each leak into the other
+//      position — split into `docker-global` and `docker-exec` buckets.
+//      This is an owned, recorded residual — not a gap papered over as
+//      "complete."
+const directDbClientWords = new Set(["psql", "pgcli", "pg_dump", "pg_restore"]);
+// Checked on the RESOLVED (word-concatenation-collapsed) text, not masked —
+// the quoted `'pg'`/`"pg"` string is itself the signal for a require()/import
+// of the 'pg' package, and resolveShellWordConcatenation correctly preserves
+// it literally even when nested inside an outer bash-quoted argument (a `'`
+// encountered while already inside a `"..."` span is a plain character, not a
+// second quote toggle) — see the resolver's own doc comment above.
+const nodeInlineEvalFlagPattern = /\b(?:node|npx)\b[^\n]*\s(?:-e|-p|--eval|--print)\b/;
+const pgPackageReferencePattern = /require\(\s*['"]pg['"]\s*\)|from\s+['"]pg['"]/;
+
+// Security round 8 finding (HIGH): the gate's final-ratification probe found
+// that `/usr/bin/psql`, `../bin/psql`, and `./psql` all launch the exact same
+// binary as bare `psql`, but the DB-client check above (`directDbClientWords
+// .has(word)`) only ever matched a bare literal word — a path-prefixed
+// invocation was never a Set member and slipped through undetected, present
+// since round 2. This is a strict basename extraction, applied ONLY to the
+// resolved command word coming out of effectiveCommandWord (i.e. after
+// quote-resolution and wrapper-peeling have already run) — never to
+// arbitrary substrings elsewhere in the command text. It strips a leading
+// directory prefix up to and including the LAST `/` or `\` separator (both
+// handled — a Windows-style backslash path is just as real a bypass vector
+// as a POSIX one) and does an EXACT Set-membership check on what remains.
+// Exact-equality is the deliberate guard against a false positive on a
+// longer basename that merely CONTAINS a client name: `not-psql` and
+// `my_psql_wrapper` each have themselves (not `psql`) as their own
+// basename, so they correctly do not match. A bare word with no separator
+// (`psql`) is returned unchanged — this function is a superset of the old
+// bare-word check, not a replacement with different behavior on the
+// already-working case.
+function commandWordBasename(word) {
+  if (typeof word !== "string" || word.length === 0) {
+    return word;
+  }
+  const lastSeparator = Math.max(word.lastIndexOf("/"), word.lastIndexOf("\\"));
+  return lastSeparator === -1 ? word : word.slice(lastSeparator + 1);
+}
+
+// Effective command word of a single pipeline segment — `{ word, ambiguous }`
+// from peelWrapperCommands (see its doc comment). `ambiguous: true` means an
+// unrecognized wrapper flag was hit and `word` must NOT be trusted as the
+// real command word by callers other than hasAmbiguousWrapperFlag itself.
+function effectiveCommandWord(segment) {
+  return peelWrapperCommands(resolvedCommandWords(segment));
+}
+
+function textLooksLikeDirectDbClientInvocation(text) {
+  if (typeof text !== "string" || text.length === 0) {
+    return false;
+  }
+  const segments = splitBashSegments(text)
+    .map((segment) => stripIoDiscardRedirects(segment).trim())
+    .filter(Boolean);
+  if (
+    segments.some((segment) => {
+      const { word, ambiguous } = effectiveCommandWord(segment);
+      return !ambiguous && directDbClientWords.has(commandWordBasename(word));
+    })
+  ) {
+    return true;
+  }
+  const resolvedWhole = resolveShellWordConcatenation(text);
+  return nodeInlineEvalFlagPattern.test(resolvedWhole) && pgPackageReferencePattern.test(resolvedWhole);
+}
+
+export function isDirectDbClientInvocation(command) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return false;
+  }
+  if (textLooksLikeDirectDbClientInvocation(stripHeredocBodies(command))) {
+    return true;
+  }
+  for (const body of extractExecutableHeredocBodies(command)) {
+    if (textLooksLikeDirectDbClientInvocation(body)) {
+      return true;
+    }
+  }
+  for (const payload of extractShellStringPayloads(command)) {
+    if (textLooksLikeDirectDbClientInvocation(payload)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function textHasUnverifiableDynamicCommandWord(text) {
+  if (typeof text !== "string" || text.length === 0) {
+    return false;
+  }
+  const segments = splitBashSegments(text)
+    .map((segment) => stripIoDiscardRedirects(segment).trim())
+    .filter(Boolean);
+  return segments.some((segment) => {
+    const { word, ambiguous } = effectiveCommandWord(segment);
+    return !ambiguous && isDynamicCommandWord(word);
+  });
+}
+
+// Security round 4, finding (HIGH): probing the round-3 wrapper-peel found
+// ordinary shapes an optimistic flag-skip silently mis-parsed, letting the
+// real command escape undetected (see the FAIL-CLOSED redesign note on the
+// wrapper-peel table above). A segment where peeling hit an unrecognized
+// wrapper flag is unverifiable — this predicate reports that condition with
+// its own message, distinct from the dynamic-word gate, per the finding's
+// explicit wording requirement.
+function textHasAmbiguousWrapperFlag(text) {
+  if (typeof text !== "string" || text.length === 0) {
+    return false;
+  }
+  const segments = splitBashSegments(text)
+    .map((segment) => stripIoDiscardRedirects(segment).trim())
+    .filter(Boolean);
+  return segments.some((segment) => effectiveCommandWord(segment).ambiguous);
+}
+
+export function hasAmbiguousWrapperFlag(command) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return false;
+  }
+  if (textHasAmbiguousWrapperFlag(stripHeredocBodies(command))) {
+    return true;
+  }
+  for (const body of extractExecutableHeredocBodies(command)) {
+    if (textHasAmbiguousWrapperFlag(body)) {
+      return true;
+    }
+  }
+  for (const payload of extractShellStringPayloads(command)) {
+    if (textHasAmbiguousWrapperFlag(payload)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Separate predicate (own message, own doc contract) from
+// isDirectDbClientInvocation per security round 3 finding 2 — a dynamic
+// effective command word (`$VAR`, `$(cmd)`, `` `cmd` ``) is unverifiable
+// regardless of whether it resolves to a DB client, so it gets its own
+// "unverifiable, not verified-innocent" message rather than being folded
+// into the DB-client-specific block text. Both predicates share the same
+// `db_direct` scope bypass — see hasDbDirectScopeGrant.
+export function hasUnverifiableDynamicCommandWord(command) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return false;
+  }
+  if (textHasUnverifiableDynamicCommandWord(stripHeredocBodies(command))) {
+    return true;
+  }
+  for (const body of extractExecutableHeredocBodies(command)) {
+    if (textHasUnverifiableDynamicCommandWord(body)) {
+      return true;
+    }
+  }
+  for (const payload of extractShellStringPayloads(command)) {
+    if (textHasUnverifiableDynamicCommandWord(payload)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The `db_direct` scope marker is a non-path token in `## Allowed write
+// scope` (parallel to a managed control-layer PATH grant) — its literal
+// presence, not path-matching, opts a task into direct DB access for this gate.
+export function hasDbDirectScopeGrant(allowedWriteScope) {
+  return (
+    Array.isArray(allowedWriteScope) &&
+    allowedWriteScope.some((scope) => typeof scope === "string" && scope.trim() === "db_direct")
+  );
+}
+
 export function isTaskPacketPath(relativePath) {
   const normalized = normalizePath(relativePath);
   return normalized.startsWith(".archon/work/tasks/task-") && normalized.endsWith(".md");
@@ -1929,8 +2765,16 @@ export function extractToolCommand(payload) {
   return "";
 }
 
+// Resolved (not masked) before matching — mirrors the fix applied to the
+// direct DB-client gate above (audit auditP3Stewards, security round 2,
+// finding 1): this function tests raw `command` text with zero masking, so
+// `g""it reset --hard` (or `r\m -rf` / any other adjacency-split phrase)
+// defeated the same /\bword\b/ pattern shape the same way. Resolving first
+// collapses the split fragments back into the literal word bash would
+// actually execute, closing the identical evasion class here.
 export function isDestructiveCommand(command) {
-  return destructiveCommandPatterns.some((pattern) => pattern.test(command));
+  const resolved = resolveShellWordConcatenation(typeof command === "string" ? command : "");
+  return destructiveCommandPatterns.some((pattern) => pattern.test(resolved));
 }
 
 export function isVerificationCommand(command) {
