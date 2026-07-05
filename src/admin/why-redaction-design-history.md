@@ -1,0 +1,233 @@
+# `why-redaction.ts` design history
+
+This document is the extracted round-by-round evolution narrative for
+`src/admin/why-redaction.ts` (audit F9, `archon why`'s secret-redaction
+module). It exists so the module's own header can stay lean — current
+contract only — while this history remains available to anyone auditing
+*why* the design looks the way it does. Round-9 (LOW finding 1) moved this
+content out of the module header, which had grown past its line-count
+ratchet purely from accumulated historical prose, not current-contract
+complexity.
+
+This file is intentionally co-located under `src/admin/` (not under
+`docs/`) so it stays within this task's declared write scope; it is
+engineering-history documentation for maintainers of this module, not
+user/operator-facing product documentation, so it is not added to
+`package.json`'s `files[]` allowlist (consistent with several other
+`docs/*.md` files already not shipped, e.g. `docs/archon-analysis.md`).
+
+Read `src/admin/why-redaction.ts`'s module header first for the CURRENT
+contract (exemption checklist, boundedness audit, residual disclosure).
+Everything below is superseded history, kept for context only — do not
+treat any rule described here as authoritative if it conflicts with the
+current header or the code.
+
+## Rounds 1-4 (pre-vocabulary-anchoring)
+
+Round 4 inverted the default from "hunt for secret shapes" to "redact by
+default, allowlist a few safe SHAPES" (UUID, path, number, flag, bare
+identifier). Round 5's gate found the residual bypass in that model: a
+generic identifier SHAPE (`[A-Za-z][A-Za-z0-9_-]*`) can never prove safety,
+because a real secret often looks EXACTLY like one — `ghp_XXXX`,
+`hunter2Aa1`, an API key. "token ghp_XXXX is invalid" and "password is
+hunter2Aa1" both shape-matched the round-4 identifier allowlist and
+survived untouched. Chasing yet another shape distinction would only
+produce a fifth bypass.
+
+## Round 5 — vocabulary anchoring
+
+ROUND-5 FIX — anchor the allowlist to KNOWN VOCABULARY, not shape alone:
+
+The blanket "any identifier-shaped token is safe" rule was removed. In its
+place, a free-text token survives only if it is:
+
+1. An EXACT member of a `knownSafeTokens` vocabulary the caller supplies
+   — built, at diagnosis time, from the STRUCTURED context the collector
+   already holds (task ids, run ids, role names, status/enum/outcome
+   tokens, this module's own recommended command words, sidecar paths it
+   constructed). See why-diagnosis.ts's `buildKnownVocabulary`.
+2. A flag name (`-x`, `--long-flag`) — flags are labels, never secrets.
+3. A number or ISO-timestamp shape — machine-generated, not
+   attacker-controlled.
+4. A path (absolute, `./`/`../`-relative, OR bare relative) containing no
+   `@` and no `://` — credential-bearing shapes always carry one of those.
+5. A `scheme://host...` URL with NO userinfo component (no `@`) — a URL
+   that DOES carry `user:pass@` is caught by stage 1 before tokenization
+   ever sees it.
+
+Everything else — including any bare word, identifier, or acronym that
+merely LOOKS like a safe token — redacts. `ghp_XXXX`, `hunter2Aa1`, and
+ordinary English prose in a caught error message all die unless the caller
+explicitly vouches for them via the vocabulary. `sanitizeFreeText`/
+`sanitizeForDisplay` default `knownSafeTokens` to an EMPTY set, so any
+caller that does not supply a vocabulary gets the strictest possible
+behavior — this is deliberate: a missing vocabulary must never silently
+fall back to "shape is enough".
+
+Stage 1 (`applySecretMarkerRules`) was kept as defense-in-depth: high-
+confidence context markers (credential URLs, AWS key ids, well-known
+secret-token prefixes — `ghp_`, `sk_live_`, `sk-ant-`, `npm_` — labeled
+`key=value` fields, Authorization/Bearer headers, mysqldump's `-p<value>`)
+redact regardless of what stage 2's vocabulary check would have decided,
+so an obviously-shaped secret dies even before tokenization.
+
+**HONEST FRICTION** (re-disclosed per the round-5 gate's explicit request):
+the real footprint of this design is "any free-text token not in the known
+vocabulary redacts." That is broader than round 4's disclosed friction
+(colon-containing compound words only). It ALSO includes: ordinary
+English prose in a caught error message or recorded shell command (a hook-
+blocker's `npm test` becomes two `[redacted]` tokens unless "npm"/"test"
+happen to be vocabulary words); acronyms and identifiers that are not task
+ids, run ids, role names, or enum tokens (a respawn lease owner like
+"daemon-A" redacts unless it happens to equal a known id); and IPv6
+addresses and other colon-bearing tokens (unchanged from round 4 — still
+redact, since colon is the same shape as a credential fragment). Numbers,
+ISO timestamps, and paths were NOT vocabulary-gated at this point — they
+survived via their own shape rules regardless of vocabulary, since round 5
+specifically fixed their prior over-redaction (this changed again in round
+8 — see below). The sidecar-file pointer already present in every cause's
+evidence remains the relief valve: the operator can always read the
+untouched original there. This was a deliberate, disclosed trade-off, not
+an oversight — the alternative (letting shape alone decide) is exactly the
+bypass class this redesign exists to close.
+
+## Round 6
+
+An UNBOUNDED digit run is itself a shape that can't prove safety —
+`--token 837215098172340192` shape-matched `SAFE_NUMBER` and survived.
+`SAFE_NUMBER` was bounded; a space-separated labeled flag (`--token <v>`,
+`--password <v>`, etc.) was caught at stage 1 regardless of the value's
+shape; and `SAFE_URL_NO_USERINFO`'s `@` exclusion was narrowed to the
+URL's authority segment, so a query-string email no longer over-redacted
+the whole URL.
+
+## Round 7
+
+The round-6 `SAFE_NUMBER` bound only capped the INTEGER part —
+`(?:\.[0-9]+)?` was still unbounded, so `9.87215098172340192` (a decimal
+secret) shape-matched and survived whole. The bound was widened to apply
+to the ENTIRE numeric token (sign + digits + decimal point together, ≤6
+chars), per the gate's own simplest-fix suggestion. The same audit found
+`SAFE_ISO_TIMESTAMP`'s fractional-seconds group was ALSO unbounded
+(`(?:\.\d+)?`) — closed to 1-9 digits (real ISO timestamps never exceed
+nanosecond precision). Separately, the keyword list gained `pin`, `otp`,
+`passphrase`, `mfa`, `passcode`, `cvv`; a scoped compound-phrase rule
+caught "pin code"/"otp code"/"verification code"/"auth code" WITHOUT
+adding bare `code` (which would collide with this codebase's own
+`exit-code`/`error-code`/`status-code` vocabulary); and a narrow prose
+rule caught "<keyword> is <value>"-style adjacency (a secret keyword
+followed within 1-2 filler words by a value token) for phrasings with no
+flag and no colon/equals join.
+
+The round-7 gate's own probing then found this keyword-enumeration
+approach leaking again: round-6-named reproductions (`2FA: 482913`,
+`--code 482913`) still leaked verbatim, plus at least a dozen more
+realistic secret-labeling phrasings — recovery/backup/security/activation
+code, license key, session id, CVC, card verification value, TOTP-in-
+prose, PIN-number-with-colon, `--2fa`. The path/URL residual (bare
+path-segment secrets, bare file-path secrets, generically-named URL
+query-string secrets surviving intact) was rated HIGH — confirmed
+exploitable, not a merely theoretical trade-off. An internal
+inconsistency was also found: `PIN number:` (colon) vs `PIN number`
+(space) vs `TOTP:` (colon, accidental substring match) vs `your TOTP is`
+(prose, `\b`-blocked) behaved differently for the identical keyword,
+root-causing several of the specific leaks above.
+
+## Round 8 — terminal design, numeric exemption removed
+
+Seven rounds proved the pattern conclusively: enumerated keyword labeling
+CANNOT converge — there is always another synonym, another join form,
+another phrasing the list hasn't seen yet. Round 8 removed the load-
+bearing enumeration itself rather than adding a 13th/14th/15th keyword:
+
+1. **The free-text numeric shape-exemption was removed entirely.** A bare
+   number in free text now survives ONLY as an exact vocabulary member
+   (ISO timestamps keep their own bounded shape-safety — they are
+   machine-generated, not attacker-supplied, an entirely different case).
+   Every number that matters to a diagnosis reaches output through this
+   module's STRUCTURED evidence fields (why-diagnosis.ts's `structured()`),
+   which never call `sanitizeFreeText` at all — the free-text numeric
+   exemption was never load-bearing for legitimate output. With it gone, a
+   numeric secret dies in EVERY phrasing, with ZERO keyword dependence.
+2. **Paths and URLs are now tokenized, not exempted wholesale.** A URL
+   keeps its scheme+authority (WHERE, not WHAT) but its path+query is only
+   kept if EVERY token in it independently passes vocabulary/shape checks
+   — otherwise the whole path+query collapses to
+   `scheme://host/[redacted]`. A free-text path survives only if EVERY
+   `/`-separated segment is a vocabulary member or a bounded safe shape —
+   otherwise the WHOLE token redacts. Collector-constructed sidecar paths
+   are added to the vocabulary as one whole string (no internal
+   whitespace), so real evidence paths keep rendering via ordinary
+   exact-match membership.
+3. **The filler-word regex bug was fixed at root** (a correctness bug,
+   independent of finding 1): the prose-adjacency rule required AT LEAST
+   ONE filler word between a keyword and its value, so a bare, unprefixed
+   "password hunter2Aa1" or "PIN 482913" matched neither that rule (needed
+   a filler) nor the space-separated flag rule (needed a leading dash),
+   and leaked. The filler count became `{0,2}`, closing that gap
+   regardless of whether the value is numeric.
+4. **The keyword rules were reframed as explicitly documented pure
+   defense-in-depth, non-load-bearing.** They still run (cheap, and they
+   still catch alphanumeric secrets like `hunter2Aa1` a beat earlier), but
+   the SECURITY BOUNDARY became the vocabulary-anchored default-deny
+   applied uniformly to every free-text token, numeric or not.
+
+This closed the entire round-6/7 keyword-enumeration bug CLASS in one
+structural move — verified against roughly 15 adversarial phrasings from
+the round-7 gate's own probe list, none of which use a recognized
+keyword, all of which redact purely because bare numbers no longer
+survive by shape.
+
+## Round 9 — the `[redacted]`-substring short-circuit, and stage-1 vocabulary blindness
+
+Round 8's terminal design held for every keyword and shape class it
+targeted, but round 9's gate found one CRITICAL mechanical bug and one
+HIGH gap in the surrounding machinery, not in the terminal design itself:
+
+1. **CRITICAL — the `"[redacted]"`-substring short-circuit.**
+   `classifyToken` had a guard, `if (core.includes("[redacted]")) return
+   token;`, meant to skip re-processing a token stage 1 had ALREADY fully
+   redacted. But it matched on ANY substring occurrence, not just a whole-
+   core exact match. A single whitespace-delimited token that mixed
+   already-redacted stage-1 content with UNTOUCHED live secret content
+   (glued together with no whitespace — e.g. a URL query string where
+   stage 1's labeled-field rule caught one `key=value` pair but left a
+   neighboring `&otherKey=value` pair untouched) tripped this guard and
+   returned the WHOLE token unexamined, leaking the untouched portion in
+   full. Live repro: `https://x.com/callback?state=<secret>&password=
+   <secret>` — stage 1 redacts only the `password` value; the old code
+   then let `state=<secret>` through completely. The fix narrowed the
+   guard to an EXACT match (`core === "[redacted]"`) so only a token stage
+   1 fully consumed short-circuits; anything else falls through to the
+   existing tokenized analysis (`classifyUrlToken`, path-segment checks,
+   the flag-value split, the final catch-all), each of which already
+   replaces its entire matched scope rather than leaving fragments — so a
+   partially-redacted token gets its untouched remainder correctly
+   re-examined and, if unsafe, fully collapsed.
+2. **HIGH — stage-1 vocabulary blindness.** `applySecretMarkerRules` (stage
+   1) had no visibility into `knownSafeTokens` at all, so its value-
+   redacting rules (labeled fields, space-separated flags, code phrases,
+   prose keyword-adjacency, mysqldump's `-p<value>`) unconditionally
+   redacted any value adjacent to a keyword, even a legitimate vocabulary
+   member (`"password task-abc123"` destroyed `task-abc123` even though
+   stage 2 alone would have correctly kept it, since it's OUR id, not the
+   secret the keyword labels). The fix threaded `knownSafeTokens` through
+   to each value-capturing rule via a shared `redactValueUnlessVocabulary`
+   helper: a captured value that is an exact vocabulary member (after
+   stripping incidental trailing punctuation, mirroring stage 2's own
+   tokenization) survives; anything else still redacts exactly as before.
+3. **MEDIUM — `classifyUrlToken`'s doc comment vs. observed behavior.**
+   The apparent "partial in-place redaction" the round-9 gate observed
+   for URLs was never actually `classifyUrlToken`'s own behavior — it was
+   the CRITICAL bug above bypassing this function entirely and returning
+   raw, partially-redacted stage-1 output unchanged. Once the short-
+   circuit was narrowed (finding 1), `classifyUrlToken` is unconditionally
+   the one deciding every URL-shaped token's fate again, so its wholesale-
+   collapse doc comment and its actual behavior are back in sync with no
+   remaining bypass path.
+4. **LOW — this document.** The round-by-round narrative above was
+   extracted out of the module header into this file, both to relieve
+   ratchet pressure that had nothing to do with current-contract
+   complexity, and so a future reader doesn't have to wade through eight
+   rounds of history to find the two paragraphs describing the CURRENT
+   design.

@@ -154,7 +154,19 @@ const ADVERSARIAL_FIXTURES: Array<{ name: string; text: string; secret: string }
     name: "round-8 probe: recovery code prose adjacency, no flag, no colon",
     text: "your recovery code is 482913",
     secret: "482913"
-  }
+  },
+  // Round-9 LOW finding 2: 3 named round-7 probe-list phrasings that were
+  // never actually encoded as fixtures despite being explicitly named by the
+  // round-7 gate alongside the ones above — "card verification value" (the
+  // full spelled-out phrase, distinct from the CVC/cvv abbreviation already
+  // covered), the "--2fa" flag form (distinct from the "2FA:" colon form
+  // already covered), and the bare space-separated "PIN number 482913" (no
+  // colon, no "is" — distinct from both the colon-joined and prose-adjacency
+  // "PIN number" forms already covered, and explicitly called out by the
+  // round-7 gate's own consistency finding as its own case).
+  { name: "round-9 probe: card verification value, colon-joined", text: "card verification value: 482913", secret: "482913" },
+  { name: "round-9 probe: --2fa flag", text: "--2fa 482913", secret: "482913" },
+  { name: "round-9 probe: bare PIN number, space-separated, no colon, no \"is\"", text: "PIN number 482913", secret: "482913" }
 ];
 
 for (const fixture of ADVERSARIAL_FIXTURES) {
@@ -315,6 +327,73 @@ test("round-8 supersedes round-6's query-string-email fix: without vocabulary, a
   // authority survives, the content after it does not, unless vouched for.
   const url = "https://x.example.com/search?email=foo@bar.com";
   assert.equal(sanitizeFreeText(url), "https://x.example.com/[redacted]");
+});
+
+// ---------------------------------------------------------------------------
+// Round-9 CRITICAL fix: `classifyToken`'s old blanket
+// `core.includes("[redacted]")` short-circuit treated ANY partial stage-1
+// redaction inside a token as whole-token clearance, skipping stage 2 (URL
+// tokenization, path-segment checks, the catch-all) entirely. A token that
+// mixes already-redacted stage-1 content with UNTOUCHED live secret content,
+// glued together with no whitespace, used to leak the untouched portion in
+// full. The fix narrows the short-circuit to an EXACT match on `[redacted]`,
+// so a partially-redacted token always falls through to full re-analysis.
+// ---------------------------------------------------------------------------
+
+test("round-9 CRITICAL: the gate's own live repro — a URL query string with one stage-1-caught secret and one untouched secret, glued with no whitespace", () => {
+  const url = "https://x.com/callback?state=xK9pQ7mZvL3nR8tYbW2cAe&password=hunter2Aa1";
+  const result = sanitizeFreeText(url);
+  assert.equal(result.includes("xK9pQ7mZvL3nR8tYbW2cAe"), false, `the untouched "state" secret must not survive: ${result}`);
+  assert.equal(result.includes("hunter2Aa1"), false, `the stage-1-caught "password" secret must not survive either: ${result}`);
+});
+
+test("round-9 CRITICAL: hyphen-joined-blob variant — a bounded stage-1 match (AWS key id) glued via a hyphen to an untouched secret in the SAME token", () => {
+  // WELL_KNOWN_SECRET_PREFIX_PATTERN / AWS_KEY_ID_PATTERN are bounded to
+  // `[A-Z0-9]`/`[A-Za-z0-9_-]` character classes, so a stage-1 match against
+  // an all-uppercase AWS key id stops cleanly at the hyphen, leaving the
+  // remainder glued to the resulting "[redacted]" marker with no whitespace
+  // in between — the exact "partial substring, non-URL" shape the gate's
+  // repro targets, distinct from the URL-tokenized case above.
+  const text = "AKIAIOSFODNN7EXAMPLE-anotherSecretRightHere";
+  const result = sanitizeFreeText(text);
+  assert.equal(result.includes("AKIAIOSFODNN7EXAMPLE"), false, `the stage-1-caught AWS key id must not survive: ${result}`);
+  assert.equal(result.includes("anotherSecretRightHere"), false, `the untouched hyphen-glued remainder must not survive: ${result}`);
+});
+
+test("round-9 CRITICAL: a token that IS exactly the [redacted] marker still short-circuits (no change in behavior for the fully-redacted case)", () => {
+  // "--token" survives as a flag name; its value is fully consumed by stage 1
+  // into the bare "[redacted]" token, which must still short-circuit cleanly
+  // (an exact-match core), proving the narrowed guard didn't regress the
+  // common single-word-secret case this guard was originally written for.
+  const result = sanitizeFreeText("--token 123456");
+  assert.equal(result, "--token [redacted]");
+});
+
+// ---------------------------------------------------------------------------
+// Round-9 HIGH fix: stage 1 (`applySecretMarkerRules`) had no visibility into
+// `knownSafeTokens` at all, so its value-redacting rules force-redacted ANY
+// value adjacent to a keyword, even a legitimate vocabulary member. Both
+// directions on the SAME text, proving the vocabulary now wins even in a
+// keyword-adjacent position.
+// ---------------------------------------------------------------------------
+
+test("round-9 HIGH, both directions: a vocabulary-member value next to a keyword survives; a non-vocabulary value in the same position still redacts", () => {
+  const text = "password task-abc123";
+  const noVocabResult = sanitizeFreeText(text);
+  // Without a vocabulary, the value redacts (as it always has) — AND, per
+  // round 5's disclosed friction, so does the bare label word "password"
+  // itself at stage 2 (ordinary English prose, not a vocabulary member).
+  // The load-bearing assertion here is the ABSENCE of the secret value.
+  assert.equal(noVocabResult.includes("task-abc123"), false, `no vocabulary → the value must still redact: ${noVocabResult}`);
+  const vocabResult = sanitizeFreeText(text, new Set(["task-abc123"]));
+  assert.equal(vocabResult, "[redacted] task-abc123", "a vocabulary-member value survives even directly adjacent to a keyword, at stage 1 already");
+});
+
+test("round-9 HIGH: the same vocabulary-blindness fix holds for a colon-joined labeled field", () => {
+  const vocabResult = sanitizeFreeText("token: task-abc123", new Set(["task-abc123"]));
+  assert.equal(vocabResult, "[redacted] task-abc123", "the value survives via the stage-1 vocabulary fix; the bare label word 'token' still redacts at stage 2 like any other non-vocabulary prose word");
+  const noVocabResult = sanitizeFreeText("token: task-abc123");
+  assert.equal(noVocabResult.includes("task-abc123"), false, "without vocabulary backing, the value still redacts");
 });
 
 // ---------------------------------------------------------------------------

@@ -625,7 +625,15 @@ test("second egress (round-2 HIGH fix): task_blocked's raw seedFailure reason is
   assert.ok(c);
   const reasons = c!.evidence.values.reasons as string[];
   assert.equal(reasons[0]!.includes("hunter2Aa1!"), false, "reason must be redacted, not passed through raw");
-  assert.match(reasons[0]!, /PGPASSWORD=\[redacted\]/);
+  // Round-9 CRITICAL fix: the "PGPASSWORD=[redacted]" token (stage-1's own
+  // partial redaction, not a whole-token exact "[redacted]") no longer
+  // short-circuits at stage 2 — it now falls through to full re-analysis and,
+  // since "PGPASSWORD=[redacted]" isn't a flag=value pair (no leading dash)
+  // or any other recognized safe shape, the WHOLE token collapses to a bare
+  // "[redacted]" rather than preserving the "PGPASSWORD=" label text. This is
+  // MORE conservative than before, never less safe.
+  assert.match(reasons[0]!, /\[redacted\]/);
+  assert.equal(reasons[0]!.includes("PGPASSWORD="), false);
 });
 
 test("single choke point: EVERY freeText-tagged cause class redacts its evidence values, not just the ones that opt in", () => {
@@ -666,7 +674,12 @@ test("daemon_handoff_blocked nextCommand (built from external sidecar text) is a
   const c = cause(d, "daemon_handoff_blocked");
   assert.ok(c);
   assert.equal(c!.nextCommand.includes("hunter2Aa1!"), false);
-  assert.match(c!.nextCommand, /PGPASSWORD=\[redacted\]/);
+  // Round-9 CRITICAL fix: see the matching comment in the task_blocked test
+  // above — the "PGPASSWORD=[redacted]" token now fully collapses to a bare
+  // "[redacted]" at stage 2 instead of preserving the label text, since it is
+  // no longer whole-token-exempt merely for containing the marker substring.
+  assert.match(c!.nextCommand, /\[redacted\]/);
+  assert.equal(c!.nextCommand.includes("PGPASSWORD="), false);
 });
 
 test("hook_blocker cause: a credential embedded in the recorded command never appears verbatim in evidence or nextCommand", () => {
