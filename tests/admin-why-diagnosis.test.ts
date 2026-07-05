@@ -150,6 +150,16 @@ test("respawn_budget_exhausted present (count >= budget) → recover command", (
   const c = cause(d, "respawn_budget_exhausted");
   assert.ok(c);
   assert.match(c!.nextCommand, /recover --apply-safe/);
+  // Round-8 finding 5 (structured-evidence pass-direction proof): `count` and
+  // `budget` are tagged `structured()`, not `freeText()` — they never call
+  // `sanitizeFreeText`/`sanitizeForDisplay` at all, so why-redaction.ts's
+  // round-8 removal of the free-text numeric shape-exemption has ZERO effect
+  // on them. They render as the actual numbers, not "[redacted]", proving the
+  // real mechanism the round-8 gate's own rationale relies on: legitimate
+  // numeric evidence reaches output through structured fields, not prose.
+  assert.equal(c!.evidence.values.count, 8);
+  assert.equal(c!.evidence.values.budget, 8);
+  assert.equal(formatStallDiagnosis(d).includes("[redacted]"), false, "structured numeric evidence must never render as redacted");
 });
 
 test("respawn budget NOT exhausted (count < budget) → not reported", () => {

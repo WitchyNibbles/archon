@@ -17,8 +17,10 @@ import {
 // proves the vocabulary-anchored model both directions: every adversarial
 // fixture (including round 5's own bare-prose probes) must redact regardless
 // of vocabulary; every legitimate free-text shape must survive ONLY when
-// backed by an explicit vocabulary (or one of the four narrow structural
-// shapes: flag name, number/timestamp, path, credential-free URL).
+// backed by an explicit vocabulary (or a flag name / ISO timestamp / UUID, or
+// a path/URL every one of whose segments/tokens independently passes those
+// same checks — round-8 TERMINAL DESIGN: there is no bare-number shape
+// exemption anymore; see why-redaction.ts's module header).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -122,7 +124,37 @@ const ADVERSARIAL_FIXTURES: Array<{ name: string; text: string; secret: string }
   { name: "round-7 HIGH: --passphrase flag value", text: "--passphrase hunter2Aa1", secret: "hunter2Aa1" },
   { name: "round-7 HIGH: --mfa flag value", text: "--mfa 482913", secret: "482913" },
   { name: "round-7 HIGH: --passcode flag value", text: "--passcode 482913", secret: "482913" },
-  { name: "round-7 HIGH: cvv colon-joined field", text: "cvv: 123", secret: "123" }
+  { name: "round-7 HIGH: cvv colon-joined field", text: "cvv: 123", secret: "123" },
+  // Round-8 finding 5: the gate's entire round-7 probe list, encoded here.
+  // NONE of the labels below ("2FA", "code", "recovery", "backup",
+  // "security", "activation", "session", "CVC", "TOTP", "PIN number") is a
+  // recognized keyword in SECRET_KEYWORD_ALTERNATION or CODE_ADJACENT_KEYWORDS
+  // — every one of these redacts purely because a bare number no longer
+  // survives by shape at all (round-8 finding 1), proving the keyword layer
+  // is genuinely non-load-bearing for this entire probe class.
+  { name: "round-8 probe: 2FA colon-joined", text: "2FA: 482913", secret: "482913" },
+  { name: "round-8 probe: bare --code flag (never a recognized keyword)", text: "--code 482913", secret: "482913" },
+  { name: "round-8 probe: recovery code colon-joined", text: "recovery code: 482913", secret: "482913" },
+  { name: "round-8 probe: backup code colon-joined", text: "backup code: 482913", secret: "482913" },
+  { name: "round-8 probe: security code colon-joined", text: "security code: 482913", secret: "482913" },
+  { name: "round-8 probe: activation code colon-joined", text: "activation code: 482913", secret: "482913" },
+  {
+    name: "round-8 probe: license key colon-joined (alphanumeric — already closed by round-5 default-deny)",
+    text: "license key: XYZ123ABC9",
+    secret: "XYZ123ABC9"
+  },
+  { name: "round-8 probe: session id colon-joined", text: "session id: 482913", secret: "482913" },
+  { name: "round-8 probe: CVC colon-joined", text: "CVC: 123", secret: "123" },
+  { name: "round-8 probe: bare CVC, no colon", text: "CVC 482913", secret: "482913" },
+  { name: "round-8 probe: TOTP colon-joined", text: "TOTP: 482913", secret: "482913" },
+  { name: "round-8 probe: TOTP prose adjacency", text: "TOTP is 482913", secret: "482913" },
+  { name: "round-8 probe: PIN number colon-joined", text: "PIN number: 482913", secret: "482913" },
+  { name: "round-8 probe: PIN number prose adjacency", text: "PIN number is 482913", secret: "482913" },
+  {
+    name: "round-8 probe: recovery code prose adjacency, no flag, no colon",
+    text: "your recovery code is 482913",
+    secret: "482913"
+  }
 ];
 
 for (const fixture of ADVERSARIAL_FIXTURES) {
@@ -170,7 +202,12 @@ test("CRITICAL fix, both directions: the SAME shaped token redacts with no vocab
 test("pass-direction: a task id after a space-separated CLI flag survives when flag words + id are vocabulary", () => {
   const taskId = "auditP3ArchonWhyRepairVerification123456";
   const line = "npx tsx ./src/admin.ts status --task-id " + taskId;
-  const vocabulary = new Set(["npx", "tsx", "status", taskId]);
+  // Round-8: "./src/admin.ts" is path-shaped but no longer blanket-safe by
+  // shape — it needs vocabulary backing. In real usage `tokenizeToVocabulary`
+  // adds it as ONE WHOLE STRING (it contains no whitespace) straight from the
+  // literal `RECOMMENDED_COMMANDS` template that produced this exact line, so
+  // it is included here as a whole-string entry, not per-segment.
+  const vocabulary = new Set(["npx", "tsx", "./src/admin.ts", "status", taskId]);
   assert.equal(sanitizeFreeText(line, vocabulary), line);
 });
 
@@ -186,12 +223,12 @@ test("pass-direction: a task id after an =-joined CLI flag survives via the flag
 test("pass-direction: a recommended-command-shaped line with flags + a vocabulary-known task id survives intact", () => {
   const taskId = "auditP3ArchonWhyRepairVerification123456";
   const line = `npx tsx ./src/admin.ts status --task-id ${taskId}`;
-  assert.equal(sanitizeFreeText(line, new Set(["npx", "tsx", "status", taskId])), line);
+  assert.equal(sanitizeFreeText(line, new Set(["npx", "tsx", "./src/admin.ts", "status", taskId])), line);
 });
 
 // ---------------------------------------------------------------------------
-// Pass-direction, structural shapes: these survive regardless of vocabulary
-// (round-5 fixes: bare relative paths, ISO timestamps, credential-free URLs).
+// Pass-direction, structural shapes still safe by shape alone (round-8:
+// UUID and ISO timestamp only — flag names are covered separately below).
 // ---------------------------------------------------------------------------
 
 test("pass-direction: a UUID survives with no vocabulary", () => {
@@ -199,96 +236,146 @@ test("pass-direction: a UUID survives with no vocabulary", () => {
   assert.equal(sanitizeFreeText(uuid), uuid);
 });
 
-test("pass-direction: an absolute file path survives with no vocabulary", () => {
-  const filePath = "/home/eimi/projects/archon/.archon/work/daemon/hook-blocker-state-verification.json";
-  assert.equal(sanitizeFreeText(filePath), filePath);
-});
-
-test("pass-direction (round-5 fix): a BARE RELATIVE path (no leading ./ or /) survives with no vocabulary", () => {
-  const filePath = "src/admin/why-redaction.ts";
-  assert.equal(sanitizeFreeText(filePath), filePath);
-});
-
 test("pass-direction (round-5 fix): an ISO-8601 timestamp survives with no vocabulary", () => {
   const timestamp = "2026-07-04T12:34:56.789Z";
   assert.equal(sanitizeFreeText(timestamp), timestamp);
 });
 
-test("pass-direction (round-5 fix): a credential-free URL survives with no vocabulary", () => {
-  const url = "https://api.github.com/repos/owner/repo";
-  assert.equal(sanitizeFreeText(url), url);
+// ---------------------------------------------------------------------------
+// Round-8 TERMINAL DESIGN: paths and URLs are TOKENIZED, not blanket-exempt.
+// A path survives WHOLE only if every "/"-separated segment is a vocabulary
+// member or a bounded safe shape (UUID/ISO-timestamp); otherwise the ENTIRE
+// token redacts. Both directions proven on the SAME shapes that round 5/6
+// previously granted a blanket pass to with NO vocabulary at all.
+// ---------------------------------------------------------------------------
+
+test("round-8 BOTH DIRECTIONS: an absolute file path redacts wholesale with no vocabulary, survives as a whole-string vocabulary member", () => {
+  const filePath = "/home/eimi/projects/archon/.archon/work/daemon/hook-blocker-state-verification.json";
+  assert.equal(sanitizeFreeText(filePath), "[redacted]", "no vocabulary → path is no longer blanket-safe by shape");
+  assert.equal(
+    sanitizeFreeText(filePath, new Set([filePath])),
+    filePath,
+    "whole-string vocabulary membership → survives (the real relief valve: a collector-constructed sidecar path is added as ONE STRING)"
+  );
 });
 
-test("round-5 MEDIUM fix retained: a URL WITH userinfo still redacts even though bare URLs now survive", () => {
+test("round-8 BOTH DIRECTIONS: a bare relative path redacts wholesale with no vocabulary, survives when every segment is vocabulary/shape-safe", () => {
+  const filePath = "src/admin/why-redaction.ts";
+  assert.equal(sanitizeFreeText(filePath), "[redacted]", "no vocabulary → redacts wholesale");
+  // Per-segment vocabulary (as opposed to whole-string membership) also
+  // works — every "/"-separated piece must individually pass.
+  assert.equal(sanitizeFreeText(filePath, new Set(["src", "admin", "why-redaction.ts"])), filePath);
+});
+
+test("round-8: a path with ONE unsafe segment redacts the WHOLE token, not just the bad segment", () => {
+  const path = "logs/hunter2Aa1notASafeShape";
+  const result = sanitizeFreeText(path, new Set(["logs"]));
+  assert.equal(result.includes("hunter2Aa1notASafeShape"), false);
+  assert.equal(result, "[redacted]", "one bad segment redacts the entire path, never a partial `logs/[redacted]`");
+});
+
+test("round-8: a path segment that is UUID-shaped counts as a bounded safe shape, mixed with a vocabulary segment", () => {
+  // Note: an ISO timestamp is NOT usable as a path segment here — timestamps
+  // contain `:`, and the path shape gate deliberately excludes `:` (it is one
+  // of the two characters that signal a credential-bearing URL/connection-
+  // string shape). A UUID segment has no such conflict.
+  const path = "requests/a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+  assert.equal(sanitizeFreeText(path, new Set(["requests"])), path);
+});
+
+test("round-5 MEDIUM fix retained: a URL WITH userinfo still redacts (stage 1, unaffected by round-8's stage-2 rework)", () => {
   const url = "https://archon:hunter2Aa1!@api.example.com/path";
   const result = sanitizeFreeText(url);
   assert.equal(result.includes("hunter2Aa1!"), false);
   assert.match(result, /^https:\/\/\[redacted\]$/);
 });
 
-test("pass-direction (round-6 LOW fix): a query-string email address no longer over-redacts the whole URL", () => {
+test("pass-direction: a bare scheme://authority URL with NO path at all survives with no vocabulary", () => {
+  const url = "https://api.github.com";
+  assert.equal(sanitizeFreeText(url), url, "nothing after the authority — nothing to redact");
+});
+
+test("round-8 BOTH DIRECTIONS: a credential-free URL's path+query collapses wholesale with no vocabulary, survives when every path/query token is vocabulary/shape-safe", () => {
+  const url = "https://api.github.com/repos/owner/repo";
+  assert.equal(
+    sanitizeFreeText(url),
+    "https://api.github.com/[redacted]",
+    "no vocabulary → path+query collapses wholesale, authority (scheme+host) is kept"
+  );
+  assert.equal(sanitizeFreeText(url, new Set(["repos", "owner", "repo"])), url);
+});
+
+test("round-8 supersedes round-6's query-string-email fix: without vocabulary, a query value redacts along with the rest of the path+query", () => {
+  // Round 6 fixed this specific URL to survive so an unrelated `@` (a query-
+  // string email) didn't over-redact the whole URL by shape alone. Round 8's
+  // terminal design is stricter: an unlabeled, non-vocabulary token anywhere
+  // in a URL's path/query is now treated the same as any other free-text
+  // token — it must be vouched for, or the whole path+query collapses. This
+  // is the accepted, disclosed trade-off (see the module header): the
+  // authority survives, the content after it does not, unless vouched for.
   const url = "https://x.example.com/search?email=foo@bar.com";
-  assert.equal(sanitizeFreeText(url), url);
+  assert.equal(sanitizeFreeText(url), "https://x.example.com/[redacted]");
 });
 
 // ---------------------------------------------------------------------------
-// Round-6 HIGH fix: SAFE_NUMBER is bounded (≤6 integer digits), so ports,
-// exit codes, counts, and years still survive with no vocabulary — this is
-// the "unchanged path" the gate asked to prove alongside the new bound.
+// Round-8 finding 1 (terminal design): the free-text numeric shape-exemption
+// is GONE. A bare number now survives ONLY as an exact vocabulary member —
+// never by shape alone, regardless of how short it is. Both directions on
+// the SAME values that round 6/7 previously granted a blanket pass to.
 // ---------------------------------------------------------------------------
 
-test("pass-direction (round-6 bound unchanged): a port number survives with no vocabulary", () => {
-  assert.equal(sanitizeFreeText("--port 8080"), "--port 8080");
+test("round-8 BOTH DIRECTIONS: a port number redacts with no vocabulary, survives when the value IS in the vocabulary", () => {
+  assert.equal(sanitizeFreeText("--port 8080"), "--port [redacted]");
+  assert.equal(sanitizeFreeText("--port 8080", new Set(["8080"])), "--port 8080");
 });
 
-test("pass-direction (round-6 bound unchanged): an exit code survives with no vocabulary", () => {
-  assert.equal(sanitizeFreeText("--exit-code 137"), "--exit-code 137");
+test("round-8 BOTH DIRECTIONS: an exit code redacts with no vocabulary, survives when the value IS in the vocabulary", () => {
+  assert.equal(sanitizeFreeText("--exit-code 137"), "--exit-code [redacted]");
+  assert.equal(sanitizeFreeText("--exit-code 137", new Set(["137"])), "--exit-code 137");
 });
 
-test("pass-direction (round-6 bound unchanged): a count survives with no vocabulary", () => {
-  assert.equal(sanitizeFreeText("--count 42"), "--count 42");
+test("round-8 BOTH DIRECTIONS: a count redacts with no vocabulary, survives when the value IS in the vocabulary", () => {
+  assert.equal(sanitizeFreeText("--count 42"), "--count [redacted]");
+  assert.equal(sanitizeFreeText("--count 42", new Set(["42"])), "--count 42");
 });
 
-test("pass-direction (round-6 bound unchanged): a 4-digit year survives with no vocabulary", () => {
-  assert.equal(sanitizeFreeText("--year 2026"), "--year 2026");
+test("round-8 BOTH DIRECTIONS: a 4-digit year redacts with no vocabulary, survives when the value IS in the vocabulary", () => {
+  assert.equal(sanitizeFreeText("--year 2026"), "--year [redacted]");
+  assert.equal(sanitizeFreeText("--year 2026", new Set(["2026"])), "--year 2026");
 });
 
-test("pass-direction (round-6 bound unchanged): an ISO-8601 timestamp still survives unaffected by the numeric bound", () => {
+test("pass-direction (unaffected by the numeric-exemption removal): an ISO-8601 timestamp still survives with no vocabulary", () => {
   const timestamp = "2026-07-04T12:34:56.789Z";
   assert.equal(sanitizeFreeText(timestamp), timestamp);
 });
 
-// ---------------------------------------------------------------------------
-// Round-7 CRITICAL fix: SAFE_NUMBER now bounds the WHOLE token (sign + digits
-// + decimal point together), not just the integer part — short decimals
-// must still survive with no vocabulary.
-// ---------------------------------------------------------------------------
-
-test("pass-direction (round-7 fix): short decimal numbers survive with no vocabulary", () => {
+test("round-8 BOTH DIRECTIONS: a short decimal number redacts with no vocabulary, survives when the value IS in the vocabulary", () => {
   for (const n of ["1.5", "99.9", "3.14"]) {
-    assert.equal(sanitizeFreeText(n), n, `"${n}" must survive unchanged`);
+    assert.equal(sanitizeFreeText(n), "[redacted]", `"${n}" must redact with no vocabulary (round-8 terminal design)`);
+    assert.equal(sanitizeFreeText(n, new Set([n])), n, `"${n}" must survive as a vocabulary member`);
   }
 });
 
 // ---------------------------------------------------------------------------
-// Round-7 HIGH fix: "code" was deliberately NOT added to the keyword list —
-// it must stay scoped to the compound pin/otp/verification/auth phrasing, or
-// this codebase's own exit-code/error-code/status-code vocabulary would
-// start colliding with it.
+// Round-7's "code" scoping (compound pin/otp/verification/auth-code phrase,
+// never bare `code`) is retained as documented DEFENSE-IN-DEPTH — but it is
+// no longer what makes exit-code/error-code/status-code survive. They survive
+// because their VALUES aren't redacted at all when in the vocabulary (or
+// redact along with everything else in free text when not) — the keyword
+// layer is irrelevant to this outcome either way (round-8 finding 4).
 // ---------------------------------------------------------------------------
 
-test("pass-direction (round-7 scoped code fix): an error code survives with no vocabulary", () => {
-  assert.equal(sanitizeFreeText("--error-code 404"), "--error-code 404");
+test("round-8: an error code and a status code behave exactly like any other numeric flag value (keyword-independent)", () => {
+  assert.equal(sanitizeFreeText("--error-code 404"), "--error-code [redacted]");
+  assert.equal(sanitizeFreeText("--error-code 404", new Set(["404"])), "--error-code 404");
+  assert.equal(sanitizeFreeText("--status-code 200"), "--status-code [redacted]");
+  assert.equal(sanitizeFreeText("--status-code 200", new Set(["200"])), "--status-code 200");
 });
 
-test("pass-direction (round-7 scoped code fix): a status code survives with no vocabulary", () => {
-  assert.equal(sanitizeFreeText("--status-code 200"), "--status-code 200");
-});
-
-test("round-6 HIGH fix, defense-in-depth: a space-separated secret-labeled flag redacts its value even when the value is a SHORT (in-bound) number", () => {
-  // "123456" is 6 digits — within SAFE_NUMBER's bound and would otherwise
-  // survive by shape alone. The labeled-flag rule (SPACE_SEPARATED_SECRET_FLAG)
-  // catches it anyway because it's the value of a --token-shaped flag.
+test("defense-in-depth, now non-load-bearing: a space-separated secret-labeled flag still redacts its value directly (no vocabulary needed to reach that outcome anymore)", () => {
+  // "123456" would ALSO redact purely because bare numbers no longer survive
+  // by shape (round-8 finding 1) — the labeled-flag rule (round-6) still
+  // fires too, but it is redundant for this outcome now, not load-bearing.
   const result = sanitizeFreeText("--token 123456");
   assert.equal(result.includes("123456"), false);
   assert.equal(result, "--token [redacted]");
@@ -376,24 +463,18 @@ test("membership invariant: only an EXACT vocabulary match survives — mutation
 });
 
 // ---------------------------------------------------------------------------
-// Round-7: the boundedness audit's own regression guard. Every SAFE_* shape
-// that IS bounded (SAFE_NUMBER, SAFE_ISO_TIMESTAMP, SAFE_UUID) must reject a
-// 100-char adversarial token built in its own shape family — proving the
-// bound is real and not just documented. Shapes the audit found legitimately
-// UNBOUNDED (SAFE_PATH, SAFE_URL_NO_USERINFO — see the module header's
-// boundedness table) are intentionally excluded: a length rejection there
-// would break real long paths/URLs, which is not the property being tested.
+// Round-7's boundedness-audit regression guard, updated for round 8: there is
+// no `SAFE_NUMBER` anymore (a bare number never passes by shape at all,
+// regardless of length — round-8 finding 1), so a 100-digit run is covered
+// by the "round-8 BOTH DIRECTIONS" numeric tests above, not this list. What
+// remains genuinely bounded-by-shape is `SAFE_ISO_TIMESTAMP` and `SAFE_UUID`
+// — this guard proves each rejects a 100-char adversarial token of its own
+// shape family. `PATH_LIKE_SHAPE`/`URL_STRUCTURE` are intentionally excluded:
+// they are gates, not grants (see the module header's boundedness table), and
+// a length rejection there would break real long paths/URLs.
 // ---------------------------------------------------------------------------
 
 const BOUNDED_SHAPE_ADVERSARIAL_PROBES: Array<{ name: string; token: string }> = [
-  {
-    name: "SAFE_NUMBER: a 100-digit integer run",
-    token: "1".repeat(100)
-  },
-  {
-    name: "SAFE_NUMBER: a 100-character decimal (integer.fraction) run",
-    token: `1.${"2".repeat(98)}`
-  },
   {
     name: "SAFE_ISO_TIMESTAMP: a valid date/time prefix with an 80-digit fractional-seconds run (100 chars total)",
     token: `2026-07-04T12:34:56.${"9".repeat(80)}`
@@ -403,6 +484,45 @@ const BOUNDED_SHAPE_ADVERSARIAL_PROBES: Array<{ name: string; token: string }> =
     token: `a1b2c3d4-e5f6-7890-abcd-ef1234567890${"a".repeat(64)}`
   }
 ];
+
+// ---------------------------------------------------------------------------
+// Round-8 finding 3 (LOW, internal consistency): with findings 1+2 in place,
+// the colon-joined, space-separated/flag, and no-flag prose join forms all
+// converge to the SAME outcome for a given keyword+value pair — none of them
+// is "more" or "less" strict than the others. Verified as a matrix (keyword ×
+// join form), not a single hand-picked example, so a future regression in any
+// ONE join form's rule is caught regardless of which keyword exposes it.
+// ---------------------------------------------------------------------------
+
+test("matrix: colon-joined, space-separated, and prose-adjacency joins produce an equivalent redaction outcome for the same keyword+value", () => {
+  const secretValue = "482913";
+  const keywords = ["token", "password", "secret"];
+  const joinForms: Array<{ name: string; build: (keyword: string) => string }> = [
+    { name: "colon-joined", build: (keyword) => `${keyword}: ${secretValue}` },
+    { name: "space-separated flag", build: (keyword) => `--${keyword} ${secretValue}` },
+    { name: "prose adjacency", build: (keyword) => `${keyword} is ${secretValue}` }
+  ];
+
+  for (const keyword of keywords) {
+    const outcomes = joinForms.map(({ name, build }) => {
+      const text = build(keyword);
+      const result = sanitizeFreeText(text);
+      return { name, text, result };
+    });
+
+    for (const { name, text, result } of outcomes) {
+      assert.equal(
+        result.includes(secretValue),
+        false,
+        `keyword "${keyword}", join form "${name}": secret leaked in "${result}" (from "${text}")`
+      );
+      assert.ok(
+        result.includes("[redacted]"),
+        `keyword "${keyword}", join form "${name}": expected a "[redacted]" marker in "${result}" (from "${text}")`
+      );
+    }
+  }
+});
 
 test("boundedness audit: each bounded SAFE_* shape rejects a 100-char adversarial token of its own shape family", () => {
   for (const { name, token } of BOUNDED_SHAPE_ADVERSARIAL_PROBES) {
@@ -435,11 +555,10 @@ test("sanitizeForDisplay: redacts BEFORE truncating, not after", () => {
 });
 
 test("sanitizeForDisplay: redacts then truncates in one call", () => {
-  // The trailing filler is a repeated NUMBER (a safe shape that survives
-  // redaction), not one long opaque identifier — round-5 redacts a bare
-  // identifier-shaped run entirely, which would otherwise collapse the
-  // string below the truncation threshold before this test could observe
-  // truncation happening at all.
+  // The trailing filler is 100 repeated whitespace-separated tokens — each
+  // one redacts to "[redacted]" (round-8: bare numbers no longer survive by
+  // shape), which only makes the padded string LONGER after redaction, so
+  // truncation still has plenty of length left to exercise regardless.
   const long = `PGPASSWORD=hunter2 ${Array(100).fill("1").join(" ")}`;
   const result = sanitizeForDisplay(long);
   assert.equal(result.includes("hunter2"), false);

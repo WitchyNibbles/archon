@@ -92,81 +92,123 @@
  * followed within 1-2 filler words by a value token) for phrasings with no
  * flag and no colon/equals join.
  *
- * EXEMPTION CHECKLIST (round-6 gate's explicit ask — every remaining
- * structural shape-exemption, so the next review pass has a checklist
- * instead of rediscovering categories from scratch):
+ * ROUND-8 — TERMINAL DESIGN, numeric exemption removed. Round 7's own gate
+ * probing found the keyword layer leaking AGAIN (a filler-word regex bug
+ * plus roughly a dozen adjacent phrasings — `2FA:`, `--code`, `recovery
+ * code`, `backup code`, `security code`, `activation code`, `license key`,
+ * `session id`, `CVC`, `TOTP`, `PIN number`, ...). Seven rounds proved the
+ * pattern conclusively: enumerated labeling CANNOT converge — there is
+ * always another synonym, another join form, another phrasing the list
+ * hasn't seen yet. This round removes the load-bearing enumeration itself
+ * rather than adding a 13th/14th/15th keyword:
+ *
+ *   1. THE FREE-TEXT NUMERIC SHAPE-EXEMPTION IS GONE. A bare number in free
+ *      text now survives ONLY as an exact vocabulary member (ISO timestamps
+ *      keep their own bounded shape-safety — they are machine-generated, not
+ *      attacker-supplied, an entirely different case). Rationale: every
+ *      number that matters to a diagnosis — ports, exit codes, counts,
+ *      respawn cycles — reaches output through this module's STRUCTURED
+ *      evidence fields (why-diagnosis.ts's `structured()`), which never call
+ *      `sanitizeFreeText` at all. The free-text numeric exemption was never
+ *      load-bearing for legitimate output; it was prose cosmetics, and it was
+ *      the ONE remaining shape a secret could still hide behind after round
+ *      5's identifier-shape fix. With it gone, a numeric secret dies in
+ *      EVERY phrasing — `pin code is 482913`, `2FA: 482913`, `--code
+ *      482913`, `recovery code 482913`, bare `482913` — with ZERO keyword
+ *      dependence. This closes the entire round-6/7 keyword-enumeration bug
+ *      CLASS in one structural move.
+ *   2. PATHS AND URLS ARE NOW TOKENIZED, NOT EXEMPTED WHOLESALE. A URL keeps
+ *      its scheme+authority (that identifies WHERE, not WHAT) but its
+ *      path+query is only kept if EVERY token in it independently passes
+ *      vocabulary/shape checks — otherwise the whole path+query collapses to
+ *      `scheme://host/[redacted]`. A free-text path survives only if EVERY
+ *      `/`-separated segment is a vocabulary member or a bounded safe shape
+ *      — otherwise the WHOLE token redacts. Collector-constructed sidecar
+ *      paths are added to the vocabulary as one whole string (they contain no
+ *      whitespace, so `tokenizeToVocabulary` never splits them), so real
+ *      evidence paths keep rendering via ordinary exact-match membership —
+ *      that is the relief valve, by design, not by luck.
+ *   3. THE FILLER-WORD REGEX BUG IS FIXED AT ROOT (a correctness bug,
+ *      independent of finding 1 above): the prose-adjacency rule required
+ *      AT LEAST ONE filler word between a keyword and its value, so a bare,
+ *      unprefixed "password hunter2Aa1" or "PIN 482913" — keyword directly
+ *      adjacent to its value, no "is"/"code" in between, no leading dash —
+ *      matched neither that rule (needed a filler) nor the space-separated
+ *      flag rule (needed a leading dash), and leaked. The filler count is now
+ *      `{0,2}`, closing that gap regardless of whether the value is numeric.
+ *   4. THE KEYWORD RULES ARE NOW EXPLICITLY DOCUMENTED AS PURE DEFENSE-IN-
+ *      DEPTH, NON-LOAD-BEARING. They still run (cheap, and they still catch
+ *      alphanumeric secrets like `hunter2Aa1` a beat earlier / with clearer
+ *      evidence-value shape), but the SECURITY BOUNDARY is now the
+ *      vocabulary-anchored default-deny applied uniformly to every free-text
+ *      token, numeric or not. A future keyword gap (a synonym this list
+ *      doesn't know) is explicitly NOT a valid finding against this design —
+ *      the numeric case it would have exposed is already closed by finding 1,
+ *      and a non-numeric case was already closed by round 5's identifier-
+ *      shape removal (an unrecognized alphanumeric token was NEVER
+ *      shape-exempt; it has always required vocabulary membership).
+ *
+ * EXEMPTION CHECKLIST (every remaining structural shape-exemption, kept up
+ * to date so the next review pass has a checklist instead of rediscovering
+ * categories from scratch):
  *
  *   - Flag name (`SAFE_FLAG_NAME`, e.g. `--task-id`, `-h`) — a flag is a
  *     LABEL, not a value; nothing after the label has been read yet, so
  *     there is nothing to leak. Cannot hide a secret by construction.
- *   - Bounded number (`SAFE_NUMBER`, whole token ≤6 characters, round-7
- *     fix) — sized to cover ports (max 65535), exit codes, small counts,
- *     and 4-digit years with margin, while being too short for the 7-20+
- *     character runs typical of OTPs, PINs, and numeric API tokens. See
- *     the residual trade-off note below — this is a bound, not a proof.
  *   - ISO-8601 timestamp (`SAFE_ISO_TIMESTAMP`, fractional seconds bounded
  *     to 1-9 digits, round-7 fix) — machine-generated by the runtime's own
- *     clock, never something an attacker supplies as a secret; the
- *     fractional-seconds group is now bounded too (see the audit table).
- *   - Path (`SAFE_PATH`, absolute/relative/bare-relative, no `@`, no `:`) —
- *     excluding the two characters that signal a credential-bearing
- *     URL/connection-string shape makes a path structurally incapable of
- *     encoding `user:pass@host`. Length is deliberately UNBOUNDED — see the
- *     audit table and residual note below.
- *   - Credential-free URL (`SAFE_URL_NO_USERINFO`, no `@` in the AUTHORITY
- *     segment) — a URL's only place to embed a credential is the userinfo
- *     slot before `@` in the authority; forbidding that slot specifically
- *     (not the whole URL) rules out `user:pass@host` while still allowing
- *     ordinary path/query content (including an unrelated `@`, e.g. an email
- *     address in a query string) to pass through unmolested. Length is
- *     deliberately UNBOUNDED — see the audit table and residual note below.
+ *     clock, never something an attacker supplies as a secret. The ONLY
+ *     numeric-adjacent shape still safe without vocabulary backing
+ *     (round-8) — a bare integer/decimal is not.
+ *   - UUID (`SAFE_UUID`) — fixed-width, every group is `{n}`, exactly 36
+ *     characters total; machine-generated, and the fixed width leaves no
+ *     room to smuggle variable-length secret data.
+ *   - Path segment / URL path-query token (`isBoundedSafeShape`, reused by
+ *     `isSafePathToken`/`classifyUrlToken`, round-8) — a vocabulary member,
+ *     UUID, or ISO timestamp appearing as ONE segment/token of an otherwise
+ *     path- or URL-shaped token. A path or URL survives WHOLE only if EVERY
+ *     one of its segments/tokens independently passes this check; otherwise
+ *     the entire token (or, for URLs, the entire path+query) redacts. Length
+ *     is deliberately UNBOUNDED at the path/URL-structure level — real paths
+ *     and URLs are legitimately long, and the actual security-relevant
+ *     restriction is exclusion of `@`/`:` (credential-bearing shapes), not
+ *     length. See the residual note below.
  *   - Shell operator (`SHELL_OPERATOR`) — pure punctuation with no
  *     alphanumeric content; there is no character budget left to carry a
  *     secret.
  *
- * BOUNDEDNESS AUDIT (round-7 gate's explicit ask — every SAFE_* shape
- * regex, bounded-or-justified):
+ * BOUNDEDNESS AUDIT (kept current — every SAFE_* shape regex, bounded or
+ * justified):
  *
  *   | Pattern               | Bounded?                  | Why
  *   |-----------------------|---------------------------|---------------------------------------
  *   | SAFE_UUID             | yes, fixed-width          | every group is `{n}`; exactly 36 chars total
- *   | SAFE_NUMBER           | yes, whole token ≤6 chars | round-7 fix: bounds sign+digits+decimal TOGETHER
  *   | SAFE_ISO_TIMESTAMP    | yes, fraction ≤9 digits   | round-7 fix: closed the unbounded `\d+` fraction
- *   | SAFE_PATH             | NO — justified unbounded  | real paths are legitimately long; safety is the
- *   |                       |                           | excluded chars (no `@`/`:`), not length
- *   | SAFE_URL_NO_USERINFO  | NO — justified unbounded  | same reasoning as SAFE_PATH, for a URL's path/query
  *   | SAFE_FLAG_NAME        | N/A — label, not a value  | nothing has been read yet; no value to leak
  *   | SAFE_FLAG_VALUE_PAIR  | N/A — splitter, not a gate| the extracted value is re-validated independently
  *   | SHELL_OPERATOR        | yes, closed alphabet      | punctuation-only; zero alphanumeric content
+ *   | PATH_LIKE_SHAPE       | N/A — gate, not a grant   | only decides ELIGIBILITY for per-segment checks
+ *   | URL_STRUCTURE         | N/A — gate, not a grant   | only decides ELIGIBILITY for per-token checks
+ *   (there is no `SAFE_NUMBER` and no blanket `SAFE_PATH`/`SAFE_URL_NO_USERINFO`
+ *   as of round 8 — see the "numeric exemption removed" / "tokenized" notes above)
  *
- * RESIDUAL, ACCEPTED TRADE-OFF (round-7 correction — the round-6 disclosure
- * claimed "the labeled-flag rule already closes the realistic leak vector"
- * for PIN/OTP-style secrets. That claim was FALSE and is retracted here:
- * this round's own gate probes — `--pin 482913`, `--otp 482913`, `your otp
- * is 482913` — proved unlabeled PIN/OTP secrets DID pass before this round's
- * keyword-list and prose-adjacency fixes closed them. The true, now-honest
- * residual: an unlabeled, non-vocabulary, SHORT (≤6 total characters,
- * including any decimal point) numeric token with NO recognized secret
- * keyword within 2 tokens of it still survives by shape alone (e.g. a bare
- * "482913" in prose with zero surrounding context). This is deliberately
- * accepted, not hidden: shrinking the bound further would reject genuine
- * ports/years/exit codes/counts, and the keyword-adjacency rules (labeled
- * flag, colon/equals field, code-phrase, and the 2-token prose rule) now
- * cover every realistic PIN/OTP/secret phrasing this codebase's own caught-
- * error surfaces actually produce — a bare, contextless short number is the
- * narrower, honestly-scoped residual.
- *
- * A SECOND residual, surfaced by this round's boundedness audit (new to
- * this disclosure): `SAFE_PATH` and `SAFE_URL_NO_USERINFO` are deliberately
- * unbounded in length. An unlabeled secret with no recognized keyword,
- * formatted to look like a long path segment or embedded in a URL's query
- * string under a generic (non-keyword) parameter name, is not caught by
- * shape rules alone. This is the same trade-off round 5 accepted when it
- * fixed credential-free URLs/paths to survive: bounding their length would
- * break real, legitimately long paths and URLs, and the actual security-
- * relevant restriction for these two shapes is character-class exclusion
- * (no `@`, no `:`), not length. Both residuals are proposed to the gate for
- * ratification together.
+ * RESIDUAL, ACCEPTED TRADE-OFF (round-8, replaces every prior round's
+ * numeric-bound disclosure — that entire category of residual is GONE, not
+ * shrunk): nothing survives by shape alone except an exact vocabulary
+ * member, an ISO timestamp, a UUID, a flag name, or a path/URL every one of
+ * whose segments/tokens independently passes one of those same checks. A
+ * bare number — no matter how short — no longer has any shape-only path to
+ * survival; it must be vouched for by the vocabulary, exactly like any other
+ * unrecognized token. The residual that remains is the same one round 5
+ * already disclosed and this round does not change: paths and URLs are
+ * deliberately UNBOUNDED in length (bounding them would break real,
+ * legitimately long paths and URLs), so an unlabeled secret with no
+ * recognized keyword, formatted to look like a long path segment or a URL
+ * query token that ALSO happens to be a vocabulary member or a UUID/
+ * timestamp shape, is still a residual (this is an extremely narrow,
+ * already-accepted case — a secret would have to itself collide with a
+ * bounded safe shape, not merely look path/URL-adjacent). Proposed to the
+ * gate for ratification as the FINAL disclosure for this design.
  */
 
 import { scrubPgCredentials } from "./db-error-scrub.ts";
@@ -224,16 +266,21 @@ const SPACE_SEPARATED_CODE_PHRASE_PATTERN = new RegExp(
   "gi"
 );
 
-// Round-7 gate finding 2's fourth live probe — "your otp is 482913" — has NO
-// flag and NO colon/equals join; it is a secret keyword followed by ordinary
-// prose ("is") before the value. Narrow prose rule: a recognized secret
-// keyword followed by 1-2 filler words (pure letters — never itself an
-// already-redacted "[redacted]" marker or a flag) then a value token redacts
-// that value. Requires at least one filler word, so it does not re-match
-// the flag/labeled-field shapes above (those have the value immediately
-// adjacent to the keyword with no filler in between).
+// Round-8 gate finding 1 (root-cause fix, filler-word regex bug): a
+// recognized secret keyword followed by 0-2 filler words (pure letters —
+// never itself an already-redacted "[redacted]" marker or a flag) then a
+// value token redacts that value. Round 7 required AT LEAST ONE filler word
+// (`{1,2}`), which silently missed the ZERO-filler case — a bare, unprefixed
+// "password hunter2Aa1" or "PIN 482913" (keyword directly adjacent to its
+// value, no "is"/"code" in between, no leading dash) matched neither this
+// rule (needed a filler) nor SPACE_SEPARATED_SECRET_FLAG (needed a leading
+// dash), so it leaked. `{0,2}` closes that gap at the regex level — this is
+// a correctness fix to the pattern itself, independent of and in addition to
+// round 8's numeric-exemption removal below (which is what actually makes
+// this whole keyword-adjacency family NON-LOAD-BEARING for numeric secrets —
+// see the module header's "keyword rules are defense-in-depth only" note).
 const PROSE_SECRET_KEYWORD_PATTERN = new RegExp(
-  `(\\b(?:${SECRET_KEYWORD_ALTERNATION})\\b(?:\\s+[A-Za-z]+){1,2}\\s+)([^\\s"'\`]+)`,
+  `(\\b(?:${SECRET_KEYWORD_ALTERNATION})\\b(?:\\s+[A-Za-z]+){0,2}\\s+)([^\\s"'\`]+)`,
   "gi"
 );
 
@@ -291,70 +338,32 @@ function applySecretMarkerRules(text: string): string {
 
 // ---------------------------------------------------------------------------
 // Stage 2 — vocabulary-anchored default-deny. Every token stage 1 didn't
-// already redact is classified; only an exact vocabulary member or one of the
-// four narrow structural shapes below survives. There is NO generic
-// "identifier-shaped" rule anymore (round-5 CRITICAL fix).
+// already redact is classified. ROUND-8 TERMINAL DESIGN: the free-text
+// numeric shape-exemption is GONE — a bare number now survives ONLY as an
+// exact vocabulary member (or as part of an ISO timestamp, which stays
+// shape-safe — it is machine-generated, never attacker-supplied). Every
+// number that matters to a diagnosis reaches output through this module's
+// STRUCTURED evidence fields (why-diagnosis.ts's `structured()` — task ids,
+// respawn counts/budgets, ranks — never `sanitizeFreeText`), so the free-text
+// numeric exemption was never load-bearing for legitimate output; it was
+// prose cosmetics that seven rounds of keyword whack-a-mole (rounds 6-7)
+// tried and failed to patch around. Removing it closes every numeric-secret
+// leak in ONE structural move, regardless of what label precedes the number —
+// see the module header for the full disclosure and the "keyword rules are
+// now pure defense-in-depth" framing.
 // ---------------------------------------------------------------------------
 
 const SAFE_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-
-/** A SHORT number — counts, ports (max 65535, 5 digits), exit codes, small
- * indices, 4-digit years, and short decimals (1.5, 99.9, 3.14). Bounded at
- * 6 characters for the WHOLE token — sign, digits, AND decimal point
- * together (round-7 gate CRITICAL fix): round 6 bounded only the integer
- * part (`{1,6}`), leaving the fractional group `(?:\.[0-9]+)?` unbounded —
- * `9.87215098172340192` (a decimal secret) shape-matched the round-6 version
- * and survived whole. The `(?=.{1,6}$)` lookahead measures the ENTIRE
- * matched string's length before any part of it is accepted, so a long
- * fraction can no longer smuggle extra length past a short-looking integer
- * part. 6 characters covers every realistic port/year/count/short-decimal
- * with margin while being short of the 7+ character runs typical of OTPs,
- * PINs, and numeric API tokens (a token longer than 6 characters must be
- * vouched for by the vocabulary, same as any other unrecognized token). See
- * the module header's "residual, accepted trade-off" note — this is a
- * bound, not a proof. */
-const SAFE_NUMBER = /^(?=.{1,6}$)-?[0-9]+(?:\.[0-9]+)?$/;
 
 /** ISO-8601 timestamp shape, with optional fractional seconds and a
  * `Z`/offset suffix — e.g. `2026-07-04T12:34:56.789Z`. Machine-generated,
  * not attacker-controlled, so safe by shape alone regardless of vocabulary
  * (round-5 fix: round 4 only allowlisted bare numbers, so a full timestamp
- * fell through to redaction). Round-7 boundedness-audit fix: the fractional-
- * seconds group was `(?:\.\d+)?` — UNBOUNDED — so a secret could ride in as
- * fake fractional seconds after a valid date/time prefix (the same bypass
- * class as the `SAFE_NUMBER` finding, found while auditing every SAFE_*
- * pattern for this round). Bounded to 1-9 digits, which covers millisecond
- * (3), microsecond (6), and nanosecond (9) precision — every real timestamp
- * this runtime's own clock produces — while rejecting anything longer. */
+ * fell through to redaction; round-7 bounded the fractional-seconds group to
+ * 1-9 digits, closing an identical unbounded-digit-run bypass). This is the
+ * ONLY numeric-adjacent shape that still survives without vocabulary backing
+ * (round-8 terminal design) — a bare integer or decimal no longer does. */
 const SAFE_ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})?$/;
-
-function isSafeNumberOrTimestamp(token: string): boolean {
-  return SAFE_NUMBER.test(token) || SAFE_ISO_TIMESTAMP.test(token);
-}
-
-/** A filesystem path — absolute, `./`/`../`-relative, or bare relative
- * (`src/admin/why.ts`) — built from path-safe characters, with at least one
- * internal `/` (a bare word with no slash is NOT a path — it is an
- * identifier, which is vocabulary-gated, not shape-safe). Deliberately
- * excludes `@` and `:`: the two characters that signal a credential-bearing
- * URL/connection-string shape. Round-5 fix: round 4 required a leading `./`
- * or `/`; bare relative paths (no leading dot/slash) now also survive. */
-const SAFE_PATH = /^\.{0,2}\/?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\/?$/;
-
-/** A `scheme://host...` URL with NO userinfo component IN THE AUTHORITY
- * SEGMENT (the part before the first `/` after `scheme://`) — a bare,
- * credential-free URL (`https://api.github.com/...`) is not a secret and
- * must not be swept up by the same default-deny rule that catches everything
- * else shaped like a connection string (round-5 MEDIUM fix). Round-6 LOW
- * fix: the `@` exclusion is scoped to the AUTHORITY segment only, not the
- * whole token — a query-string email address
- * (`https://x.com/search?email=foo@bar.com`) no longer over-redacts the
- * entire URL just because an unrelated `@` appears in the path/query. A URL
- * that DOES carry userinfo (`user:pass@host`) is caught by stage 1's
- * `CREDENTIAL_URL_WITH_USERINFO` before tokenization ever runs; the
- * authority-only `@` exclusion here is defense-in-depth for anything that
- * slipped past it. */
-const SAFE_URL_NO_USERINFO = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'`@/]*(?:\/[^\s"'`]*)?$/;
 
 /** A flag name on its own (`--task-id`, `-h`, `--apply-safe`) — never a
  * secret by itself, only ever a label. */
@@ -368,14 +377,92 @@ const SAFE_FLAG_VALUE_PAIR = /^(--?[A-Za-z][A-Za-z0-9-]*)=([\s\S]*)$/;
  * a secret since it has no alphanumeric content. */
 const SHELL_OPERATOR = /^[-&|;<>()]+$/;
 
+/** The bounded, non-vocabulary shapes that can still prove safety on their
+ * own: an exact vocabulary member, a UUID (fixed-width, machine-generated),
+ * or an ISO timestamp (fixed-format, machine-generated). Reused both for
+ * plain-token classification AND for classifying the individual SEGMENTS of
+ * a path or the individual TOKENS inside a URL's path/query (round-8 finding
+ * 2) — "bounded safe shape" is now one well-defined concept applied
+ * uniformly everywhere a value needs proving, not a per-context ad hoc list. */
+function isBoundedSafeShape(token: string, knownSafeTokens: ReadonlySet<string>): boolean {
+  return knownSafeTokens.has(token) || SAFE_UUID.test(token) || SAFE_ISO_TIMESTAMP.test(token);
+}
+
+/** Shape GATE (not a safety grant) for "this token looks like a path" —
+ * absolute, `./`/`../`-relative, or bare relative, with at least one internal
+ * `/`, built from path-safe characters, excluding `@` and `:` (the two
+ * characters that signal a credential-bearing URL/connection-string shape).
+ * Passing this gate only means the token is ELIGIBLE for per-segment
+ * analysis in `isSafePathToken` below — round-8 finding 2 removed the old
+ * blanket "any path-shaped token survives" allowlist (round-5/6's `SAFE_PATH`
+ * granted safety by shape alone; that is gone). */
+const PATH_LIKE_SHAPE = /^\.{0,2}\/?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\/?$/;
+
+/** Round-8 finding 2: a free-text path survives ONLY if EVERY segment is a
+ * vocabulary member or a bounded safe shape (UUID/ISO-timestamp) — otherwise
+ * the ENTIRE token redacts (never a per-segment partial redaction, which
+ * would fragment the path into something unreadable and still leak the
+ * segments that "happened" to look safe). In practice: a collector-
+ * constructed sidecar path (e.g. `.archon/work/daemon/hook-blocker-
+ * state.json`) is added to the vocabulary as ONE WHOLE STRING by
+ * `tokenizeToVocabulary` (it contains no whitespace, so it is never split
+ * into per-segment vocabulary entries) — so real evidence paths render via
+ * plain exact-match membership, checked before this function is ever called.
+ * This per-segment path is the fallback for a path-shaped token that is NOT
+ * already a whole-string vocabulary member. */
+function isSafePathToken(token: string, knownSafeTokens: ReadonlySet<string>): boolean {
+  if (!PATH_LIKE_SHAPE.test(token)) return false;
+  const segments = token.split("/").filter((segment) => segment.length > 0);
+  if (segments.length === 0) return false;
+  return segments.every((segment) => isBoundedSafeShape(segment, knownSafeTokens));
+}
+
+/** `scheme://authority...` structure — captures the scheme, the authority
+ * segment (host[:port], no userinfo — a URL WITH userinfo is caught by
+ * stage 1's `CREDENTIAL_URL_WITH_USERINFO` before this ever runs), and
+ * everything after the authority (the path+query "rest", if any). */
+const URL_STRUCTURE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^\s"'`@/]*)(\/[^\s"'`]*)?$/;
+
+/** Round-8 finding 2: a URL's authority (scheme + host) is safe by shape —
+ * it identifies WHERE, not WHAT — but the path+query is free-text content an
+ * attacker (or an accidental leak) can put anything into, including an
+ * unlabeled secret as a query value. Round-5/6's `SAFE_URL_NO_USERINFO`
+ * granted the ENTIRE URL a blanket pass once userinfo was absent; that
+ * blanket pass is gone. Now: split the "rest" (path+query) into its
+ * component tokens and require EVERY one to be a vocabulary member or a
+ * bounded safe shape. If they all pass, the whole URL survives unchanged.
+ * If any fails, the path+query is dropped wholesale to a single
+ * `[redacted]` marker — `scheme://host/[redacted]` — rather than partially
+ * redacting individual tokens (which would still disclose the URL's overall
+ * shape/structure to a degree not worth the complexity). Returns `undefined`
+ * when the token isn't URL-shaped at all, so the caller falls through to
+ * other checks. */
+function classifyUrlToken(token: string, knownSafeTokens: ReadonlySet<string>): string | undefined {
+  // Whole-string vocabulary membership wins immediately, same as every other
+  // shape check — a collector-constructed URL added to the vocabulary as ONE
+  // STRING (it contains no whitespace, so `tokenizeToVocabulary` never splits
+  // it) must not be needlessly decomposed into path/query tokens that aren't
+  // separately in the vocabulary.
+  if (knownSafeTokens.has(token)) return token;
+  const match = URL_STRUCTURE.exec(token);
+  if (!match) return undefined;
+  const scheme = match[1] ?? "";
+  const authority = match[2] ?? "";
+  const rest = match[3];
+  if (!rest) {
+    // Bare `scheme://authority` with nothing after it — nothing to redact.
+    return `${scheme.toLowerCase()}://${authority}`;
+  }
+  const restTokens = rest.split(/[/?&=]/).filter((piece) => piece.length > 0);
+  const allSafe = restTokens.every((piece) => isBoundedSafeShape(piece, knownSafeTokens));
+  if (allSafe) {
+    return `${scheme.toLowerCase()}://${authority}${rest}`;
+  }
+  return `${scheme.toLowerCase()}://${authority}/[redacted]`;
+}
+
 function isSafeValueShape(token: string, knownSafeTokens: ReadonlySet<string>): boolean {
-  return (
-    knownSafeTokens.has(token) ||
-    SAFE_UUID.test(token) ||
-    SAFE_PATH.test(token) ||
-    isSafeNumberOrTimestamp(token) ||
-    SAFE_URL_NO_USERINFO.test(token)
-  );
+  return isBoundedSafeShape(token, knownSafeTokens) || isSafePathToken(token, knownSafeTokens);
 }
 
 const TOKEN_WRAPPER_PATTERN = /^([`"'(]*)([\s\S]*?)([`"'),.;]*)$/;
@@ -419,7 +506,19 @@ function classifyToken(token: string, knownSafeTokens: ReadonlySet<string>): str
   if (core.length === 0) return token;
   if (core.includes("[redacted]")) return token;
 
-  if (SHELL_OPERATOR.test(core) || SAFE_FLAG_NAME.test(core) || isSafeValueShape(core, knownSafeTokens)) {
+  if (SHELL_OPERATOR.test(core) || SAFE_FLAG_NAME.test(core)) {
+    return token;
+  }
+
+  // URL-shaped tokens get their own rendering (authority kept, path+query
+  // tokenized/wholesale-redacted — see `classifyUrlToken`) rather than a
+  // plain safe/unsafe boolean, so check this BEFORE the generic shape check.
+  const urlRendering = classifyUrlToken(core, knownSafeTokens);
+  if (urlRendering !== undefined) {
+    return `${prefix}${urlRendering}${suffix}`;
+  }
+
+  if (isSafeValueShape(core, knownSafeTokens)) {
     return token;
   }
 
@@ -427,7 +526,13 @@ function classifyToken(token: string, knownSafeTokens: ReadonlySet<string>): str
   if (flagValueMatch) {
     const flag = flagValueMatch[1] ?? "";
     const value = flagValueMatch[2] ?? "";
-    const safeValue = isSafeValueShape(value, knownSafeTokens) ? value : "[redacted]";
+    const valueUrlRendering = classifyUrlToken(value, knownSafeTokens);
+    const safeValue =
+      valueUrlRendering !== undefined
+        ? valueUrlRendering
+        : isSafeValueShape(value, knownSafeTokens)
+          ? value
+          : "[redacted]";
     return `${prefix}${flag}=${safeValue}${suffix}`;
   }
 
@@ -438,10 +543,11 @@ function classifyToken(token: string, knownSafeTokens: ReadonlySet<string>): str
  * Sanitizes free text SOURCED FROM OUTSIDE this module — a hook-blocker's
  * recorded command/summary, a seed-failure reason, a daemon's recorded
  * reason/nextActions text, or any other caught-error message. Redacts by
- * default: only a token that is an exact member of `knownSafeTokens`, or
- * matches one of the four narrow structural shapes (flag name, number/
- * timestamp, path, credential-free URL), survives. See the module header for
- * the full rationale and the honestly-disclosed friction this trades off.
+ * default: only a token that is an exact member of `knownSafeTokens`, a flag
+ * name, an ISO timestamp, a UUID, a path whose every segment passes the same
+ * bounded checks, or a URL whose every path/query token passes them, survives
+ * (round-8 terminal design — see the module header). A bare number no longer
+ * survives by shape alone.
  *
  * `knownSafeTokens` defaults to an EMPTY set — a caller that doesn't supply a
  * vocabulary gets the strictest possible behavior, never a silent fallback
