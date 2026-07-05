@@ -508,6 +508,13 @@ export interface TaskPacketInput {
   // runtime is connected this is the authoritative council outcome for the Stop-hook
   // gate; the on-disk packet markdown is only the offline fallback.
   councilOutcome?: string | undefined;
+  // auditP3RetroLoop fix (HIGH #1): orchestrator-recorded post-task retro decision —
+  // mirrors councilOutcome. Recorded via `record-retro`; read by close-run's seal
+  // gate to prove at least one task in the run recorded a real retro outcome before
+  // the run can be sealed (unless the operator uses the explicit acknowledge escape
+  // hatch). Additive/optional — no migration needed since `packet` is a JSON blob.
+  retroOutcome?: string | undefined;
+  retroDecidedAt?: string | undefined;
 }
 
 export interface HandoffInput {

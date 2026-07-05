@@ -26,6 +26,7 @@ import {
   type ClosurePlan,
   type ClosureTaskEvidence
 } from "../core/closure-reconciler.ts";
+import { RETRO_OUTCOME_TOKENS } from "./record-retro.ts";
 
 export interface CloseRunDeps {
   getStatusSnapshot: (runId: string) => Promise<RunStatusSnapshot>;
@@ -88,14 +89,55 @@ export interface CloseRunResult {
 }
 
 /**
+ * Explicit escape hatch for sealing a run with no recorded retro decision.
+ * Requires a non-empty, human-readable `reason` — there is no silent bypass.
+ */
+export interface AcknowledgeNoRetro {
+  reason: string;
+}
+
+export interface ReconcileRunClosureOptions {
+  /**
+   * Bypasses the retro-required seal gate (auditP3RetroLoop fix #1) with an
+   * explicit, recorded reason. The reason is printed to the operator-visible
+   * log so the bypass is auditable, not silent.
+   */
+  acknowledgeNoRetro?: AcknowledgeNoRetro | undefined;
+}
+
+const RETRO_COMMAND_HINT =
+  "npx tsx ./src/admin.ts record-retro --task-id <id> " +
+  "--outcome <memory_promoted|skill_patched|discarded|postmortem_filed|nothing_to_promote> --source orchestrator";
+
+function hasRecordedRetroDecision(tasks: readonly TaskRecord[]): boolean {
+  return tasks.some((task) => {
+    const outcome = task.packet.retroOutcome;
+    // Validate against the actual RETRO_OUTCOME_TOKENS set, not truthy-only —
+    // a stray non-token string (future refactor, manual DB fix, copy-paste bug
+    // in some other updateTask call site) must not silently satisfy this
+    // governance gate (PR #163 round-2 review finding #2).
+    return typeof outcome === "string" && RETRO_OUTCOME_TOKENS.has(outcome);
+  });
+}
+
+/**
  * Reconcile terminal closure for a run. Fetches per-task evidence, computes the
  * pure plan, prints it, and (only with `confirm`) advances closeable tasks to
  * `done` and seals the run when every task is terminal.
+ *
+ * Sealing is gated on a real, auditable retro decision (auditP3RetroLoop fix
+ * #1): at least one task in the run must carry a `packet.retroOutcome` recorded
+ * via `record-retro`, or the caller must pass an explicit `acknowledgeNoRetro`
+ * reason. This is the one concrete chokepoint this module already owns — it is
+ * intentionally NOT wired into the universal per-task workflow-proof check or
+ * task-activation flow, which would retroactively block every other in-flight
+ * task across the repo that has never recorded a retro decision.
  */
 export async function reconcileRunClosure(
   runId: string,
   confirm: boolean,
-  deps: CloseRunDeps
+  deps: CloseRunDeps,
+  options?: ReconcileRunClosureOptions
 ): Promise<CloseRunResult> {
   const snapshot = await deps.getStatusSnapshot(runId);
 
@@ -143,23 +185,57 @@ export async function reconcileRunClosure(
   }
 
   let sealedRun = false;
+  // Retro decision recorded on ANY task in this run counts (an initiative
+  // typically closes with one retro pass covering the whole run's slice).
+  let retroBlocked = false;
+  let retroAcknowledgedReason: string | undefined;
   // Idempotent: only seal a run that is not already terminal — re-running
   // close-run on a fully-closed run must not re-write the run or re-fire the
   // sealed hook.
   if (plan.sealRun && snapshot.run.status !== "done") {
-    await deps.updateRun({ ...snapshot.run, status: "done", updatedAt: deps.now() });
-    sealedRun = true;
-    if (deps.onRunSealed) {
-      // A sealed run means every task in it is terminal; the full key set is what
-      // the pointer clear matches against (cross-run stale-pointer case).
-      const sealedTaskKeys = snapshot.tasks.map((task) => task.packet.taskId);
-      await deps.onRunSealed(runId, sealedTaskKeys);
+    const acknowledge = options?.acknowledgeNoRetro;
+    const retroRecorded = hasRecordedRetroDecision(snapshot.tasks);
+    if (!retroRecorded && (!acknowledge || acknowledge.reason.trim().length === 0)) {
+      // Real, auditable gate (auditP3RetroLoop fix #1): do NOT seal. No task in
+      // this run has a recorded retro decision, and no (non-empty) explicit
+      // acknowledgement was supplied — there is no silent bypass.
+      retroBlocked = true;
+    } else {
+      if (!retroRecorded && acknowledge) {
+        retroAcknowledgedReason = acknowledge.reason;
+      }
+      await deps.updateRun({ ...snapshot.run, status: "done", updatedAt: deps.now() });
+      sealedRun = true;
+      if (deps.onRunSealed) {
+        // A sealed run means every task in it is terminal; the full key set is what
+        // the pointer clear matches against (cross-run stale-pointer case).
+        const sealedTaskKeys = snapshot.tasks.map((task) => task.packet.taskId);
+        await deps.onRunSealed(runId, sealedTaskKeys);
+      }
     }
   }
 
   deps.writeLine(`  advanced ${plan.closeable.length} task(s) to done.`);
   if (sealedRun) {
+    if (retroAcknowledgedReason !== undefined) {
+      deps.writeLine(`  retro gap acknowledged: ${retroAcknowledgedReason}`);
+    }
     deps.writeLine("  sealed the run (status → done).");
+    // Learning loop (audit F5): a sealed run is an initiative-closure moment —
+    // nudge the operator to run the retro before the next initiative so the
+    // learning compounds instead of being lost. Emitted only on an actual seal
+    // (sealedRun === true), never on dry-run or an already-sealed re-run.
+    deps.writeLine(
+      `  next: run \`${RETRO_COMMAND_HINT}\` to record the promotion decision ` +
+        "(repo facts → .archon/memory/, process lessons → /archon-skill-evolution, or an explicit " +
+        "\"nothing to promote\") before starting the next initiative."
+    );
+  } else if (retroBlocked) {
+    deps.writeLine("  BLOCKED: no task in this run has recorded a retro decision (packet.retroOutcome).");
+    deps.writeLine(`  next: run \`${RETRO_COMMAND_HINT}\` first,`);
+    deps.writeLine(
+      "  or re-run close-run with --acknowledge-no-retro \"<reason>\" to explicitly acknowledge the gap (no silent bypass)."
+    );
   } else if (plan.sealRun) {
     deps.writeLine("  run already sealed.");
   } else {
@@ -188,7 +264,8 @@ export interface CloseAllRunsResult {
 export async function reconcileAllRuns(
   runIds: readonly string[],
   confirm: boolean,
-  deps: CloseRunDeps
+  deps: CloseRunDeps,
+  options?: ReconcileRunClosureOptions
 ): Promise<CloseAllRunsResult> {
   const results: CloseAllRunsResult["results"] = [];
   let sealedCount = 0;
@@ -196,7 +273,7 @@ export async function reconcileAllRuns(
   let advancedCount = 0;
   deps.writeLine(`close-run --all: ${confirm ? "CONFIRM" : "DRY-RUN"} over ${runIds.length} non-terminal run(s)`);
   for (const runId of runIds) {
-    const result = await reconcileRunClosure(runId, confirm, deps);
+    const result = await reconcileRunClosure(runId, confirm, deps, options);
     const advanced = result.plan.closeable.length;
     results.push({ runId, sealedRun: result.sealedRun, advanced });
     if (result.sealedRun) sealedCount += 1;

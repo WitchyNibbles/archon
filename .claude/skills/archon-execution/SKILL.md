@@ -19,6 +19,7 @@ Goal: ship the smallest clean increment without bypassing gates.
 8. The manager persists review gate files under `.archon/work/reviews/` (naming `review-<task-id>-<role>.md`, structure per `.archon/templates/review-gate.md`) when the reviewer roles are read-only — evidence layer only; runtime records remain the completion authority.
 9. Run the canonical workflow check `npx tsx ./src/admin.ts workflow-proof --run-id latest --task-id <task-id>` before claiming the substantive slice is complete (`bash scripts/check-archon-workflow-live.sh [--task-id <task-id>]` is the documented local-live alias).
 10. Promote only reviewed durable memory.
+11. At slice close (gates passed), run `/archon-retro` to record the promotion decision — repo facts to `.archon/memory/`, process lessons to `/archon-skill-evolution`, or an explicit "nothing to promote".
 
 ## Agent routing
 

@@ -1,6 +1,6 @@
 /**
  * Regression tests for closureLoop bug 3 + the --confirm/--apply alias paper cut
- * (audit auditDebt202607).
+ * (audit auditDebt202607, PR #154).
  *
  * Bug 3: close-run's onRunSealed cleared the dangling active-task pointer only
  * when the pointer's run == the sealed run. When a duplicate had moved the pointer
@@ -10,6 +10,10 @@
  *
  * Paper cut: close-run (--confirm) and reconcile-runtime-state (--apply) now
  * accept BOTH mutate flags (alias, no break).
+ *
+ * Split from tests/close-run-pointer-clear.test.ts (auditP3RetroLoop review
+ * finding — this file previously bundled these PR #154 tests with the unrelated
+ * retro-nudge/seal-gate tests, which now live in tests/close-run-retro-gate.test.ts).
  */
 
 import test from "node:test";
@@ -116,7 +120,11 @@ function task(id: string, status: TaskRecord["status"]): TaskRecord {
       securityChecks: [],
       antiPatterns: [],
       rollbackNotes: "",
-      handoffFormat: ""
+      handoffFormat: "",
+      // Recorded so this test seals purely on task-terminality, independent of
+      // the retro-required seal gate (auditP3RetroLoop fix #1) — that gate has
+      // its own dedicated coverage in tests/close-run-retro-gate.test.ts.
+      retroOutcome: "nothing_to_promote"
     }
   };
 }

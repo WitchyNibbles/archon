@@ -37,6 +37,7 @@ import { resolveArchonContextPolicy } from "./runtime/context-budget.ts";
 import { PostgresStore } from "./store/postgres-store.ts";
 import { initTaskCommand } from "./admin/init-task.ts";
 import { recordCouncilCommand } from "./admin/record-council.ts";
+import { recordRetroCommand } from "./admin/record-retro.ts";
 import { pruneOrphansCommand } from "./admin/prune-orphans.ts";
 import { sweepOrphansCommand } from "./admin/sweep-orphans.ts";
 import { reconcileRunClosure, reconcileAllRuns, shouldClearDanglingActiveTaskPointer, isMutateConfirmed } from "./admin/close-run.ts";
@@ -71,8 +72,9 @@ export * from "./daemon.ts";
  *   - Unknown (fall through to dispatch so "Unknown command" shows, not a
  *     spurious config error).
  *
- * "init-task" and "record-council" need both a DB connection AND a project
- * identity to record workflow state — add ARCHON_PROJECT_SLUG for those.
+ * "init-task", "record-council", and "record-retro" need both a DB connection
+ * AND a project identity to record workflow state — add ARCHON_PROJECT_SLUG
+ * for those.
  */
 const COMMAND_REQUIRED = new Map<string, readonly (keyof ArchonConfig)[]>([
   // DB-backed commands — require a live postgres connection
@@ -126,6 +128,7 @@ const COMMAND_REQUIRED = new Map<string, readonly (keyof ArchonConfig)[]>([
   // Project-identity commands — also need ARCHON_PROJECT_SLUG
   ["init-task",               ["ARCHON_CORE_DATABASE_URL", "ARCHON_PROJECT_SLUG"]],
   ["record-council",          ["ARCHON_CORE_DATABASE_URL", "ARCHON_PROJECT_SLUG"]],
+  ["record-retro",            ["ARCHON_CORE_DATABASE_URL", "ARCHON_PROJECT_SLUG"]],
 ]);
 
 async function main() {
@@ -350,6 +353,14 @@ async function main() {
     return;
   }
 
+  if (command === "record-retro") {
+    await recordRetroCommand(args, {
+      withClient: (fn) => withClient((client) => fn(client)),
+      createStore: (client) => new PostgresStore(client as ConstructorParameters<typeof PostgresStore>[0])
+    });
+    return;
+  }
+
   if (command === "prune-orphans") {
     await withClient(async (client) => {
       const { mkdir, writeFile } = await import("node:fs/promises");
@@ -433,6 +444,14 @@ async function main() {
     if (runIdFlagIdx !== -1 && (runIdArg === undefined || runIdArg.startsWith("--"))) {
       throw new Error("close-run: --run-id requires a value (a run id or 'latest')");
     }
+    // Explicit escape hatch for the retro-required seal gate (auditP3RetroLoop
+    // fix #1) — requires a non-empty reason; there is no flag-only silent bypass.
+    const ackFlagIdx = args.indexOf("--acknowledge-no-retro");
+    const ackReasonArg = ackFlagIdx !== -1 ? args[ackFlagIdx + 1] : undefined;
+    if (ackFlagIdx !== -1 && (ackReasonArg === undefined || ackReasonArg.startsWith("--") || ackReasonArg.trim().length === 0)) {
+      throw new Error("close-run: --acknowledge-no-retro requires a non-empty reason string");
+    }
+    const reconcileOptions = ackReasonArg !== undefined ? { acknowledgeNoRetro: { reason: ackReasonArg } } : undefined;
     await withClient(async (client) => {
       const store = new PostgresStore(client as ConstructorParameters<typeof PostgresStore>[0]);
       const service = new ArchonCoreService(store);
@@ -478,7 +497,7 @@ async function main() {
         const candidateRunIds = runs
           .filter((run) => !TERMINAL_RUN_STATUSES.has(run.status))
           .map((run) => run.id);
-        await reconcileAllRuns(candidateRunIds, confirm, closeRunDeps);
+        await reconcileAllRuns(candidateRunIds, confirm, closeRunDeps, reconcileOptions);
         return;
       }
 
@@ -490,7 +509,7 @@ async function main() {
       if (!runId) {
         throw new Error("close-run: could not resolve a run — pass --run-id <id> or set ARCHON_PROJECT_SLUG");
       }
-      await reconcileRunClosure(runId, confirm, closeRunDeps);
+      await reconcileRunClosure(runId, confirm, closeRunDeps, reconcileOptions);
     });
     return;
   }
