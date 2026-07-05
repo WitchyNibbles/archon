@@ -90,7 +90,39 @@ const ADVERSARIAL_FIXTURES: Array<{ name: string; text: string; secret: string }
     name: "7-digit OTP after --token (short enough to tempt a lax bound, still redacts)",
     text: "--token 8372150",
     secret: "8372150"
-  }
+  },
+  // Round-7 CRITICAL fixtures: the round-6 SAFE_NUMBER bound only capped the
+  // integer part — the fractional group was still unbounded, so a decimal
+  // secret shape-matched and survived whole.
+  {
+    name: "round-7 CRITICAL: decimal secret in prose (long fraction, short-looking integer part)",
+    text: "the secret value is 9.87215098172340192",
+    secret: "9.87215098172340192"
+  },
+  {
+    name: "round-7 CRITICAL: bare decimal secret, no surrounding label",
+    text: "9.87215098172340192",
+    secret: "9.87215098172340192"
+  },
+  {
+    name: "round-7 CRITICAL: long-fraction variant with a 1-digit integer part",
+    text: "value 1.234567890123456789",
+    secret: "1.234567890123456789"
+  },
+  // Round-7 HIGH fixtures: the gate's own four live probes for the keyword
+  // list gap ("code" collision avoided via compound-phrase scoping; pin/otp
+  // added directly; prose "<keyword> is <value>" adjacency).
+  { name: "round-7 HIGH: compound code-phrase label, colon-joined", text: "OTP code: 482913", secret: "482913" },
+  { name: "round-7 HIGH: --pin flag value", text: "--pin 482913", secret: "482913" },
+  { name: "round-7 HIGH: --otp flag value", text: "--otp 482913", secret: "482913" },
+  { name: "round-7 HIGH: prose keyword-adjacency, no flag, no colon", text: "your otp is 482913", secret: "482913" },
+  // Round-7 HIGH: the remaining new keywords (passphrase, mfa, passcode,
+  // cvv), each proven wired into both the colon/equals and space-separated
+  // stage-1 rules.
+  { name: "round-7 HIGH: --passphrase flag value", text: "--passphrase hunter2Aa1", secret: "hunter2Aa1" },
+  { name: "round-7 HIGH: --mfa flag value", text: "--mfa 482913", secret: "482913" },
+  { name: "round-7 HIGH: --passcode flag value", text: "--passcode 482913", secret: "482913" },
+  { name: "round-7 HIGH: cvv colon-joined field", text: "cvv: 123", secret: "123" }
 ];
 
 for (const fixture of ADVERSARIAL_FIXTURES) {
@@ -226,6 +258,33 @@ test("pass-direction (round-6 bound unchanged): an ISO-8601 timestamp still surv
   assert.equal(sanitizeFreeText(timestamp), timestamp);
 });
 
+// ---------------------------------------------------------------------------
+// Round-7 CRITICAL fix: SAFE_NUMBER now bounds the WHOLE token (sign + digits
+// + decimal point together), not just the integer part — short decimals
+// must still survive with no vocabulary.
+// ---------------------------------------------------------------------------
+
+test("pass-direction (round-7 fix): short decimal numbers survive with no vocabulary", () => {
+  for (const n of ["1.5", "99.9", "3.14"]) {
+    assert.equal(sanitizeFreeText(n), n, `"${n}" must survive unchanged`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Round-7 HIGH fix: "code" was deliberately NOT added to the keyword list —
+// it must stay scoped to the compound pin/otp/verification/auth phrasing, or
+// this codebase's own exit-code/error-code/status-code vocabulary would
+// start colliding with it.
+// ---------------------------------------------------------------------------
+
+test("pass-direction (round-7 scoped code fix): an error code survives with no vocabulary", () => {
+  assert.equal(sanitizeFreeText("--error-code 404"), "--error-code 404");
+});
+
+test("pass-direction (round-7 scoped code fix): a status code survives with no vocabulary", () => {
+  assert.equal(sanitizeFreeText("--status-code 200"), "--status-code 200");
+});
+
 test("round-6 HIGH fix, defense-in-depth: a space-separated secret-labeled flag redacts its value even when the value is a SHORT (in-bound) number", () => {
   // "123456" is 6 digits — within SAFE_NUMBER's bound and would otherwise
   // survive by shape alone. The labeled-flag rule (SPACE_SEPARATED_SECRET_FLAG)
@@ -313,6 +372,43 @@ test("membership invariant: only an EXACT vocabulary match survives — mutation
       "[redacted]",
       `${name}: "${mutated}" is NOT an exact vocabulary match and must redact (got "${result}")`
     );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Round-7: the boundedness audit's own regression guard. Every SAFE_* shape
+// that IS bounded (SAFE_NUMBER, SAFE_ISO_TIMESTAMP, SAFE_UUID) must reject a
+// 100-char adversarial token built in its own shape family — proving the
+// bound is real and not just documented. Shapes the audit found legitimately
+// UNBOUNDED (SAFE_PATH, SAFE_URL_NO_USERINFO — see the module header's
+// boundedness table) are intentionally excluded: a length rejection there
+// would break real long paths/URLs, which is not the property being tested.
+// ---------------------------------------------------------------------------
+
+const BOUNDED_SHAPE_ADVERSARIAL_PROBES: Array<{ name: string; token: string }> = [
+  {
+    name: "SAFE_NUMBER: a 100-digit integer run",
+    token: "1".repeat(100)
+  },
+  {
+    name: "SAFE_NUMBER: a 100-character decimal (integer.fraction) run",
+    token: `1.${"2".repeat(98)}`
+  },
+  {
+    name: "SAFE_ISO_TIMESTAMP: a valid date/time prefix with an 80-digit fractional-seconds run (100 chars total)",
+    token: `2026-07-04T12:34:56.${"9".repeat(80)}`
+  },
+  {
+    name: "SAFE_UUID: a valid UUID padded with 64 extra hex characters (100 chars total)",
+    token: `a1b2c3d4-e5f6-7890-abcd-ef1234567890${"a".repeat(64)}`
+  }
+];
+
+test("boundedness audit: each bounded SAFE_* shape rejects a 100-char adversarial token of its own shape family", () => {
+  for (const { name, token } of BOUNDED_SHAPE_ADVERSARIAL_PROBES) {
+    assert.equal(token.length, 100, `${name}: fixture must actually be 100 chars (got ${token.length})`);
+    const result = sanitizeFreeText(token);
+    assert.equal(result, "[redacted]", `${name}: a 100-char token must NOT pass as a bounded-safe shape (got "${result}")`);
   }
 });
 

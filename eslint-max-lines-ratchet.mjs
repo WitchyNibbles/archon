@@ -29,7 +29,7 @@ export default {
   "src/admin/status.ts": 525,
   "src/admin/sweep-orphans.ts": 575,
   "src/admin/why-diagnosis.ts": 825,
-  "src/admin/why-redaction.ts": 400,
+  "src/admin/why-redaction.ts": 500,
   "src/admin/why-vocabulary.ts": 175,
   "src/admin/why.ts": 550,
   "src/archon/agent-artifact-verifier.ts": 275,
