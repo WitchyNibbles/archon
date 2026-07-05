@@ -34,7 +34,9 @@ const {
   extractBashWriteTargets,
   validateReviewArtifact,
   parseCouncilReview,
-  isHandoffArtifactPath
+  isHandoffArtifactPath,
+  isDirectDbClientInvocation,
+  hasDbDirectScopeGrant
 } = await import(`${hooksDir}/hook-utils.mjs`);
 const {
   evaluatePreToolUse,
@@ -340,6 +342,152 @@ test("PermissionRequest: read-only Bash referencing .claude/ with no task is not
     bashPayload("cat .claude/settings.json"),
     emptyContext()
   );
+  assert.ok(result === undefined || result.decision !== "deny");
+});
+
+// ─── isDirectDbClientInvocation / hasDbDirectScopeGrant ──────────────────────
+// Audit auditP3Stewards HIGH (security): runtime-medic's "sanctioned admin CLI
+// only, never direct DB writes" boundary was prose-only. These tests prove
+// both directions: the named bypass shape is blocked, and the sanctioned admin
+// CLI (and ordinary read-only commands that merely mention "psql" as text)
+// pass through unaffected.
+
+test("isDirectDbClientInvocation: raw psql UPDATE is detected", () => {
+  assert.equal(
+    isDirectDbClientInvocation('psql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE reviews SET outcome=1"'),
+    true
+  );
+});
+
+test("isDirectDbClientInvocation: psql --version and read-only psql -c \"SELECT 1\" are ALSO detected (documented decision: block psql entirely, not just writes)", () => {
+  assert.equal(isDirectDbClientInvocation("psql --version"), true);
+  assert.equal(isDirectDbClientInvocation('psql -U archon -d archon -tAc "select 1;"'), true);
+});
+
+test("isDirectDbClientInvocation: pg_dump and pg_restore are detected", () => {
+  assert.equal(isDirectDbClientInvocation("pg_dump -U archon archon > backup.sql"), true);
+  assert.equal(isDirectDbClientInvocation("pg_restore -U archon -d archon backup.dump"), true);
+});
+
+test("isDirectDbClientInvocation: wrapped invocation (docker exec ... psql) is detected", () => {
+  assert.equal(
+    isDirectDbClientInvocation('docker exec archon-postgres psql -U archon -d archon -tAc "select 1;"'),
+    true
+  );
+});
+
+test("isDirectDbClientInvocation: psql piped as the second stage of a pipeline is detected", () => {
+  assert.equal(isDirectDbClientInvocation('cat query.sql | psql "$ARCHON_CORE_DATABASE_URL"'), true);
+});
+
+test("isDirectDbClientInvocation: psql wrapped in eval/bash -c is detected", () => {
+  assert.equal(isDirectDbClientInvocation("eval \"psql -c 'select 1'\""), true);
+  assert.equal(isDirectDbClientInvocation('bash -c "psql -c \'select 1\'"'), true);
+});
+
+test("isDirectDbClientInvocation: psql inside an executable heredoc body is detected", () => {
+  assert.equal(
+    isDirectDbClientInvocation('bash <<EOF\npsql -c "select 1"\nEOF'),
+    true
+  );
+});
+
+test("isDirectDbClientInvocation: node/npx one-liner requiring 'pg' is detected", () => {
+  assert.equal(isDirectDbClientInvocation("node -e \"require('pg').Client\""), true);
+  assert.equal(isDirectDbClientInvocation('npx -e "import { Client } from \'pg\'"'), true);
+});
+
+test("isDirectDbClientInvocation: sanctioned admin CLI commands are NEVER detected", () => {
+  assert.equal(isDirectDbClientInvocation("npx tsx ./src/admin.ts status --run-id latest"), false);
+  assert.equal(
+    isDirectDbClientInvocation(
+      "ARCHON_CORE_DATABASE_URL=postgresql://x npx tsx src/admin.ts init-task --id foo"
+    ),
+    false
+  );
+  assert.equal(
+    isDirectDbClientInvocation("node --experimental-strip-types src/admin.ts recover --run-id latest"),
+    false
+  );
+  assert.equal(isDirectDbClientInvocation("npx tsx src/admin.ts reconcile-runtime-state --apply"), false);
+});
+
+test("isDirectDbClientInvocation: a mere TEXT MENTION of psql (not an invocation) is NOT detected", () => {
+  assert.equal(isDirectDbClientInvocation('grep -n "psql" .claude/hooks/hook-utils.mjs'), false);
+  assert.equal(isDirectDbClientInvocation("cat migration.sql"), false);
+  assert.equal(isDirectDbClientInvocation('echo "run psql to inspect the db"'), false);
+});
+
+test("isDirectDbClientInvocation: node -e with no 'pg' reference is NOT detected", () => {
+  assert.equal(isDirectDbClientInvocation('node -e "console.log(1)"'), false);
+});
+
+test("isDirectDbClientInvocation: ordinary non-DB commands are NOT detected", () => {
+  assert.equal(isDirectDbClientInvocation("npm test"), false);
+  assert.equal(isDirectDbClientInvocation("npm run build:dist && npm test"), false);
+  assert.equal(isDirectDbClientInvocation("npx tsc --noEmit"), false);
+});
+
+test("hasDbDirectScopeGrant: true only when the literal `db_direct` marker is present", () => {
+  assert.equal(hasDbDirectScopeGrant(["db_direct"]), true);
+  assert.equal(hasDbDirectScopeGrant(["src/archon", "db_direct", "tests"]), true);
+  assert.equal(hasDbDirectScopeGrant([]), false);
+  assert.equal(hasDbDirectScopeGrant(["src/archon"]), false);
+  assert.equal(hasDbDirectScopeGrant(undefined), false);
+});
+
+test("evaluatePreToolUse: raw psql UPDATE with no active task is blocked", () => {
+  const result = evaluatePreToolUse(
+    bashPayload('psql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE reviews SET outcome=1"'),
+    emptyContext()
+  );
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+  assert.match(result.reason, /direct database-client invocation/i);
+});
+
+test("evaluatePreToolUse: sanctioned admin CLI command is NOT blocked by the DB-direct gate", () => {
+  const result = evaluatePreToolUse(
+    bashPayload("npx tsx ./src/admin.ts status --run-id latest"),
+    emptyContext()
+  );
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePreToolUse: psql is allowed when the task packet grants `db_direct` scope", () => {
+  const ctx = contextWithScope("db_direct");
+  const result = evaluatePreToolUse(bashPayload('psql -c "select 1"'), ctx);
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePreToolUse: an unrelated grant (e.g. src/archon) does NOT satisfy the db_direct gate", () => {
+  const ctx = contextWithScope("src/archon");
+  const result = evaluatePreToolUse(bashPayload('psql -c "select 1"'), ctx);
+  assert.ok(result);
+  assert.equal(result.decision, "block");
+});
+
+test("evaluatePreToolUse: read-only grep for the word psql is NOT blocked (normal workflow preserved)", () => {
+  const result = evaluatePreToolUse(
+    bashPayload('grep -rn "psql" .claude/hooks/hook-utils.mjs'),
+    emptyContext()
+  );
+  assert.ok(result === undefined || result.decision !== "block");
+});
+
+test("evaluatePermissionRequest: raw psql UPDATE approval request with no task is denied", () => {
+  const result = evaluatePermissionRequest(
+    bashPayload('psql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE reviews SET outcome=1"'),
+    emptyContext()
+  );
+  assert.ok(result);
+  assert.equal(result.decision, "deny");
+  assert.match(result.reason, /direct database-client invocation/i);
+});
+
+test("evaluatePermissionRequest: psql approval request is allowed with `db_direct` scope granted", () => {
+  const ctx = contextWithScope("db_direct");
+  const result = evaluatePermissionRequest(bashPayload('psql -c "select 1"'), ctx);
   assert.ok(result === undefined || result.decision !== "deny");
 });
 

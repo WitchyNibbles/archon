@@ -1193,6 +1193,105 @@ export function isManagedPrefixPartiallyAllowed(managedPrefix, allowedWriteScope
   });
 }
 
+// ---------------------------------------------------------------------------
+// Direct DB-client invocation gate (audit auditP3Stewards, security HIGH)
+//
+// runtime-medic's repair-authority boundary ("sanctioned admin CLI only, never
+// direct DB writes") was prose-only: the Bash gate had zero awareness of
+// DB-client processes, so a raw `psql "$ARCHON_CORE_DATABASE_URL" -c "UPDATE
+// reviews ..."` bypassed the review-identity adapter completely undetected —
+// and since ARCHON_CORE_DATABASE_URL is routinely in-session for the
+// sanctioned admin commands too, this was reachable by any agent, not only
+// runtime-medic.
+//
+// DECISION (documented, not a perfect boundary): block EVERY direct
+// invocation of psql / pg_dump / pg_restore, and the cheap `node -e
+// "require('pg')..."` / `npx -e ...` one-liner shape, regardless of read vs
+// write intent. Sniffing the SQL statement for read/write is fragile
+// (multi-statement bodies, `\i file.sql`, a script-wrapped `-c`, …) and misses
+// the point anyway: the sanctioned admin CLI (`npx tsx ./src/admin.ts
+// <command>`) is the ONLY route runtime-medic's contract permits for ANY DB
+// interaction — read or write — so a blanket block is the simpler AND more
+// defensible policy, not a narrower "block writes only" carve-out. The
+// sanctioned admin CLI never invokes psql/pg_dump/pg_restore and never
+// contains a bare `require('pg')`/`from 'pg'` reference in the Bash-visible
+// command string (it imports the 'pg' package internally in TypeScript
+// source, not from the shell command line), so it is never caught here.
+//
+// Detection scans the same three surfaces extractBashReferencedManagedPaths
+// already scans for managed-path writes (reused here for parity): (1) each
+// top-level pipeline segment's command word, quote-masked so a MENTION of the
+// word (e.g. `grep -n "psql" foo.sh`) is not a match while an unquoted
+// invocation (including wrapped forms like `docker exec pg-container psql
+// ...`) is; (2) executable heredoc bodies (`bash <<EOF` / `psql ...` / `EOF`);
+// (3) `eval`/`sh -c`/`bash -c` string payloads.
+//
+// Bypass: a task packet that genuinely needs direct DB access adds the
+// literal marker `db_direct` to its `## Allowed write scope` section —
+// mirrors how a managed control-layer PATH is explicitly granted today
+// (isManagedPathAllowed), just with a non-path token instead of a path.
+//
+// ACCEPTED LIMITATION (stated, not hidden): this is friction/telemetry
+// hardening per the layered-defense stance, not a complete boundary. An
+// interpreter that builds the psql/pg invocation dynamically, reads it from a
+// file, or otherwise keeps the token out of the Bash-visible command string
+// is not caught. It closes the cheap, easily-fingerprinted path named in the
+// finding — nothing more is claimed.
+const directDbClientWordPatterns = [/\bpsql\b/, /\bpg_dump\b/, /\bpg_restore\b/];
+// Checked UNMASKED (unlike the patterns above) — the quoted `'pg'`/`"pg"`
+// string is itself the signal for a require()/import of the 'pg' package, so
+// masking quotes would hide the exact thing being detected.
+const nodeInlineEvalFlagPattern = /\b(?:node|npx)\b[^\n]*\s(?:-e|-p|--eval|--print)\b/;
+const pgPackageReferencePattern = /require\(\s*['"]pg['"]\s*\)|from\s+['"]pg['"]/;
+
+function textLooksLikeDirectDbClientInvocation(text) {
+  if (typeof text !== "string" || text.length === 0) {
+    return false;
+  }
+  const segments = splitBashSegments(text)
+    .map((segment) => stripIoDiscardRedirects(segment).trim())
+    .filter(Boolean);
+  if (
+    segments.some((segment) => {
+      const masked = maskQuotedSpans(segment);
+      return directDbClientWordPatterns.some((pattern) => pattern.test(masked));
+    })
+  ) {
+    return true;
+  }
+  return nodeInlineEvalFlagPattern.test(text) && pgPackageReferencePattern.test(text);
+}
+
+export function isDirectDbClientInvocation(command) {
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return false;
+  }
+  if (textLooksLikeDirectDbClientInvocation(stripHeredocBodies(command))) {
+    return true;
+  }
+  for (const body of extractExecutableHeredocBodies(command)) {
+    if (textLooksLikeDirectDbClientInvocation(body)) {
+      return true;
+    }
+  }
+  for (const payload of extractShellStringPayloads(command)) {
+    if (textLooksLikeDirectDbClientInvocation(payload)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The `db_direct` scope marker is a non-path token in `## Allowed write
+// scope` (parallel to a managed control-layer PATH grant) — its literal
+// presence, not path-matching, opts a task into direct DB access for this gate.
+export function hasDbDirectScopeGrant(allowedWriteScope) {
+  return (
+    Array.isArray(allowedWriteScope) &&
+    allowedWriteScope.some((scope) => typeof scope === "string" && scope.trim() === "db_direct")
+  );
+}
+
 export function isTaskPacketPath(relativePath) {
   const normalized = normalizePath(relativePath);
   return normalized.startsWith(".archon/work/tasks/task-") && normalized.endsWith(".md");

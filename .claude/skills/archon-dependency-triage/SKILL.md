@@ -40,15 +40,21 @@ accepted with a named owner and an expiry date (no-buts bar).
 
 ## Cadence hook
 
-This routine is meant to run on a schedule, not only reactively. An operator or the
-autonomy loop triggers it by:
+This routine is designed to run on a recurring cadence, not only reactively — but
+that cadence is currently a **proposed** trigger, not a scheduled one: no
+`.github/workflows/` job exists yet to fire it automatically. Until one is added,
+trigger it by:
 
 - **Manual / operator:** invoke `/archon-dependency-triage` and run the procedure; land
-  the disposition set in the debt notes.
-- **Cron / scheduled:** a weekly (or per-release) job runs `npm audit` + `npm outdated`
-  and, on any new `high`/`critical` advisory or expired accept, opens a queue item that
-  routes here. The daemon/autonomy loop may surface the same trigger when it observes a
-  new advisory during a run.
+  the disposition set in the debt notes. This is the only trigger path today.
+- **Autonomy loop (opportunistic):** the daemon/autonomy loop may surface the same
+  trigger when it observes a new advisory during a run, routing here the same as a
+  manual invocation.
+- **Future — scheduled (proposed, not yet implemented):** a weekly (or per-release)
+  GitHub Actions job running `npm audit` + `npm outdated` and opening a queue item on
+  any new `high`/`critical` advisory or expired accept would close the gap between
+  "designed for a cadence" and "actually scheduled." Adding that workflow is a
+  separate, deliberately small follow-up — not bundled into this skill file.
 
 Whichever fires it, the output is the same: an updated block/schedule/accept set with
 owners and expiries.

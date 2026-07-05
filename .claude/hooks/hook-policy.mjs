@@ -7,8 +7,10 @@ import {
   extractBashWriteTargets,
   extractToolCommand,
   getBashExitCode,
+  hasDbDirectScopeGrant,
   isAllowedPath,
   isDestructiveCommand,
+  isDirectDbClientInvocation,
   isManagedPath,
   isManagedPathAllowed,
   isManagedPrefixPartiallyAllowed,
@@ -151,6 +153,17 @@ export function evaluatePermissionRequest(payload, context) {
     return { decision: "deny", reason: "destructive approval request blocked by archon policy" };
   }
 
+  // Audit auditP3Stewards HIGH (security): mirror the PreToolUse gate on the
+  // approval-request path so a direct DB-client invocation cannot slip
+  // through by requesting approval instead of calling Bash directly.
+  if (isDirectDbClientInvocation(command) && !hasDbDirectScopeGrant(context.allowedWriteScope)) {
+    return {
+      decision: "deny",
+      reason:
+        "approval request for a direct database-client invocation (psql/pg_dump/pg_restore, or a node/npx one-liner importing 'pg') is blocked outside a `db_direct` write-scope grant"
+    };
+  }
+
   const managedTarget = extractBashReferencedManagedPaths(command, context.repoRoot).find(
     (target) => !isManagedPrefixPartiallyAllowed(target, context.allowedWriteScope)
   );
@@ -229,6 +242,21 @@ export function evaluatePreToolUse(payload, context) {
   if (toolName === "Bash") {
     if (isDestructiveCommand(command)) {
       return { decision: "block", reason: "destructive shell command blocked by archon policy" };
+    }
+
+    // Audit auditP3Stewards HIGH (security): direct DB-client invocations
+    // (psql/pg_dump/pg_restore, or the cheap node/npx one-liner shape) bypass
+    // the review-identity adapter and every gate-write invariant undetected.
+    // Blocked unconditionally unless the active task packet carries the
+    // `db_direct` scope marker (see isDirectDbClientInvocation's doc comment
+    // in hook-utils.mjs for the full decision record). The sanctioned admin
+    // CLI (`npx tsx ./src/admin.ts <command>`) is never caught by this check.
+    if (isDirectDbClientInvocation(command) && !hasDbDirectScopeGrant(context.allowedWriteScope)) {
+      return {
+        decision: "block",
+        reason:
+          "direct database-client invocation (psql/pg_dump/pg_restore, or a node/npx one-liner importing 'pg') is blocked outside a `db_direct` write-scope grant — route ALL database interaction through the sanctioned admin CLI (npx tsx ./src/admin.ts <command>) instead. If a task genuinely requires direct DB access, add `db_direct` to its ## Allowed write scope."
+      };
     }
 
     const managedTarget = extractBashReferencedManagedPaths(command, context.repoRoot).find(

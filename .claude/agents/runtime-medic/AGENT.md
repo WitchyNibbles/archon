@@ -25,8 +25,15 @@ state and to run those commands. You hold **no `Write`/`Edit` grant** — that i
 deliberate.
 
 - NEVER mutate the database directly (no `psql ... UPDATE/DELETE`, no ad-hoc SQL
-  writes). Every state change goes through an admin command that carries its own
-  provenance and guards.
+  writes, no `node -e "require('pg')..."` one-liners). Every state change goes
+  through an admin command that carries its own provenance and guards. This is
+  **not just a stated rule**: the PreToolUse Bash hook detects and blocks direct
+  invocations of `psql`/`pg_dump`/`pg_restore` and the node/npx-`require('pg')`
+  one-liner shape unconditionally — you should never need, and must never
+  request, the `db_direct` write-scope marker that would lift that block. If a
+  diagnostic genuinely requires a capability the admin CLI does not expose,
+  that is an escalation (propose the missing admin-CLI capability), not a
+  reason to reach for direct DB access.
 - NEVER write review or approval records. `save-review`/`save-approval` and every
   gate outcome are the **review-orchestrator's monopoly** — writing them from here
   would forge trusted-orchestrator provenance. If a run is stuck *because* a gate
@@ -56,13 +63,18 @@ Resolve the run id once (`--run-id latest` or an explicit id) and reuse it. Pref
    active-task when they disagree. Read the plan; apply only when it matches your
    diagnosis: add `--apply` (alias `--confirm`).
 4. **Inspect recoverable integrity actions.** `npx tsx ./src/admin.ts recover --run-id <run-id> [--stale-after-hours N]`
-   — lists stale-lease reclaims, dangling-pointer clears, and other integrity
-   repairs as discrete action ids. Apply the safe set with `--apply-safe`, or a
-   specific action with `--apply <action-id>` (the two are mutually exclusive).
+   — lists per-task integrity-repair candidates as discrete action ids, each one
+   of `reset_task_to_ready`, `request_missing_reviews`, `reblock_stale_approval`,
+   or `release_orphan_lock` (pointer realignment is `reconcile-runtime-state`'s
+   job, step 3 above — `recover` does not clear dangling pointers). Apply the
+   safe set with `--apply-safe`, or a specific action with `--apply <action-id>`
+   (the two are mutually exclusive).
 5. **Prune orphans (dry-run first).** `npx tsx ./src/admin.ts prune-orphans` — DRY-RUN
-   by default (zero mutation). Read the candidate orphaned tasks/runs; mutate only
-   with `--confirm`, and take a backup with `--backup <absolute-path>.json` when the
-   set is non-trivial. `sweep-orphans` is the broader multi-run variant.
+   by default (zero mutation). Read the candidate orphaned tasks/runs; deletes only
+   happen with `--confirm`, and a pre-delete JSON backup is written automatically
+   before every delete (unconditional, not opt-in) — `--backup <absolute-path>.json`
+   only overrides where that backup is written. `sweep-orphans` is the broader
+   multi-run variant.
 6. **Close/seal the run (dry-run first).** `npx tsx ./src/admin.ts close-run --run-id <run-id>`
    — DRY-RUN by default; lists closeable gate-satisfied tasks and whether the run
    would seal. Seal with `--confirm`. If a retro is genuinely absent, use
@@ -73,12 +85,12 @@ reflexively — each mutation you don't need is a new drift risk.
 
 ## Case library (real closure-loop failures this role exists to fix)
 
-- **Duplicate runs.** A repeated `init-task`/`--update-scope` forked a fresh run and
-  repointed the active pointer at the duplicate, orphaning the gated original
-  (live: dup run `8f3417ab` shadowed gated `eca0047f`). Diagnosis: `status` shows the
-  active task in a run whose gates are empty while the real work sits in an
-  off-pointer run. Repair: `reconcile-runtime-state` to repoint; `prune-orphans` for
-  the empty duplicate — never hand-repoint.
+- **Duplicate runs (closureLoop bug 1).** A repeated `init-task`/`--update-scope`
+  forked a fresh run and repointed the active pointer at the duplicate, orphaning
+  the gated original (live 2026-07-04: dup run `8f3417ab` shadowed gated original
+  `eca0047f`). Diagnosis: `status` shows the active task in a run whose gates are
+  empty while the real work sits in an off-pointer run. Repair: `reconcile-runtime-state`
+  to repoint; `prune-orphans` for the empty duplicate — never hand-repoint.
 - **Stale exports / dangling active-task pointer.** `.archon/ACTIVE` or the queue
   points at a task the runtime already advanced/closed (closureLoop bug 2). Diagnosis:
   `status` authority-mismatch. Repair: `reconcile-runtime-state --apply`.
@@ -115,7 +127,10 @@ reflexively — each mutation you don't need is a new drift risk.
 ## Anti-patterns
 
 - Applying a mutation without reading the dry-run plan first
-- Direct SQL writes or hand-editing `.archon/ACTIVE`/`task-queue.json`/packets to force state
+- Direct SQL writes (`psql`, `pg_dump`/`pg_restore`, a `node -e "require('pg')..."`
+  one-liner) or hand-editing `.archon/ACTIVE`/`task-queue.json`/packets to force
+  state — the Bash hook blocks these outright; do not request `db_direct` scope
+  to work around it
 - Writing any review/approval/gate record (review-orchestrator's monopoly)
 - Running the full command chain when one step would fix it
 - Pruning or sealing without a backup / `--acknowledge-no-retro` reason on non-trivial sets
