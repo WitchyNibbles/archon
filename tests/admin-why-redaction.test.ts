@@ -5,7 +5,8 @@ import {
   sanitizeFreeText,
   truncateForDisplay,
   sanitizeForDisplay,
-  tokenizeToVocabulary
+  tokenizeToVocabulary,
+  MAX_SANITIZE_INPUT_LENGTH
 } from "../src/admin/why-redaction.ts";
 
 // ---------------------------------------------------------------------------
@@ -218,24 +219,29 @@ test("pass-direction: a task id after a space-separated CLI flag survives when f
   // shape — it needs vocabulary backing. In real usage `tokenizeToVocabulary`
   // adds it as ONE WHOLE STRING (it contains no whitespace) straight from the
   // literal `RECOMMENDED_COMMANDS` template that produced this exact line, so
-  // it is included here as a whole-string entry, not per-segment.
-  const vocabulary = new Set(["npx", "tsx", "./src/admin.ts", "status", taskId]);
+  // it is included here as a whole-string entry, not per-segment. Round-12:
+  // `--task-id` is no longer safe by "no keyword substring" shape alone (the
+  // inversion) — it survives here because it too is a literal token inside
+  // `RECOMMENDED_COMMANDS`'s own templates, exactly like `RECOMMENDED_
+  // COMMANDS`'s real vocabulary already includes it via `buildKnownVocabulary`.
+  const vocabulary = new Set(["npx", "tsx", "./src/admin.ts", "status", "--task-id", taskId]);
   assert.equal(sanitizeFreeText(line, vocabulary), line);
 });
 
-test("pass-direction: a task id after an =-joined CLI flag survives via the flag-value split (round-4 fix, still holds)", () => {
+test("pass-direction: a task id after an =-joined CLI flag survives via the flag-value split when the flag is vocabulary-known", () => {
   const taskId = "auditP3ArchonWhyRepairVerification123456";
   const line = `--task-id=${taskId}`;
-  // No vocabulary needed here: the flag half is always safe, and the value
-  // half is checked independently — but it must still be vouched for.
-  assert.equal(sanitizeFreeText(line, new Set([taskId])), line);
-  assert.notEqual(sanitizeFreeText(line), line, "without the id in vocabulary, the value half redacts");
+  // Round-12: the flag half is no longer safe by shape alone — it must be an
+  // exact `knownSafeTokens` member (as `--task-id` is, via `RECOMMENDED_
+  // COMMANDS`'s own templates in real usage) or a canonical keyword spelling.
+  assert.equal(sanitizeFreeText(line, new Set(["--task-id", taskId])), line);
+  assert.notEqual(sanitizeFreeText(line), line, "without vocabulary backing, the whole token redacts");
 });
 
 test("pass-direction: a recommended-command-shaped line with flags + a vocabulary-known task id survives intact", () => {
   const taskId = "auditP3ArchonWhyRepairVerification123456";
   const line = `npx tsx ./src/admin.ts status --task-id ${taskId}`;
-  assert.equal(sanitizeFreeText(line, new Set(["npx", "tsx", "./src/admin.ts", "status", taskId])), line);
+  assert.equal(sanitizeFreeText(line, new Set(["npx", "tsx", "./src/admin.ts", "status", "--task-id", taskId])), line);
 });
 
 // ---------------------------------------------------------------------------
@@ -426,11 +432,21 @@ test("round-10 MEDIUM: SPACE_SEPARATED_CODE_PHRASE_PATTERN is vocabulary-aware, 
   assert.equal(vocab.endsWith("task-abc123"), true, "a vocabulary-member value survives the space-separated code-phrase rule");
 });
 
-test("round-10 MEDIUM: MYSQL_CONCAT_PASSWORD_FLAG is vocabulary-aware, both directions", () => {
+test("round-10/round-12: MYSQL_CONCAT_PASSWORD_FLAG threads knownSafeTokens at stage 1, but the glued flag+value token is wholesale-redacted at stage 2 either way (round-12 inversion, locked)", () => {
   const noVocab = sanitizeFreeText("mysqldump -ptask-abc123 -u root");
   assert.equal(noVocab.includes("task-abc123"), false, "no vocabulary → the concatenated -p value still redacts");
-  const vocab = sanitizeFreeText("mysqldump -ptask-abc123 -u root", new Set(["task-abc123"]));
-  assert.equal(vocab.includes("-ptask-abc123"), true, "a vocabulary-member value survives mysqldump's concatenated -p flag");
+  // Round-12: `-ptask-abc123` is one GLUED, flag-shaped token — it is not
+  // itself an exact `knownSafeTokens` member and is not a canonical keyword
+  // spelling, so stage 2's positive-match-only rule redacts it WHOLESALE
+  // even when the bare value alone (without the glued "-p") is vocabulary
+  // -known. This is the same accepted trade-off as any other flag with no
+  // canonical spelling — see the module header and design-history's
+  // round-12 entry. Stage 1's vocabulary threading (round-9 fix) still runs
+  // and is still correct at ITS layer; it is simply no longer the deciding
+  // factor for the final rendered output once stage 2 re-evaluates the
+  // resulting flag-shaped token.
+  const vocab = sanitizeFreeText("mysqldump -ptask-abc123 -u root", new Set(["task-abc123", "mysqldump", "-u", "root"]));
+  assert.equal(vocab, "mysqldump [redacted] -u root", "the glued -p flag+value redacts wholesale; surrounding vocabulary-known tokens are unaffected");
 });
 
 // ---------------------------------------------------------------------------
@@ -460,12 +476,22 @@ test("round-10 CRITICAL: hyphen-glued-AFTER variant — the secret trails the ke
   assert.equal(result.includes("secretHere"), false, `the glued-after secret must not survive: ${result}`);
 });
 
-test("round-10 CRITICAL: legitimate long flags with no embedded keyword still survive unchanged", () => {
-  assert.equal(sanitizeFreeText("--experimental-strip-types"), "--experimental-strip-types");
-  assert.equal(sanitizeFreeText("--max-warnings"), "--max-warnings");
-  assert.equal(sanitizeFreeText("--preserve-env"), "--preserve-env");
+test("round-12 CRITICAL (fail-closed inversion): a flag with NO keyword content at all now ALSO redacts by default — only vocabulary or a canonical spelling survives", () => {
+  // Rounds 10-11 trusted any flag body that didn't (recognizably) CONTAIN a
+  // keyword — a fail-OPEN design that each round's gate defeated through a
+  // new recognition gap. Round 12 inverted this: a flag survives only on a
+  // POSITIVE match, so a flag with zero keyword content is no exception.
+  assert.equal(sanitizeFreeText("--experimental-strip-types"), "[redacted]");
+  assert.equal(sanitizeFreeText("--max-warnings"), "[redacted]");
+  assert.equal(sanitizeFreeText("--preserve-env"), "[redacted]");
+  // The escape hatch is unchanged: the SAME vocabulary mechanism every other
+  // structured value already uses.
+  assert.equal(sanitizeFreeText("--experimental-strip-types", new Set(["--experimental-strip-types"])), "--experimental-strip-types");
   assert.equal(
-    sanitizeFreeText("node --experimental-strip-types --test tests/admin-why-redaction.test.ts", new Set(["node", "--test", "tests/admin-why-redaction.test.ts"])),
+    sanitizeFreeText(
+      "node --experimental-strip-types --test tests/admin-why-redaction.test.ts",
+      new Set(["node", "--experimental-strip-types", "--test", "tests/admin-why-redaction.test.ts"])
+    ),
     "node --experimental-strip-types --test tests/admin-why-redaction.test.ts"
   );
 });
@@ -514,9 +540,17 @@ test("round-11 CRITICAL: hyphen-split keyword + all-lowercase, no-digit glued se
   assert.equal(result.includes("hunterbunny"), false, `all-lowercase glued secret survived: ${result}`);
 });
 
-test("round-11 CRITICAL: a bare hyphen-split keyword (no glued content) is still a legitimate flag label", () => {
-  assert.equal(sanitizeFreeText("--pass-word"), "--pass-word");
-  assert.equal(sanitizeFreeText("--to-ken"), "--to-ken");
+test("round-12 (supersedes round-11): a bare hyphen-split keyword is NO LONGER a positive match — it now redacts unless vocabulary-known", () => {
+  // Round 11 treated `--pass-word` as legitimate because SEPARATOR-TOLERANT
+  // RECOGNITION matched it against the keyword list. Round 12's fail-closed
+  // allowlist (`CANONICAL_BARE_SECRET_KEYWORD_FLAGS`) is deliberately EXACT,
+  // not separator-tolerant — recognition looseness has no place in a
+  // POSITIVE trust grant (see why-redaction-keywords.ts). `--pass-word` is
+  // not itself a canonical spelling, so it now redacts by default, same as
+  // any other non-canonical flag; it still survives via `knownSafeTokens`.
+  assert.equal(sanitizeFreeText("--pass-word"), "[redacted]");
+  assert.equal(sanitizeFreeText("--to-ken"), "[redacted]");
+  assert.equal(sanitizeFreeText("--pass-word", new Set(["--pass-word"])), "--pass-word");
 });
 
 // ---------------------------------------------------------------------------
@@ -545,10 +579,113 @@ test("round-11 MEDIUM (locked trade-off): benign compound flags with an embedded
   }
 });
 
-test("round-11 MEDIUM (locked trade-off, control): a compound flag with NO embedded keyword substring is unaffected", () => {
-  assert.equal(sanitizeFreeText("--experimental-strip-types"), "--experimental-strip-types");
-  assert.equal(sanitizeFreeText("--max-warnings"), "--max-warnings");
-  assert.equal(sanitizeFreeText("--preserve-env"), "--preserve-env");
+// Round-12 note: the former "control" case here (a compound flag with NO
+// embedded keyword substring surviving unchanged) no longer exists as a
+// distinct behavior — round 12's inversion redacts EVERY non-canonical flag
+// uniformly, keyword-bearing or not. See the round-12 CRITICAL test above
+// (fail-closed inversion) for the current, merged coverage of this case.
+
+// ---------------------------------------------------------------------------
+// Round-12 CRITICAL (finding 1, third recurrence): rounds 10-11 each widened
+// keyword RECOGNITION and each left a bypass. Two-plus separators and an
+// interposed digit defeated round-11's recognition entirely — but under the
+// round-12 fail-closed inversion, a recognition MISS can only cause MORE
+// redaction, never less, so these repros must redact by CONSTRUCTION, not
+// because any particular regex happens to catch them.
+// ---------------------------------------------------------------------------
+
+test("round-12 CRITICAL: double-separator and digit-interposed keyword splits redact in flag position", () => {
+  const repros = [
+    "--pass--word-hunter2Aa1Zz9",
+    "--pass___word-hunter2Aa1Zz9",
+    "--pass---word-hunter2Aa1Zz9",
+    "--p4ssword-hunter2Aa1Zz9",
+    "--to9ken-hunter2Aa1Zz9",
+    "--se-cr3t-hunter2Aa1Zz9",
+    "--au7h-hunter2Aa1Zz9"
+  ];
+  for (const repro of repros) {
+    const result = sanitizeFreeText(repro);
+    assert.equal(result, "[redacted]", `${repro}: expected wholesale redaction, got "${result}"`);
+  }
+});
+
+test("round-12 CRITICAL: double-separator and digit-interposed keyword splits redact in labeled (colon/equals) position", () => {
+  const repros = ["pass--word: hunter2Aa1Zz9", "p4ssword: hunter2Aa1Zz9", "to9ken=hunter2Aa1Zz9"];
+  for (const repro of repros) {
+    const result = sanitizeFreeText(repro);
+    assert.equal(result.includes("hunter2Aa1Zz9"), false, `${repro}: glued secret survived in "${result}"`);
+  }
+});
+
+test("round-12 CRITICAL: double-separator and digit-interposed keyword splits redact in prose position", () => {
+  const repros = ["your p4ssword is hunter2Aa1Zz9", "the to9ken is hunter2Aa1Zz9"];
+  for (const repro of repros) {
+    const result = sanitizeFreeText(repro);
+    assert.equal(result.includes("hunter2Aa1Zz9"), false, `${repro}: glued secret survived in "${result}"`);
+  }
+});
+
+test("round-12 CRITICAL: next-idiom probes — triple separators, mixed dash/underscore runs, still redact by construction", () => {
+  const repros = ["--pass----word-hunter2Aa1Zz9", "--pass-_-word-hunter2Aa1Zz9", "--PASS__WORD-hunter2Aa1Zz9"];
+  for (const repro of repros) {
+    const result = sanitizeFreeText(repro);
+    assert.equal(result, "[redacted]", `${repro}: expected wholesale redaction (fail-closed by construction), got "${result}"`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Round-12 CRITICAL (finding 4, closed): isSafeFlagName now consults
+// knownSafeTokens directly for an exact flag-name match — the alternative
+// the round-11 write-up never considered. Both directions.
+// ---------------------------------------------------------------------------
+
+test("round-12: an unrecognized flag body redacts by default; the SAME flag survives as an exact knownSafeTokens member", () => {
+  assert.equal(sanitizeFreeText("--custom-flag-name"), "[redacted]");
+  assert.equal(sanitizeFreeText("--custom-flag-name", new Set(["--custom-flag-name"])), "--custom-flag-name");
+});
+
+test("round-12: the designed labeled-flag case (an exact canonical keyword spelling) survives with NO vocabulary at all", () => {
+  for (const flag of ["--token", "--password", "--api-key", "--access-key", "--auth", "--pin", "--cvv"]) {
+    assert.equal(sanitizeFreeText(flag), flag, `${flag}: canonical bare keyword flags remain a designed safe case`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Round-12 MEDIUM (finding 6, LOW in the gate, locked here): a labeled
+// bare-word form over-redacts the LABEL too, not just the value — a safe-
+// direction side effect, not a bug, disclosed in the module header.
+// ---------------------------------------------------------------------------
+
+test("round-12 (finding 6, documented): a labeled bare-word form redacts the label as well as the value", () => {
+  const result = sanitizeFreeText("pass-word: hunter2Aa1Zz9");
+  assert.equal(result, "[redacted] [redacted]", "the label 'pass-word:' is not a recognized safe shape either, so it redacts too (safe direction)");
+});
+
+// ---------------------------------------------------------------------------
+// Round-12 HIGH (finding 2): input-length cap restores linear-time behavior
+// by construction. Generous wall-clock budget (1s) to stay CI-stable while
+// still catching a genuine regression back to polynomial blowup.
+// ---------------------------------------------------------------------------
+
+test("round-12 HIGH: the gate's adversarial near-miss shape completes within budget above the input cap, and produces capped output", () => {
+  const unit = "cr-ed-en-tial-X";
+  const aboveCap = unit.repeat(Math.ceil((MAX_SANITIZE_INPUT_LENGTH * 3) / unit.length));
+  assert.ok(aboveCap.length > MAX_SANITIZE_INPUT_LENGTH, "fixture must actually exceed the cap");
+  const start = Date.now();
+  const result = sanitizeFreeText(aboveCap);
+  const elapsedMs = Date.now() - start;
+  assert.ok(elapsedMs < 1000, `expected under 1000ms, took ${elapsedMs}ms`);
+  assert.ok(result.endsWith("[truncated]"), `expected a visible truncation marker, got "${result}"`);
+});
+
+test("round-12 HIGH: the gate's exact 120KB repro also completes fast now (was 5.2s)", () => {
+  const unit = "cr-ed-en-tial-X";
+  const size120k = unit.repeat(Math.ceil(120000 / unit.length));
+  const start = Date.now();
+  sanitizeFreeText(size120k);
+  const elapsedMs = Date.now() - start;
+  assert.ok(elapsedMs < 1000, `expected under 1000ms, took ${elapsedMs}ms`);
 });
 
 // ---------------------------------------------------------------------------
@@ -556,26 +693,30 @@ test("round-11 MEDIUM (locked trade-off, control): a compound flag with NO embed
 // is GONE. A bare number now survives ONLY as an exact vocabulary member —
 // never by shape alone, regardless of how short it is. Both directions on
 // the SAME values that round 6/7 previously granted a blanket pass to.
+// Round-12 note: the FLAG name itself (`--port`, `--exit-code`, ...) is now
+// ALSO subject to the fail-closed inversion (it is not a canonical keyword
+// spelling), so the vocabulary-survives direction adds the flag name too —
+// the test's load-bearing point remains the numeric VALUE's own behavior.
 // ---------------------------------------------------------------------------
 
 test("round-8 BOTH DIRECTIONS: a port number redacts with no vocabulary, survives when the value IS in the vocabulary", () => {
-  assert.equal(sanitizeFreeText("--port 8080"), "--port [redacted]");
-  assert.equal(sanitizeFreeText("--port 8080", new Set(["8080"])), "--port 8080");
+  assert.equal(sanitizeFreeText("--port 8080"), "[redacted] [redacted]");
+  assert.equal(sanitizeFreeText("--port 8080", new Set(["--port", "8080"])), "--port 8080");
 });
 
 test("round-8 BOTH DIRECTIONS: an exit code redacts with no vocabulary, survives when the value IS in the vocabulary", () => {
-  assert.equal(sanitizeFreeText("--exit-code 137"), "--exit-code [redacted]");
-  assert.equal(sanitizeFreeText("--exit-code 137", new Set(["137"])), "--exit-code 137");
+  assert.equal(sanitizeFreeText("--exit-code 137"), "[redacted] [redacted]");
+  assert.equal(sanitizeFreeText("--exit-code 137", new Set(["--exit-code", "137"])), "--exit-code 137");
 });
 
 test("round-8 BOTH DIRECTIONS: a count redacts with no vocabulary, survives when the value IS in the vocabulary", () => {
-  assert.equal(sanitizeFreeText("--count 42"), "--count [redacted]");
-  assert.equal(sanitizeFreeText("--count 42", new Set(["42"])), "--count 42");
+  assert.equal(sanitizeFreeText("--count 42"), "[redacted] [redacted]");
+  assert.equal(sanitizeFreeText("--count 42", new Set(["--count", "42"])), "--count 42");
 });
 
 test("round-8 BOTH DIRECTIONS: a 4-digit year redacts with no vocabulary, survives when the value IS in the vocabulary", () => {
-  assert.equal(sanitizeFreeText("--year 2026"), "--year [redacted]");
-  assert.equal(sanitizeFreeText("--year 2026", new Set(["2026"])), "--year 2026");
+  assert.equal(sanitizeFreeText("--year 2026"), "[redacted] [redacted]");
+  assert.equal(sanitizeFreeText("--year 2026", new Set(["--year", "2026"])), "--year 2026");
 });
 
 test("pass-direction (unaffected by the numeric-exemption removal): an ISO-8601 timestamp still survives with no vocabulary", () => {
@@ -600,10 +741,10 @@ test("round-8 BOTH DIRECTIONS: a short decimal number redacts with no vocabulary
 // ---------------------------------------------------------------------------
 
 test("round-8: an error code and a status code behave exactly like any other numeric flag value (keyword-independent)", () => {
-  assert.equal(sanitizeFreeText("--error-code 404"), "--error-code [redacted]");
-  assert.equal(sanitizeFreeText("--error-code 404", new Set(["404"])), "--error-code 404");
-  assert.equal(sanitizeFreeText("--status-code 200"), "--status-code [redacted]");
-  assert.equal(sanitizeFreeText("--status-code 200", new Set(["200"])), "--status-code 200");
+  assert.equal(sanitizeFreeText("--error-code 404"), "[redacted] [redacted]");
+  assert.equal(sanitizeFreeText("--error-code 404", new Set(["--error-code", "404"])), "--error-code 404");
+  assert.equal(sanitizeFreeText("--status-code 200"), "[redacted] [redacted]");
+  assert.equal(sanitizeFreeText("--status-code 200", new Set(["--status-code", "200"])), "--status-code 200");
 });
 
 test("defense-in-depth, now non-load-bearing: a space-separated secret-labeled flag still redacts its value directly (no vocabulary needed to reach that outcome anymore)", () => {

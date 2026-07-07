@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { emit, runWhyDiagnosis, makeSqlClientAdapter, type RunWhyDiagnosisDeps } from "../src/admin/why.ts";
+import { emit, runWhyDiagnosis, makeSqlClientAdapter, formatStallDiagnosis, type RunWhyDiagnosisDeps } from "../src/admin/why.ts";
 import { fetchAllTasks } from "../src/admin/prune-orphans.ts";
 import type { RunStatusSnapshot, TaskRecord } from "../src/domain/types.ts";
 
@@ -221,6 +221,53 @@ test("runWhyDiagnosis: an unrelated thrown error propagates rather than being tr
       cwd
     );
     await assert.rejects(() => runWhyDiagnosis(["--run-id", "latest"], deps), /connection refused/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Round-12 finding 7 (qa, LOW): no end-to-end secret-bearing test existed
+// through runWhyDiagnosis → render. This proves a synthetic secret placed in
+// a recorded hook-blocker command survives collection, diagnosis, AND
+// rendering nowhere — the full real pipeline, not just sanitizeFreeText in
+// isolation.
+// ---------------------------------------------------------------------------
+
+test("runWhyDiagnosis → formatStallDiagnosis: a secret in a recorded hook-blocker command never reaches the rendered output", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "archon-why-entry-"));
+  try {
+    const runSnapshot = snapshot([taskRecord("t1", "blocked")]);
+    const secret = "hunter2Aa1Zz9SuperSecret";
+    const deps = baseDeps(
+      {
+        env: { ARCHON_WORKSPACE_SLUG: "w", ARCHON_PROJECT_SLUG: "p" },
+        findLatestRun: async () => ({ id: "run-1" }),
+        getStatusSnapshot: async () => runSnapshot,
+        getExecutionPlan: async (runId: string) => ({
+          mode: "runtime_authoritative",
+          runId,
+          runStatus: "in_progress",
+          directive: { kind: "blocked", rationale: [], blockers: [] }
+        }),
+        readHookBlocker: async () => ({
+          taskId: "t1",
+          blockerKind: "pretooluse",
+          command: `--pass-word-${secret}`,
+          summary: `command failed: password ${secret} was rejected`,
+          recordedAt: "2026-07-05T00:00:00.000Z"
+        })
+      },
+      cwd
+    );
+
+    const diagnosis = await runWhyDiagnosis([], deps);
+    const hookBlockerCause = diagnosis.causes.find((c) => c.id === "hook_blocker");
+    assert.ok(hookBlockerCause, "expected the hook-blocker sidecar to surface as a cause");
+
+    const rendered = formatStallDiagnosis(diagnosis);
+    assert.equal(rendered.includes(secret), false, `secret leaked into rendered output: ${rendered}`);
+    assert.equal(JSON.stringify(diagnosis).includes(secret), false, "secret leaked into the raw diagnosis (the --json path)");
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

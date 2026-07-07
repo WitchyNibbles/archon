@@ -318,7 +318,13 @@ test("daemon_handoff_blocked present, real 2-step nextActions → BOTH steps joi
   // with the "then" joiner between them (joinNextActions's own
   // code-generated structure, never itself redacted).
   assert.match(c!.nextCommand, /^1\).*then 2\)/);
-  assert.match(c!.nextCommand, /--repair/, "the --repair flag survives (flag names are always safe)");
+  // Round-12: flag names are no longer safe by shape/absence-of-keyword
+  // alone (the fail-closed inversion — see why-redaction.ts's module
+  // header) — `--repair` is not a canonical keyword spelling and this
+  // sidecar-sourced free text carries no vocabulary, so it now redacts like
+  // any other non-canonical flag. The structural join assertion above (both
+  // numbered steps present, joined by "then") remains this test's point.
+  assert.match(c!.nextCommand, /\[redacted\]/, "non-canonical flags in free text redact under the round-12 inversion");
 });
 
 test("daemon_supervisor_blocked present (state=blocked) → reported", () => {

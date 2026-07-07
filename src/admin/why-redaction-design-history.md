@@ -377,3 +377,142 @@ over-redaction tension round 10 left open:
    count ("13 ranked causes") was stale — `why-diagnosis.ts` defines 15
    distinct cause ids. Corrected, and an explicit `## Acceptance criteria`
    section was added reflecting what the shipped code actually delivers.
+
+## Round 12 — the fail-closed inversion (manager-directed; mirrors round 4)
+
+Round 11's fix held for exactly one gate round before round 12's own probing
+defeated it through a different angle — the THIRD recurrence of the same bug
+class across rounds 10, 11, 12. The manager directed a structural inversion
+rather than a fourth recognition patch, explicitly mirroring the round-4
+inversion recorded above ("redact by default, allowlist a few safe shapes")
+and the lessons this module's own postmortem had just promoted to
+`lessons-learned.md`: enumerating unsafe shapes never converges, and a fix
+can reintroduce its own bug class through a different code path.
+
+### Root cause (not the regex — the trust direction)
+
+`isSafeFlagName` had always been structured as: trust a flag body UNLESS a
+keyword is recognized inside it. Every round (10: unbounded label capture:
+11: single-separator splits; 12: double-plus separators AND digit-
+interposed splits — `--pass--word-X`, `--p4ssword-X`, `--to9ken-X`) found a
+new way to make recognition MISS, and every miss converted DIRECTLY into a
+trust grant, because "not recognized" and "safe" were the same code path.
+Widening `looseKeywordSource` (round 11) could never converge — this is
+LITERALLY the first lesson this module's own postmortem promoted
+("enumerating unsafe shapes never converges — invert to fail-closed").
+
+### The inversion
+
+`isSafeFlagName` no longer asks "do I recognize a keyword in this body?" at
+all. It asks "does this body POSITIVELY match one of exactly two bounded
+safe things?":
+
+  (a) an EXACT, case-sensitive member of the caller's `knownSafeTokens`
+      vocabulary — the SAME mechanism every other structured value in this
+      module already uses (task ids, run ids, sidecar paths). This also
+      closes round-11's own gate finding 4 (reviewer): `isSafeFlagName` had
+      never consulted `knownSafeTokens` at all, an unexplored alternative.
+  (b) the body IS, EXACTLY, one canonical secret-keyword flag spelling
+      (`why-redaction-keywords.ts`'s `CANONICAL_BARE_SECRET_KEYWORD_FLAGS`
+      — `token`, `password`, `api-key`, `access-key`, …) — the designed
+      `--token <value>` labeled-flag case, deliberately EXACT and NOT
+      separator-tolerant, because recognition looseness has no place in a
+      POSITIVE trust grant (looseness only ever WIDENS what survives).
+
+Everything else in flag position redacts. Under this inversion, a
+separator/digit/case/unicode mutation of a keyword can only ever make
+recognition WORSE, which — because recognition is no longer how trust is
+granted — can only ever produce MORE redaction, never a leak. The bug class
+ends by construction, not by enumeration: verified against the full
+round-10/11/12 repro families AND unprompted next-idiom probes (triple
+separators, mixed dash/underscore runs, Cyrillic/fullwidth Unicode
+lookalike letters) — all redact, none require a new pattern to catch them.
+
+`SECRET_KEYWORD_ALTERNATION` (stage-1's keyword-adjacent VALUE redaction)
+is kept and even widened (bounded run `[-_]{0,3}`, up from a single optional
+separator) — but it is now explicitly BEST-EFFORT coverage, not a security
+boundary: a recognition miss there can only affect which value stage 1
+redacts a beat earlier, never whether an unrecognized flag NAME survives.
+
+### The allowlist decision (finding 2 in the directive)
+
+Two options were on the table for the now-larger set of previously-surviving
+benign flags (`--experimental-strip-types`, `--max-warnings`, `--pass-word`
+bare, mysqldump's `-p`/`-u` conventions, and now every OTHER non-canonical
+flag too, since the inversion is total): (a) add a small, individually-
+justified allowlist of well-known benign CLI flag names to a default
+vocabulary, or (b) accept and document the wider redaction, relying on the
+existing `knownSafeTokens` threading mechanism as the escape hatch.
+
+CHOSE (b). A hardcoded "well-known benign flag name" allowlist is itself an
+enumerated list that would need the SAME forever-widening maintenance this
+whole redesign exists to escape — every new CLI tool `archon why` might ever
+wrap introduces new flag spellings, and the list would chase them
+indefinitely, exactly the failure mode round 8 already closed for numeric
+shapes. The existing vocabulary mechanism already solves this correctly: a
+caller (why-diagnosis.ts's `buildKnownVocabulary`) that needs a specific
+flag to survive threads it through `knownSafeTokens` the same way it already
+threads task ids, run ids, and its own `RECOMMENDED_COMMANDS` vocabulary
+(which, notably, already includes `--task-id` and similar flags literally,
+via `tokenizeToVocabulary` over the command templates — so the common case
+is unaffected in real usage). This is documented in the module header's
+EXEMPTION CHECKLIST entry, owned by `backend-engineer`.
+
+One concrete, previously-load-bearing case changed as a direct consequence:
+mysqldump's `-p<value>` concatenated flag (`MYSQL_CONCAT_PASSWORD_FLAG`)
+still threads `knownSafeTokens` correctly AT STAGE 1 (round-9 fix,
+unchanged), but the resulting glued `-p<value>` token is now a flag-shaped
+token stage 2 re-evaluates under the positive-match-only rule — since it is
+neither an exact vocabulary member nor a canonical spelling, it now redacts
+WHOLESALE even when the bare value (without the glued `-p`) is
+vocabulary-known. This is the same accepted trade-off as any other
+non-canonical flag, not a separate decision; the stage-1 fix remains
+structurally correct at its own layer, it is simply no longer the deciding
+factor for the final rendered output.
+
+### HIGH ReDoS fix (finding 2 in the "Also required" list)
+
+The gate measured polynomial blowup (~O(n^1.5-2)) in the FULL pipeline
+against adversarial near-miss input (`"cr-ed-en-tial-X".repeat(n)`; 120KB
+took 5.2s, 380KB ~23s) — a real DoS on the diagnostic path, since input
+sources (recorded commands, hook summaries, caught errors) can carry
+attacker-shaped text. No amount of regex micro-tuning closes this class for
+arbitrary-length input, so `sanitizeFreeText` now caps its input to
+`MAX_SANITIZE_INPUT_LENGTH` (8192 chars) BEFORE the pipeline runs — the cap
+is what actually bounds runtime, not any one regex's own linear-time-ness
+(every regex here already was individually linear-time; that alone never
+bounded the FULL multi-pass pipeline against unbounded input). The
+`[truncated]` marker is appended AFTER classification as a hardcoded
+literal, not fed through `classifyToken` — an earlier draft glued it into
+the pre-pipeline text and it got redacted along with everything else,
+losing the user-visible signal that truncation occurred. Verified: the
+above-cap adversarial shape now completes in ~13ms (was reported at 5.2s+
+for smaller input); the exact 120KB repro now completes in ~12ms.
+
+### Probes run
+
+Full round-10/11/12 repro families (mixed-case and all-lowercase glued
+secrets, double/triple separators, digit-interposed splits, mixed
+dash/underscore runs) plus unprompted next-idiom probes (Cyrillic `а` and
+fullwidth `ａ` lookalike letters in place of `a`) — every one redacts by
+construction. Canonical bare-keyword flags (`--token`, `--api-key`, …)
+still survive with zero vocabulary, matching the designed labeled-flag case.
+An unrecognized flag survives only as an exact `knownSafeTokens` member.
+Perf: adversarial input above the cap and the exact 120KB gate repro both
+complete in ~10-15ms. An end-to-end test (`runWhyDiagnosis` →
+`formatStallDiagnosis`) proves a synthetic secret glued into a recorded
+hook-blocker command never reaches rendered output or the raw `--json`
+diagnosis, closing finding 7 (qa, no prior e2e coverage).
+
+### Residual disclosure
+
+A labeled bare-word form (`pass-word: value`) now redacts the LABEL too —
+`pass-word:` is not a recognized safe shape at stage 2 either (finding 6,
+qa, LOW) — a safe-direction over-redaction, not a bug, documented in the
+module header. The round-8 path/URL-segment residual and the new
+round-12 input-cap residual (an attacker who controls both content and the
+exact 8192-char cutoff could in principle craft a secret whose prefix
+collides with a bounded safe shape at the cut point) remain narrow,
+already-accepted trade-offs per this module's own doctrine — not worth
+chasing further, since at most a bounded fixed-width fragment is ever at
+risk and everything past the cut is unconditionally dropped.
