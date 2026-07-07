@@ -478,6 +478,80 @@ test("round-10 CRITICAL: a flag that IS exactly a recognized keyword still survi
 });
 
 // ---------------------------------------------------------------------------
+// Round-11 CRITICAL: splitting a recognized keyword with a single internal
+// hyphen (`pass-word`, `to-ken`, `se-cret`, `au-th`, `cred-ential`) defeated
+// BOTH stage-1 pattern recognition (all built from a literal, separator-free
+// keyword alternation) AND the round-10 `isSafeFlagName` backstop
+// (`SECRET_KEYWORD_ANYWHERE`/`BARE_SECRET_KEYWORD`, same literal
+// alternation) — the whole flag body, including a glued live secret, sailed
+// through as an inert "safe-looking" flag name. Root-cause fix: the keyword
+// alternation itself (`why-redaction-keywords.ts`) is now separator-
+// tolerant, so every site that consults it is fixed by one shared source,
+// not a per-site patch. Every repro below must fully redact, both a
+// mixed-case secret AND an all-lowercase, no-digit secret (finding 2's own
+// residual concern: a keyword-segment plus non-word residue must never pass
+// as a safe flag merely because it happens to be lowercase).
+// ---------------------------------------------------------------------------
+
+test("round-11 CRITICAL: hyphen-split keyword + glued secret must redact, one case per named keyword", () => {
+  const repros = [
+    "--pass-word-hunter2Aa1Zz9",
+    "--to-ken-hunter2Aa1Zz9",
+    "--se-cret-hunter2Aa1Zz9",
+    "--au-th-hunter2Aa1Zz9",
+    "--cred-ential-hunter2Aa1Zz9",
+    "--api-key-hunter2Aa1Zz9",
+    "--access-key-hunter2Aa1Zz9"
+  ];
+  for (const repro of repros) {
+    const result = sanitizeFreeText(repro);
+    assert.equal(result.includes("hunter2Aa1Zz9"), false, `${repro}: glued secret survived in "${result}"`);
+  }
+});
+
+test("round-11 CRITICAL: hyphen-split keyword + all-lowercase, no-digit glued secret must still redact (the exact residual finding 2 warns about)", () => {
+  const result = sanitizeFreeText("--pass-word-hunterbunny value");
+  assert.equal(result.includes("hunterbunny"), false, `all-lowercase glued secret survived: ${result}`);
+});
+
+test("round-11 CRITICAL: a bare hyphen-split keyword (no glued content) is still a legitimate flag label", () => {
+  assert.equal(sanitizeFreeText("--pass-word"), "--pass-word");
+  assert.equal(sanitizeFreeText("--to-ken"), "--to-ken");
+});
+
+// ---------------------------------------------------------------------------
+// Round-11 MEDIUM: the round-10 backstop's over-redaction of benign compound
+// flags is an ACCEPTED, DOCUMENTED trade-off (design choice (b) — see
+// why-redaction.ts's module header and why-redaction-design-history.md's
+// round-11 entry for why a shape-based exemption was rejected as
+// unfalsifiable: `--auth-timeout` and a lowercase-only glued secret like
+// `--auth-hunterbunny` are IDENTICAL by shape). These tests LOCK the current
+// (over-redacting) behavior so a future change to it is a deliberate,
+// reviewed decision, not a silent regression.
+// ---------------------------------------------------------------------------
+
+test("round-11 MEDIUM (locked trade-off): benign compound flags with an embedded keyword substring still redact wholesale", () => {
+  const benignFlags = [
+    "--token-refresh-interval",
+    "--auth-timeout",
+    "--tokenizer",
+    "--secretless-mode",
+    "--passwordless-login",
+    "--auth-provider",
+    "--credential-source"
+  ];
+  for (const flag of benignFlags) {
+    assert.equal(sanitizeFreeText(flag), "[redacted]", `${flag}: expected the locked over-redaction trade-off, got a different result`);
+  }
+});
+
+test("round-11 MEDIUM (locked trade-off, control): a compound flag with NO embedded keyword substring is unaffected", () => {
+  assert.equal(sanitizeFreeText("--experimental-strip-types"), "--experimental-strip-types");
+  assert.equal(sanitizeFreeText("--max-warnings"), "--max-warnings");
+  assert.equal(sanitizeFreeText("--preserve-env"), "--preserve-env");
+});
+
+// ---------------------------------------------------------------------------
 // Round-8 finding 1 (terminal design): the free-text numeric shape-exemption
 // is GONE. A bare number now survives ONLY as an exact vocabulary member —
 // never by shape alone, regardless of how short it is. Both directions on

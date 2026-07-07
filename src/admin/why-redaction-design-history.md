@@ -284,3 +284,96 @@ match, and the flag-name grant that trusted it — plus one MEDIUM test gap:
    `SPACE_SEPARATED_CODE_PHRASE_PATTERN`, `MYSQL_CONCAT_PASSWORD_FLAG`)
    were untested — exactly where the gate warned the next gap would hide
    in this file. Added both-direction tests for each.
+
+## Round 11 — separator-normalized keyword matching, and the over-redaction trade-off finally documented instead of chased
+
+Round 10 closed the "unbounded label capture" bypass by bounding the label
+context AND by requiring `isSafeFlagName` to check whether a flag body
+contains a recognized keyword SUBSTRING. Round 11's gate found the fix
+reintroduced its OWN bug class through a different path — exactly the
+pattern this module's history keeps warning about — plus resolved the
+over-redaction tension round 10 left open:
+
+1. **CRITICAL — hyphen-split keyword bypass.** Every keyword-consulting site
+   (`LABELED_FIELD_PATTERN`, `SPACE_SEPARATED_SECRET_FLAG`,
+   `PROSE_SECRET_KEYWORD_PATTERN`'s embedded `SECRET_KEYWORD_ALTERNATION`,
+   plus `SECRET_KEYWORD_ANYWHERE` and `BARE_SECRET_KEYWORD` in
+   `isSafeFlagName`) tested for a keyword via a LITERAL, separator-free
+   spelling (`password`, `token`, `auth`, ...). Splitting a keyword with a
+   single internal hyphen or underscore (`pass-word`, `to-ken`, `se-cret`,
+   `au-th`, `cred-ential`) defeated the literal match at every one of those
+   sites simultaneously, because they all copied the same separator-free
+   spelling. The practical exploit: `--pass-word-hunter2Aa1Zz9` shape-matches
+   a bare flag; `isSafeFlagName`'s keyword-substring check reported "no
+   keyword present" (wrongly, since `password` never appears unsplit in
+   `pass-word...`), so the WHOLE flag body — including the glued live
+   secret — sailed through as a trusted flag label. Only `api-key`/
+   `access-key` were partially immune, since those two had a hand-rolled
+   `[_-]?` tolerance the others never got — itself a symptom of "per-site
+   copies" rather than one shared rule.
+
+   ROOT-CAUSE FIX: the keyword list moved to a new module,
+   `why-redaction-keywords.ts`, and is no longer a literal string — each
+   keyword is expanded to a regex-alternation fragment that tolerates an
+   optional single `-`/`_` between any two of its letters
+   (`looseKeywordSource`). `SECRET_KEYWORD_ALTERNATION`, the ONE exported
+   constant, is what every consulting site in `why-redaction.ts` now embeds
+   or wraps — `LABELED_FIELD_PATTERN`, `SPACE_SEPARATED_SECRET_FLAG`,
+   `PROSE_SECRET_KEYWORD_PATTERN`, `SECRET_KEYWORD_ANYWHERE`, and
+   `BARE_SECRET_KEYWORD` all reference the SAME import; there is no
+   per-site copy left to independently drift out of sync. `api-key`/
+   `access-key`'s special-cased hyphen tolerance was retired — the general
+   mechanism already subsumes it. There is no backtracking-complexity cost:
+   each letter is followed by at most one optional single-character
+   separator, never a nested unbounded quantifier, so the fix stays
+   linear-time regardless of input length.
+
+   Verified against the gate's own repro family (`--pass-word-`,
+   `--to-ken-`, `--se-cret-`, `--au-th-`, `--cred-ential-`, plus
+   `--api-key-`/`--access-key-` for completeness) with a mixed-case glued
+   secret, AND against an all-lowercase, no-digit glued secret
+   (`--pass-word-hunterbunny`) — the exact residual the gate warned a
+   case-only distinction could hide behind.
+
+2. **MEDIUM — over-redaction of benign compound flags: accepted, not
+   chased.** Round 10's keyword-substring backstop already wholesale-
+   redacted legitimate flags like `--auth-timeout`, `--tokenizer`,
+   `--secretless-mode`, and `--credential-source` (any flag containing a
+   keyword substring, benign or not) — round 11 does not loosen or tighten
+   this, it only makes the underlying keyword check harder to evade. A
+   bounded structural exemption ("a flag body is safe if every hyphen-
+   segment is a purely lowercase alphabetic word of bounded length") was
+   designed and then REJECTED as not airtight: `--auth-timeout` (benign) and
+   `--auth-hunterbunny` (a lowercase, no-digit secret glued the same way,
+   this round's own gate scenario) are STRUCTURALLY IDENTICAL under that
+   rule — both are a keyword segment followed by a bounded lowercase-word
+   segment. Any exemption permissive enough to spare the former necessarily
+   also spares the latter, which is exactly the "enumerating unsafe shapes
+   never converges" trap round 8 already named and rejected once for numeric
+   shapes. Per that same doctrine, this round chooses the DOCUMENTED
+   trade-off (design choice (b)) over an unfalsifiable exemption (choice
+   (a)): the over-redaction is explicitly disclosed in the module header's
+   EXEMPTION CHECKLIST entry for `isSafeFlagName`, owned by
+   `backend-engineer`, with a stated follow-up condition (revisit only if a
+   real workflow needs these specific flags back, backed by a live
+   counterexample the way this entry's own analysis was), and LOCKED with a
+   dedicated regression test asserting the current (over-redacting) output
+   for all 7 of the gate's named benign flags, plus a control test proving
+   flags with NO embedded keyword substring at all remain unaffected.
+
+3. **MEDIUM — test gap for both new bug classes.** Added: (i) both-direction
+   redaction tests for every hyphen-split keyword repro, mixed-case and
+   all-lowercase; (ii) a locked-trade-off test asserting the 7 named benign
+   compound flags still redact wholesale (choice (b), not a regression); a
+   control test for legitimate long flags with no embedded keyword; (iii) a
+   dedicated `why-redaction-keywords.ts` unit-test file exercising
+   `SECRET_KEYWORD_ALTERNATION` directly (every canonical keyword matches
+   itself unsplit; every keyword tolerates one hyphen/underscore split; the
+   alternation is a substring search, not a shape grant, so an ordinary
+   secret-shaped value doesn't itself look like a keyword; no accidental
+   duplicate entries in the canonical list).
+
+4. **Task-packet hygiene (qa_engineer finding).** The task packet's cause
+   count ("13 ranked causes") was stale — `why-diagnosis.ts` defines 15
+   distinct cause ids. Corrected, and an explicit `## Acceptance criteria`
+   section was added reflecting what the shipped code actually delivers.
