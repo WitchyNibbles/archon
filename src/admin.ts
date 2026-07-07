@@ -43,6 +43,7 @@ import { sweepOrphansCommand } from "./admin/sweep-orphans.ts";
 import { reconcileRunClosure, reconcileAllRuns, shouldClearDanglingActiveTaskPointer, isMutateConfirmed } from "./admin/close-run.ts";
 import { ArchonCoreService } from "./core/service.ts";
 import { continueSessionCommand } from "./admin/continue-session.ts";
+import { whyCommand } from "./admin/why.ts";
 import { forgeCommand } from "./admin/forge.ts";
 import { secretCommand } from "./admin/secret.ts";
 import { advanceActiveTaskCommand, checkpointCommand, coverageCommand, gapsCommand, githubDispatchCommand, opsCommand, repairTaskQueueCommand, reportCommand, resumeCommand, statusCommand, syncRuntimeExportsCommand } from "./workflow.ts";
@@ -118,6 +119,7 @@ const COMMAND_REQUIRED = new Map<string, readonly (keyof ArchonConfig)[]>([
   ["sweep-orphans",           ["ARCHON_CORE_DATABASE_URL"]],
   ["close-run",               ["ARCHON_CORE_DATABASE_URL"]],
   ["continue-session",        ["ARCHON_CORE_DATABASE_URL"]],
+  ["why",                     ["ARCHON_CORE_DATABASE_URL"]],
   ["forge",                   ["ARCHON_CORE_DATABASE_URL"]],
   ["context-status",          ["ARCHON_CORE_DATABASE_URL"]],
   ["handoffs",                ["ARCHON_CORE_DATABASE_URL"]],
@@ -511,6 +513,11 @@ async function main() {
       }
       await reconcileRunClosure(runId, confirm, closeRunDeps, reconcileOptions);
     });
+    return;
+  }
+
+  if (command === "why") {
+    await whyCommand(args);
     return;
   }
 

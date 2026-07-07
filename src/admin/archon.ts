@@ -21,6 +21,7 @@ const adminCommands = new Set([
   // facing `archon init-task …` route (and the hook's unblock hint) actually work.
   "init-task",
   "status",
+  "why",
   "coverage",
   "gaps",
   "checkpoint",
@@ -82,7 +83,8 @@ function printUsage(): void {
       "  archon <install-command> [args]",
       "",
       "Runtime commands:",
-      "  status | coverage | gaps | checkpoint | resume | workflow-proof | seed-workflow-proof | advance-active-task | reconcile-runtime-state | sync-runtime-exports | daemon | supervisor | supervisor-history | ops | loop | recover | report | plan-context | export-docs | github-dispatch",
+      "  status | why | coverage | gaps | checkpoint | resume | workflow-proof | seed-workflow-proof | advance-active-task | reconcile-runtime-state | sync-runtime-exports | daemon | supervisor | supervisor-history | ops | loop | recover | report | plan-context | export-docs | github-dispatch",
+      "  why [--task-id <id>] [--run-id <id>] [--json]  — ranked explanation of why the loop is stuck",
       "  migrate | health | doctor [--repair] | bootstrap-project | verify-setup | verify-live-migrations",
       "  verify-review-identity | record-review | index-repo-markdown | refresh-retrieval | refresh-repo-context | repair-task-queue | run-embedding-jobs",
       "  init-task --id <id> --title \"<title>\" --scope <comma,paths> [--update-scope]",

@@ -4,7 +4,7 @@ import { writeArchonExport } from "../runtime/export-writer.ts";
 import type { TaskQueue } from "../archon/task-queue.ts";
 import type { RunRecord, TaskRecord, TaskPacketInput } from "../domain/types.ts";
 import type { ArchonStore } from "../store/types.ts";
-import { effectiveRequiredReviews } from "../domain/contracts.ts";
+import { effectiveRequiredReviews, MAX_TASK_ID_LENGTH } from "../domain/contracts.ts";
 import { VALID_TASK_CLASSES, type TaskClass } from "../domain/task-class.ts";
 
 export type { TaskClass };
@@ -81,6 +81,14 @@ export function buildInitiativeRecords(input: BuildInitiativeInput): InitiativeR
     throw new Error(
       `init-task: --id "${id}" is invalid; ids must match ${VALID_TASK_ID} (no slashes, dots, or path separators)`
     );
+  }
+  // Round-13 MEDIUM fix (contributing cause): task ids are agent-chosen,
+  // unbounded strings — an unbounded id was one contributing factor in the
+  // round-13 vocabulary-laundering CRITICAL (see why-vocabulary.ts). Shared
+  // constant with domain/contracts.ts's `validateTaskPacket` so every
+  // creation-time site enforces the SAME bound.
+  if (id.length > MAX_TASK_ID_LENGTH) {
+    throw new Error(`init-task: --id "${id}" is invalid; ids must be at most ${MAX_TASK_ID_LENGTH} characters`);
   }
   const title = sanitizeMarkdownField(input.title.trim() || id);
   const ownerRole = sanitizeMarkdownField(input.ownerRole.trim() || "planner");

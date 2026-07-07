@@ -31,6 +31,7 @@ import {
 } from "./state-writers.ts";
 import type { DaemonSupervisorHistoryReadOptions } from "./state-writers.ts";
 import { resolveDaemonOperatorActionDir } from "./review-queue.ts";
+import { formatMissingReviewActorHint } from "../daemon-guidance-text.ts";
 import type { DaemonCommandResult, ExecuteDaemonCommandOptions } from "../daemon.ts";
 import {
   buildSupervisorOperatorNotes,
@@ -409,7 +410,7 @@ export async function executeSupervisorCommandFromArgs(
           activeRunId: handoff.activeRunId ?? daemonResult.result.activeRunId,
           activeTaskId: handoff.activeTaskId ?? daemonResult.result.activeTaskId,
           sessionId: handoff.sessionId ?? daemonResult.result.sessionId,
-          nextActions: missingRoles.map((role) => `provide --review-actor ${role}=<actor>`),
+          nextActions: missingRoles.map((role) => formatMissingReviewActorHint(role)),
           missingReviewRoles: missingRoles
         });
       }

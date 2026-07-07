@@ -76,6 +76,7 @@ import {
   runL3Probes,
 } from "./admin/capability-probes-runtime.ts";
 import { assembleCapabilityReport } from "./install/capability/report.ts";
+import { RUNTIME_EXECUTION_PREFLIGHT_NEXT_ACTIONS } from "./daemon-guidance-text.ts";
 import type { ReadFileFn } from "./install/capability/probes-file.ts";
 
 export type PostgresStoreClient = ConstructorParameters<typeof PostgresStore>[0];
@@ -1706,10 +1707,7 @@ export async function executeRuntimeExecutionPreflight(
     blockers,
     reason: `runtime execution preflight failed: ${blockers.join(" | ")}`,
     activeRunId: report.run?.id ?? null,
-    nextActions: [
-      "run `npm run archon:doctor -- --repair` to replay safe runtime setup healing",
-      "if task-state drift remains after services are healthy, run `npm run archon:reconcile` before retrying execution"
-    ]
+    nextActions: [...RUNTIME_EXECUTION_PREFLIGHT_NEXT_ACTIONS]
   };
 }
 

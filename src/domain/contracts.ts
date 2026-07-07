@@ -607,6 +607,13 @@ export function validatePlanInput(plan: PlanInput): string[] {
   return errors;
 }
 
+/** Max task-id/task-key length (round-13 MEDIUM, contributing cause: task
+ * ids are agent-chosen, unbounded strings — see why-vocabulary.ts's round-13
+ * fix). 64 chars is generous (longest real task key in this repo's history:
+ * 33 chars). `admin/init-task.ts`'s `VALID_TASK_ID` check imports this SAME
+ * constant rather than keeping its own copy. */
+export const MAX_TASK_ID_LENGTH = 64;
+
 export function validateTaskPacket(packet: TaskPacketInput): string[] {
   const errors: string[] = [];
   const normalizedOwnerRole = packet.ownerRole.trim();
@@ -617,6 +624,8 @@ export function validateTaskPacket(packet: TaskPacketInput): string[] {
 
   if (packet.taskId.trim().length === 0) {
     errors.push("taskId is required");
+  } else if (packet.taskId.trim().length > MAX_TASK_ID_LENGTH) {
+    errors.push(`taskId must be at most ${MAX_TASK_ID_LENGTH} characters (got ${packet.taskId.trim().length})`);
   }
 
   if (normalizedOwnerRole.length === 0) {
