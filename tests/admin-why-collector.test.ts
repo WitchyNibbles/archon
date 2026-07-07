@@ -467,9 +467,12 @@ test("real fs: readContextGuardSidecar / readHookBlockerSidecar tolerate absence
     assert.equal(await readHookBlockerSidecar(dir), undefined);
 
     // 3. Valid, well-formed sidecar files.
+    // Round-14: invocationId must now be UUID-shaped to pass read-time
+    // validation (why-sidecar-validation.ts) — a real UUID, not a bare label.
+    const invocationId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
     await writeFile(
       join(dir, ".archon", "work", "context-guard.json"),
-      JSON.stringify({ state: "handoff_written", taskId: "t1", invocationId: "inv-1" }),
+      JSON.stringify({ state: "handoff_written", taskId: "t1", invocationId }),
       "utf8"
     );
     await writeFile(
@@ -484,9 +487,105 @@ test("real fs: readContextGuardSidecar / readHookBlockerSidecar tolerate absence
     );
     const guard = await readContextGuardSidecar(dir);
     const blocker = await readHookBlockerSidecar(dir);
-    assert.deepEqual(guard, { state: "handoff_written", taskId: "t1", invocationId: "inv-1" });
+    assert.deepEqual(guard, { state: "handoff_written", taskId: "t1", invocationId });
     assert.equal(blocker?.blockerKind, "generic_nonzero_bash");
     assert.equal(blocker?.command, "npm test");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Round-14 CRITICAL fix: a hand-crafted, attacker-shaped sidecar file must
+// never make an unvalidated string a trusted enum/shape value — the gate's
+// own live repro. Each of the four fields (state, invocationId, blockerKind,
+// recordedAt) is probed independently with a secret-shaped string.
+// ---------------------------------------------------------------------------
+
+test("real fs: a hand-crafted context-guard.json with a secret-shaped `state` is rejected wholesale", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "archon-why-sidecar-"));
+  try {
+    await mkdir(join(dir, ".archon", "work"), { recursive: true });
+    await writeFile(
+      join(dir, ".archon", "work", "context-guard.json"),
+      JSON.stringify({
+        state: "hunter2Aa1SuperSecret9",
+        taskId: "t1",
+        invocationId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      }),
+      "utf8"
+    );
+    assert.equal(
+      await readContextGuardSidecar(dir),
+      undefined,
+      "an invalid state must drop the whole sidecar entry, not just the field"
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("real fs: a hand-crafted context-guard.json with a secret-shaped `invocationId` is rejected wholesale", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "archon-why-sidecar-"));
+  try {
+    await mkdir(join(dir, ".archon", "work"), { recursive: true });
+    await writeFile(
+      join(dir, ".archon", "work", "context-guard.json"),
+      JSON.stringify({ state: "registered", taskId: "t1", invocationId: "hunter2Aa1SuperSecret9" }),
+      "utf8"
+    );
+    assert.equal(
+      await readContextGuardSidecar(dir),
+      undefined,
+      "a non-UUID-shaped invocationId must drop the whole sidecar entry, not just the field"
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("real fs: a hand-crafted hook-blocker-state.json with a secret-shaped `blockerKind` is rejected wholesale", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "archon-why-sidecar-"));
+  try {
+    await mkdir(join(dir, ".archon", "work", "daemon"), { recursive: true });
+    await writeFile(
+      join(dir, ".archon", "work", "daemon", "hook-blocker-state.json"),
+      JSON.stringify({
+        activeTaskId: "t1",
+        blockerKind: "hunter2Aa1SuperSecret9",
+        command: "npm test",
+        summary: "tests failed"
+      }),
+      "utf8"
+    );
+    assert.equal(
+      await readHookBlockerSidecar(dir),
+      undefined,
+      "an invalid blockerKind must drop the whole sidecar entry, not just the field"
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("real fs: a hand-crafted hook-blocker-state.json with a secret-shaped `recordedAt` drops only that (optional) field", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "archon-why-sidecar-"));
+  try {
+    await mkdir(join(dir, ".archon", "work", "daemon"), { recursive: true });
+    await writeFile(
+      join(dir, ".archon", "work", "daemon", "hook-blocker-state.json"),
+      JSON.stringify({
+        activeTaskId: "t1",
+        blockerKind: "generic_nonzero_bash",
+        command: "npm test",
+        summary: "tests failed",
+        recordedAt: "hunter2Aa1SuperSecret9"
+      }),
+      "utf8"
+    );
+    const blocker = await readHookBlockerSidecar(dir);
+    assert.ok(blocker, "the sidecar entry itself must survive — recordedAt is optional");
+    assert.equal(blocker!.recordedAt, undefined, "the invalid recordedAt must be dropped, not passed through");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -92,6 +92,17 @@ export const councilApprovedOutcomes = [
   "exception_granted",
   "inherited"
 ] as const;
+
+// Round-14: hook-blocker `blockerKind`, lockstep with hook-utils.mjs's
+// `hookBlockerKinds` (cross-checked: admin-why-hook-blocker-kind-parity.test.ts).
+export const hookBlockerKinds = [
+  "command_not_found",
+  "environment_missing",
+  "runtime_preflight",
+  "connection_refused",
+  "permission_denied",
+  "generic_nonzero_bash"
+] as const;
 export const uiSurfaces = ["none", "visual_change", "interactive_flow"] as const;
 export const qualityGates = [
   "council_review_required",

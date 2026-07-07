@@ -634,3 +634,143 @@ still pass unchanged (this round touched vocabulary SOURCES, not the
 redaction pipeline itself). Full suite: 3521 tests green, tsc clean, lint 0,
 build:dist clean (208 files). `why-redaction.ts` holds its frozen 625-line
 ratchet entry exactly.
+
+## Round 14 — sidecar reader enum validation, guidance single-sourcing completed, ratchet resolved honestly
+
+Round 13's classification table listed sidecar `blockerKind`/`state`/
+`recordedAt`/`invocationId` as "bounded, code-defined at each writer site" —
+true of the WRITE side, but the gate falsified the claim at the READ side:
+`why.ts`'s `readContextGuardSidecar`/`readHookBlockerSidecar` accepted any
+non-empty string for these fields, no enum/shape check at all. Sidecars are
+attacker-shapeable files on disk (the same threat model `handoff-consumer.ts`
+already documents for context-guard.json's `role` field), and
+`buildKnownVocabulary` folds these fields into `knownSafeTokens`
+unconditionally — a hand-crafted sidecar putting a secret-shaped string in
+any of the four fields became globally trusted vocabulary and leaked
+verbatim, live-verified by the gate.
+
+### 1. CRITICAL — reader-boundary validation policy
+
+Trust is now established at READ time, in `why.ts`, never assumed from disk
+content — mirroring `daemon/state-readers.ts`'s existing discipline for the
+equivalent daemon-handoff/supervisor fields (which this round left
+untouched; see "considered, deferred" below):
+
+  - **blockerKind/state**: validated against the writers' own canonical
+    enum sets via `admin/why-sidecar-validation.ts`'s `validateEnumMember`.
+    `hook-blocker-state.json`'s `blockerKind` set is owned by
+    `.claude/hooks/hook-utils.mjs` (a dependency-free hook script this
+    package's `src/` cannot import at runtime — the same constraint that
+    already forces `councilApprovedOutcomes` to be a hand-mirrored,
+    machine-cross-checked constant rather than a live import); its TS-side
+    mirror now lives in `domain/types.ts`'s `hookBlockerKinds`, cross-checked
+    by `tests/admin-why-hook-blocker-kind-parity.test.ts` (same regex-
+    extraction technique as the existing council-outcomes parity test —
+    read-only, no `.claude/hooks/` write needed). `context-guard.json`'s
+    `state` set (`registered`/`handoff_written`) is genuinely TS-authored
+    (`runtime/interactive-parachute.ts`), so it is exported directly as
+    `CONTEXT_GUARD_STATES`, no cross-check needed. `daemon-operator-
+    handoff`/`daemon-supervisor-status`'s blockerKind/state sets are now
+    ALSO exported as runtime arrays from `admin/status.ts`
+    (`DAEMON_HANDOFF_STATES`/`DAEMON_HANDOFF_BLOCKER_KINDS`/
+    `DAEMON_SUPERVISOR_STATES`/`DAEMON_SUPERVISOR_BLOCKER_KINDS`), with the
+    interface types now DERIVING from them (`(typeof ARRAY)[number]`) — one
+    source per field, not a hand-typed union and a hand-copied array.
+  - **recordedAt**: must round-trip as a real ISO-8601 timestamp
+    (`validateIsoTimestamp` — shape match AND `Date.parse` succeeds,
+    rejecting both malformed shapes and shape-matching-but-invalid dates).
+  - **invocationId**: must match the UUID shape (`validateUuid`).
+  - **Rejection semantics**: a required field (state, invocationId,
+    blockerKind) failing validation drops the WHOLE sidecar entry, same as a
+    missing field always has; the optional `recordedAt` simply omits itself.
+    None of these fields are ever emitted via free text directly — they are
+    already `structured()` in why-diagnosis.ts — so "drop, don't launder"
+    is the only policy needed; there is no display-after-sanitization case
+    to design for here (unlike task ids, which genuinely need to keep
+    appearing in their own evidence).
+
+  All four validators live in a new module, `admin/why-sidecar-validation.ts`
+  (kept small and dependency-free, extracted rather than inlined into
+  `why.ts` to avoid pushing that file over its own frozen ratchet).
+
+  Considered, deferred: refactoring `daemon/state-readers.ts`'s existing
+  inline `===` chains to consume `admin/status.ts`'s new exported arrays
+  too (closing the last remaining "per-site copy" between the TS union
+  types and the hand-written chains). Not done this round — state-readers.ts
+  was already correctly enforcing validation (the round-14 finding's own
+  cited example of good behavior), and refactoring working, correct code
+  outside the finding's scope risked unrelated regressions for a purely
+  cosmetic single-sourcing win. Flagged for a future round if this
+  drift ever actually causes a problem.
+
+  Regression tests (`tests/admin-why-collector.test.ts`): the gate's exact
+  four-field attacker-controlled repro (secret-shaped `state`, `invocationId`,
+  `blockerKind`, `recordedAt` each independently), asserting absence from the
+  reader's return value; a positive-control test confirms valid sidecar
+  values (a real UUID, a real ISO timestamp, a real enum member) still work
+  end to end. One pre-existing fixture (`tests/admin-why-collector.test.ts`'s
+  real-fs round-trip test) used a non-UUID placeholder `invocationId`
+  ("inv-1") that the new validation now correctly rejects — updated to a real
+  UUID, since that fixture's own intent (prove a well-formed sidecar reads
+  correctly) was never about testing malformed-id tolerance.
+
+### 2. MEDIUM — supervisor.ts single-sourcing completed
+
+Round 13 extracted `formatMissingReviewActorHint` into the shared
+`daemon-guidance-text.ts` module but never deleted `daemon/supervisor.ts`'s
+OWN local copy of the same function — the shared import was added but never
+actually wired to the call site, so the "single-sourced" claim was false and
+the shared export was dead code. Fixed: `supervisor.ts` now imports
+`formatMissingReviewActorHint` from `daemon-guidance-text.ts` and no longer
+defines it locally. Anti-drift test (`tests/daemon-guidance-text-single-
+source.test.ts`, the same cross-module pinning pattern
+`setup-playwright.test.ts` uses for `setup-playwright.ts`/`merge.ts`):
+(1) `supervisor.ts`'s own SOURCE TEXT must import the shared function and
+must NOT redefine it locally, so a future edit cannot silently reintroduce
+the duplicate; (2) the shared function's real output and the shared
+constant's static words must agree.
+
+### 3. MEDIUM/LOW — ratchet-headroom discrepancy resolved honestly
+
+The round-13 report's claim ("ratchet regenerated cleanly, why-redaction.ts
+holds 625") did not reproduce: `why-redaction.ts` sat EXACTLY at its 625-line
+cap (no headroom at all), and re-running the generator yielded 650 — a real
+bump, not a clean no-op. Root cause: round 13's own edits (case-sensitivity
+doc fix, stale-comment fix) landed the file exactly on the ratchet boundary,
+and the "clean 2-line regeneration" claimed in that report was checked
+BEFORE those final edits, not after — a verification-timing gap, now closed
+by making re-running the generator the LAST step before every commit, not an
+earlier one.
+
+Chose the PREFERRED resolution (trim, not regenerate-and-accept): extracted
+`isBoundedSafeShape`/`isSafeValueShape`/`classifyUrlToken` (the UUID/ISO-
+timestamp/path-segment/URL-path-query shape checks, round-8 finding 2) into
+a new module, `admin/why-redaction-shapes.ts` — the same "extract a cohesive
+helper" move already applied twice (why-redaction-keywords.ts, round 11;
+daemon-guidance-text.ts, round 13). `why-redaction.ts` dropped from 625 to
+517 lines (108 lines of real headroom); its ratchet entry correspondingly
+DROPPED from 625 to 525 on regeneration (a legitimate decrease, never a
+bump). `admin/status.ts` and `domain/types.ts` were ALSO discovered sitting
+exactly at their own frozen caps as a side effect of this round's other
+fixes (the new exported enum arrays); both were trimmed by a few comment
+lines to land back inside their existing ratchet buckets, so regenerating
+produces NO change to either entry.
+
+Verified honestly this time: `node scripts/generate-max-lines-ratchet.mjs`
+run twice in direct succession produces byte-identical output
+(`md5sum` match) — not just "no lint error," but a genuinely stable
+fixed point. Final numbers: `why-redaction.ts` 517 lines / 525 cap (was 625
+exactly / 625 cap), `admin/status.ts` 521/525, `domain/types.ts` 1674/1675,
+plus two new frozen entries for the extracted modules
+(`why-redaction-shapes.ts`: 125, `why-sidecar-validation.ts`: 75).
+
+### Probes run
+
+The gate's exact four-field sidecar-forgery repro (secret-shaped `state`,
+`invocationId`, `blockerKind`, `recordedAt`) against the real
+`readContextGuardSidecar`/`readHookBlockerSidecar` functions on a real
+tmpdir filesystem — every attacker-controlled field is rejected (whole-entry
+drop for required fields, field-only drop for the optional one); a positive
+control with real UUID/ISO-timestamp/enum values confirms the readers still
+work end to end. Full suite: 3544 tests green (3521 + 23 new), tsc clean,
+lint 0 warnings, build:dist clean (210 files).

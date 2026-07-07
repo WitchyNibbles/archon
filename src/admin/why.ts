@@ -74,7 +74,9 @@ import type {
   RunExecutionPlan,
   RunStatusSnapshot
 } from "../domain/types.ts";
-import { councilApprovedOutcomes } from "../domain/types.ts";
+import { councilApprovedOutcomes, hookBlockerKinds } from "../domain/types.ts";
+import { CONTEXT_GUARD_STATES } from "../runtime/interactive-parachute.ts";
+import { validateEnumMember, validateIsoTimestamp, validateUuid } from "./why-sidecar-validation.ts";
 import {
   diagnoseStall,
   formatStallDiagnosis,
@@ -327,14 +329,24 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+// Round-14 CRITICAL fix: state/blockerKind/recordedAt/invocationId are now
+// validated at READ time (enum membership / ISO-timestamp round-trip / UUID
+// shape — why-sidecar-validation.ts), not trusted from a bare non-empty-
+// string check. A sidecar is an attacker-shapeable file on disk; these
+// fields feed why-vocabulary.ts's buildKnownVocabulary unconditionally, so
+// an unvalidated value could become globally trusted vocabulary. Required
+// fields (state, invocationId, blockerKind) drop the WHOLE sidecar entry on
+// failure, same as a missing field always has; the optional `recordedAt`
+// simply omits itself.
+
 export async function readContextGuardSidecar(
   cwd: string
 ): Promise<StallSignals["sidecars"]["contextGuard"]> {
   const parsed = await readJsonSidecar(path.join(cwd, ".archon", "work", "context-guard.json"));
   if (!parsed) return undefined;
-  const state = str(parsed.state);
+  const state = validateEnumMember(str(parsed.state), CONTEXT_GUARD_STATES);
   const taskId = str(parsed.taskId);
-  const invocationId = str(parsed.invocationId);
+  const invocationId = validateUuid(str(parsed.invocationId));
   if (!state || !taskId || !invocationId) return undefined;
   return { state, taskId, invocationId };
 }
@@ -347,7 +359,7 @@ export async function readHookBlockerSidecar(
   );
   if (!parsed) return undefined;
   const taskId = str(parsed.activeTaskId);
-  const blockerKind = str(parsed.blockerKind);
+  const blockerKind = validateEnumMember(str(parsed.blockerKind), hookBlockerKinds);
   const summary = str(parsed.summary);
   if (!taskId || !blockerKind || !summary) return undefined;
   return {
@@ -355,7 +367,7 @@ export async function readHookBlockerSidecar(
     blockerKind,
     command: str(parsed.command) ?? "",
     summary,
-    recordedAt: str(parsed.recordedAt)
+    recordedAt: validateIsoTimestamp(str(parsed.recordedAt))
   };
 }
 

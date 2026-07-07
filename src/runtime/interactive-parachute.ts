@@ -15,6 +15,15 @@ import path from "node:path";
 import { HandoffController, type HandoffStoreLike } from "./handoff-controller.ts";
 import type { CreateAgentInvocationInput } from "../store/agent-runtime-store.ts";
 
+/** Round-14 CRITICAL fix: the only two states this module ever writes to
+ * context-guard.json's `state` field. Exported so a reader validating
+ * parsed JSON off disk (why.ts's readContextGuardSidecar) can check
+ * membership at read time — context-guard.json is documented elsewhere
+ * (handoff-consumer.ts's C1) as an attacker-writable file, so a bare
+ * non-empty-string check is not enough. */
+export const CONTEXT_GUARD_STATES = ["registered", "handoff_written"] as const;
+export type ContextGuardState = (typeof CONTEXT_GUARD_STATES)[number];
+
 // ---------------------------------------------------------------------------
 // Re-exports for callers that need the store interface
 // ---------------------------------------------------------------------------

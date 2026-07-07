@@ -51,24 +51,32 @@ export interface DaemonContinuationStatusObservation {
   updatedAt?: string | undefined;
 }
 
+/** Round-14: exported RUNTIME arrays (not just TS union types) so a reader
+ * validating parsed JSON off disk (why.ts's sidecar readers) can check
+ * membership at read time. Interface types below DERIVE from these arrays —
+ * one source per field, never a hand-copied union + a hand-copied array. */
+export const DAEMON_HANDOFF_STATES = ["blocked", "invalid"] as const;
+export const DAEMON_HANDOFF_BLOCKER_KINDS = [
+  "bootstrapping",
+  "runtime_preflight",
+  "missing_active_runtime",
+  "review_queue",
+  "review_execution_unsupported",
+  "operator_required_continuation",
+  "workflow_proof_failure",
+  "scope_expansion_required",
+  "runtime_blocked",
+  "recovery_required",
+  "runtime_task_missing",
+  "active_task_mismatch",
+  "uncommitted_deliverables",
+  "unknown"
+] as const;
+
 export interface DaemonOperatorHandoffObservation {
   authorityLabel: "derived_only";
-  state: "blocked" | "invalid";
-  blockerKind:
-    | "bootstrapping"
-    | "runtime_preflight"
-    | "missing_active_runtime"
-    | "review_queue"
-    | "review_execution_unsupported"
-    | "operator_required_continuation"
-    | "workflow_proof_failure"
-    | "scope_expansion_required"
-    | "runtime_blocked"
-    | "recovery_required"
-    | "runtime_task_missing"
-    | "active_task_mismatch"
-    | "uncommitted_deliverables"
-    | "unknown";
+  state: (typeof DAEMON_HANDOFF_STATES)[number];
+  blockerKind: (typeof DAEMON_HANDOFF_BLOCKER_KINDS)[number];
   reason: string;
   workspaceSlug?: string | undefined;
   projectSlug?: string | undefined;
@@ -89,18 +97,23 @@ export interface DaemonOperatorHandoffObservation {
   updatedAt?: string | undefined;
 }
 
+/** See DAEMON_HANDOFF_STATES/DAEMON_HANDOFF_BLOCKER_KINDS above for the
+ * round-14 rationale — same pattern, the supervisor's own bounded sets. */
+export const DAEMON_SUPERVISOR_STATES = ["completed", "blocked", "max_cycles_reached", "invalid"] as const;
+export const DAEMON_SUPERVISOR_BLOCKER_KINDS = [
+  "runtime_preflight",
+  "missing_review_actor_bindings",
+  "handoff_missing",
+  "unsupported_handoff",
+  "continuation_derivation_failed",
+  "review_derivation_failed",
+  "unknown"
+] as const;
+
 export interface DaemonSupervisorStatusObservation {
   authorityLabel: "derived_only";
-  state: "completed" | "blocked" | "max_cycles_reached" | "invalid";
-  blockerKind?:
-    | "runtime_preflight"
-    | "missing_review_actor_bindings"
-    | "handoff_missing"
-    | "unsupported_handoff"
-    | "continuation_derivation_failed"
-    | "review_derivation_failed"
-    | "unknown"
-    | undefined;
+  state: (typeof DAEMON_SUPERVISOR_STATES)[number];
+  blockerKind?: (typeof DAEMON_SUPERVISOR_BLOCKER_KINDS)[number] | undefined;
   reason: string;
   workspaceSlug?: string | undefined;
   projectSlug?: string | undefined;

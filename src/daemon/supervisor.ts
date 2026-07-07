@@ -31,6 +31,7 @@ import {
 } from "./state-writers.ts";
 import type { DaemonSupervisorHistoryReadOptions } from "./state-writers.ts";
 import { resolveDaemonOperatorActionDir } from "./review-queue.ts";
+import { formatMissingReviewActorHint } from "../daemon-guidance-text.ts";
 import type { DaemonCommandResult, ExecuteDaemonCommandOptions } from "../daemon.ts";
 import {
   buildSupervisorOperatorNotes,
@@ -244,10 +245,6 @@ export function formatSupervisorHistoryCommandResult(result: SupervisorHistoryCo
   return lines.join("\n");
 }
 
-
-function formatMissingReviewActorHint(role: string): string {
-  return `provide --review-actor ${role}=<actor>`;
-}
 
 export async function executeSupervisorCommandFromArgs(
   args: readonly string[],
