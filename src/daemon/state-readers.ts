@@ -12,10 +12,25 @@ import type {
   DaemonOperatorHandoffObservation,
   DaemonSupervisorStatusObservation
 } from "../admin/status.ts";
+import {
+  DAEMON_HANDOFF_STATES,
+  DAEMON_HANDOFF_BLOCKER_KINDS,
+  DAEMON_SUPERVISOR_STATES,
+  DAEMON_SUPERVISOR_BLOCKER_KINDS
+} from "../admin/status.ts";
+import { validateEnumMember } from "../admin/why-sidecar-validation.ts";
 import type {
   DaemonSupervisorHistoryReadOptions,
   DaemonSupervisorHistoryReadResult
 } from "../daemon.ts";
+
+/** Round-15: validates a daemon-sidecar enum field against `admin/status.ts`'s
+ * canonical arrays (round-14 left those arrays as dead code; this wires them
+ * up for real) — replaces hand-rolled `===` OR-chains. `fallback` preserves
+ * each field's existing "always return a value" contract. */
+function matchOrFallback<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return validateEnumMember(typeof value === "string" ? value : undefined, allowed) ?? fallback;
+}
 
 export async function readDaemonContinuationStatus(
   cwd: string
@@ -156,23 +171,8 @@ export async function readDaemonOperatorHandoff(
 
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const state = parsed.state === "blocked" ? "blocked" : "invalid";
-    const blockerKind =
-      parsed.blockerKind === "bootstrapping" ||
-      parsed.blockerKind === "runtime_preflight" ||
-      parsed.blockerKind === "missing_active_runtime" ||
-      parsed.blockerKind === "review_queue" ||
-      parsed.blockerKind === "review_execution_unsupported" ||
-      parsed.blockerKind === "operator_required_continuation" ||
-      parsed.blockerKind === "workflow_proof_failure" ||
-      parsed.blockerKind === "scope_expansion_required" ||
-      parsed.blockerKind === "runtime_blocked" ||
-      parsed.blockerKind === "recovery_required" ||
-      parsed.blockerKind === "runtime_task_missing" ||
-      parsed.blockerKind === "active_task_mismatch" ||
-      parsed.blockerKind === "uncommitted_deliverables"
-        ? parsed.blockerKind
-        : "unknown";
+    const state = matchOrFallback(parsed.state, DAEMON_HANDOFF_STATES, "invalid");
+    const blockerKind = matchOrFallback(parsed.blockerKind, DAEMON_HANDOFF_BLOCKER_KINDS, "unknown");
     const reason =
       typeof parsed.reason === "string" && parsed.reason.trim().length > 0
         ? parsed.reason
@@ -284,21 +284,14 @@ export async function readDaemonSupervisorStatus(
 
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const state =
-      parsed.state === "completed" || parsed.state === "blocked" || parsed.state === "max_cycles_reached"
-        ? parsed.state
-        : "invalid";
+    const state = matchOrFallback(parsed.state, DAEMON_SUPERVISOR_STATES, "invalid");
+    // blockerKind stays genuinely OPTIONAL here (unlike the handoff reader
+    // above) — a present-but-unrecognized string still becomes "unknown",
+    // but a non-string value stays undefined, matching this field's existing
+    // `?: ... | undefined` contract exactly.
     const blockerKind =
-      parsed.blockerKind === "runtime_preflight" ||
-      parsed.blockerKind === "missing_review_actor_bindings" ||
-      parsed.blockerKind === "handoff_missing" ||
-      parsed.blockerKind === "unsupported_handoff" ||
-      parsed.blockerKind === "continuation_derivation_failed" ||
-      parsed.blockerKind === "review_derivation_failed"
-        ? parsed.blockerKind
-        : typeof parsed.blockerKind === "string"
-          ? "unknown"
-          : undefined;
+      validateEnumMember(typeof parsed.blockerKind === "string" ? parsed.blockerKind : undefined, DAEMON_SUPERVISOR_BLOCKER_KINDS) ??
+      (typeof parsed.blockerKind === "string" ? "unknown" : undefined);
     const reason =
       typeof parsed.reason === "string" && parsed.reason.trim().length > 0
         ? parsed.reason
@@ -438,6 +431,11 @@ export async function readDaemonSupervisorHistory(
     .flatMap((line) => {
       try {
         const parsed = JSON.parse(line) as Record<string, unknown>;
+        // Round-15: a 3rd hand-rolled duplicate (no "invalid" member here —
+        // unrecognized DROPS the whole line via `!state` below, unlike the
+        // top-level reader's fallback). Deliberately deferred: unconsumed by
+        // the why-redaction vocabulary pipeline, so no redaction exposure;
+        // needs its own narrower "terminal-only" array, a separate cleanup.
         const state =
           parsed.state === "completed" || parsed.state === "blocked" || parsed.state === "max_cycles_reached"
             ? parsed.state

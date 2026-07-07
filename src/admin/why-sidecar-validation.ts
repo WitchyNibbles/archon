@@ -35,14 +35,26 @@ export function validateEnumMember<T extends string>(
   return (allowed as readonly string[]).includes(value) ? (value as T) : undefined;
 }
 
-/** Validates `value` round-trips as a real ISO-8601 timestamp: it must match
- * the same bounded shape why-redaction.ts's SAFE_ISO_TIMESTAMP trusts AND
- * parse to a real, non-NaN instant — rejecting both malformed shapes and
- * shape-matching-but-invalid dates (e.g. month 13). */
+/** Validates `value` is EXACTLY a canonical `Date.prototype.toISOString()`
+ * string — the sole contract this validator accepts (round-15 MEDIUM fix).
+ * `Date.parse` alone is not enough: JS silently NORMALIZES an out-of-range
+ * date instead of rejecting it (`Date.parse("2026-02-30T...")` succeeds and
+ * quietly becomes March 2), so a shape-matching-but-invalid date used to
+ * round-trip as "valid". The real check is RE-SERIALIZE and compare: parse,
+ * then `new Date(ms).toISOString()`, then require EXACT string equality
+ * against the input. Every writer of a `recordedAt` field this module reads
+ * (`.claude/hooks/hook-policy.mjs`) always calls `new Date().toISOString()`
+ * — verified — so exact equality against that canonical form is the
+ * cleanest, least-surprising contract: a real, valid instant serialized in
+ * any other (still ISO-legal) form, e.g. a non-UTC offset or a different
+ * fractional-second precision, is deliberately rejected too, not just
+ * invalid dates. The shape regex remains a cheap first-pass filter. */
 export function validateIsoTimestamp(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (!ISO_TIMESTAMP_SHAPE.test(value)) return undefined;
-  return Number.isNaN(Date.parse(value)) ? undefined : value;
+  const parsedMs = Date.parse(value);
+  if (Number.isNaN(parsedMs)) return undefined;
+  return new Date(parsedMs).toISOString() === value ? value : undefined;
 }
 
 /** Validates `value` is UUID-shaped (fixed-width, machine-generated shape —

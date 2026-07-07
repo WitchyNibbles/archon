@@ -748,7 +748,8 @@ timestamp/path-segment/URL-path-query shape checks, round-8 finding 2) into
 a new module, `admin/why-redaction-shapes.ts` — the same "extract a cohesive
 helper" move already applied twice (why-redaction-keywords.ts, round 11;
 daemon-guidance-text.ts, round 13). `why-redaction.ts` dropped from 625 to
-517 lines (108 lines of real headroom); its ratchet entry correspondingly
+519 lines (round-15 correction: the round-14 report misstated this as 517 —
+verified by direct `wc -l`, corrected here); its ratchet entry correspondingly
 DROPPED from 625 to 525 on regeneration (a legitimate decrease, never a
 bump). `admin/status.ts` and `domain/types.ts` were ALSO discovered sitting
 exactly at their own frozen caps as a side effect of this round's other
@@ -759,7 +760,7 @@ produces NO change to either entry.
 Verified honestly this time: `node scripts/generate-max-lines-ratchet.mjs`
 run twice in direct succession produces byte-identical output
 (`md5sum` match) — not just "no lint error," but a genuinely stable
-fixed point. Final numbers: `why-redaction.ts` 517 lines / 525 cap (was 625
+fixed point. Final numbers: `why-redaction.ts` 519 lines / 525 cap (was 625
 exactly / 625 cap), `admin/status.ts` 521/525, `domain/types.ts` 1674/1675,
 plus two new frozen entries for the extracted modules
 (`why-redaction-shapes.ts`: 125, `why-sidecar-validation.ts`: 75).
@@ -774,3 +775,142 @@ drop for required fields, field-only drop for the optional one); a positive
 control with real UUID/ISO-timestamp/enum values confirms the readers still
 work end to end. Full suite: 3544 tests green (3521 + 23 new), tsc clean,
 lint 0 warnings, build:dist clean (210 files).
+
+## Round 15 — councilOutcome enum validation, exhaustive enforcement-point audit
+
+qa/security blocked round 14 on the SAME read-side bug class in one field the
+sweep missed, plus two claim gaps. This is the closing repair; the re-audit
+below traces every kept vocabulary source to its ACTUAL enforcement point in
+code (file:function/line), not a claimed one — the gate had falsified this
+table twice (round 13's task ids, this round's councilOutcome), so every row
+was re-derived from scratch rather than trusted from the prior round's text.
+
+### 1. CRITICAL — councilGates.outcome folded unvalidated
+
+`task.packet.councilOutcome` is `string | undefined` at the domain level
+(`domain/types.ts:534`) — NOT a typed union — and `buildKnownVocabulary`
+folded it into `knownSafeTokens` with zero validation. Identical class to
+round 13 (task ids) and round 14 (sidecar fields): an unrelated ("sibling")
+task's secret-shaped `councilOutcome` became globally trusted vocabulary and
+could rescue that same string inside a completely different, in-scope
+task's free text. Gate live-verified.
+
+Fix: `record-council.ts` already exports `COUNCIL_OUTCOME_TOKENS` — the
+REAL write-side canonical set (7 tokens: `pending`, `approved`,
+`approved_with_conditions`, `rework_required`, `exception_granted`,
+`rejected`, `inherited`), enforced when `record-council` writes the field.
+This is a SUPERSET of `domain/types.ts`'s `councilApprovedOutcomes` (the 4
+"approved-class" tokens gate evaluation cares about) — validating against
+the narrower 4-token set would have wrongly dropped a legitimately recorded
+`rework_required`/`rejected`/`pending` outcome from the vocabulary. Fixed at
+the fold site in `why-vocabulary.ts`: `validateEnumMember(gate.outcome,
+COUNCIL_OUTCOME_LIST)` where `COUNCIL_OUTCOME_LIST` is `[...
+COUNCIL_OUTCOME_TOKENS]`, imported directly from `record-council.ts` (no
+hand-copy). An invalid value drops from the vocabulary only — the outcome
+still renders in its own evidence via `structured()`, exactly like task ids.
+
+Verified with the gate's own repro shape (an unrelated task's council gate
+outcome set to a secret-shaped string, checked against a different scoped
+task's hook-blocker free text) at the `diagnoseStall` level, plus a positive
+test proving a legitimate non-approved-class outcome (`rework_required`)
+still validates through.
+
+### Full enforcement-point audit (every source `buildKnownVocabulary` folds in)
+
+| Source | Class | Enforcement point (file:function/line) | Kept? |
+|---|---|---|---|
+| Static enums (`taskStatuses`, `runStatuses`, `requiredGateReviews`, `councilApprovedOutcomes`, `RETRO_OUTCOME_TOKENS`) + `"unknown"`/`"unset"` + tokenized `RECOMMENDED_COMMANDS`/`EVIDENCE_SOURCES`/`RUNTIME_EXECUTION_PREFLIGHT_NEXT_ACTIONS`/`MISSING_REVIEW_ACTOR_HINT_WORDS` | STATIC | N/A — compiled-in literals in `why-vocabulary.ts`/`daemon-guidance-text.ts` source; no runtime input path exists to validate | yes |
+| `scope.taskId` | BOUNDED EXCEPTION (policy) | N/A by design — `why.ts`'s `runWhyDiagnosis` reads the raw `--task-id` CLI argument verbatim; trusted as a deliberate round-13 policy choice (the operator's own explicit query target), never extended to sibling ids | yes |
+| `scope.runId` | BOUNDED EXCEPTION (policy), **round-15 correction** | N/A by design — same as `scope.taskId`: the raw `--run-id` CLI argument (may be `"latest"` or a run id), NOT independently verified as a UUID. The round-13 table wrongly classified this as "machine-gen UUID"; it is policy-trusted CLI input, exactly like `scope.taskId`, not a DB-sourced value | yes |
+| `run?.id` | MACHINE-GENERATED (DB) | `runs.id` is a native Postgres `uuid` PRIMARY KEY column (`src/sql/migrations/001_initial_schema.sql:22`); every writer creates it via `node:crypto`'s `randomUUID()` (`src/core/task-lifecycle.ts`, `src/admin/init-task.ts`) — DB column type is the real enforcement, not the writer convention alone | yes |
+| `run?.status` | ENUM (DB) | `runs.status` has a DB CHECK constraint (`001_initial_schema.sql:29`) listing the exact same 9 values as `domain/types.ts`'s `runStatuses` (already static vocabulary) | yes |
+| `taskCounts` keys | ENUM (DB, redundant) | `tasks.status` has a DB CHECK constraint (`001_initial_schema.sql:42`) matching `taskStatuses`; keys of `Record<TaskStatus, number>` (`admin/status.ts`'s `countTaskBuckets`), already in static vocabulary either way | yes |
+| `blockedTasks`/`reviewBlockedTasks`/`duplicateRuns.taskKey`/`closureBlocks`/`sealReadyTaskIds`/`councilGates.taskId`/`respawn.taskId`/`ownerWork.taskIds`/sidecar `taskId`s | FREE-FORM (sibling ids) | N/A — never added (round-13 fix); still render in their OWN evidence via `structured()` | NO |
+| `reviewBlockedTasks.blockers` | code template + bounded interpolation | `core/policy.ts`'s `evaluateReviewDecision`: `requiredReview` is bounded via `effectiveRequiredReviewsForTask` → `GateReviewRole`, itself validated at task-packet creation by `domain/contracts.ts`'s `validateTaskPacket` (`requiredReviews must be limited to...`, line ~762); `latestReview.state` is bounded by the `reviews.state` DB CHECK constraint (`001_initial_schema.sql:114`: `'pending'\|'passed'\|'blocked'\|'waived'`) | yes |
+| `duplicateRuns.runIds` | MACHINE-GENERATED (DB) | `tasks.run_id` is a native Postgres `uuid` column with a foreign-key reference to `runs(id)` (`001_initial_schema.sql:38`) — DB column TYPE + FK enforcement, genuinely enforced, not merely assumed by convention | yes |
+| `closureBlocks.missingRoles` | ENUM, bounded by construction (application-layer only) | `core/closure-reconciler.ts`'s `requiredFloor` is either `effectiveRequiredReviews(task.packet.requiredReviews)` (validated `GateReviewRole[]`) or `reduction.effectiveFloor`, whose ONLY writer (`core/gate-closure-manager.ts:332`) always derives it from `effectiveRequiredReviewsForTask`'s `GateReviewRole[]` return. `effectiveFloor` is stored as a plain `text[]` column with NO DB CHECK constraint — single-writer application-level enforcement, not schema-level; flagged here as the one row in this table that is "provably safe today" rather than "structurally impossible to violate" | yes |
+| `councilGates.outcome` | validated string (round-15 fix) | `why-vocabulary.ts`'s `buildKnownVocabulary`: `validateEnumMember(gate.outcome, COUNCIL_OUTCOME_LIST)`, `COUNCIL_OUTCOME_LIST` derived from `record-council.ts`'s exported `COUNCIL_OUTCOME_TOKENS` (the actual write-side canonical set) | yes, validated |
+| `ownerWork.directiveKind` | STATIC (compiled-in literal) | `why.ts` hardcodes the literal `"dispatch_owner"` at its one construction site — not read from any external input | yes |
+| `respawn.*` (count/budget/leaseHeld/leaseOwner) | N/A — never folded in | `buildKnownVocabulary` does not reference `signals.respawn` at all (round-13 removed the one line that did, `respawn.taskId`) | never added |
+| sidecar `hookBlocker.blockerKind` | validated enum (round 14) | `why.ts`'s `readHookBlockerSidecar` → `validateEnumMember` against `domain/types.ts`'s `hookBlockerKinds`, cross-checked against `.claude/hooks/hook-utils.mjs`'s module-private `hookBlockerKinds` by `tests/admin-why-hook-blocker-kind-parity.test.ts` | yes, validated |
+| sidecar `hookBlocker.recordedAt` | validated ISO timestamp (round 14, round-trip corrected round 15) | `why.ts`'s `readHookBlockerSidecar` → `why-sidecar-validation.ts`'s `validateIsoTimestamp` (exact `toISOString()` round-trip as of round 15) | yes, validated |
+| sidecar `contextGuard.invocationId` | validated UUID shape (round 14) | `why.ts`'s `readContextGuardSidecar` → `why-sidecar-validation.ts`'s `validateUuid` | yes, validated |
+| sidecar `contextGuard.state` | validated enum (round 14) | `why.ts`'s `readContextGuardSidecar` → `validateEnumMember` against `runtime/interactive-parachute.ts`'s exported `CONTEXT_GUARD_STATES` | yes, validated |
+| sidecar `daemonHandoff`/`daemonSupervisor.blockerKind`/`.state` | validated enum (round-14 arrays wired up for real, round 15) | `daemon/state-readers.ts`'s `readDaemonOperatorHandoff`/`readDaemonSupervisorStatus` → `matchOrFallback` (built on `validateEnumMember`) against `admin/status.ts`'s `DAEMON_HANDOFF_STATES`/`DAEMON_HANDOFF_BLOCKER_KINDS`/`DAEMON_SUPERVISOR_STATES`/`DAEMON_SUPERVISOR_BLOCKER_KINDS`, which the interface types themselves derive from | yes, validated |
+
+### 2. MEDIUM — validateIsoTimestamp round-trip claim was false
+
+`Date.parse`/`new Date(...)` silently NORMALIZES an out-of-range date instead
+of rejecting it — `Date.parse("2026-02-30T00:00:00.000Z")` does not return
+`NaN`; it quietly becomes March 2. The round-14 validator's `Number.isNaN`
+check therefore accepted a shape-matching-but-semantically-invalid date as
+"round-tripped", which it never actually did.
+
+Verified the writer contract first: every real writer of a `recordedAt`
+field this module reads calls `new Date().toISOString()` exactly
+(`.claude/hooks/hook-policy.mjs:486`) — there is exactly one canonical
+serialization in play. Fixed `validateIsoTimestamp` to actually round-trip:
+shape-match, `Date.parse`, then RE-SERIALIZE (`new Date(ms).toISOString()`)
+and require EXACT string equality against the input. This is deliberately
+narrower than "any ISO-8601-legal string" — a real, valid instant written in
+a different (still-legal) form (a non-UTC offset, a different fractional-
+second precision) is also rejected, since it could never have come from this
+codebase's own writer. Documented as the module's stated contract: accepts
+ONLY canonical `toISOString()` form.
+
+Tests: the exact Feb-30 repro (asserting `Date.parse` alone does NOT report
+`NaN` for it — proving the OLD bug would have passed — then asserting the
+round-trip correctly rejects it); a valid leap day (`2028-02-29`, a real
+leap year) as the positive control.
+
+### 3. MEDIUM — daemon enum arrays were dead code
+
+Round 14 exported `DAEMON_HANDOFF_STATES`/`DAEMON_HANDOFF_BLOCKER_KINDS`/
+`DAEMON_SUPERVISOR_STATES`/`DAEMON_SUPERVISOR_BLOCKER_KINDS` from
+`admin/status.ts` and made the interface types derive from them, but never
+wired any READER to consume them — `daemon/state-readers.ts` kept its own
+hand-rolled `===` OR-chain duplicates, unenforced against any shared source.
+Completed the single-sourcing for real: confirmed no import-cycle risk first
+(`state-readers.ts` already type-imports from `admin/status.ts`; `status.ts`
+imports nothing from `daemon/`), then wired `readDaemonOperatorHandoff`/
+`readDaemonSupervisorStatus` to a small shared `matchOrFallback` helper
+(built on `why-sidecar-validation.ts`'s `validateEnumMember`, imported
+across the `daemon/` → `admin/` boundary the same way this file already
+imports `admin/autonomous-summary.ts`) consuming the canonical arrays, and
+deleted the hand-rolled OR-chains entirely.
+
+A THIRD hand-rolled duplicate of the supervisor state list was found in
+`readDaemonSupervisorHistory`'s per-line JSONL parsing — deliberately NOT
+unified this round: its "unrecognized state" semantics genuinely differ
+(drops the whole history line rather than falling back to a literal
+`"invalid"`), it would need its own narrower "terminal states only"
+sub-array to unify correctly, and — most importantly — it is never consumed
+by the why-redaction vocabulary pipeline at all (`why.ts` never reads
+supervisor history), so it carries no redaction-security exposure. Recorded
+here as an owned, explicit follow-up, not silently carried or expanded into
+under this round's scope (same treatment as round 13's `appendTasks` gap).
+
+Anti-drift test (`tests/daemon-state-readers.test.ts`, the same cross-module
+source-pinning pattern used for `daemon/supervisor.ts` in round 14): asserts
+`state-readers.ts`'s own source imports the four canonical arrays and does
+NOT contain the old hand-rolled OR-chain; both-directions behavioral tests
+(a recognized value passes through; an attacker-controlled secret-shaped
+value falls back to `"invalid"`/`"unknown"` exactly as before).
+
+### 4. LOW — line-count claim corrected
+
+The round-14 report stated `why-redaction.ts` at 517 lines; direct `wc -l`
+shows 519. Corrected above and in this round's own verification (see
+"Probes run" below for the exact numbers this round produced).
+
+### Probes run
+
+The gate's councilOutcome repro (unrelated task's secret-shaped council
+outcome, checked against a different scoped task's hook-blocker free text)
+at the `diagnoseStall` level — the string does not appear in rendered or
+`--json` output; a legitimate non-approved-class outcome (`rework_required`)
+still validates through. The Feb-30/leap-day timestamp probes (above). The
+state-readers.ts attacker-controlled `state`/`blockerKind` probes (real fs,
+both operator-handoff and supervisor-status paths) — attacker values fall
+back to `"invalid"`/`"unknown"`, real values pass through unchanged. Full
+suite green; exact numbers in this round's closing report.

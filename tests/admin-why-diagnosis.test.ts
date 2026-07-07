@@ -991,3 +991,91 @@ test("round-13 CRITICAL: an unrelated task's secret-shaped id must NOT survive i
     "the secret-shaped sibling task id must not appear anywhere in the raw --json diagnosis either"
   );
 });
+
+// ---------------------------------------------------------------------------
+// Round-15 CRITICAL: councilGates.outcome folded unvalidated. task.packet.
+// councilOutcome is `string | undefined` at the domain level (not a typed
+// union) — a secret-shaped councilOutcome on a sibling task became trusted
+// vocabulary and could rescue that same string inside an unrelated, in-scope
+// task's free text. Identical class to the round-13 task-id bypass and the
+// round-14 sidecar-field bypass.
+// ---------------------------------------------------------------------------
+
+test("round-15 CRITICAL: an unrelated task's secret-shaped councilOutcome must NOT survive in a different task's free text", () => {
+  const secretShapedOutcome = "hunter2Aa1SuperSecretCouncil9";
+  const d = diagnoseStall(
+    baseline({
+      scope: { taskId: "t-focus" },
+      // The secret-shaped councilOutcome belongs to a completely different,
+      // unrelated task elsewhere in the same run.
+      councilGates: [{ taskId: "t-sibling", outcome: secretShapedOutcome }],
+      sidecars: {
+        // The FOCUS task's own hook-blocker free text happens to mention the
+        // same secret-shaped string (the laundering path).
+        hookBlocker: {
+          taskId: "t-focus",
+          blockerKind: "runtime_preflight",
+          command: `npm test ${secretShapedOutcome}`,
+          summary: "tests failed"
+        }
+      }
+    })
+  );
+
+  const hookBlockerCause = cause(d, "hook_blocker");
+  assert.ok(hookBlockerCause);
+  assert.equal(
+    hookBlockerCause!.evidence.values.command,
+    "npm [redacted] [redacted]",
+    `the secret-shaped councilOutcome must redact, not survive via the unrelated council gate: ${JSON.stringify(hookBlockerCause!.evidence.values.command)}`
+  );
+
+  // The unrelated council gate is out of scope, so it never surfaces its own
+  // cause here either — same as the round-13 test's structure.
+  assert.equal(cause(d, "council_gate"), undefined, "the unrelated council gate is out of scope and must not surface its own cause");
+
+  const rendered = formatStallDiagnosis(d);
+  assert.equal(
+    rendered.includes(secretShapedOutcome),
+    false,
+    `the secret-shaped sibling councilOutcome must not appear anywhere in the rendered output: ${rendered}`
+  );
+  assert.equal(
+    serializeStallDiagnosis(d).includes(secretShapedOutcome),
+    false,
+    "the secret-shaped sibling councilOutcome must not appear anywhere in the raw --json diagnosis either"
+  );
+});
+
+test("round-15: a legitimate, non-approved-class councilOutcome (e.g. 'rework_required') still validates into the vocabulary", () => {
+  // COUNCIL_OUTCOME_TOKENS (record-council.ts) is a 7-value SUPERSET of
+  // councilApprovedOutcomes (the 4 approved-class tokens) — a real recorded
+  // "rework_required"/"rejected"/"pending" outcome must not be wrongly
+  // treated as invalid just because it isn't approved-class.
+  const legitimateOutcome = "rework_required";
+  const d = diagnoseStall(
+    baseline({
+      scope: { taskId: "t-focus" },
+      councilGates: [{ taskId: "t-focus", outcome: legitimateOutcome }],
+      sidecars: {
+        hookBlocker: {
+          taskId: "t-focus",
+          blockerKind: "runtime_preflight",
+          command: `npm test ${legitimateOutcome}`,
+          summary: "tests failed"
+        }
+      }
+    })
+  );
+  const hookBlockerCause = cause(d, "hook_blocker");
+  assert.ok(hookBlockerCause);
+  // "npm" is static vocabulary (round-13 daemon-guidance-text tokenization);
+  // "test" is ordinary prose with no vocabulary backing and redacts by
+  // design (unrelated to this fix) — the load-bearing assertion is that
+  // "rework_required" itself survives, proving it validated into vocabulary.
+  assert.equal(
+    hookBlockerCause!.evidence.values.command,
+    `npm [redacted] ${legitimateOutcome}`,
+    `a legitimate councilOutcome token must survive as vocabulary: ${JSON.stringify(hookBlockerCause!.evidence.values.command)}`
+  );
+});

@@ -2,31 +2,19 @@
  * @module admin/why-vocabulary
  *
  * Known-vocabulary construction for `archon why`'s round-5 redaction model
- * (audit F9, gate finding 1: "anchor the allowlist to KNOWN VOCABULARY, per
- * the gate's option (a)"). Split out of why-diagnosis.ts for the same reason
- * round 3 split why-redaction.ts out.
+ * (audit F9, gate finding 1: "anchor the allowlist to KNOWN VOCABULARY").
+ * Split out of why-diagnosis.ts for the same reason round 3 split
+ * why-redaction.ts out.
  *
  * A generic identifier SHAPE can never prove a free-text token is safe (a
  * real secret often looks exactly like a task id or role name). This module
  * builds the `knownSafeTokens` vocabulary that why-redaction.ts's
  * `sanitizeFreeText`/`sanitizeForDisplay` anchor to instead, from STRUCTURED
- * context `diagnoseStall` already holds.
- *
- * Round-13 CRITICAL fix (full repro/fix narrative in
- * `why-redaction-design-history.md`'s round-13 entry): round 12's inversion
+ * context `diagnoseStall` already holds. Round 12's fail-closed inversion
  * made this vocabulary the load-bearing security boundary, so every source
- * folded in must be provably non-attacker-choosable. `buildKnownVocabulary`
- * used to fold EVERY task id in the entire run in unconditionally — task ids
- * are agent-chosen, unbounded strings, so an attacker-named task could get
- * its secret-shaped id vouched-for globally. Every source is now classified
- * (STATIC / MACHINE-GENERATED / the one BOUNDED EXCEPTION `scope.taskId` /
- * FREE-FORM, never added) — see `buildKnownVocabulary`'s doc comment below.
- *
- * Round-13 MEDIUM fix: two real, single-sourced, code-authored `nextActions`
- * texts (`daemon-guidance-text.ts`) are tokenized here too, the same pattern
- * as `RECOMMENDED_COMMANDS` — previously free-text with zero vocabulary
- * backing, so `daemon_handoff_blocked`/`daemon_supervisor_blocked`'s
- * recommended-fix message rendered as all-`[redacted]` noise.
+ * folded in must be provably non-attacker-choosable — see
+ * `buildKnownVocabulary`'s doc comment and `why-redaction-design-history.md`'s
+ * round-13/14/15 entries for the full classification/enforcement narrative.
  */
 
 import { tokenizeToVocabulary } from "./why-redaction.ts";
@@ -38,7 +26,15 @@ import {
 } from "../domain/types.ts";
 import { RETRO_OUTCOME_TOKENS } from "./record-retro.ts";
 import { RUNTIME_EXECUTION_PREFLIGHT_NEXT_ACTIONS, MISSING_REVIEW_ACTOR_HINT_WORDS } from "../daemon-guidance-text.ts";
+import { COUNCIL_OUTCOME_TOKENS } from "./record-council.ts";
+import { validateEnumMember } from "./why-sidecar-validation.ts";
 import type { StallSignals } from "./why-diagnosis.ts";
+
+/** record-council.ts's full write-side outcome set (7 tokens) — a SUPERSET of
+ * `councilApprovedOutcomes` (the 4 approved-class tokens). `councilOutcome`
+ * is a plain `string | undefined` at the domain level, so a legitimately
+ * recorded "rejected"/"rework_required"/"pending" must still validate. */
+const COUNCIL_OUTCOME_LIST = [...COUNCIL_OUTCOME_TOKENS];
 
 /** The exact `nextCommand` templates why-diagnosis.ts recommends, named once
  * so both cause construction AND vocabulary derivation read from the same
@@ -118,29 +114,21 @@ function addTokenized(target: Set<string>, ...values: ReadonlyArray<string | und
 }
 
 /**
- * Builds the `knownSafeTokens` vocabulary for one `diagnoseStall` call.
- * Round-13 CRITICAL fix — classification (source: class: kept?; full
- * rationale in `why-redaction-design-history.md`'s round-13 entry):
- *   static tokens (enums+code strings): static: yes.
- *   scope.taskId: BOUNDED EXCEPTION (operator's own scope, never extended): yes.
- *   scope.runId/run.id: machine-gen UUID: yes. run.status: enum: yes.
- *   taskCounts keys: enum (redundant w/ static): yes.
- *   blockedTasks/reviewBlockedTasks/duplicateRuns.taskKey/closureBlocks/
- *   sealReadyTaskIds/councilGates/respawn/ownerWork.taskIds/sidecar taskIds:
- *   FREE-FORM (sibling ids, agent-choosable): NO — dropped, never added.
- *   reviewBlockedTasks.blockers: code template + bounded enum interpolation
- *   (evaluateReviewDecision): yes. duplicateRuns.runIds: machine-gen UUID: yes.
- *   closureBlocks.missingRoles/councilGates.outcome: enum: yes.
- *   ownerWork.directiveKind: code-authored constant ("dispatch_owner"): yes.
- *   sidecar blockerKind/state: bounded, code-defined at each writer site: yes.
- *   sidecar recordedAt/invocationId: machine-gen (ISO/UUID): yes.
+ * Builds the `knownSafeTokens` vocabulary for one `diagnoseStall` call. Every
+ * source folded in below is classified (STATIC / MACHINE-GENERATED (DB
+ * column type or schema CHECK constraint) / BOUNDED EXCEPTION / FREE-FORM,
+ * never added) and traced to its ENFORCEMENT POINT — the full per-row table,
+ * re-audited round 15 with fresh eyes after the gate falsified it twice
+ * (round-13 task ids, round-15 councilOutcome), lives in
+ * `why-redaction-design-history.md`'s round-15 entry; do not trust a stale
+ * copy here if the two ever disagree.
  *
- * Dropped task ids still APPEAR in rendered output — why-diagnosis.ts
- * interpolates them via `structured()`, resolved AFTER free-text
- * sanitization, never touching `knownSafeTokens`. Dropping a sibling task id
- * here only stops it from ALSO rescuing an unrelated free-text token
- * elsewhere in the SAME diagnosis (the round-13 bypass) — it does not remove
- * the id from the diagnosis itself.
+ * Dropped/invalid values still APPEAR in rendered output where applicable —
+ * why-diagnosis.ts interpolates task ids etc. via `structured()`, resolved
+ * AFTER free-text sanitization, never touching `knownSafeTokens`. Excluding
+ * a value here only stops it from ALSO rescuing an unrelated free-text token
+ * elsewhere in the SAME diagnosis — it does not remove it from the
+ * diagnosis itself.
  */
 export function buildKnownVocabulary(signals: StallSignals): ReadonlySet<string> {
   const vocabulary = new Set(STATIC_VOCABULARY_TOKENS);
@@ -161,7 +149,13 @@ export function buildKnownVocabulary(signals: StallSignals): ReadonlySet<string>
   for (const block of signals.closureBlocks ?? []) {
     for (const role of block.missingRoles) addTokenized(vocabulary, role);
   }
-  for (const gate of signals.councilGates ?? []) addTokenized(vocabulary, gate.outcome);
+  // Round-15: councilOutcome is `string | undefined`, NOT a typed union — it
+  // must validate against COUNCIL_OUTCOME_LIST at THIS fold site (same class
+  // as round-14 sidecar fields). Invalid drops from vocabulary only, not
+  // from the diagnosis (still renders via structured()).
+  for (const gate of signals.councilGates ?? []) {
+    addTokenized(vocabulary, validateEnumMember(gate.outcome, COUNCIL_OUTCOME_LIST));
+  }
   if (signals.ownerWork) addTokenized(vocabulary, signals.ownerWork.directiveKind);
 
   const { hookBlocker, contextGuard, daemonHandoff, daemonSupervisor } = signals.sidecars;

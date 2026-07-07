@@ -34,6 +34,21 @@ test("validateIsoTimestamp: a shape-matching but semantically invalid date is re
   assert.equal(validateIsoTimestamp("2026-13-40T99:99:99Z"), undefined);
 });
 
+// Round-15 MEDIUM fix: Date.parse silently NORMALIZES an out-of-range day
+// instead of rejecting it (Feb 30 becomes March 2) — the round-trip
+// (re-serialize + exact-compare) is what actually catches this, not
+// Date.parse's non-NaN check alone.
+test("validateIsoTimestamp: day overflow (Feb 30) silently normalizes under Date.parse alone but is rejected by the round-trip check", () => {
+  const feb30 = "2026-02-30T00:00:00.000Z";
+  assert.equal(Number.isNaN(Date.parse(feb30)), false, "Date.parse must NOT report NaN for this input (that is exactly the bug)");
+  assert.equal(validateIsoTimestamp(feb30), undefined);
+});
+
+test("validateIsoTimestamp: a valid leap day (2028-02-29, a real leap year) round-trips and is accepted", () => {
+  const leapDay = "2028-02-29T00:00:00.000Z";
+  assert.equal(validateIsoTimestamp(leapDay), leapDay);
+});
+
 test("validateUuid: a real UUID passes through", () => {
   const uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
   assert.equal(validateUuid(uuid), uuid);
