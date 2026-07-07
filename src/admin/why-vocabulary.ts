@@ -4,30 +4,29 @@
  * Known-vocabulary construction for `archon why`'s round-5 redaction model
  * (audit F9, gate finding 1: "anchor the allowlist to KNOWN VOCABULARY, per
  * the gate's option (a)"). Split out of why-diagnosis.ts for the same reason
- * round 3 split why-redaction.ts out — this module's growth is real new
- * functionality, not something that belongs bundled into the ranking core.
+ * round 3 split why-redaction.ts out.
  *
  * A generic identifier SHAPE can never prove a free-text token is safe (a
  * real secret often looks exactly like a task id or role name). This module
  * builds the `knownSafeTokens` vocabulary that why-redaction.ts's
  * `sanitizeFreeText`/`sanitizeForDisplay` anchor to instead, from STRUCTURED
- * context `diagnoseStall` already holds:
+ * context `diagnoseStall` already holds.
  *
- *   - Static: domain enums (task/run statuses, gate-review role names,
- *     council-approved outcomes, retro-outcome tokens) imported from their
- *     single owning module — never retyped here — plus this module's own
- *     recommended command words and sidecar/table evidence-source paths,
- *     tokenized from the SAME literal strings `why-diagnosis.ts` uses to
- *     build `nextCommand`/`source` values (`RECOMMENDED_COMMANDS` /
- *     `EVIDENCE_SOURCES` below), so the vocabulary can never drift from what
- *     a cause class actually emits.
- *   - Dynamic: every task id, run id, role name, and status/enum/outcome
- *     token actually present in one `StallSignals` snapshot.
+ * Round-13 CRITICAL fix (full repro/fix narrative in
+ * `why-redaction-design-history.md`'s round-13 entry): round 12's inversion
+ * made this vocabulary the load-bearing security boundary, so every source
+ * folded in must be provably non-attacker-choosable. `buildKnownVocabulary`
+ * used to fold EVERY task id in the entire run in unconditionally — task ids
+ * are agent-chosen, unbounded strings, so an attacker-named task could get
+ * its secret-shaped id vouched-for globally. Every source is now classified
+ * (STATIC / MACHINE-GENERATED / the one BOUNDED EXCEPTION `scope.taskId` /
+ * FREE-FORM, never added) — see `buildKnownVocabulary`'s doc comment below.
  *
- * `StallSignals` is imported as a type only (no runtime import) — this keeps
- * why-diagnosis.ts → why-vocabulary.ts a one-directional VALUE dependency
- * (buildKnownVocabulary, RECOMMENDED_COMMANDS, EVIDENCE_SOURCES) with only a
- * type flowing the other way, so there is no runtime circular-import risk.
+ * Round-13 MEDIUM fix: two real, single-sourced, code-authored `nextActions`
+ * texts (`daemon-guidance-text.ts`) are tokenized here too, the same pattern
+ * as `RECOMMENDED_COMMANDS` — previously free-text with zero vocabulary
+ * backing, so `daemon_handoff_blocked`/`daemon_supervisor_blocked`'s
+ * recommended-fix message rendered as all-`[redacted]` noise.
  */
 
 import { tokenizeToVocabulary } from "./why-redaction.ts";
@@ -38,6 +37,7 @@ import {
   taskStatuses
 } from "../domain/types.ts";
 import { RETRO_OUTCOME_TOKENS } from "./record-retro.ts";
+import { RUNTIME_EXECUTION_PREFLIGHT_NEXT_ACTIONS, MISSING_REVIEW_ACTOR_HINT_WORDS } from "../daemon-guidance-text.ts";
 import type { StallSignals } from "./why-diagnosis.ts";
 
 /** The exact `nextCommand` templates why-diagnosis.ts recommends, named once
@@ -102,7 +102,9 @@ const STATIC_VOCABULARY_TOKENS: readonly string[] = [
   "unknown",
   "unset",
   ...Object.values(RECOMMENDED_COMMANDS).flatMap(tokenizeToVocabulary),
-  ...Object.values(EVIDENCE_SOURCES).flatMap(tokenizeToVocabulary)
+  ...Object.values(EVIDENCE_SOURCES).flatMap(tokenizeToVocabulary),
+  ...tokenizeToVocabulary(RUNTIME_EXECUTION_PREFLIGHT_NEXT_ACTIONS.join(" ")),
+  ...tokenizeToVocabulary(MISSING_REVIEW_ACTOR_HINT_WORDS)
 ];
 
 /** Tokenizes every defined string argument and adds each core token to
@@ -116,45 +118,55 @@ function addTokenized(target: Set<string>, ...values: ReadonlyArray<string | und
 }
 
 /**
- * Builds the `knownSafeTokens` vocabulary for one `diagnoseStall` call —
- * STRUCTURED context this module already holds: every task id, run id, role
- * name, and status/enum/outcome token present in `signals`, plus the static
- * command-word and sidecar-path vocabulary above. This is deliberately NOT a
- * generic "does it look like an identifier" check (round-5 CRITICAL fix) —
- * only vocabulary actually present in this diagnosis's own structured data
- * can make a freeText token survive.
+ * Builds the `knownSafeTokens` vocabulary for one `diagnoseStall` call.
+ * Round-13 CRITICAL fix — classification (source: class: kept?; full
+ * rationale in `why-redaction-design-history.md`'s round-13 entry):
+ *   static tokens (enums+code strings): static: yes.
+ *   scope.taskId: BOUNDED EXCEPTION (operator's own scope, never extended): yes.
+ *   scope.runId/run.id: machine-gen UUID: yes. run.status: enum: yes.
+ *   taskCounts keys: enum (redundant w/ static): yes.
+ *   blockedTasks/reviewBlockedTasks/duplicateRuns.taskKey/closureBlocks/
+ *   sealReadyTaskIds/councilGates/respawn/ownerWork.taskIds/sidecar taskIds:
+ *   FREE-FORM (sibling ids, agent-choosable): NO — dropped, never added.
+ *   reviewBlockedTasks.blockers: code template + bounded enum interpolation
+ *   (evaluateReviewDecision): yes. duplicateRuns.runIds: machine-gen UUID: yes.
+ *   closureBlocks.missingRoles/councilGates.outcome: enum: yes.
+ *   ownerWork.directiveKind: code-authored constant ("dispatch_owner"): yes.
+ *   sidecar blockerKind/state: bounded, code-defined at each writer site: yes.
+ *   sidecar recordedAt/invocationId: machine-gen (ISO/UUID): yes.
+ *
+ * Dropped task ids still APPEAR in rendered output — why-diagnosis.ts
+ * interpolates them via `structured()`, resolved AFTER free-text
+ * sanitization, never touching `knownSafeTokens`. Dropping a sibling task id
+ * here only stops it from ALSO rescuing an unrelated free-text token
+ * elsewhere in the SAME diagnosis (the round-13 bypass) — it does not remove
+ * the id from the diagnosis itself.
  */
 export function buildKnownVocabulary(signals: StallSignals): ReadonlySet<string> {
   const vocabulary = new Set(STATIC_VOCABULARY_TOKENS);
 
+  // BOUNDED EXCEPTION: only the CURRENT diagnosis's own explicit scope — the
+  // one task/run id the operator actually asked about — is trusted. No other
+  // task id anywhere below gets this treatment (round-13 CRITICAL fix).
   addTokenized(vocabulary, signals.scope.taskId, signals.scope.runId);
   addTokenized(vocabulary, signals.run?.id, signals.run?.status);
   for (const key of Object.keys(signals.taskCounts ?? {})) vocabulary.add(key);
 
-  for (const task of signals.blockedTasks ?? []) addTokenized(vocabulary, task.taskId);
   for (const task of signals.reviewBlockedTasks ?? []) {
-    addTokenized(vocabulary, task.taskId);
     for (const blocker of task.blockers) addTokenized(vocabulary, blocker);
   }
   for (const group of signals.duplicateRuns ?? []) {
-    addTokenized(vocabulary, group.taskKey);
     for (const runId of group.runIds) addTokenized(vocabulary, runId);
   }
   for (const block of signals.closureBlocks ?? []) {
-    addTokenized(vocabulary, block.taskId);
     for (const role of block.missingRoles) addTokenized(vocabulary, role);
   }
-  for (const taskId of signals.sealReadyTaskIds ?? []) addTokenized(vocabulary, taskId);
-  for (const gate of signals.councilGates ?? []) addTokenized(vocabulary, gate.taskId, gate.outcome);
-  if (signals.respawn) addTokenized(vocabulary, signals.respawn.taskId);
-  if (signals.ownerWork) {
-    addTokenized(vocabulary, signals.ownerWork.directiveKind);
-    for (const taskId of signals.ownerWork.taskIds) addTokenized(vocabulary, taskId);
-  }
+  for (const gate of signals.councilGates ?? []) addTokenized(vocabulary, gate.outcome);
+  if (signals.ownerWork) addTokenized(vocabulary, signals.ownerWork.directiveKind);
 
   const { hookBlocker, contextGuard, daemonHandoff, daemonSupervisor } = signals.sidecars;
-  if (hookBlocker) addTokenized(vocabulary, hookBlocker.taskId, hookBlocker.blockerKind, hookBlocker.recordedAt);
-  if (contextGuard) addTokenized(vocabulary, contextGuard.taskId, contextGuard.invocationId, contextGuard.state);
+  if (hookBlocker) addTokenized(vocabulary, hookBlocker.blockerKind, hookBlocker.recordedAt);
+  if (contextGuard) addTokenized(vocabulary, contextGuard.invocationId, contextGuard.state);
   if (daemonHandoff) addTokenized(vocabulary, daemonHandoff.blockerKind, daemonHandoff.state);
   if (daemonSupervisor) addTokenized(vocabulary, daemonSupervisor.blockerKind, daemonSupervisor.state);
 

@@ -217,12 +217,15 @@ test("hook_blocker present → re-run failed command", () => {
   // Round-4: nextCommand no longer embeds the raw command directly (single-
   // egress discipline — the redacted command lives ONCE, in evidence.values,
   // and nextCommand just points there + at the sidecar file).
-  // Round-5: "npm"/"test" are ordinary prose, not part of this diagnosis's
-  // known vocabulary (neither is a task/run id, role, enum, or a command
-  // this module itself recommends), so they redact by default — the
-  // intended, honestly re-disclosed friction (why-redaction.ts's module
-  // header), not a bug.
-  assert.equal(c!.evidence.values.command, "[redacted] [redacted]");
+  // Round-5: "test" is ordinary prose, not part of this diagnosis's known
+  // vocabulary, so it redacts by default — the intended, honestly
+  // re-disclosed friction (why-redaction.ts's module header), not a bug.
+  // Round-13: "npm" is now static vocabulary (it appears verbatim inside
+  // `RUNTIME_EXECUTION_PREFLIGHT_NEXT_ACTIONS`'s code-authored text, tokenized
+  // the same way as RECOMMENDED_COMMANDS), so it survives here too — a safe,
+  // expected side effect of finding 2's fix, not a new bypass (it is not a
+  // secret and never was).
+  assert.equal(c!.evidence.values.command, "npm [redacted]");
   assert.match(c!.nextCommand, /this cause's evidence/);
   assert.match(c!.nextCommand, /hook-blocker-state\.json/);
 });
@@ -230,6 +233,12 @@ test("hook_blocker present → re-run failed command", () => {
 test("hook_blocker: a recorded command matching this module's own recommended-command vocabulary survives", () => {
   const d = diagnoseStall(
     baseline({
+      // Round-13: the task id inside the recorded command only survives via
+      // the BOUNDED EXCEPTION (signals.scope.taskId, the CURRENT diagnosis's
+      // own explicit scope) — a "sibling" id (the hookBlocker's own taskId,
+      // when it differs from scope) no longer gets vocabulary trust. Scoping
+      // this diagnosis to "t1" exercises that exception correctly.
+      scope: { taskId: "t1" },
       sidecars: {
         hookBlocker: {
           taskId: "t1",
@@ -244,7 +253,8 @@ test("hook_blocker: a recorded command matching this module's own recommended-co
   assert.ok(c);
   // "npx"/"tsx"/"./src/admin.ts"/"status" all appear verbatim inside this
   // module's own RECOMMENDED_COMMANDS templates, so they are known
-  // vocabulary; "t1" is the hookBlocker's own taskId, also known. Nothing in
+  // vocabulary; "t1" is the CURRENT diagnosis's own explicit scope, also
+  // known (the round-13 bounded exception). Nothing in
   // this recorded command is unrecognized, so nothing redacts.
   assert.equal(c!.evidence.values.command, "npx tsx ./src/admin.ts status --task-id t1");
 });
@@ -308,23 +318,20 @@ test("daemon_handoff_blocked present, real 2-step nextActions → BOTH steps joi
   );
   const c = cause(d, "daemon_handoff_blocked");
   assert.ok(c);
-  // Round-5: nextActions is freeText sourced from a daemon-written sidecar
-  // file, so under vocabulary-anchoring almost every prose word in it
-  // redacts by default (none of it is a task/run id, role, enum, or command
-  // word this module itself recommends — see why-redaction.ts's module
-  // header for the honestly re-disclosed friction). The point of THIS test
-  // is structural, not lexical: both steps must survive the join, in order,
-  // none silently dropped — proven by both numbered markers being present
-  // with the "then" joiner between them (joinNextActions's own
+  // Structural point (unchanged since round 5): both steps must survive the
+  // join, in order, none silently dropped — proven by both numbered markers
+  // present with the "then" joiner between them (joinNextActions's own
   // code-generated structure, never itself redacted).
   assert.match(c!.nextCommand, /^1\).*then 2\)/);
-  // Round-12: flag names are no longer safe by shape/absence-of-keyword
-  // alone (the fail-closed inversion — see why-redaction.ts's module
-  // header) — `--repair` is not a canonical keyword spelling and this
-  // sidecar-sourced free text carries no vocabulary, so it now redacts like
-  // any other non-canonical flag. The structural join assertion above (both
-  // numbered steps present, joined by "then") remains this test's point.
-  assert.match(c!.nextCommand, /\[redacted\]/, "non-canonical flags in free text redact under the round-12 inversion");
+  // Round-13 MEDIUM fix: this EXACT text is `RUNTIME_EXECUTION_PREFLIGHT_
+  // NEXT_ACTIONS` (daemon-guidance-text.ts) — a real, single-sourced,
+  // code-authored string, now tokenized into the static vocabulary the same
+  // way RECOMMENDED_COMMANDS is. It renders fully readable, including the
+  // `--repair`/`--apply` style flags that round 12's inversion would
+  // otherwise redact (they are vocabulary members, not merely flag-shaped).
+  assert.equal(c!.nextCommand.includes("[redacted]"), false, `expected fully readable text, got: ${c!.nextCommand}`);
+  assert.match(c!.nextCommand, /--repair/);
+  assert.match(c!.nextCommand, /--reconcile|archon:reconcile/);
 });
 
 test("daemon_supervisor_blocked present (state=blocked) → reported", () => {
@@ -920,4 +927,67 @@ test("runtime brand: a real diagnosis (every cause built via buildEvidence) neve
   assert.doesNotThrow(() => formatStallDiagnosis(d));
   assert.doesNotThrow(() => serializeStallDiagnosis(d));
   assert.equal(serializeStallDiagnosis(d), JSON.stringify(d));
+});
+
+// ---------------------------------------------------------------------------
+// Round-13 CRITICAL: vocabulary laundering via task ids. buildKnownVocabulary
+// used to fold EVERY task id in the entire run into knownSafeTokens
+// unconditionally, before any scope filtering — an agent/attacker-chosen,
+// secret-shaped task id anywhere in the run (blocked/review-blocked/
+// duplicate/council-gated/owner-work) became a trusted vocabulary member for
+// the WHOLE diagnosis, rescuing that exact string wherever it appeared in
+// ANY free-text field, even inside a completely unrelated task's evidence.
+// The gate's own live repro: create any unrelated task with a secret-shaped
+// id and it survives redaction verbatim inside unrelated tasks' free text.
+// ---------------------------------------------------------------------------
+
+test("round-13 CRITICAL: an unrelated task's secret-shaped id must NOT survive in a different task's free text", () => {
+  const secretShapedTaskId = "hunter2Aa1SuperSecret9";
+  const d = diagnoseStall(
+    baseline({
+      scope: { taskId: "t-focus" },
+      // The secret-shaped id belongs to a completely different, unrelated
+      // task elsewhere in the same run (a blocked task, in this repro).
+      blockedTasks: [{ taskId: secretShapedTaskId, reason: "unrelated failure" }],
+      sidecars: {
+        // The FOCUS task's own hook-blocker free text happens to mention
+        // the same secret-shaped string (simulating the laundering path:
+        // any free-text field anywhere in the diagnosis could reference it).
+        hookBlocker: {
+          taskId: "t-focus",
+          blockerKind: "runtime_preflight",
+          command: `npm test ${secretShapedTaskId}`,
+          summary: "tests failed"
+        }
+      }
+    })
+  );
+
+  const hookBlockerCause = cause(d, "hook_blocker");
+  assert.ok(hookBlockerCause);
+  assert.equal(
+    hookBlockerCause!.evidence.values.command,
+    "npm [redacted] [redacted]",
+    `the secret-shaped id must redact, not survive via the unrelated blocked task: ${JSON.stringify(hookBlockerCause!.evidence.values.command)}`
+  );
+
+  // This diagnosis is scoped to "t-focus" — the unrelated blocked task
+  // (owning the secret-shaped id) is out of scope, so `task_blocked` does
+  // not even surface as a cause. The whole point: even though that task's id
+  // never appears in ITS OWN (filtered-out) evidence here, the CRITICAL bug
+  // was that `buildKnownVocabulary` still folded it in — before any scope
+  // filtering — letting it rescue this UNRELATED cause's free text instead.
+  assert.equal(cause(d, "task_blocked"), undefined, "the unrelated task is out of scope and must not surface its own cause");
+
+  const rendered = formatStallDiagnosis(d);
+  assert.equal(
+    rendered.includes(secretShapedTaskId),
+    false,
+    `the secret-shaped sibling task id must not appear anywhere in the rendered output: ${rendered}`
+  );
+  assert.equal(
+    serializeStallDiagnosis(d).includes(secretShapedTaskId),
+    false,
+    "the secret-shaped sibling task id must not appear anywhere in the raw --json diagnosis either"
+  );
 });

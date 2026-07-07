@@ -129,7 +129,7 @@ const ADVERSARIAL_FIXTURES: Array<{ name: string; text: string; secret: string }
   // Round-8 finding 5: the gate's entire round-7 probe list, encoded here.
   // NONE of the labels below ("2FA", "code", "recovery", "backup",
   // "security", "activation", "session", "CVC", "TOTP", "PIN number") is a
-  // recognized keyword in SECRET_KEYWORD_ALTERNATION or CODE_ADJACENT_KEYWORDS
+  // recognized keyword in SECRET_KEYWORD_ALTERNATION or CODE_ADJACENT_KEYWORD_ALTERNATION
   // — every one of these redacts purely because a bare number no longer
   // survives by shape at all (round-8 finding 1), proving the keyword layer
   // is genuinely non-load-bearing for this entire probe class.

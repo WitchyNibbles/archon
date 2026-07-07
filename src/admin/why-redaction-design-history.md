@@ -516,3 +516,121 @@ collides with a bounded safe shape at the cut point) remain narrow,
 already-accepted trade-offs per this module's own doctrine — not worth
 chasing further, since at most a bounded fixed-width fragment is ever at
 risk and everything past the cut is unconditionally dropped.
+
+## Round 13 — vocabulary source classification (round 12's inversion made the vocabulary load-bearing)
+
+Round 12's fail-closed inversion held — three independent roles verified
+every round-9..12 repro class closed, and the ReDoS fix measured 12-26ms.
+Security found the NEXT layer down: round 12 made `knownSafeTokens`
+(why-vocabulary.ts) the load-bearing trust boundary for flag/value survival,
+but nothing had yet audited what actually FEEDS that vocabulary.
+
+### 1. CRITICAL — vocabulary laundering via task ids
+
+`buildKnownVocabulary` folded EVERY task id in the entire run
+(blocked/review-blocked/duplicate/council-gated/seal-ready/respawn/owner-work/
+sidecar) into `knownSafeTokens` unconditionally, BEFORE any per-cause scope
+filtering. Task ids are agent/attacker-choosable, unbounded strings — the
+gate live-verified that creating any unrelated task with a secret-shaped id
+(e.g. `hunter2Aa1SuperSecret9`) makes that exact string a trusted vocabulary
+member for the WHOLE diagnosis, surviving verbatim inside a COMPLETELY
+UNRELATED task's free text (a hook-blocker command, a daemon reason, etc.).
+Full verbatim leak through the primary output.
+
+ROOT-CAUSE PRINCIPLE (same doctrine as round 12): the vocabulary may contain
+ONLY code-authored/enum/machine-generated strings, plus exactly ONE bounded
+exception — never a free-form, externally-choosable identifier. Every source
+`buildKnownVocabulary` folds in is now classified (STATIC / MACHINE-GENERATED
+/ the BOUNDED EXCEPTION `signals.scope.taskId` / FREE-FORM never added) — the
+full table lives in `why-vocabulary.ts`'s own header and `buildKnownVocabulary`
+doc comment. Every "sibling" task id/key (any task OTHER than the one the
+operator explicitly asked about) is now excluded, including — deliberately,
+per the manager's explicit instruction NOT to extend the exception to
+siblings — a sidecar's own `taskId` (`hookBlocker.taskId`, `contextGuard.taskId`)
+even though that sidecar's cause is itself scope-filtered before rendering:
+the vocabulary is built ONCE, before any per-cause filtering, so granting it
+trust there would reopen the exact same class through a narrower door.
+
+Excluded task ids still APPEAR in the diagnosis: why-diagnosis.ts interpolates
+every task id via `structured()`, which resolves evidence values AFTER
+free-text sanitization and never consults `knownSafeTokens` — dropping a
+sibling id from the vocabulary only stops it from ALSO rescuing an unrelated
+free-text token elsewhere in the SAME diagnosis; it does not remove the id
+from its own evidence.
+
+Verified with the gate's exact repro (an unrelated blocked task's
+secret-shaped id, a hook-blocker command for a DIFFERENT scoped task
+mentioning that string) at both the pure `diagnoseStall` level and the full
+`runWhyDiagnosis` → `formatStallDiagnosis`/`--json` entrypoint level — the
+string no longer appears anywhere in either rendered form.
+
+### 2. MEDIUM — static nextActions text rendered as all-redacted noise
+
+`daemon_handoff_blocked`/`daemon_supervisor_blocked`'s recommended-fix
+message is entirely code-authored (runtime.ts's execution-preflight
+guidance, supervisor.ts's missing-review-actor hint) but was never tokenized
+into the static vocabulary, so it rendered as near-total `[redacted]` noise
+even though nothing in it is externally influenced. Fixed by extracting both
+literal texts into a new, tiny, dependency-free module,
+`src/daemon-guidance-text.ts` — deliberately NOT importing `runtime.ts` or
+`daemon/supervisor.ts` directly into `why-vocabulary.ts` (a small, hot-path
+diagnostic module), which would have pulled in their much heavier
+db-preflight/doctor/supervisor-orchestration dependency graphs just for two
+strings. `runtime.ts` and `daemon/supervisor.ts` now import their own
+literal text FROM this shared module (single-sourced, never retyped);
+`why-vocabulary.ts` tokenizes it the same way it already threads
+`RECOMMENDED_COMMANDS`. The `daemon_handoff_blocked` case (single, static,
+2-step array) now renders fully readable end to end. The `daemon_supervisor_
+blocked` missing-review-actor hint renders its two fixed words ("provide",
+"--review-actor") but the compound `<role>=<actor>` segment (role name
+joined to a placeholder via "=", no independent whitespace boundary) still
+redacts — an honest partial improvement, not a full fix, since that segment
+is a genuinely dynamic, non-atomic token; changing the underlying message
+FORMAT to give it its own token boundary was judged out of scope for a
+vocabulary fix and would need its own review.
+
+### 3. MEDIUM — unbounded task-id length (contributing cause)
+
+Added `domain/contracts.ts`'s `MAX_TASK_ID_LENGTH = 64` (verified: the
+longest real task key in this repo's history is 33 chars), enforced at both
+creation-time validation sites: `validateTaskPacket` (used by
+`createTaskGraph`) and `admin/init-task.ts`'s `buildInitiativeRecords`
+(`VALID_TASK_ID` check), sharing the one constant. Deliberately minimal and
+additive — no other behavior changed. Explicitly NOT extended to
+`appendTasks` (`core/task-lifecycle.ts`): that function's own doc comment
+enumerates exactly what it validates (duplicate task_key, missing dependency
+edges, run existence) and does not call `validateTaskPacket` at all today —
+a pre-existing gap, not introduced by this round, and out of scope for a
+"small, additive" length-bound fix since closing it would be a real behavior
+change (new rejection paths for existing callers) needing its own review.
+Flagged here for a follow-up round, not silently carried.
+
+### 4. LOWs
+
+- Added a frozen max-lines ratchet entry for `why-redaction-keywords.ts`
+  (150, at its current 143 lines) and the new `daemon-guidance-text.ts` (50)
+  via `node scripts/generate-max-lines-ratchet.mjs` — regenerated cleanly,
+  a 2-line pure addition with no unintended bumps to any other file's frozen
+  entry (verified via `git diff --stat`).
+- Case-sensitivity: `CANONICAL_BARE_SECRET_KEYWORD` (the round-12 bare-flag
+  positive match) is case-INSENSITIVE; `knownSafeTokens` membership is
+  case-SENSITIVE. Both are deliberate, now stated explicitly in
+  `isSafeFlagName`'s doc comment: case-insensitivity for the canonical
+  spelling is safe because `--TOKEN`/`--Password` are the SAME known keyword
+  NAME in a different case, never a secret — unlike the vocabulary path, a
+  fixed spelling carries no caller-supplied data for case to narrow.
+- Fixed a stale `CODE_ADJACENT_KEYWORDS` comment reference (renamed to
+  `CODE_ADJACENT_KEYWORD_ALTERNATION` in round 12) in
+  `tests/admin-why-redaction.test.ts`.
+
+### Probes run
+
+The gate's exact CRITICAL repro (unrelated blocked task, secret-shaped id,
+hook-blocker command for a different scoped task) at both the `diagnoseStall`
+and `runWhyDiagnosis`/`--json` levels — the string no longer appears in
+either. `daemon_handoff_blocked`'s recommended text renders fully readable
+(no `[redacted]` at all). Round-9 through round-12's own repro suites all
+still pass unchanged (this round touched vocabulary SOURCES, not the
+redaction pipeline itself). Full suite: 3521 tests green, tsc clean, lint 0,
+build:dist clean (208 files). `why-redaction.ts` holds its frozen 625-line
+ratchet entry exactly.

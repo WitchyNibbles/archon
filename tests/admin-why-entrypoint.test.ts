@@ -274,6 +274,67 @@ test("runWhyDiagnosis → formatStallDiagnosis: a secret in a recorded hook-bloc
 });
 
 // ---------------------------------------------------------------------------
+// Round-13 CRITICAL: the gate's own live repro, at the full runWhyDiagnosis
+// entrypoint level — create an unrelated task in the same run with a
+// secret-shaped id, diagnose a DIFFERENT task, and confirm that string does
+// not survive in the rendered output or the raw --json diagnosis.
+// ---------------------------------------------------------------------------
+
+test("runWhyDiagnosis → formatStallDiagnosis: an unrelated task's secret-shaped id does not survive when diagnosing a different task", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "archon-why-entry-"));
+  try {
+    const secretShapedTaskId = "hunter2Aa1SuperSecret9";
+    const runSnapshot = snapshot([taskRecord("t-focus", "in_progress"), taskRecord(secretShapedTaskId, "blocked")]);
+    const deps = baseDeps(
+      {
+        env: { ARCHON_WORKSPACE_SLUG: "w", ARCHON_PROJECT_SLUG: "p" },
+        findLatestRun: async () => ({ id: "run-1" }),
+        getStatusSnapshot: async () => runSnapshot,
+        getExecutionPlan: async (runId: string) => ({
+          mode: "runtime_authoritative",
+          runId,
+          runStatus: "in_progress",
+          directive: { kind: "none", rationale: [] }
+        }),
+        readHookBlocker: async () => ({
+          taskId: "t-focus",
+          blockerKind: "pretooluse",
+          command: `npm test ${secretShapedTaskId}`,
+          summary: "tests failed",
+          recordedAt: "2026-07-05T00:00:00.000Z"
+        })
+      },
+      cwd
+    );
+
+    // Diagnose "t-focus" specifically — the unrelated blocked task (owning
+    // the secret-shaped id) is out of this diagnosis's scope.
+    const diagnosis = await runWhyDiagnosis(["--task-id", "t-focus"], deps);
+    const hookBlockerCause = diagnosis.causes.find((c) => c.id === "hook_blocker");
+    assert.ok(hookBlockerCause, "expected the hook-blocker sidecar to surface as a cause");
+    assert.equal(
+      diagnosis.causes.some((c) => c.id === "task_blocked"),
+      false,
+      "the unrelated (out-of-scope) blocked task must not surface its own cause"
+    );
+
+    const rendered = formatStallDiagnosis(diagnosis);
+    assert.equal(
+      rendered.includes(secretShapedTaskId),
+      false,
+      `the unrelated task's secret-shaped id must not appear in rendered output: ${rendered}`
+    );
+    assert.equal(
+      JSON.stringify(diagnosis).includes(secretShapedTaskId),
+      false,
+      "the unrelated task's secret-shaped id must not appear in the raw --json diagnosis"
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // makeSqlClientAdapter — round-2 reviewer LOW: replaces an unsafe whole-object
 // cast (`client as unknown as SqlClient`) with a safe adapter that wraps only
 // the one method actually needed. This is end-to-end-shaped: it feeds a

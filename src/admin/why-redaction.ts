@@ -328,25 +328,26 @@ const CANONICAL_BARE_SECRET_KEYWORD = new RegExp(`^(?:${CANONICAL_BARE_SECRET_KE
  * The fix is structural, not another regex patch: a flag body is now
  * emitted verbatim ONLY on a POSITIVE match against a bounded safe set —
  *
- *   (a) an EXACT, case-sensitive member of the caller's `knownSafeTokens`
+ *   (a) an EXACT, case-SENSITIVE member of the caller's `knownSafeTokens`
  *       vocabulary (closes the round-11 gate's own finding 4 — this was
  *       never wired in before), or
- *   (b) the flag body IS, EXACTLY, one canonical secret-keyword spelling
- *       (`CANONICAL_BARE_SECRET_KEYWORD`) — the designed labeled-flag case.
+ *   (b) the flag body IS, EXACTLY, one canonical secret-keyword spelling,
+ *       case-INSENSITIVE (`CANONICAL_BARE_SECRET_KEYWORD`; round-13 LOW,
+ *       deliberate: `--TOKEN`/`--Password` are the SAME known keyword name in
+ *       a different case, never a secret — unlike (a), a fixed spelling
+ *       carries no caller-supplied data for case to narrow) — the designed labeled-flag case.
  *
  * EVERYTHING ELSE in flag position now redacts, including a flag with NO
  * keyword content at all (`--experimental-strip-types`, `--max-warnings`) —
- * this is an ACCEPTED, DOCUMENTED trade-off (round-12 MEDIUM decision — see
- * the module header and design-history's round-12 entry): rather than ship
- * a hardcoded "well-known benign flag name" allowlist (itself an enumerated
- * list that would need its own forever-widening maintenance), a caller that
- * needs a specific flag to survive threads it through `knownSafeTokens` —
- * the SAME mechanism task ids/run ids already use. Under this inversion,
- * keyword RECOGNITION (`SECRET_KEYWORD_ALTERNATION`) is no longer consulted
- * here at all — a recognition miss can only ever cause MORE redaction, not
- * less, so the bug class this function existed to close (rounds 10, 11, 12)
- * ends by construction: no widening of the separator tolerance, no new
- * digit/case/unicode mutation, can ever convert a miss into a leak again.
+ * an ACCEPTED, DOCUMENTED trade-off (round-12 MEDIUM, module header + design-
+ * history's round-12 entry): rather than a hardcoded "well-known benign
+ * flag" allowlist (its own forever-widening maintenance trap), a caller
+ * threads a specific flag through `knownSafeTokens` — same mechanism task/
+ * run ids already use. Keyword RECOGNITION (`SECRET_KEYWORD_ALTERNATION`) is
+ * no longer consulted here at all — a miss can only cause MORE redaction, so
+ * the bug class this function existed to close (rounds 10-12) ends by
+ * construction: no separator/digit/case/unicode mutation converts a miss
+ * into a leak again.
  */
 function isSafeFlagName(token: string, knownSafeTokens: ReadonlySet<string>): boolean {
   if (!SAFE_FLAG_SHAPE.test(token)) return false;

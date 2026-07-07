@@ -245,6 +245,10 @@ export function formatSupervisorHistoryCommandResult(result: SupervisorHistoryCo
 }
 
 
+function formatMissingReviewActorHint(role: string): string {
+  return `provide --review-actor ${role}=<actor>`;
+}
+
 export async function executeSupervisorCommandFromArgs(
   args: readonly string[],
   options: ExecuteSupervisorCommandOptions
@@ -409,7 +413,7 @@ export async function executeSupervisorCommandFromArgs(
           activeRunId: handoff.activeRunId ?? daemonResult.result.activeRunId,
           activeTaskId: handoff.activeTaskId ?? daemonResult.result.activeTaskId,
           sessionId: handoff.sessionId ?? daemonResult.result.sessionId,
-          nextActions: missingRoles.map((role) => `provide --review-actor ${role}=<actor>`),
+          nextActions: missingRoles.map((role) => formatMissingReviewActorHint(role)),
           missingReviewRoles: missingRoles
         });
       }
