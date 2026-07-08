@@ -1,15 +1,15 @@
 {
-  "$comment": "Forge asset manifest for the dashboard web app. Council forgeEmptyStateIllustration (approved_with_conditions) — this is the SINGLE approved empty-state illustration; its id is referenced by the data-ag018-allow marker in TaskListView. Any further empty-state illustration requires a new council packet (C7).",
+  "$comment": "Test fixture for the manifest→AG-018-checker contract (tests/forge-anti-generic-s1-density.test.ts). This is a preserved copy of the asset manifest that used to live at web/src/assets/asset-manifest.json for the council-approved dashboard-empty-state illustration; the web/ Forge dashboard test harness that owned that asset was removed. Kept here so the end-to-end 'manifest marks an asset QA-passed, which exempts the marked snapshot' contract stays proven without depending on any GUI asset.",
   "assets": [
     {
       "id": "dashboard-empty-state",
       "provider": "codex_builtin_imagegen",
       "type": "empty_state",
-      "path": "web/src/assets/dashboard-empty-state.png",
+      "path": "(historical) web/src/assets/dashboard-empty-state.png — removed with the web/ dashboard test harness",
       "promptHash": "64dba87d5a884c82",
       "originalRequestPath": ".archon/work/council-forgeEmptyStateIllustration.md",
       "alt": "",
-      "usedIn": ["web/src/components/TaskListView.tsx (empty state, decorative)"],
+      "usedIn": ["(historical) web/src/components/TaskListView.tsx (empty state, decorative)"],
       "approved": true,
       "generatedBy": "codex:$imagegen",
       "qaStatus": "pass",
