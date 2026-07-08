@@ -244,8 +244,11 @@ describe("AG-018 — data-ag018-allow marker exemption (council C1/C2)", () => {
   });
 
   it("end-to-end: the committed manifest marks dashboard-empty-state QA-passed, which exempts the marked snapshot", () => {
-    // Read the REAL committed asset manifest (the C1 manifest→checker contract).
-    const manifestUrl = new URL("../web/src/assets/asset-manifest.json", import.meta.url);
+    // Read the preserved manifest fixture (the C1 manifest→checker contract).
+    // The original lived at web/src/assets/asset-manifest.json; that GUI test
+    // harness was removed, so the fixture moved to tests/fixtures/ to keep this
+    // end-to-end contract test provable without any GUI dependency.
+    const manifestUrl = new URL("./fixtures/forge-asset-manifest.json", import.meta.url);
     const manifest = JSON.parse(readFileSync(fileURLToPath(manifestUrl), "utf8")) as {
       assets: Array<{ id: string; qaStatus: string }>;
     };

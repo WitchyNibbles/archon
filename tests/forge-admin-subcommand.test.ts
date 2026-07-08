@@ -9,27 +9,19 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import path from "node:path";
 
 import {
   parseForgeArgs,
-  executeSnapshotVerb,
   executeCriticVerb,
   forgeCommand
 } from "../src/admin/forge.ts";
-import type { ForgeSnapshotDeps, ForgeCriticDeps } from "../src/admin/forge.ts";
+import type { ForgeCriticDeps } from "../src/admin/forge.ts";
 
-import {
-  buildSampleSnapshot,
-  resolveSnapshotOutputPath,
-  STDOUT_TARGET
-} from "../src/forge/snapshot.ts";
 import {
   runAntiGenericChecker,
   RenderedSnapshotSchema
 } from "../src/forge/anti-generic-checker.ts";
 import type { RenderedElement, RenderedSnapshot } from "../src/forge/anti-generic-checker.ts";
-import { DashboardViewModelSchema } from "../src/forge/dashboard-contract.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -126,27 +118,14 @@ function genericCardSoupSnapshot(): RenderedSnapshot {
   ]);
 }
 
-// A fake repo root that the bounds-check resolver can use without a real FS.
-const FAKE_REPO = "/tmp/archon-test-repo";
-
 // ---------------------------------------------------------------------------
 // parseForgeArgs
 // ---------------------------------------------------------------------------
 
 describe("parseForgeArgs", () => {
   it("extracts the verb as the first arg", () => {
-    const result = parseForgeArgs(["snapshot"]);
-    assert.equal(result.verb, "snapshot");
-  });
-
-  it("extracts --out flag for snapshot", () => {
-    const result = parseForgeArgs(["snapshot", "--out", "web/out.json"]);
-    assert.equal(result.outArg, "web/out.json");
-  });
-
-  it("accepts --out=value syntax", () => {
-    const result = parseForgeArgs(["snapshot", "--out=web/out.json"]);
-    assert.equal(result.outArg, "web/out.json");
+    const result = parseForgeArgs(["critic", "/tmp/snap.json"]);
+    assert.equal(result.verb, "critic");
   });
 
   it("extracts positional snapshot path for critic", () => {
@@ -157,242 +136,6 @@ describe("parseForgeArgs", () => {
   it("returns undefined verb when args is empty", () => {
     const result = parseForgeArgs([]);
     assert.equal(result.verb, undefined);
-  });
-
-  it("throws a clear usage error when --out has no value (last token)", () => {
-    assert.throws(
-      () => parseForgeArgs(["snapshot", "--out"]),
-      (err: unknown) => {
-        assert.ok(err instanceof Error, "expected Error instance");
-        assert.ok(
-          err.message.includes("--out") && err.message.includes("requires a value"),
-          `expected --out-no-value error, got: ${err.message}`
-        );
-        return true;
-      }
-    );
-  });
-
-  it("throws a clear usage error when --out is followed by another flag", () => {
-    assert.throws(
-      () => parseForgeArgs(["snapshot", "--out", "--other"]),
-      (err: unknown) => {
-        assert.ok(err instanceof Error, "expected Error instance");
-        assert.ok(
-          err.message.includes("--out") && err.message.includes("requires a value"),
-          `expected --out-followed-by-flag error, got: ${err.message}`
-        );
-        return true;
-      }
-    );
-  });
-
-  it("throws a clear usage error when --out= has an empty value", () => {
-    assert.throws(
-      () => parseForgeArgs(["snapshot", "--out="]),
-      (err: unknown) => {
-        assert.ok(err instanceof Error, "expected Error instance");
-        assert.ok(
-          err.message.includes("--out") && err.message.includes("requires"),
-          `expected --out=-empty error, got: ${err.message}`
-        );
-        return true;
-      }
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// forge snapshot — stdout mode
-// ---------------------------------------------------------------------------
-
-describe("forge snapshot verb — stdout mode", () => {
-  function makeStdoutDeps(): ForgeSnapshotDeps & {
-    stdoutChunks: string[];
-    fileWriteCalls: Array<{ path: string; data: string }>;
-  } {
-    const stdoutChunks: string[] = [];
-    const fileWriteCalls: Array<{ path: string; data: string }> = [];
-    return {
-      buildSnapshot: buildSampleSnapshot,
-      resolveOutputPath: resolveSnapshotOutputPath,
-      writeFile: async (p, d) => { fileWriteCalls.push({ path: p, data: d }); },
-      writeStdout: (d) => stdoutChunks.push(d),
-      writeStderr: () => { /* noop for stdout tests */ },
-      stdoutChunks,
-      fileWriteCalls
-    };
-  }
-
-  it("builds a schema-valid DashboardViewModel snapshot to stdout", async () => {
-    const deps = makeStdoutDeps();
-    const result = await executeSnapshotVerb(["--out", "-"], deps);
-    assert.equal(result.outputPath, STDOUT_TARGET);
-
-    const written = deps.stdoutChunks.join("");
-    const parsed = JSON.parse(written);
-    const validated = DashboardViewModelSchema.safeParse(parsed);
-    assert.ok(validated.success, `DashboardViewModelSchema validation failed: ${JSON.stringify(validated.error)}`);
-  });
-
-  it("does NOT call writeFile when output is stdout", async () => {
-    const deps = makeStdoutDeps();
-    await executeSnapshotVerb(["--out", "-"], deps);
-    assert.equal(deps.fileWriteCalls.length, 0, "writeFile must NOT be called in stdout mode");
-    assert.ok(deps.stdoutChunks.length >= 1, "expected stdout to receive the JSON");
-  });
-
-  it("bare positional '-' routes to stdout", async () => {
-    const deps = makeStdoutDeps();
-    const result = await executeSnapshotVerb(["-"], deps);
-    assert.equal(result.outputPath, STDOUT_TARGET);
-    assert.equal(deps.fileWriteCalls.length, 0, "writeFile must NOT be called for bare '-'");
-    assert.ok(deps.stdoutChunks.length >= 1, "expected stdout to receive the JSON");
-  });
-
-  it("uses custom buildSnapshot dep when injected", async () => {
-    const customSnapshot = buildSampleSnapshot();
-    let called = false;
-    const deps: ForgeSnapshotDeps = {
-      buildSnapshot: () => { called = true; return customSnapshot; },
-      resolveOutputPath: resolveSnapshotOutputPath,
-      writeFile: async () => { /* noop */ },
-      writeStdout: () => { /* noop */ },
-      writeStderr: () => { /* noop */ }
-    };
-    await executeSnapshotVerb(["--out", "-"], deps);
-    assert.ok(called, "expected injected buildSnapshot to be called");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// forge snapshot — file write mode (CRITICAL fix verification)
-// ---------------------------------------------------------------------------
-
-describe("forge snapshot verb — file write mode", () => {
-  it("calls writeFile with the bounds-checked path and the snapshot JSON", async () => {
-    const fileWriteCalls: Array<{ path: string; data: string }> = [];
-    const stdoutChunks: string[] = [];
-    const expectedPath = path.join(FAKE_REPO, "web", "public", "out.json");
-
-    const deps: ForgeSnapshotDeps = {
-      buildSnapshot: buildSampleSnapshot,
-      // resolveSnapshotOutputPath with FAKE_REPO so bounds-check works without real FS
-      resolveOutputPath: (arg) => resolveSnapshotOutputPath(arg, FAKE_REPO),
-      writeFile: async (p, d) => { fileWriteCalls.push({ path: p, data: d }); },
-      writeStdout: (d) => stdoutChunks.push(d),
-      writeStderr: () => { /* noop */ }
-    };
-
-    const result = await executeSnapshotVerb(["--out", "web/public/out.json"], deps);
-    assert.equal(result.outputPath, expectedPath, "outputPath should be the resolved bounds-checked path");
-    assert.equal(fileWriteCalls.length, 1, "writeFile must be called exactly once");
-    assert.equal(fileWriteCalls[0]!.path, expectedPath, "writeFile path must match resolved output path");
-
-    // Verify the data written is valid JSON matching the snapshot schema
-    const written = JSON.parse(fileWriteCalls[0]!.data);
-    const validated = DashboardViewModelSchema.safeParse(written);
-    assert.ok(validated.success, "data written to file must be schema-valid snapshot JSON");
-
-    // stdout must NOT receive the JSON in file-write mode
-    assert.equal(stdoutChunks.length, 0, "stdout must be empty when writing to file");
-  });
-
-  it("calls writeFile with the default live path (snapshot.live.json) when no --out is given", async () => {
-    const fileWriteCalls: Array<{ path: string; data: string }> = [];
-    // Default mode is "live" → writes to the gitignored snapshot.live.json path.
-    const expectedPath = path.join(FAKE_REPO, "web", "public", "snapshot.live.json");
-
-    const deps: ForgeSnapshotDeps = {
-      buildSnapshot: buildSampleSnapshot,
-      resolveOutputPath: (arg, _repoRoot, mode) => resolveSnapshotOutputPath(arg, FAKE_REPO, mode),
-      writeFile: async (p, d) => { fileWriteCalls.push({ path: p, data: d }); },
-      writeStdout: () => { /* must not be called */ },
-      writeStderr: () => { /* noop */ }
-    };
-
-    const result = await executeSnapshotVerb([], deps);
-    assert.equal(result.outputPath, expectedPath, "should use gitignored live path by default");
-    assert.equal(fileWriteCalls.length, 1, "writeFile must be called exactly once");
-    assert.equal(fileWriteCalls[0]!.path, expectedPath);
-  });
-
-  it("rejects --out path that escapes the repo root (bounds check)", async () => {
-    const deps: ForgeSnapshotDeps = {
-      buildSnapshot: buildSampleSnapshot,
-      resolveOutputPath: (arg) => resolveSnapshotOutputPath(arg, FAKE_REPO),
-      writeFile: async () => { throw new Error("writeFile should not be called"); },
-      writeStdout: () => { /* noop */ },
-      writeStderr: () => { /* noop */ }
-    };
-    await assert.rejects(
-      () => executeSnapshotVerb(["--out", "../../etc/evil.json"], deps),
-      (err: unknown) => {
-        assert.ok(err instanceof Error, "expected Error");
-        assert.ok(err.message.includes("must stay within the repository"), `got: ${err.message}`);
-        return true;
-      }
-    );
-  });
-
-  it("rejects --out path that does not end in .json", async () => {
-    const deps: ForgeSnapshotDeps = {
-      buildSnapshot: buildSampleSnapshot,
-      resolveOutputPath: (arg) => resolveSnapshotOutputPath(arg, FAKE_REPO),
-      writeFile: async () => { throw new Error("writeFile should not be called"); },
-      writeStdout: () => { /* noop */ },
-      writeStderr: () => { /* noop */ }
-    };
-    await assert.rejects(
-      () => executeSnapshotVerb(["--out", "web/public/out.txt"], deps),
-      (err: unknown) => {
-        assert.ok(err instanceof Error, "expected Error");
-        assert.ok(err.message.includes("must end in .json"), `got: ${err.message}`);
-        return true;
-      }
-    );
-  });
-
-  it("wraps a writeFile failure in a prefixed, readable forge snapshot error", async () => {
-    const deps: ForgeSnapshotDeps = {
-      buildSnapshot: buildSampleSnapshot,
-      resolveOutputPath: (arg) => resolveSnapshotOutputPath(arg, FAKE_REPO),
-      writeFile: async () => { throw new Error("EACCES: permission denied"); },
-      writeStdout: () => { /* noop */ },
-      writeStderr: () => { /* noop */ }
-    };
-    await assert.rejects(
-      () => executeSnapshotVerb(["--out", "web/public/out.json"], deps),
-      (err: unknown) => {
-        assert.ok(err instanceof Error, "expected Error");
-        assert.ok(
-          err.message.startsWith("forge snapshot: could not write file") &&
-          err.message.includes("EACCES"),
-          `expected a prefixed write error, got: ${err.message}`
-        );
-        return true;
-      }
-    );
-  });
-
-  it("treats a single-dash flag like '-v' as a flag, not a positional path", async () => {
-    // "-v" must NOT be picked up as the output path (it is not bare "-"); it
-    // resolves through the default live path instead of producing a misleading .json error.
-    const fileWriteCalls: Array<{ path: string; data: string }> = [];
-    const deps: ForgeSnapshotDeps = {
-      buildSnapshot: buildSampleSnapshot,
-      resolveOutputPath: (arg, _repoRoot, mode) => resolveSnapshotOutputPath(arg, FAKE_REPO, mode),
-      writeFile: async (p, d) => { fileWriteCalls.push({ path: p, data: d }); },
-      writeStdout: () => { /* noop */ },
-      writeStderr: () => { /* noop */ }
-    };
-    const result = await executeSnapshotVerb(["-v"], deps);
-    assert.equal(
-      result.outputPath,
-      path.join(FAKE_REPO, "web", "public", "snapshot.live.json"),
-      "'-v' must not be consumed as the output path; default live path used"
-    );
-    assert.equal(fileWriteCalls.length, 1);
   });
 });
 
@@ -610,27 +353,6 @@ describe("forge critic verb — error handling", () => {
 // ---------------------------------------------------------------------------
 
 describe("forgeCommand routing integration", () => {
-  it("dispatches 'snapshot' verb with injected deps (stdout mode)", async () => {
-    const stdoutChunks: string[] = [];
-    const fileWriteCalls: string[] = [];
-
-    await forgeCommand(["snapshot", "--out", "-"], {
-      snapshot: {
-        buildSnapshot: buildSampleSnapshot,
-        resolveOutputPath: resolveSnapshotOutputPath,
-        writeFile: async (p) => { fileWriteCalls.push(p); },
-        writeStdout: (d) => stdoutChunks.push(d),
-        writeStderr: () => { /* noop */ }
-      }
-    });
-
-    assert.ok(stdoutChunks.length >= 1, "forgeCommand snapshot should write to stdout");
-    assert.equal(fileWriteCalls.length, 0, "no file write in stdout mode");
-    const parsed = JSON.parse(stdoutChunks.join(""));
-    const validated = DashboardViewModelSchema.safeParse(parsed);
-    assert.ok(validated.success, "snapshot output must be schema-valid");
-  });
-
   it("dispatches 'critic' verb with injected deps (clean snapshot → exitCode 0)", async () => {
     const stdoutChunks: string[] = [];
     const savedExitCode = process.exitCode;
@@ -676,13 +398,12 @@ describe("forgeCommand routing integration", () => {
 // ---------------------------------------------------------------------------
 
 describe("forgeCommand — unknown and missing verb", () => {
-  it("throws a usage error listing snapshot + critic for unknown verb", async () => {
+  it("throws a usage error listing critic for unknown verb", async () => {
     await assert.rejects(
       () => forgeCommand(["unknownverb"]),
       (err: unknown) => {
         assert.ok(err instanceof Error, "expected Error instance");
         const msg = err.message;
-        assert.ok(msg.includes("snapshot"), `expected 'snapshot' in usage, got: ${msg}`);
         assert.ok(msg.includes("critic"), `expected 'critic' in usage, got: ${msg}`);
         assert.ok(
           msg.includes("unknown verb") || msg.includes("unknownverb"),
@@ -693,13 +414,12 @@ describe("forgeCommand — unknown and missing verb", () => {
     );
   });
 
-  it("throws a usage error listing snapshot + critic when no verb given", async () => {
+  it("throws a usage error listing critic when no verb given", async () => {
     await assert.rejects(
       () => forgeCommand([]),
       (err: unknown) => {
         assert.ok(err instanceof Error, "expected Error instance");
         const msg = err.message;
-        assert.ok(msg.includes("snapshot"), `expected 'snapshot' in usage, got: ${msg}`);
         assert.ok(msg.includes("critic"), `expected 'critic' in usage, got: ${msg}`);
         assert.ok(
           msg.includes("verb required") || msg.includes("verb"),

@@ -133,7 +133,7 @@ function canonicalisePath(target: string): string {
  *
  * @example
  * // Enforce inside repo, must be .json or .svg
- * const safe = resolveWithinRepo("web/public/snapshot.json", {
+ * const safe = resolveWithinRepo("generated/report.json", {
  *   repoRoot: "/home/user/project",
  *   allowedExt: [".json", ".svg"],
  * });
