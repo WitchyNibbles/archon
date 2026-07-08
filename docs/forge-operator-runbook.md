@@ -28,10 +28,12 @@ installing the package — there is no separate install step for Forge itself.
 
 ### What does NOT ship
 
-- **`web/**`** — the dogfood dashboard and its Vite/React/Playwright toolchain are **excluded** from
-  the package (the R2-C package boundary). The lean core keeps its small dependency surface; a
-  consuming repo never inherits the browser toolchain. A CI check (`npm pack --dry-run`) asserts
-  `src/forge` is present and `web` is absent on every PR that touches `package.json` or `src/forge/**`.
+- **`web/`** — the dogfood dashboard and its Vite/React/Playwright toolchain have been **removed from
+  the repository**. It was a test harness for exercising Forge output, not Forge capability itself,
+  and it is gone entirely — not merely excluded from the npm package. The lean core keeps its small
+  dependency surface; a consuming repo never inherits a browser toolchain. The packaging guard (a CI
+  check running `npm pack --dry-run`, asserting `src/forge` is present and `web` is absent) remains in
+  place as a regression tripwire in case anything web-shaped is ever reintroduced.
 
 ### Import wall
 
@@ -56,7 +58,7 @@ project's.
 
 - `.env.archon` (your environment file)
 - `<dataRoot>/secrets/` (the encrypted secret store — see §2)
-- Generated asset bytes and `web/public/snapshot.live.json`
+- Generated asset bytes
 
 A CI tripwire keeps the tracked-binary count at zero.
 

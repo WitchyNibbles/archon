@@ -6,11 +6,17 @@
  *     compiled JS via dist/**).  P1 removed raw src/*.ts from files[]; forge now ships
  *     compiled.
  *   - `web/` is absent from the packed file list (R2-C: web toolchain boundary preserved).
+ *   - No `web/` directory exists in the repo working tree at all (the dogfood dashboard was
+ *     deleted outright, not merely excluded from packaging — see docs/forge-operator-runbook.md).
  *   - `src/` is absent from the packed file list (P1 invariant: no raw TypeScript source).
  *
  * All assertions are non-vacuous:
  *   - The dist/forge/ assertion fails if dist/ is removed from package.json files[].
- *   - The web assertion fails if web/** is added to package.json files[].
+ *   - The packed-file-list web assertion fails if web/** is added to package.json files[]
+ *     while a web/ directory exists on disk. On its own it would pass vacuously now that
+ *     web/ has been deleted (there is nothing under web/ to pack), so it is paired with...
+ *   - ...the working-tree web/ existence assertion, which fails immediately if a `web/`
+ *     directory is ever reintroduced at the repo root, regardless of package.json files[].
  *   - The src/ assertion fails if any src/**\/*.ts entry is re-added to files[].
  *
  * This test runs `npm pack --dry-run --json` in the repo root via `child_process`
@@ -24,7 +30,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { resolve, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -94,6 +101,20 @@ describe("npm pack surface (CC-14)", () => {
       [],
       `Packed file list must contain NOTHING under web/ (R2-C boundary violation). ` +
         `Found: ${webEntries.join(", ")}`
+    );
+  });
+
+  it("no web/ directory exists in the repo working tree (dogfood dashboard removed, not just unpacked)", () => {
+    // Non-vacuous even though web/ no longer exists to be packed: this FAILS if a `web/`
+    // directory is ever reintroduced at the repo root, with or without being added to
+    // package.json files[]. This is the guard that stays meaningful now that the packed-file-list
+    // web/ assertion above would otherwise pass vacuously (nothing on disk under web/ to pack).
+    assert.equal(
+      existsSync(join(REPO_ROOT, "web")),
+      false,
+      "A web/ directory exists in the repo root. The Forge dogfood dashboard was removed " +
+        "entirely (see docs/forge-operator-runbook.md); reintroducing web/ requires updating " +
+        "this test and the runbook, not just re-adding it silently."
     );
   });
 
