@@ -84,24 +84,14 @@ test("importing the module does not execute the CLI main() (import.meta.url guar
   assert.ok(typeof buildPlaywrightEnv === "function");
 });
 
-test("Playwright version is pinned exact (never @latest) and matches the web workspace", () => {
-  // Exact pin — reproducible, supply-chain-safe.
+test("Playwright version is pinned exact (never @latest)", () => {
+  // Exact pin — reproducible, supply-chain-safe. This is now the sole
+  // Playwright pin in the repo: the former Forge web/ dashboard test harness
+  // carried its own `@playwright/test` devDependency that had to be kept in
+  // sync with PLAYWRIGHT_VERSION; it was removed alongside that harness.
   assert.match(PLAYWRIGHT_VERSION, /^\d+\.\d+\.\d+$/, "PLAYWRIGHT_VERSION must be an exact version");
   assert.equal(playwrightPackageSpec(), `playwright@${PLAYWRIGHT_VERSION}`);
   assert.ok(!playwrightPackageSpec().includes("@latest"), "must never use @latest");
-
-  // Must line up with the web workspace's @playwright/test pin so the browser
-  // binaries the installer fetches match the version web-e2e runs against.
-  const webPkgPath = fileURLToPath(new URL("../web/package.json", import.meta.url));
-  const webPkg = JSON.parse(readFileSync(webPkgPath, "utf8")) as {
-    devDependencies?: Record<string, string>;
-  };
-  const webPin = webPkg.devDependencies?.["@playwright/test"];
-  assert.equal(
-    webPin,
-    PLAYWRIGHT_VERSION,
-    `installer PLAYWRIGHT_VERSION (${PLAYWRIGHT_VERSION}) must match web @playwright/test (${webPin})`
-  );
 });
 
 test("the installer source contains no unpinned playwright@latest reference", () => {

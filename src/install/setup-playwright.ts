@@ -19,10 +19,11 @@ export const PLAYWRIGHT_ARTIFACTS_DIR = path.join(".archon", "work", "artifacts"
 
 // Pinned Playwright version for the system/MCP browser install. Kept exact (no
 // `@latest`) so a fresh install is reproducible and cannot silently pull a new
-// or compromised Playwright release. MUST match the web workspace pin
-// (web/package.json `@playwright/test`) so the browser binaries the daemon
-// installs line up with the version the web-e2e suite runs against. Bump both
-// together (and re-verify the browser install) when upgrading.
+// or compromised Playwright release. This is the sole Playwright pin in the
+// repo (the former Forge web/ dashboard test harness carried its own
+// `@playwright/test` devDependency that had to be kept in sync with this
+// constant; it was removed alongside that harness). Re-verify the browser
+// install when bumping this version.
 export const PLAYWRIGHT_VERSION = "1.61.0";
 
 /** The exact `playwright@<version>` spec passed to npx (never `@latest`). */

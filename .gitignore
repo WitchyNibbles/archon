@@ -37,15 +37,6 @@ dist/
 graphify-out/
 coverage/
 
-# Forge web workspace — toolchain outputs never tracked
-web/node_modules/
-web/dist/
-# Forge generated assets (runtime-produced binaries/data for the UI).
-# The directory skeleton (web/src/assets/generated/.gitkeep) IS tracked;
-# everything inside the directory at build time is NOT.
-web/src/assets/generated/*
-!web/src/assets/generated/.gitkeep
-
 # Secret store — guards the Pillar B encrypted-file backend data root at dataRoot/secrets/
 # (CC-16). This rule is anchored to the repo-relative dataRoot/secrets/ path specifically; a
 # runtime data root configured to live ELSEWHERE on disk is naturally outside the repo and

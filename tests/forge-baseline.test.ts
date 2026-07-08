@@ -125,17 +125,17 @@ describe("forge-baseline", () => {
   // ---------------------------------------------------------------------------
 
   describe("asset_qa area", () => {
-    it("committed SVG case: pass captured as true (details check)", () => {
-      const c = report.cases.find((x) => x.id === "asset_qa_committed_svg_passes");
-      assert.ok(c !== undefined, "case asset_qa_committed_svg_passes not found");
+    it("generated SVG case: pass captured as true (details check)", () => {
+      const c = report.cases.find((x) => x.id === "asset_qa_generated_svg_passes");
+      assert.ok(c !== undefined, "case asset_qa_generated_svg_passes not found");
       assert.ok(
         c.details.includes("pass=true"),
         `Expected details to contain 'pass=true', got: ${c.details}`
       );
     });
 
-    it("committed SVG case: passed === true (good asset accepted)", () => {
-      const c = report.cases.find((x) => x.id === "asset_qa_committed_svg_passes");
+    it("generated SVG case: passed === true (good asset accepted)", () => {
+      const c = report.cases.find((x) => x.id === "asset_qa_generated_svg_passes");
       assert.ok(c !== undefined);
       assert.strictEqual(c.passed, true);
     });

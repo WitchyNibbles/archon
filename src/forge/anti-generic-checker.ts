@@ -17,7 +17,7 @@
  *   - No `any`; all unknowns narrowed explicitly
  *
  * Schemas and TypeScript types live in anti-generic-types.ts (schema/logic
- * cohesion mirrors dashboard-contract.ts vs constraints-manifest.ts).
+ * cohesion mirrors asset-contract.ts vs asset-qa.ts).
  */
 
 import { CONSTRAINTS_MANIFEST } from "./constraints-manifest.ts";

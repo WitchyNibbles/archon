@@ -6,7 +6,7 @@
  * Turns three existing forge gate modules into tracked regression cases:
  *   - anti-generic-checker: AG-012 three-card soup (MUST block) + distinctive
  *     dashboard (MUST NOT block)
- *   - asset-qa: committed placeholder SVG (MUST pass) + XSS-carrying SVG (MUST fail)
+ *   - asset-qa: generated placeholder SVG (MUST pass) + XSS-carrying SVG (MUST fail)
  *   - wcag-contrast: AA-pass token pair + AA-fail near-identical grays
  *
  * Pattern: mirrors src/evals/orchestration-baseline.ts and
@@ -24,7 +24,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
-import { fileURLToPath } from "node:url";
 
 import {
   runAntiGenericChecker,
@@ -34,6 +33,7 @@ import type { RenderedElement, RenderedSnapshot } from "../forge/anti-generic-ch
 
 import { runAssetQA } from "../forge/asset-qa.ts";
 import type { AssetRequest } from "../forge/asset-contract.ts";
+import { generatePlaceholderSvg } from "../forge/placeholder-assets.ts";
 
 import { meetsAA } from "../forge/wcag-contrast.ts";
 
@@ -249,16 +249,6 @@ function buildDistinctiveDashboard(): RenderedSnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// Resolve committed SVG path relative to this file (works in both src and dist)
-// ---------------------------------------------------------------------------
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-// This file lives in src/evals/; web/ is two levels up.
-const REPO_ROOT = path.resolve(__dirname, "..", "..");
-const COMMITTED_SVG = path.join(REPO_ROOT, "web", "public", "fallbacks", "icon.svg");
-
-// ---------------------------------------------------------------------------
 // Asset request builders
 // ---------------------------------------------------------------------------
 
@@ -267,14 +257,14 @@ function goodAssetRequest(): AssetRequest {
     id: "eval-icon",
     provider: "placeholder_svg",
     assetType: "icon",
-    purpose: "Eval baseline: committed placeholder icon asset",
+    purpose: "Eval baseline: generated placeholder icon asset",
     placement: "Forge eval suite",
     prompt: "Archon icon placeholder for eval baseline",
     negativeConstraints: [],
     preferredSize: "square",
     preferredFormat: "svg",
     background: "transparent",
-    outputPath: "web/public/fallbacks/icon.svg",
+    outputPath: "generated/fallbacks/icon.svg",
     altText: "Archon icon placeholder",
     needsUserApproval: false,
     status: "planned"
@@ -293,7 +283,7 @@ function badAssetRequest(): AssetRequest {
     preferredSize: "square",
     preferredFormat: "svg",
     background: "transparent",
-    outputPath: "web/public/fallbacks/spot_illustration.svg",
+    outputPath: "generated/fallbacks/spot_illustration.svg",
     altText: "Eval bad asset",
     needsUserApproval: false,
     status: "planned"
@@ -357,19 +347,36 @@ export function runForgeBaseline(): ForgeEvalReport {
   }
 
   // -------------------------------------------------------------------------
-  // Asset QA gate — committed SVG (MUST pass)
+  // Asset QA gate — generated placeholder SVG (MUST pass)
+  //
+  // Uses src/forge/placeholder-assets.ts (the real Forge placeholder generator)
+  // to produce the SVG in-memory and writes it to a scratch tmp file for
+  // runAssetQA to check. Self-contained: no dependency on any committed asset
+  // in a consumer app's asset directory (Forge no longer ships a GUI of its
+  // own — the web/ dashboard test harness was removed).
   // -------------------------------------------------------------------------
   {
-    const report = runAssetQA(COMMITTED_SVG, goodAssetRequest());
+    const request = goodAssetRequest();
+    const svgContent = generatePlaceholderSvg(request);
+    const tmpDir = os.tmpdir();
+    const randSuffix = crypto.randomBytes(8).toString("hex");
+    const tmpPath = path.join(tmpDir, `archon-eval-good-asset-${randSuffix}.svg`);
+    let report;
+    try {
+      fs.writeFileSync(tmpPath, svgContent, "utf8");
+      report = runAssetQA(tmpPath, request);
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+    }
     const passed = report.pass === true;
     cases.push(
       buildResult({
-        id: "asset_qa_committed_svg_passes",
+        id: "asset_qa_generated_svg_passes",
         area: "asset_qa",
         passed,
         evidenceRefs: [
           "src/forge/asset-qa.ts",
-          "web/public/fallbacks/icon.svg",
+          "src/forge/placeholder-assets.ts",
           "src/evals/forge-baseline.ts"
         ],
         details: `pass=${report.pass} fails=${report.findings.filter((f) => f.severity === "fail" && !f.unchecked).map((f) => f.id).join(",") || "none"}`

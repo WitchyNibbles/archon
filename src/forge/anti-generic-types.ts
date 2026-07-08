@@ -3,8 +3,8 @@
  *
  * Zod schemas and inferred TypeScript types for the anti-generic checker
  * (Phase 1, S4). Extracted from anti-generic-checker.ts to keep the logic
- * file focused (schemas-vs-logic cohesion mirrors dashboard-contract.ts
- * vs constraints-manifest.ts).
+ * file focused (schemas-vs-logic cohesion mirrors asset-contract.ts vs
+ * asset-qa.ts).
  *
  * Import this module from tests, the Playwright extractor layer, or any
  * tooling that needs to validate or construct snapshots/reports without

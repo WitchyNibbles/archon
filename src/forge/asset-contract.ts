@@ -9,13 +9,13 @@
  * MVP providers per §12: codex_builtin_imagegen, manual_upload, placeholder_svg.
  * No api-key provider in MVP.
  *
- * Style mirrors src/forge/dashboard-contract.ts:
+ * Style mirrors src/forge/constraints-manifest.ts:
  *   - Zod schemas with .strict() (no .passthrough())
  *   - Exported inferred TypeScript types
  *   - JSDoc on every field
  *
- * Zero runtime dependencies on archon services — safe to import from web/ or
- * any tooling layer.
+ * Zero runtime dependencies on archon services — safe to import from any
+ * tooling layer.
  */
 
 import { z } from "zod";
@@ -210,7 +210,7 @@ export const AssetRequestSchema = z.object({
 
   /**
    * Repo-relative path where the generated asset should be saved.
-   * Example: "web/public/generated/hero.webp"
+   * Example: "public/generated/hero.webp"
    */
   outputPath: z.string().min(1),
 

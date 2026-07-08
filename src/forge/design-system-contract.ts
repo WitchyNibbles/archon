@@ -12,10 +12,10 @@
  *                   non-empty justification, and hard limits (no second accent, no
  *                   gradient, radius ≤ cap, motion ≤ cap) are enforced.
  *
- * Style mirrors: dashboard-contract.ts (Zod strict schemas),
+ * Style mirrors: asset-contract.ts (Zod strict schemas),
  *                anti-generic-types.ts (ruleId + measured + cap on violations).
  *
- * Zero archon-service dependencies — safe to import from web/ or any tooling layer.
+ * Zero archon-service dependencies — safe to import from any tooling layer.
  */
 
 import { z } from "zod";
