@@ -1,0 +1,151 @@
+{
+  "date": "2026-09-22",
+  "engine_version": "2.1.278",
+  "platform": "linux-wsl2",
+  "auth": "claude.ai subscription (email omitted)",
+  "note": "Live probes run during design research in a throwaway git fixture; no user configuration was modified. Reviewer flag set = --setting-sources '' --strict-mcp-config --disable-slash-commands --permission-mode dontAsk --no-session-persistence.",
+  "probes": {
+    "P2a_structured_output_haiku_no_tools": {
+      "flags": "--json-schema --tools '' --max-turns 2 --model haiku",
+      "structured_output": null,
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 2
+    },
+    "P2b_structured_output_haiku_default_tools": {
+      "flags": "--json-schema --model haiku",
+      "structured_output": null,
+      "subtype": "success",
+      "model_text": "I don't have access to a StructuredOutput tool..."
+    },
+    "P2c_structured_output_sonnet_instructed": {
+      "flags": "--json-schema --model sonnet; prompt names StructuredOutput tool",
+      "structured_output": {
+        "decision": "approve",
+        "summary": "ok"
+      },
+      "subtype": "success",
+      "num_turns": 3,
+      "total_cost_usd": 0.0862454
+    },
+    "P3_stream_json_event_types": {
+      "flags": "--output-format stream-json --verbose --include-hook-events --tools Read --permission-mode dontAsk",
+      "event_types_seen": [
+        "system/init",
+        "system/hook_started",
+        "system/hook_response",
+        "system/thinking_tokens",
+        "assistant",
+        "user",
+        "rate_limit_event",
+        "result"
+      ],
+      "user_hooks_fired_without_setting_sources_flag": 3
+    },
+    "P4b_dontAsk_deny": {
+      "flags": "--permission-mode dontAsk --settings {deny:[Bash(rm *),Write,Edit]} --setting-sources ''",
+      "permission_denials": [
+        "Bash rm a.txt",
+        "Bash curl -m 5 https://example.com",
+        "Bash cat ~/.ssh/id_rsa"
+      ],
+      "file_survived": true,
+      "subtype": "success",
+      "is_error": false
+    },
+    "P5_engine_sandbox": {
+      "flags": "--permission-mode dontAsk --settings {allow:[Bash(curl *),Bash(cat *),Bash(touch *)], sandbox:{enabled,failIfUnavailable,allowUnsandboxedCommands:false,network.allowedDomains:[],strictAllowlist,filesystem.denyRead:[~/.ssh],denyWrite:[protected],allowWrite:[.]}}",
+      "permission_denials": 0,
+      "num_turns": 5,
+      "observed": {
+        "curl example.com": "blocked by sandbox (network)",
+        "cat ~/.ssh/id_rsa": "blocked by sandbox (denyRead)",
+        "touch protected/x": "blocked (denyWrite); file absent",
+        "touch ok.txt": "succeeded; file present"
+      },
+      "model_summary": "(4) Succeeded silently \u2014 `ok.txt` created in the working directory (exit 0).\n\nSummary: network egress and the SSH key path were blocked by the sandbox, `protected/` is read-only, and only the plain `touch ok.txt` in the working directory succeeded."
+    },
+    "P6_session_identity_and_hermeticity": {
+      "flags": "--session-id U --setting-sources '' --strict-mcp-config --disable-slash-commands --tools Read",
+      "init": {
+        "session_id": "1dd2e50f-58bb-4f8b-abad-19d03085dd5b",
+        "tools": [
+          "Read"
+        ],
+        "mcp_servers": [],
+        "skills": [],
+        "agents": [
+          "claude",
+          "Explore",
+          "general-purpose",
+          "Plan",
+          "statusline-setup"
+        ],
+        "permissionMode": "dontAsk",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "result": {
+        "session_id": "1dd2e50f-58bb-4f8b-abad-19d03085dd5b",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 2,
+        "total_cost_usd": 0.0454346
+      },
+      "hook_started_count": 0,
+      "transcript_path_pattern": "~/.claude/projects/<munged-cwd>/<U>.jsonl",
+      "rate_limit_events": [
+        {
+          "status": "allowed",
+          "resetsAt": 1790100000,
+          "rateLimitType": "five_hour",
+          "overageStatus": "rejected",
+          "overageDisabledReason": "org_level_disabled",
+          "isUsingOverage": false,
+          "unifiedWindows": {
+            "five_hour": {
+              "utilization": 0.15,
+              "resetsAt": 1790100000
+            },
+            "seven_day": {
+              "utilization": 0.04,
+              "resetsAt": 1790686800
+            }
+          }
+        }
+      ]
+    },
+    "CLI_flags_present_at_2.1.278": [
+      "--add-dir",
+      "--autocompact",
+      "--bare",
+      "--disable-slash-commands",
+      "--effort",
+      "--fork-session",
+      "--forward-subagent-text",
+      "--include-hook-events",
+      "--json-schema",
+      "--max-budget-usd",
+      "--permission-prompts",
+      "--setting-sources",
+      "--strict-mcp-config",
+      "--session-id",
+      "--resume",
+      "--no-session-persistence",
+      "--tools",
+      "--allowedTools",
+      "--disallowedTools",
+      "--permission-mode {acceptEdits,auto,bypassPermissions,manual,dontAsk,plan}",
+      "--restricted",
+      "--safe-mode",
+      "--system-prompt-snapshot"
+    ],
+    "CLI_flags_absent_from_help": [
+      "--max-turns (accepted without error when passed; undocumented)"
+    ],
+    "host": {
+      "bwrap": "/usr/bin/bwrap",
+      "socat": "/usr/bin/socat",
+      "srt": "not installed"
+    }
+  }
+}
