@@ -37,7 +37,9 @@ A worker saying "done" cannot mark a run verified. A reviewer approving the wron
 
 - Linux or WSL2, Python 3.12+, [`uv`](https://docs.astral.sh/uv/).
 - `bubblewrap` and `socat` (`sudo apt install bubblewrap socat`).
-- The Claude Code CLI (tested at **2.1.278**), logged in with your subscription.
+- The Claude Code CLI, logged in with your subscription. `archon doctor` reports whether your
+  version falls in the range the spike book has actually been run against, and warns rather than
+  blocks when it does not. The range is derived from recorded evidence, never written down here.
 - A consuming Git repository with an initial commit.
 
 Installation:

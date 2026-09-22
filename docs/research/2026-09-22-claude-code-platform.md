@@ -243,3 +243,59 @@ masked-read arm did not have such a guard, passed its verdict on other criteria,
 recorded an error shape that was really just a missing file. **A negative result needs a
 positive control.** Every masking arm now plants its own target and pairs it with an
 identical unmasked control.
+
+## 11. Third book run — engine 2.1.280, after an in-session engine update
+
+The installed engine updated from 2.1.278 to 2.1.280 partway through the build. The whole
+book was re-run against it: **11 PASS, 1 UNRESOLVED (S8), 0 FAIL**, `$0.55`. Both books are
+kept — evidence filenames now carry the engine version, because they previously did not and
+a same-day re-run silently overwrote the earlier version's records.
+
+### Correction 9 — retracting correction 5
+
+**§9 correction 5 said `--resume` cannot recover an interrupted session. That is wrong, and
+the spike that produced it never tested recovery.**
+
+S1 at 2.1.278 observed two things after `kill -9`: no transcript at the derived path, and
+`num_turns: 1` on the resumed run. From those it inferred a silent fresh start. Neither
+observation supports that. `num_turns: 1` is simply the resumed run's own turn count, and
+the transcript probe turns out to be a race.
+
+Re-run at 2.1.280 with a token planted in the first session and demanded back after the
+kill, `--resume` returned the token **verbatim in every run**. Context is recovered.
+
+| Wait before `kill -9` | Outcome |
+|---|---|
+| 1.5 s | coin flip: sometimes the session had not yet persisted a turn, and `--resume` was a no-op with `num_turns: 0` and an empty result |
+| 8 s, count-to-20 prompt | the session had already *finished*; nothing was killed, so the spike measured a clean run while reporting on an interrupted one |
+| 8 s, count-to-200 prompt | deterministic: killed mid-stream, turn persisted, token recovered, 3/3 |
+
+Two lessons, both already cost this project a false claim. **An inference is not an
+observation** — "no transcript and one turn" was read as "started fresh" because that was
+the expected answer. And **a probe whose verdict depends on its own timing measures its
+timing**, which is why the verdict no longer keys on the transcript file at all.
+
+The engineering decision did not change: Archon still never resumes a reviewer. It now
+rests on the reason that was always the real one — a resumed reviewer is a new review
+wearing the previous one's identity, and three approvals with three distinct session ids is
+what the gate rests on. Justifying a correct rule with a false capability claim is how the
+rule gets repealed the day someone checks the fact.
+
+### Correction 10 — a partial book must not widen the tested range
+
+After the engine update, re-running only the host one-liners wrote a single record at
+2.1.280, and the derived range immediately claimed that version was tested while eleven of
+twelve spikes had never run there. `docs/spikes.md` always said the range comes from
+versions with a *complete* book; the code counted any record at all. Both derivations now
+require every spike to have a verdict at that version, and a FAIL counts — the range says
+the book was **executed** there, not that everything passed.
+
+### What is unchanged at 2.1.280
+
+Corrections 1, 2, 3, 4 and 6 through 8 from §9 and §10 all still hold: the headless
+subagent literal is `Task`; `--json-schema` injects `StructuredOutput`; `--max-turns` and
+`--max-budget-usd` are enforced; `skills` and `mcp_servers` are lists; relocating
+`CLAUDE_CONFIG_DIR` de-authenticates unless the credential is carried across; `denyRead`
+presents as ENOENT; and egress has two distinct denial shapes.
+
+S8 remains UNRESOLVED by choice at both versions.

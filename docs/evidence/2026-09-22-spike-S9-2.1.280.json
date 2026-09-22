@@ -1,0 +1,28 @@
+{
+  "id": "S9",
+  "date": "2026-09-22",
+  "engine_version": "2.1.280",
+  "verdict": "PASS",
+  "literal_form": "claude -p '<task>' --session-id fb952128-10b5-49ca-8976-517bc604bfec (kill -9 after 1.5s) ; claude -p '<task>' --resume fb952128-10b5-49ca-8976-517bc604bfec ; claude -p '<task>' --resume fb952128-10b5-49ca-8976-517bc604bfec --fork-session",
+  "observations": {
+    "session_id_used": "fb952128-10b5-49ca-8976-517bc604bfec",
+    "killed_mid_stream": true,
+    "transcript_path": "/home/eimi/.claude/projects/-tmp-archon-spikes-e82hg1dg-s9-fzm_dcdn/fb952128-10b5-49ca-8976-517bc604bfec.jsonl",
+    "transcript_exists_after_kill": false,
+    "resume_recovered_context": true,
+    "resume_declared_no_context": false,
+    "resume_reply": "S9-CTX-7acfd8d04365",
+    "transcript_path_probe_is_unreliable": "Across four runs at 2.1.280 the transcript was present at the derived path three times and absent once, while context recovery succeeded in all four. The file probe is a race; the nonce round-trip is the fact.",
+    "why_archon_still_never_resumes_a_reviewer": "Independence, not incapacity. A resumed session would be a new review wearing the previous one's identity, and three approvals carrying three distinct session ids is what the gate rests on. The engine's ability to resume is recorded here precisely so nobody later justifies the rule with a capability claim that is false.",
+    "resume_init_session_id": "fb952128-10b5-49ca-8976-517bc604bfec",
+    "resume_result_session_id": "fb952128-10b5-49ca-8976-517bc604bfec",
+    "resume_result_subtype": "success",
+    "resume_num_turns": 1,
+    "fork_session_id": "f4989ce6-54d3-4aa9-a918-f6eb3a09e4a7",
+    "fork_session_id_differs_from_original": true,
+    "original_transcript_sha256_before_fork": null,
+    "original_transcript_sha256_after_fork": null,
+    "original_transcript_byte_identical_after_fork": false
+  },
+  "cost_usd": 0.018241
+}

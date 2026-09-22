@@ -1,0 +1,15 @@
+{
+  "id": "S8",
+  "date": "2026-09-22",
+  "engine_version": "2.1.280",
+  "verdict": "UNRESOLVED",
+  "literal_form": "PreCompact + SessionStart[compact] hook fixture built (nonces 'S8-PRECOMPACT-8a6076e1' / 'S8-SESSIONSTART-COMPACT-0db77533') but --autocompact 100k forcing was not attempted",
+  "observations": {
+    "reason": "post-compaction forcing is unreachable within this headless single-shot (claude -p) harness under the --budget-usd cap: reaching the >=100k-token --autocompact threshold in one continuous session would require either many chained turns (cost grows with roughly the square of turn count as the transcript resends) or one huge synthetic prompt, either of which could consume most of the run's whole budget on a single spike. Deferring honestly to the inherited finding instead of faking a PASS: docs/research/2026-09-22-claude-code-platform.md \u00a77 item 5: 'SessionStart source: compact injection reaches post-compaction context; PreCompact output does not.'",
+    "fixture_built": true,
+    "precompact_nonce": "S8-PRECOMPACT-8a6076e1",
+    "sessionstart_compact_nonce": "S8-SESSIONSTART-COMPACT-0db77533",
+    "inherited_finding": "docs/research/2026-09-22-claude-code-platform.md \u00a77 item 5: 'SessionStart source: compact injection reaches post-compaction context; PreCompact output does not.'"
+  },
+  "cost_usd": 0.0
+}

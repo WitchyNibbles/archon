@@ -222,7 +222,11 @@ def exercise_overlay(python: Path, consumer: Path, venv: Path, env: dict[str, st
     first = json.loads(run([*cli, "init"], cwd=consumer, env=env))
     server = json.loads((consumer / ".mcp.json").read_text(encoding="utf-8"))
     entry = server["mcpServers"][first["server"]]
-    if not entry["command"].startswith(str(venv)):
+    # The installer spawns the server through `env` so it can unset PYTHONPATH and
+    # PYTHONHOME, so the interpreter is now in the argument vector rather than in
+    # `command`; the point of the assertion is unchanged — the entry must name the
+    # installed interpreter and not whatever `python` the consumer's PATH resolves.
+    if not any(argument.startswith(str(venv)) for argument in entry["args"]):
         raise SmokeError(f"the MCP entry does not point at the installed interpreter: {entry}")
     if "-I" not in entry["args"] or "mcp" not in entry["args"]:
         raise SmokeError(f"the MCP entry lost its isolated module invocation: {entry}")
@@ -233,10 +237,20 @@ def exercise_overlay(python: Path, consumer: Path, venv: Path, env: dict[str, st
     doctor = json.loads(run([*cli, "doctor"], cwd=consumer, env=env))
     if not doctor.get("ok") or doctor.get("problems"):
         raise SmokeError(f"doctor reported problems on a clean install: {doctor}")
-    # An installed Archon with no spike evidence beside it has no tested range,
-    # so it could never warn on engine drift (AC-22). The wheel must carry it.
-    if not doctor.get("runtime", {}).get("tested_range"):
-        raise SmokeError("the installed distribution carries no spike evidence to derive a tested range")
+    # An installed Archon with no spike evidence beside it has no tested range, so
+    # it could never warn on engine drift (AC-22). The wheel must carry it, and the
+    # two independent evidence locators -- the installer's and the adapter's -- must
+    # agree once installed, where their differing parent walks actually diverge.
+    ranges = {
+        "engine": doctor.get("engine", {}).get("tested_range"),
+        "runtime": doctor.get("runtime", {}).get("tested_range"),
+    }
+    if not all(ranges.values()):
+        raise SmokeError(
+            f"the installed distribution carries no spike evidence to derive a tested range: {ranges}"
+        )
+    if ranges["engine"] != ranges["runtime"]:
+        raise SmokeError(f"the installed evidence locators disagree on the tested range: {ranges}")
     removed = json.loads(run([*cli, "uninstall"], cwd=consumer, env=env))
     restored = file_hashes(consumer)
     if restored != before:

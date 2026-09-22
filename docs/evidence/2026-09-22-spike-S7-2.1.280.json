@@ -1,0 +1,43 @@
+{
+  "id": "S7",
+  "date": "2026-09-22",
+  "engine_version": "2.1.280",
+  "verdict": "PASS",
+  "literal_form": "claude -p 'Say done.' --output-format stream-json --verbose --include-hook-events --setting-sources project (project .claude/settings.json Stop hook, own marker-file guard)",
+  "observations": {
+    "hook_invocation_count_observed": 2,
+    "first_invocation_stop_hook_active": false,
+    "second_invocation_stop_hook_active": true,
+    "marker_file_fired": true,
+    "sentinel_reason_in_output": true,
+    "result_subtype": "success",
+    "result_num_turns": 2,
+    "raw_hook_log": [
+      {
+        "session_id": "6a1a2a07-4880-4f1d-952e-3b92b4aa9e40",
+        "transcript_path": "/home/eimi/.claude/projects/-tmp-archon-spikes-gaf8s3a4-s7-repo-4hbevd6u/6a1a2a07-4880-4f1d-952e-3b92b4aa9e40.jsonl",
+        "cwd": "/tmp/archon-spikes-gaf8s3a4/s7-repo-4hbevd6u",
+        "prompt_id": "1aeeb26d-d984-4988-8461-49ec96fcc73d",
+        "permission_mode": "default",
+        "hook_event_name": "Stop",
+        "stop_hook_active": false,
+        "last_assistant_message": "Done.",
+        "background_tasks": [],
+        "session_crons": []
+      },
+      {
+        "session_id": "6a1a2a07-4880-4f1d-952e-3b92b4aa9e40",
+        "transcript_path": "/home/eimi/.claude/projects/-tmp-archon-spikes-gaf8s3a4-s7-repo-4hbevd6u/6a1a2a07-4880-4f1d-952e-3b92b4aa9e40.jsonl",
+        "cwd": "/tmp/archon-spikes-gaf8s3a4/s7-repo-4hbevd6u",
+        "prompt_id": "1aeeb26d-d984-4988-8461-49ec96fcc73d",
+        "permission_mode": "default",
+        "hook_event_name": "Stop",
+        "stop_hook_active": true,
+        "last_assistant_message": "I see there's a stop hook that's been triggered with a continuation code (S7-CONTINUE-ONCE-dc3e7c82). This appears to be related to the `stop_hook.py` file that's currently untracked in your repository.\n\nWould you like me to:\n\n1. Investigate what the stop hook does\n2. Remove or update the stop hook configuration\n3. Continue with a specific task despite the hook\n\nWhat would you like to do?",
+        "background_tasks": [],
+        "session_crons": []
+      }
+    ]
+  },
+  "cost_usd": 0.036452
+}

@@ -53,7 +53,9 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 maxTurns: 120
 ---
 ```
-Body = DevGod's Luna `developer_instructions` verbatim, with "DevGod manager" → "Archon manager", "Terra" → "Warden", plus one added line: "If your worktree is not on the base the manager named, run `git reset --hard <base>` before any edit and say so in your report."
+Body = DevGod's Luna `developer_instructions` verbatim, with "DevGod manager" → "Archon manager", "Terra" → "Warden", plus one added paragraph: on a base mismatch the worker **stops before editing** and reports the base it was given and the commit it is on, and never resets, checks out, restores, cleans or stashes — the manager owns branch placement and re-dispatches once it is correct.
+
+> The original wording told the worker to run `git reset --hard <base>`. It shipped into other people's > repositories and would have destroyed uncommitted work on a premise the worker evaluated for itself. > The instruction is safe in an engine-created empty worktree and catastrophic in a delivery worktree, > which the worker cannot reliably tell apart — and the guard table denies `git reset` only while a > verification job is running, so it fired exactly in the window the guard leaves open. A sibling harness > lost a run this way on 2026-09-17 when an isolated worktree branched from the wrong base and the > attempt-1 diff deleted the harness's own directory.
 
 `archon-warden.md`
 

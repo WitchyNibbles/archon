@@ -147,7 +147,14 @@ def write_evidence(record: EvidenceRecord, *, allow_downgrade: bool = True) -> P
     authorized to spend, in which case the new record is the better one.
     """
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
-    path = EVIDENCE_DIR / f"{record.date}-spike-{record.id}.json"
+    # The engine version belongs in the filename. Without it a record is keyed
+    # by date and spike id alone, so re-running the book after an engine update
+    # on the same day *overwrites the previous version's evidence* — which is
+    # what happened when 2.1.278 silently became 2.1.280 mid-session, taking
+    # the whole 2.1.278 book with it and narrowing the derived range to one
+    # version. The paid-evidence guard below could not catch it, because the
+    # replacing records had cost money too.
+    path = EVIDENCE_DIR / f"{record.date}-spike-{record.id}-{record.engine_version}.json"
     payload = record.to_dict()
 
     if not allow_downgrade and path.exists() and not _spent_something(payload):

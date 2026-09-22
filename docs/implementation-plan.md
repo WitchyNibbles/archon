@@ -8,7 +8,7 @@ The user keeps working in an existing Claude Code session. An intentionally enab
 
 The selected direction: Python package `archon`, local SQLite kernel, Claude Code CLI as the only model runtime, native manager and implementation subagents, a small repository overlay. Kernel-owned evidence decides verified completion. Claude Code owns the conversation and the continuation loop. Checks run under a kernel-owned `bwrap` profile with no model turn; reviewers are kernel-launched hermetic `claude -p` sessions.
 
-Dependency contract: Python ≥ 3.12, `mcp==2.2.0` (`MCPServer`, not `FastMCP`), `pydantic>=2,<3`, `bubblewrap` and `socat` on the host, Claude Code CLI on `PATH` with an authenticated login. No Anthropic SDK dependency: the kernel never calls the API directly. The tested engine range starts and ends at **2.1.278** and widens only by re-running the spike book.
+Dependency contract: Python ≥ 3.12, `mcp==2.2.0` (`MCPServer`, not `FastMCP`), `pydantic>=2,<3`, `bubblewrap` and `socat` on the host, Claude Code CLI on `PATH` with an authenticated login. No Anthropic SDK dependency: the kernel never calls the API directly. The tested engine range is **derived from the evidence on record and never typed here**, which is why this sentence names no version. A version counts only once every spike in the book has a verdict for it; a partial book widens nothing. At the time of writing two versions qualify, and `doctor` warns — never blocks — on anything outside the range.
 
 ## Starting point — what is ported and what is written
 
@@ -79,7 +79,6 @@ class Policy(Model):
     review_budget_usd: float = Field(default=3.0, gt=0, le=50)
     max_output_bytes: int = Field(default=1_048_576, ge=1024, le=16_777_216)
     network_access: Literal[False] = False           # kept Literal on purpose; widened only by a run that needs it
-    scratch_bytes: int = Field(default=2_147_483_648, ge=1_048_576)   # private scratch tmpfs size
     def review_route(self, role: Role) -> ModelRoute: ...   # explicit > review_model@high > ModelRoute("opus","high")
 
 class ReviewResult(Model):
@@ -93,7 +92,9 @@ class ReviewResult(Model):
     cost_usd: float | None = None
 ```
 
-`CheckSpec`, `TaskSpec`, `RunSpec`, `Candidate`, `JobLease`, `NextAction`, `CommandResult`, `GateResult`, `VerificationResult`, `ReviewPayload`, `Finding` are unchanged. `CommandResult` gains `sandbox_profile_digest: Digest` (sha256 of the rendered `bwrap` argv minus paths) so evidence binds to the exact confinement.
+`CheckSpec`, `TaskSpec`, `RunSpec`, `Candidate`, `JobLease`, `NextAction`, `CommandResult`, `GateResult`, `VerificationResult`, `ReviewPayload`, `Finding` are unchanged. `CommandResult` gains `sandbox_profile_digest: Digest` (sha256 of the rendered `bwrap` argv minus paths) so evidence binds to the exact confinement. **Binding means comparison, not presence.** The field was originally recorded and never read, so a result carrying `None` passed the gate while this sentence claimed otherwise; the gate now refuses a check with no digest, refuses a candidate whose checks name two different profiles, and compares the recorded digest against the one the kernel itself renders through `ClaudeAdapter.check_profile_digest`.
+
+`Policy.scratch_bytes` was removed. It was an advertised bound with no mechanism — nothing in the tree ever sized the scratch, and `render_bwrap` emits `--tmpfs` with no size — which is the inverse of "no mechanism without a run that needed it" and worse than no field at all. Removing it required store schema v3, which strips the key from older records on open.
 
 `NextAction.action` gains `"wait"` with `inputs={"job_id", "resume_at"}`.
 

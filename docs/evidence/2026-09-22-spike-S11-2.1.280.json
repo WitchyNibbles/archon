@@ -1,0 +1,31 @@
+{
+  "id": "S11",
+  "date": "2026-09-22",
+  "engine_version": "2.1.280",
+  "verdict": "PASS",
+  "literal_form": "claude plugin validate <dir> ; CLAUDE_CONFIG_DIR=<isolated> claude plugin marketplace add <dir> ; CLAUDE_CONFIG_DIR=<isolated> claude plugin install <name>@<marketplace> -y --json ; CLAUDE_CONFIG_DIR=<isolated> claude -p 'OK' (consuming repo, checks SessionStart hook marker)",
+  "observations": {
+    "validate_returncode": 0,
+    "validate_stdout_tail": "Validating marketplace manifest: /tmp/archon-spikes-gaf8s3a4/s11-plugin-etrzen1i/.claude-plugin/marketplace.json\n\n\u26a0 Found 2 warnings:\n\n  \u276f description: No marketplace description provided. Adding a description helps users understand what this marketplace offers\n  \u276f plugins[0] plugin.json \u2192 author: No author information provided. Consider adding author details for plugin attribution\n\n\u2714 Validation passed with warnings\n",
+    "marketplace_add_returncode": 0,
+    "marketplace_add_stdout_tail": "Adding marketplace\u2026\u2714 Successfully added marketplace: archon-spike-marketplace (declared in user settings)\n",
+    "install_returncode": 0,
+    "install_stdout_tail": "{\"command\":\"install\",\"outcome\":\"ok\",\"plugin\":\"archon-spike-probe@archon-spike-marketplace\",\"pluginId\":\"archon-spike-probe@archon-spike-marketplace\",\"scope\":\"user\",\"message\":\"Successfully installed plugin: archon-spike-probe@archon-spike-marketplace (scope: user)\"}\n",
+    "settings_enabledPlugins": {
+      "archon-spike-probe@archon-spike-marketplace": true
+    },
+    "enabledPlugins_format_matches_name_at_marketplace_true": true,
+    "corrected_method": "'claude plugin install --plugin-dir' does not exist at 2.1.278 (top-level --plugin-dir is session-only, not a plugin-install subcommand flag); used 'claude plugin marketplace add <dir>' + 'claude plugin install <name>@<marketplace>' instead, which is what actually persists enabledPlugins.",
+    "consuming_repo_sessionstart_hook_fired": true,
+    "consuming_repo_init_mcp_servers": [
+      {
+        "name": "plugin:archon-spike-probe:probe-mcp",
+        "status": "failed",
+        "source": "plugin"
+      }
+    ],
+    "consuming_repo_probe_mcp_registered": true,
+    "nonce_run_id": "e11b9d86"
+  },
+  "cost_usd": 0.0
+}

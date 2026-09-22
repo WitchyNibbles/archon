@@ -1,0 +1,32 @@
+{
+  "id": "S3",
+  "date": "2026-09-22",
+  "engine_version": "2.1.280",
+  "verdict": "PASS",
+  "literal_form": "arm1: claude -p '<StructuredOutput-instructed prompt>' --model sonnet --json-schema '<ReviewPayload>' --setting-sources ''  |  arm2: claude -p 'Say hello.' --model haiku --json-schema '<ReviewPayload>' --setting-sources ''",
+  "observations": {
+    "arm1_sonnet_instructed": {
+      "structured_output": {
+        "decision": "approve",
+        "summary": "ok"
+      },
+      "valid_against_schema_shape": true,
+      "subtype": "success",
+      "is_error": false,
+      "tool_use_blocks_observed": 2,
+      "tool_names_observed": [
+        "ToolSearch",
+        "StructuredOutput"
+      ]
+    },
+    "arm2_haiku_uninstructed": {
+      "structured_output": null,
+      "structured_output_is_null": true,
+      "subtype": "success",
+      "is_error": false,
+      "model_text": "I don't have access to a \"StructuredOutput\" tool. It's not available in my current environment. \n\nIf you're looking for a specific tool or capability, I'd be happy to help \u2014 could you clarify what you're trying to accomplish? I can work with the tools I have available, including:\n\n- Reading and editing files\n- Running bash commands\n- Searching the codebase\n- Creating tasks and plans\n- And various other utilities\n\nWhat would you like to do?"
+    },
+    "error_max_structured_output_retries_observed": false
+  },
+  "cost_usd": 0.109277
+}

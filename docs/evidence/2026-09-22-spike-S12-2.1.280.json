@@ -1,0 +1,35 @@
+{
+  "id": "S12",
+  "date": "2026-09-22",
+  "engine_version": "2.1.280",
+  "verdict": "PASS",
+  "literal_form": "arm A: claude -p 'OK' --setting-sources '' --strict-mcp-config (real ~/.claude)  |  arm B: CLAUDE_CONFIG_DIR=<isolated, only .credentials.json 0600> claude -p 'OK' --setting-sources ''  |  arm C: claude --bare -p 'OK'",
+  "observations": {
+    "arm_a_real_config_dir": {
+      "returncode": 0,
+      "result_is_error": false,
+      "result_subtype": "success",
+      "stderr_tail": "",
+      "succeeded": true
+    },
+    "arm_b_isolated_credentials_only": {
+      "returncode": 0,
+      "result_is_error": false,
+      "result_subtype": "success",
+      "stderr_tail": "",
+      "succeeded": true,
+      "copied_file_mode_octal": "0o600"
+    },
+    "arm_c_bare": {
+      "returncode": 1,
+      "result_is_error": true,
+      "result_subtype": "success",
+      "stderr_tail": "",
+      "succeeded": false
+    },
+    "bare_refuses_oauth": true,
+    "isolated_credentials_only_sufficient": true,
+    "recommended_default_adapter_path_fewest_secrets": "arm_b_isolated_credentials_only"
+  },
+  "cost_usd": 0.037896
+}

@@ -11,8 +11,11 @@ stream, a null ``structured_output``, an unconfirmed termination, a broken
 confinement, a truncated capture: each produces an error, never a passing check
 and never an approved review.  The transport changed from DevGod's Codex SDK to
 a supervised CLI.  An interrupted reviewer is relaunched as a new attempt with a
-new session id, never resumed: at 2.1.278 ``--resume`` after a mid-stream kill
-silently started a fresh turn instead of recovering context (spike S9).  The
+new session id, never resumed.  Not because the engine cannot: at 2.1.280 spike
+S9 plants a token in a session, kills it, and gets the token back from
+``--resume`` every time.  Because a resumed reviewer is a new review wearing the
+previous one's identity, and three approvals with three distinct session ids is
+what the gate rests on.  The
 invocation-identity checks, bounded output, artifact caps,
 cancellation budget, nonce-bound termination receipts, sanitized operator
 messages and the self-hosting guard did not.
@@ -34,14 +37,29 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Any
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
-from .launcher import pidfd_open, pidfd_send_signal, pidfd_supported
+from .credentials import (
+    install_purge_handlers,
+    isolated_config_dir,
+    purge_credentials,
+    register_control_dir,
+    sweep,
+    write_owner,
+)
+from .launcher import (
+    PRIVATE_DIR_MODE,
+    pidfd_open,
+    pidfd_send_signal,
+    pidfd_supported,
+    read_boot_id,
+    read_process,
+    write_private,
+)
 from .models import (
     Candidate,
     CheckSpec,
@@ -49,9 +67,21 @@ from .models import (
     EventCallback,
     Policy,
     RateLimited,
-    ReviewPayload,
     ReviewResult,
     Role,
+)
+from .review_profile import (
+    MANAGED_REVIEW_ENV,
+    REQUIRED_PERMISSION_MODE,
+    REVIEW_ALLOW,
+    REVIEW_DENY,
+    REVIEW_DENY_READ,
+    REVIEW_TOOLS,
+    SCHEMA_UNSUPPORTED_KEYWORDS,
+    STRUCTURED_OUTPUT_TOOL,
+    review_schema,
+    review_settings,
+    reviewer_deny_read,
 )
 from .sandbox import (
     BwrapProbe,
@@ -61,6 +91,37 @@ from .sandbox import (
     probe_bwrap,
     render_bwrap,
 )
+from .stream import (
+    AdapterError,
+    _decode_event,
+    _event_method,
+    _ReviewSession,
+    parse_reset_time,
+)
+
+#: Re-exported so ``archon.claude_adapter`` stays the one import site for the
+#: adapter's callers; the definitions live in :mod:`archon.review_profile`.
+__all__ = [
+    "AdapterError",
+    "ClaudeAdapter",
+    "REVIEW_ALLOW",
+    "REVIEW_DENY",
+    "REVIEW_DENY_READ",
+    "REVIEW_TOOLS",
+    "SCHEMA_UNSUPPORTED_KEYWORDS",
+    "STRUCTURED_OUTPUT_TOOL",
+    "create_adapter",
+    "parse_reset_time",
+    "reviewer_deny_read",
+    "review_schema",
+    "review_settings",
+    "tested_engine_range",
+]
+
+#: The process-identity primitives moved to :mod:`archon.launcher` in the split.
+#: ``tests/test_security.py`` imports them from here, so the names stay bound.
+_read_process = read_process
+_boot_id = read_boot_id
 
 ENGINE_BINARY = "claude"
 LAUNCHER_SCRIPT = "launcher.py"
@@ -75,83 +136,44 @@ STDERR_DRAIN_SECONDS = 2.0
 ENGINE_PROBE_TIMEOUT_SECONDS = 15.0
 READ_CHUNK_BYTES = 65_536
 MAX_STREAM_LINE_BYTES = 8_388_608
-MAX_DENIAL_RECORDS = 256
 RECEIPT_NAME = "stopped.json"
-PRIVATE_DIR_MODE = 0o700
-PRIVATE_FILE_MODE = 0o600
+#: The receipt gets a directory of its own inside the control directory, so no
+#: path the supervised child can write shares a parent with it (SEC-M1).
+RECEIPT_DIRNAME = "receipt"
+#: A scratch that exists only long enough to render a profile for its digest.
+#: Deliberately not ``runtime-*``: the credential sweep must not consider it.
+DIGEST_SCRATCH_PREFIX = "digest-"
 
-#: The reviewer catalog asked for with ``--tools`` and asserted on ``system/init``.
-REVIEW_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob", "Bash")
-#: The engine auto-injects this tool whenever ``--json-schema`` is passed, even
-#: under an explicit ``--tools`` allowlist (measured at 2.1.278).  It is the only
-#: catalog member the kernel did not name, and it is required: without it the
-#: session cannot produce a structured review at all.
-STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
-REQUIRED_PERMISSION_MODE = "dontAsk"
 PERMISSION_PROMPT_TARGET = "none"
 STREAM_FORMAT = "stream-json"
 SETTING_SOURCES = ""
-MANAGED_REVIEW_ENV = "ARCHON_MANAGED_REVIEW"
 CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
-CLAUDE_HOME = ".claude"
-CREDENTIALS_FILE = ".credentials.json"
-CONFIG_DIRNAME = "config"
 REVIEWER_ASSETS = ("assets", "archon", "reviewers")
 REVIEWER_ROLES: tuple[str, ...] = ("reviewer", "qa_engineer", "security_reviewer")
-MODEL_FAMILIES: tuple[str, ...] = ("opus", "sonnet", "haiku", "fable")
-
-REVIEW_ALLOW: tuple[str, ...] = (
-    "Read", "Grep", "Glob",
-    "Bash(cat *)", "Bash(ls *)", "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)",
-    "Bash(grep *)", "Bash(rg *)", "Bash(find *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)",
-    "Bash(sed -n *)", "Bash(python3 -c *)", "Bash(python -c *)", "Bash(node -e *)",
-)  # fmt: skip
-#: ``Agent`` is the permission-rule name; ``Task`` is the live literal catalog name
-#: of the subagent tool in a headless session at 2.1.278.  Both are denied, though
-#: the explicit ``--tools`` allowlist is what structurally excludes them.
-REVIEW_DENY: tuple[str, ...] = (
-    "Write", "Edit", "NotebookEdit", "Agent", "Task", "WebFetch", "WebSearch", "Skill",
-    "EnterWorktree", "ExitWorktree", "Monitor", "SendMessage", "CronCreate", "RemoteTrigger",
-    "Bash(git commit *)", "Bash(git push *)", "Bash(git checkout *)", "Bash(git reset *)",
-    "Bash(rm *)", "Bash(mv *)", "Bash(cp *)", "Bash(curl *)", "Bash(wget *)", "Bash(ssh *)",
-    "Bash(sudo *)", "Bash(tee *)", "Bash(> *)",
-)  # fmt: skip
-REVIEW_DENY_READ: tuple[str, ...] = ("~/.ssh", "~/.aws", "~/.gnupg")
-
-#: Keywords a provider's strict structured-output subset may reject.  They stay
-#: in the local ``ReviewPayload`` validation, which is the only authority.
-SCHEMA_UNSUPPORTED_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "title", "description", "default", "minLength", "maxLength", "pattern", "format",
-        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
-        "minItems", "maxItems", "patternProperties",
-    }
-)  # fmt: skip
 
 EVIDENCE_DIRECTORY = ("docs", "evidence")
 EVIDENCE_PATTERN = "*-spike-*.json"
+#: The book a version must complete before it counts as tested. `S8` is
+#: included even though it stands UNRESOLVED: an honest unresolved verdict is
+#: a result, an absent one is silence. `preflight` and `host` are not spikes.
+REQUIRED_SPIKE_IDS: frozenset[str] = frozenset(f"S{n}" for n in range(1, 13))
+#: A spike has a result when it carries any of these. Silence is not a result.
+RECORDED_VERDICTS: frozenset[str] = frozenset({"PASS", "FAIL", "UNRESOLVED"})
 FAILED_VERDICT = "FAIL"
 VERSION_PATTERN = re.compile(r"(\d+(?:\.\d+){1,3})")
-USAGE_LIMIT_PATTERN = re.compile(r"hit your .{0,64}?limit", re.IGNORECASE)
-RESET_EPOCH_PATTERN = re.compile(r"resets\s*(?:at)?\D{0,4}(\d{10,13})", re.IGNORECASE)
-RESET_CLOCK_PATTERN = re.compile(
-    r"resets\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)?(?:\s*\(([^)]{1,64})\))?", re.IGNORECASE
-)
-#: Both bounds are enforced at 2.1.278 (spike S10).  All three of these end in a
-#: null payload, so the diagnostic must say which: an exhausted bound should be
-#: raised, a plain refusal should not be retried identically.
-BOUND_EXHAUSTED_SUBTYPES: dict[str, str] = {
-    "error_max_turns": "turn",
-    "error_max_budget_usd": "budget",
-    "error_max_structured_output_retries": "structured-output retry",
-}
-DEFAULT_PAUSE_SECONDS = 3600
 BWRAP_DIAGNOSTIC_PREFIX = "bwrap:"
+#: ``bwrap --json-status-fd N`` writes ``{"child-pid": …}`` once the child is
+#: forked and ``{"exit-code": N}`` only after that child actually ran and was
+#: reaped.  A bind-setup failure and an exec failure both stop after the first
+#: document, which is what separates them from a check that merely failed.
+STATUS_FLAG = "--json-status-fd"
+STATUS_EXIT_KEY = "exit-code"
+#: Names the descriptor for the supervisor, which forwards it and never reads it.
+STATUS_FD_ENV = "ARCHON_STATUS_FD"
+MAX_STATUS_BYTES = 65_536
 DENIAL_ARTIFACT = "permission-denials.json"
 STREAM_ARTIFACT = "stream.jsonl"
 
-NOT_HERMETIC = "reviewer session not hermetic: "
-NO_STRUCTURED_OUTPUT = "no structured output"
 CONFINEMENT_FAILED = (
     "Check confinement failed before the command produced a result ({detail}); "
     "this is a runtime fault, not a check outcome."
@@ -167,33 +189,11 @@ UNCONFIRMED_CHECK = (
     "before retrying effects."
 )
 UNCONFIRMED_REVIEW = "Reviewer process cleanup remains unresolved; its result is not accepted."
-
-
-class AdapterError(RuntimeError):
-    """A diagnosed runtime limitation; never evidence that a check passed."""
+CONFINEMENT_NO_STATUS = "the sandbox reported no child exit status"
 
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _read_process(pid: int) -> dict[str, Any] | None:
-    """Read birth and group identity, without inspecting command args or environment."""
-    try:
-        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-    except (FileNotFoundError, ProcessLookupError, IndexError, OSError):
-        return None
-    return {
-        "pid": pid,
-        "state": fields[0],
-        "pgid": int(fields[2]),
-        "sid": int(fields[3]),
-        "start_ticks": int(fields[19]),
-    }
-
-
-def _boot_id() -> str:
-    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 
 def _runtime_paths() -> list[Path]:
@@ -219,7 +219,7 @@ def _signal_process(expected: dict[str, Any], sig: int) -> bool:
     except (ProcessLookupError, ValueError):
         return True
     try:
-        if not _same_process(_read_process(expected["pid"]), expected):
+        if not _same_process(read_process(expected["pid"]), expected):
             return False
         pidfd_send_signal(descriptor, sig)
         return True
@@ -248,115 +248,6 @@ def _error_message(exc: BaseException) -> str:
     return f"Claude Code invocation failed ({name}); inspect the local runtime and retry safely."
 
 
-def review_schema() -> dict[str, Any]:
-    """The provider-facing subset of the local review schema.
-
-    Keyword stripping keeps the schema inside the strict structured-output subset
-    the engine will accept; ``ReviewPayload.model_validate`` keeps every dropped
-    constraint and remains the only authority over a returned payload.
-    """
-    schema = ReviewPayload.model_json_schema()
-
-    def visit(node: Any) -> None:
-        if isinstance(node, dict):
-            for keyword in SCHEMA_UNSUPPORTED_KEYWORDS:
-                node.pop(keyword, None)
-            if node.get("type") == "object" and "properties" in node:
-                node["required"] = list(node["properties"])
-                node["additionalProperties"] = False
-            for child in list(node.values()):
-                visit(child)
-        elif isinstance(node, list):
-            for child in node:
-                visit(child)
-
-    visit(schema)
-    return schema
-
-
-def review_settings(snapshot: Path, scratch: Path, state_dir: Path) -> dict[str, Any]:
-    """Render the engine-side sandbox the reviewer session runs under.
-
-    Bare-name denies remove a tool from the catalog, which is the layer that was
-    measured to hold; path-scoped denies are defence in depth only.  The snapshot
-    is already read-only on disk.
-    """
-    return {
-        "permissions": {
-            "defaultMode": REQUIRED_PERMISSION_MODE,
-            "allow": list(REVIEW_ALLOW),
-            "deny": list(REVIEW_DENY),
-        },
-        "sandbox": {
-            "enabled": True,
-            "failIfUnavailable": True,
-            "autoAllowBashIfSandboxed": True,
-            "allowUnsandboxedCommands": False,
-            "filesystem": {
-                "allowWrite": [str(scratch)],
-                "denyWrite": [str(snapshot)],
-                "denyRead": [*REVIEW_DENY_READ, str(state_dir)],
-            },
-            "network": {"allowedDomains": [], "strictAllowlist": True, "allowLocalBinding": False},
-        },
-        "attribution": {"commit": "", "pr": "", "sessionUrl": False},
-        "env": {MANAGED_REVIEW_ENV: "1"},
-    }
-
-
-def _zone(name: str | None) -> tzinfo | None:
-    if not name:
-        return datetime.now().astimezone().tzinfo
-    try:
-        return ZoneInfo(name)
-    except (KeyError, ValueError, OSError):
-        return datetime.now().astimezone().tzinfo
-
-
-def parse_reset_time(text: str, *, now: float | None = None) -> int:
-    """Resolve a provider reset signal to epoch seconds.
-
-    The only exhaustion message ever observed in the field carries a local clock
-    time (``resets 2:10pm (Europe/Madrid)``).  An unparseable message still pauses:
-    a pause is never a failure, so a bounded default is safer than refusing one.
-    """
-    reference = time.time() if now is None else now
-    epoch = RESET_EPOCH_PATTERN.search(text)
-    if epoch is not None:
-        value = int(epoch.group(1))
-        return value // 1000 if value > 10_000_000_000 else value
-    clock = RESET_CLOCK_PATTERN.search(text)
-    if clock is None:
-        return int(reference) + DEFAULT_PAUSE_SECONDS
-    zone = _zone(clock.group(4))
-    hour, meridiem = int(clock.group(1)), (clock.group(3) or "").lower()
-    if meridiem:
-        hour = hour % 12 + (12 if meridiem == "pm" else 0)
-    if not 0 <= hour <= 23:
-        return int(reference) + DEFAULT_PAUSE_SECONDS
-    current = datetime.fromtimestamp(reference, tz=zone)
-    target = current.replace(hour=hour, minute=int(clock.group(2) or 0), second=0, microsecond=0)
-    if target <= current:
-        target += timedelta(days=1)
-    return int(target.timestamp())
-
-
-def _model_matches(requested: str, reported: str) -> bool:
-    """A reported model id must name the family the kernel routed to."""
-    wanted, actual = requested.strip().lower(), reported.strip().lower()
-    if not wanted or not actual:
-        return False
-    if wanted in MODEL_FAMILIES:
-        return wanted in actual
-    return actual.startswith(wanted) or wanted.startswith(actual)
-
-
-def _event_method(event: Mapping[str, Any]) -> str:
-    kind = str(event.get("type", "unknown"))
-    subtype = event.get("subtype")
-    return f"{kind}/{subtype}" if isinstance(subtype, str) else kind
-
-
 @dataclass
 class _Sink:
     """A byte capture that stops at its cap and remembers that it did."""
@@ -375,172 +266,6 @@ class _Sink:
 
     def text(self) -> str:
         return bytes(self.data).decode("utf-8", errors="replace")
-
-
-@dataclass
-class _ReviewSession:
-    """Validates one reviewer stream.  Every mismatch is a refusal, not a warning."""
-
-    session_id: str
-    model: str
-    tools: tuple[str, ...] = REVIEW_TOOLS
-    init_seen: bool = False
-    reported_model: str = ""
-    tool_uses: int = 0
-    payload: ReviewPayload | None = None
-    result_uuid: str = ""
-    cost_usd: float | None = None
-    num_turns: int = 0
-    denials: list[Any] = field(default_factory=list)
-    windows: dict[str, Any] = field(default_factory=dict)
-    limit_hint: int | None = None
-
-    def handle(self, event: Mapping[str, Any]) -> None:
-        kind = event.get("type")
-        if kind == "system" and event.get("subtype") == "init":
-            self._init(event)
-        elif kind == "rate_limit_event":
-            self._rate_limit(event)
-        elif kind == "assistant":
-            self._assistant(event)
-        elif kind == "result":
-            self._result(event)
-
-    def _init(self, event: Mapping[str, Any]) -> None:
-        """Assert the session the engine actually built, not the one we asked for.
-
-        Measured at 2.1.278: ``tools`` comes back sorted rather than in the order
-        ``--tools`` listed, so the catalog is compared as a set; ``skills`` and
-        ``mcp_servers`` are lists (``[]`` when hermetic), so emptiness is the
-        assertion, never equality with ``0``; and ``--json-schema`` adds exactly
-        one member the kernel did not ask for, ``StructuredOutput``.
-        """
-        if event.get("session_id") != self.session_id:
-            raise AdapterError(f"{NOT_HERMETIC}the session identity was not echoed back")
-        catalog = set(map(str, event.get("tools") or ()))
-        if STRUCTURED_OUTPUT_TOOL not in catalog:
-            raise AdapterError(
-                f"{NOT_HERMETIC}the {STRUCTURED_OUTPUT_TOOL} tool is absent, so the session "
-                "cannot produce a structured review"
-            )
-        if catalog != set(self.tools) | {STRUCTURED_OUTPUT_TOOL}:
-            raise AdapterError(
-                f"{NOT_HERMETIC}tool catalog is {sorted(catalog)}, not "
-                f"{sorted(set(self.tools) | {STRUCTURED_OUTPUT_TOOL})}"
-            )
-        if event.get("mcp_servers"):
-            raise AdapterError(f"{NOT_HERMETIC}MCP servers are attached to the session")
-        if event.get("skills"):
-            raise AdapterError(f"{NOT_HERMETIC}skills are attached to the session")
-        if event.get("permissionMode") != REQUIRED_PERMISSION_MODE:
-            raise AdapterError(f"{NOT_HERMETIC}permission mode is {event.get('permissionMode')!r}")
-        reported = str(event.get("model") or "")
-        if not _model_matches(self.model, reported):
-            raise AdapterError(f"{NOT_HERMETIC}model {reported!r} is not the routed family")
-        self.init_seen = True
-        self.reported_model = reported
-
-    def _rate_limit(self, event: Mapping[str, Any]) -> None:
-        info = event.get("rate_limit_info")
-        if not isinstance(info, Mapping):
-            return
-        windows = info.get("unifiedWindows")
-        if isinstance(windows, Mapping):
-            self.windows = dict(windows)
-        resets_at = info.get("resetsAt")
-        window = str(info.get("rateLimitType") or "unknown")
-        status = str(info.get("status") or "")
-        if status and status != "allowed" and isinstance(resets_at, int):
-            self.limit_hint = int(resets_at)
-        if status == "rejected":
-            raise RateLimited(
-                int(resets_at) if isinstance(resets_at, int) else int(time.time()),
-                window=window,
-                detail="the provider rejected the reviewer request",
-            )
-
-    def _assistant(self, event: Mapping[str, Any]) -> None:
-        self._require_init("an assistant message")
-        message = event.get("message")
-        blocks = message.get("content") if isinstance(message, Mapping) else None
-        for block in blocks or ():
-            if not isinstance(block, Mapping) or block.get("type") != "tool_use":
-                continue
-            name = str(block.get("name") or "")
-            if name not in (*self.tools, STRUCTURED_OUTPUT_TOOL):
-                raise AdapterError(f"reviewer used a tool outside its catalog: {name!r}")
-            self.tool_uses += 1
-
-    def _result(self, event: Mapping[str, Any]) -> None:
-        text = str(event.get("result") or "")
-        if event.get("is_error") and USAGE_LIMIT_PATTERN.search(text):
-            raise RateLimited(
-                parse_reset_time(text), window="usage_limit_message", detail=text[:200]
-            )
-        if event.get("session_id") != self.session_id:
-            raise AdapterError("reviewer result did not carry its requested session identity")
-        self._require_init("the result message")
-        subtype = str(event.get("subtype") or "unknown")
-        if subtype in BOUND_EXHAUSTED_SUBTYPES:
-            raise AdapterError(
-                f"{NO_STRUCTURED_OUTPUT}: the reviewer exhausted its "
-                f"{BOUND_EXHAUSTED_SUBTYPES[subtype]} bound ({subtype}). Raise the bound for the "
-                "next attempt rather than retrying the same one."
-            )
-        if event.get("is_error"):
-            raise AdapterError(f"reviewer session failed: {subtype}")
-        self._record(event)
-        self.payload = _validate_payload(event.get("structured_output"))
-
-    def _record(self, event: Mapping[str, Any]) -> None:
-        self.result_uuid = str(event.get("uuid") or "")
-        if not self.result_uuid:
-            raise AdapterError("reviewer result carried no message identity")
-        cost = event.get("total_cost_usd")
-        self.cost_usd = float(cost) if isinstance(cost, (int, float)) else None
-        turns = event.get("num_turns")
-        self.num_turns = int(turns) if isinstance(turns, int) else 0
-        denials = event.get("permission_denials")
-        self.denials = list(denials)[:MAX_DENIAL_RECORDS] if isinstance(denials, list) else []
-
-    def _require_init(self, stage: str) -> None:
-        if not self.init_seen:
-            raise AdapterError(f"{NOT_HERMETIC}{stage} arrived before a verified init event")
-
-
-def _validate_payload(raw: Any) -> ReviewPayload:
-    """The engine mediates ``--json-schema`` through a tool the model must call.
-
-    A success-shaped result with ``structured_output: null`` is therefore a
-    bounded provider fault.  It is never a decision, and never an approval.
-    """
-    if raw is None:
-        raise AdapterError(NO_STRUCTURED_OUTPUT)
-    if not isinstance(raw, dict):
-        raise AdapterError("reviewer structured output was not an object")
-    try:
-        return ReviewPayload.model_validate(raw)
-    except Exception as exc:  # pydantic ValidationError and any coercion failure
-        raise AdapterError(f"reviewer payload failed local validation: {type(exc).__name__}") from exc
-
-
-def _decode_event(line: bytes) -> dict[str, Any]:
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError as exc:
-        raise AdapterError("reviewer stream carried malformed JSON") from exc
-    if not isinstance(event, dict):
-        raise AdapterError("reviewer stream carried a non-object event")
-    return event
-
-
-def _write_private(path: Path, payload: str) -> Path:
-    descriptor = os.open(
-        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, PRIVATE_FILE_MODE
-    )
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(payload)
-    return path
 
 
 def _role_prompt(role: str) -> str:
@@ -566,26 +291,52 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
 
 
-def tested_engine_range() -> list[str]:
-    """Derive the tested engine range from recorded spike evidence, never by hand."""
+def versions_with_a_complete_book() -> list[str]:
+    """Engine versions that have a verdict on record for *every* spike in the book.
+
+    A single evidence file used to be enough to widen the range, and that is
+    how this project nearly shipped a lie about itself. The engine updated
+    from 2.1.278 to 2.1.280 mid-session; re-running only the host one-liners
+    wrote one record at the new version, and the derived range immediately
+    claimed 2.1.280 was tested when eleven of twelve spikes had never run
+    there.
+
+    ``docs/spikes.md`` already said the right thing — the range comes from
+    versions with a *complete* book — but the code counted any record at all.
+    A partial book now widens nothing, so `doctor` keeps warning about an
+    untested engine until someone actually runs the book against it.
+    """
     directory = _evidence_directory()
     if directory is None:
         return []
-    versions: set[str] = set()
+    by_version: dict[str, set[str]] = {}
     for path in sorted(directory.glob(EVIDENCE_PATTERN)):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         version = record.get("engine_version")
-        if not isinstance(version, str) or record.get("verdict") == FAILED_VERDICT:
+        spike_id = record.get("id")
+        if not isinstance(version, str) or not VERSION_PATTERN.fullmatch(version):
             continue
-        if VERSION_PATTERN.fullmatch(version):
-            versions.add(version)
-    if not versions:
+        # Every verdict counts toward completeness, FAIL included. The range
+        # says the book was *executed* at this version, which is all a drift
+        # warning needs; it does not say everything passed. S9 stands FAIL
+        # because `--resume` genuinely cannot recover a killed session, and
+        # dropping that honest result would empty the range entirely.
+        if not isinstance(spike_id, str) or record.get("verdict") not in RECORDED_VERDICTS:
+            continue
+        by_version.setdefault(version, set()).add(spike_id)
+    complete = [v for v, ids in by_version.items() if REQUIRED_SPIKE_IDS <= ids]
+    return sorted(complete, key=_version_tuple)
+
+
+def tested_engine_range() -> list[str]:
+    """Derive the tested engine range from recorded spike evidence, never by hand."""
+    complete = versions_with_a_complete_book()
+    if not complete:
         return []
-    ordered = sorted(versions, key=_version_tuple)
-    return [ordered[0], ordered[-1]]
+    return [complete[0], complete[-1]]
 
 
 def _version_inside(version: str | None, tested: Sequence[str]) -> bool | None:
@@ -597,6 +348,102 @@ def _version_inside(version: str | None, tested: Sequence[str]) -> bool | None:
         return None
 
 
+@dataclass(frozen=True)
+class _CheckExit:
+    """What the supervisor returned, and what the sandbox itself attested.
+
+    ``sandbox_exit`` is ``None`` when ``bwrap`` never reported an ``exit-code``,
+    which is the only reliable statement that the child did not run.
+    """
+
+    supervisor_code: int
+    sandbox_exit: int | None
+
+    @property
+    def reported(self) -> int:
+        """bwrap's own number wins: the supervisor can exit on a signal instead."""
+        return self.supervisor_code if self.sandbox_exit is None else self.sandbox_exit
+
+
+class _StatusPipe:
+    """A kernel-held pipe that only ``bwrap`` writes to.
+
+    The write end is inherited by the supervisor and by ``bwrap``; the confined
+    child never sees it — measured at bubblewrap 0.9.0, a child that enumerated
+    its own descriptors held exactly ``0, 1, 2`` while this pipe still received
+    both status documents.  So the channel cannot be forged from inside the
+    confinement, which is what makes it a decision and stderr merely diagnosis.
+    """
+
+    def __init__(self) -> None:
+        self.read_fd, self.write_fd = os.pipe()
+        os.set_blocking(self.read_fd, False)
+        os.set_inheritable(self.write_fd, True)
+
+    @classmethod
+    def open(cls) -> _StatusPipe:
+        return cls()
+
+    def __enter__(self) -> _StatusPipe:
+        return self
+
+    def __exit__(self, *exception: object) -> None:
+        self.release_write()
+        with contextlib.suppress(OSError):
+            os.close(self.read_fd)
+
+    def release_write(self) -> None:
+        """Drop the kernel's copy once the supervisor holds one, so reads see EOF."""
+        if self.write_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(self.write_fd)
+            self.write_fd = -1
+
+    def exit_code(self) -> int | None:
+        """The child's exit code, or ``None`` when the sandbox never ran one."""
+        return _parse_status(self._drain())
+
+    def _drain(self) -> bytes:
+        captured = bytearray()
+        while len(captured) < MAX_STATUS_BYTES:
+            try:
+                chunk = os.read(self.read_fd, READ_CHUNK_BYTES)
+            except (BlockingIOError, InterruptedError, OSError):
+                break
+            if not chunk:
+                break
+            captured.extend(chunk)
+        return bytes(captured)
+
+
+def _parse_status(payload: bytes) -> int | None:
+    """Read the last ``exit-code`` bwrap wrote; a partial line proves nothing."""
+    code: int | None = None
+    for line in payload.decode("utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            document = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        value = document.get(STATUS_EXIT_KEY) if isinstance(document, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool):
+            code = int(value)
+    return code
+
+
+def _with_status_fd(argv: Sequence[str], write_fd: int) -> list[str]:
+    """Insert ``--json-status-fd`` without touching the rendered profile.
+
+    The flag goes directly after the binary, before any bind or the argv
+    separator, so ``sandbox.render_bwrap`` stays the sole author of the
+    confinement and its digest is unchanged: this adds an output channel for the
+    kernel, never a capability for the check.
+    """
+    rendered = list(argv)
+    return [*rendered[:1], STATUS_FLAG, str(write_fd), *rendered[1:]]
+
+
 @dataclass
 class _Invocation:
     """One supervised child: its control directory, receipt and lifecycle flags."""
@@ -604,6 +451,7 @@ class _Invocation:
     invocation_id: str
     kind: str
     control_dir: Path
+    receipt_dir: Path
     nonce: str
     receipt_path: str
     process: asyncio.subprocess.Process | None = None
@@ -650,6 +498,10 @@ class ClaudeAdapter:
         self._pending_stops: dict[str, _Invocation] = {}
         self._probe: BwrapProbe | None = None
         self._closed = False
+        # SEC-M2: SIGKILL, OOM and a host crash run no cleanup, so the previous
+        # process's credential copies are swept here before this one starts.
+        install_purge_handlers()
+        self.swept_credentials = sweep(self._receipt_root)
 
     # ---------------------------------------------------------------- capability
 
@@ -744,14 +596,19 @@ class ClaudeAdapter:
                 "Verify this repository from an installation outside it."
             )
         control_dir = Path(mkdtemp(prefix="runtime-", dir=self._receipt_state(cwd, owner)))
+        receipt_dir = control_dir / RECEIPT_DIRNAME
+        receipt_dir.mkdir(mode=PRIVATE_DIR_MODE)
         nonce = uuid4().hex
         job = _Invocation(
             invocation_id=invocation_id,
             kind=kind,
             control_dir=control_dir,
+            receipt_dir=receipt_dir,
             nonce=nonce,
-            receipt_path=str(control_dir / RECEIPT_NAME),
+            receipt_path=str(receipt_dir / RECEIPT_NAME),
         )
+        register_control_dir(control_dir)
+        write_owner(control_dir)
         self._stopped.discard(invocation_id)
         self._pending_stops.pop(invocation_id, None)
         self._active[invocation_id] = job
@@ -778,7 +635,15 @@ class ClaudeAdapter:
         return root
 
     def _launcher_argv(self, job: _Invocation, command: Sequence[str]) -> list[str]:
-        return [*self._launcher, str(job.control_dir), job.nonce, job.kind, ARGV_SEPARATOR, *command]
+        """The supervisor is given the receipt directory, not the control directory.
+
+        SEC-M1: the receipt used to sit beside every writable artifact path the
+        supervised child holds, so a child that created one file before exiting
+        won the race against a supervisor that only opened the receipt afterwards.
+        Nothing but ``stopped.json`` lives in this directory now, and
+        ``launcher.supervise`` claims that name ``O_EXCL`` before the child exists.
+        """
+        return [*self._launcher, str(job.receipt_dir), job.nonce, job.kind, ARGV_SEPARATOR, *command]
 
     @staticmethod
     def _require_process(job: _Invocation) -> asyncio.subprocess.Process:
@@ -795,12 +660,14 @@ class ClaudeAdapter:
         env: Mapping[str, str] | None,
         stdin_data: bytes | None,
         on_event: EventCallback | None,
+        pass_fds: tuple[int, ...] = (),
     ) -> None:
         """Start the supervisor, prove ownership, then release the payload.
 
         The check's argv is the supervisor's own child, so the supervisor *is* the
         dispatch: the ownership record is emitted as soon as identity is provable,
-        before any output is read.
+        before any output is read.  ``pass_fds`` carries the kernel's own bwrap
+        status pipe through the supervisor; nothing else is inherited.
         """
         if job.cancelled:
             raise AdapterError("The invocation was cancelled before dispatch.")
@@ -814,6 +681,7 @@ class ClaudeAdapter:
                 cwd=str(cwd),
                 env=None if env is None else dict(env),
                 limit=MAX_STREAM_LINE_BYTES,
+                pass_fds=pass_fds,
             )
             job.process_identity = await self._observe_identity(job)
         finally:
@@ -841,7 +709,7 @@ class ClaudeAdapter:
         process = self._require_process(job)
         deadline = time.monotonic() + IDENTITY_TIMEOUT_SECONDS
         while True:
-            info = _read_process(process.pid)
+            info = read_process(process.pid)
             if info is not None and info["pid"] == info["pgid"] == info["sid"]:
                 info.pop("state")
                 return {**info, **self._identity_suffix(job)}
@@ -853,7 +721,7 @@ class ClaudeAdapter:
             await asyncio.sleep(IDENTITY_POLL_SECONDS)
 
     def _identity_suffix(self, job: _Invocation) -> dict[str, Any]:
-        return {"boot_id": _boot_id(), "receipt_path": job.receipt_path, "nonce": job.nonce}
+        return {"boot_id": read_boot_id(), "receipt_path": job.receipt_path, "nonce": job.nonce}
 
     def _receipt_identity(self, job: _Invocation) -> dict[str, Any] | None:
         """A supervisor that already finished left a receipt naming itself."""
@@ -900,7 +768,7 @@ class ClaudeAdapter:
     def _artifact(self, job: _Invocation, name: str, payload: str) -> str:
         path = job.control_dir / name
         with contextlib.suppress(OSError):
-            _write_private(path, payload)
+            write_private(path, payload)
         return str(path)
 
     # ------------------------------------------------------------------- checks
@@ -930,11 +798,10 @@ class ClaudeAdapter:
             digest = profile.digest()
             argv = render_bwrap(profile, spec.argv, cwd, probe=self._bwrap_probe())
             timeout = min(spec.timeout_seconds, policy.command_timeout_seconds)
-            outcome["exit_code"] = await self._supervise_check(
-                job, argv, root, streams, on_event, timeout
-            )
+            exit_status = await self._supervise_check(job, argv, root, streams, on_event, timeout)
+            outcome["exit_code"] = exit_status.reported
             await self._close_job(job)
-            self._finish_check(job, invocation_id, outcome, streams)
+            self._finish_check(job, invocation_id, outcome, streams, exit_status.sandbox_exit)
         except TimeoutError:
             await self._abort(job, invocation_id)
             outcome.update(timed_out=True, error="The check exceeded its recorded time limit.")
@@ -970,14 +837,53 @@ class ClaudeAdapter:
         if not cwd.is_relative_to(root) or not cwd.is_dir():
             raise AdapterError("A check working directory must exist inside the active repository.")
 
+    def check_profile_digest(self, candidate: Candidate, policy: Policy) -> str:
+        """The digest the kernel itself would render for this candidate's checks.
+
+        The gate records ``CommandResult.sandbox_profile_digest`` so evidence binds
+        to the exact confinement it was produced under, but the kernel could only
+        assert that *some* self-consistent digest was present: it had no way to
+        re-derive the one it expected, so a result naming any other profile still
+        passed.  This closes that by rendering the real profile through the same
+        construction ``run_command`` uses — never a copy of its shape, and never a
+        quoted value, which would already be stale after the confinement package
+        masked the host runtime directory.
+
+        A throwaway scratch is used because ``digest()`` canonicalises every
+        variable path; only the confinement's *shape* reaches the hash.
+        """
+        root = Path(candidate.repo_root).resolve()
+        self._validate_check(root, root, policy)
+        scratch = Path(mkdtemp(prefix=DIGEST_SCRATCH_PREFIX, dir=self._receipt_state(root, root)))
+        try:
+            return self._profile(scratch, root).digest()
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+
     def _check_profile(self, job: _Invocation, root: Path) -> CheckProfile:
-        scratch = prepare_scratch(job.control_dir / "scratch")
+        return self._profile(job.control_dir / "scratch", root)
+
+    def _profile(self, scratch: Path, root: Path) -> CheckProfile:
+        """Mask the whole workspace state root, not just the supervisor receipts.
+
+        SEC-H2, demonstrated live: the profile was handed the receipt root, so the
+        kernel's sole authority — ``state.sqlite3``, a *sibling* of that directory —
+        stayed readable under the read-only root bind.  Writes were already blocked,
+        but a repository-authored check could read every recorded review payload,
+        finding and checkpoint.  Checks run in the worktree and never need the
+        snapshot, so the whole state root is masked for them.
+        """
         return CheckProfile(
             worktree=root,
-            scratch=scratch,
-            state_dir=self._receipt_root.resolve(),
+            scratch=prepare_scratch(scratch),
+            state_dir=self._state_root(),
             home=Path.home().resolve(),
         )
+
+    def _state_root(self) -> Path:
+        """The workspace state root: ``<state>/repos/<id>`` holding the database,
+        ``snapshots/`` and the ``supervisors/`` receipt root this adapter was given."""
+        return self._receipt_root.resolve().parent
 
     async def _supervise_check(
         self,
@@ -987,13 +893,24 @@ class ClaudeAdapter:
         streams: Mapping[str, _Sink],
         on_event: EventCallback | None,
         timeout: int,
-    ) -> int:
-        async with asyncio.timeout(timeout):
-            await self._dispatch(job, argv, cwd=cwd, env=None, stdin_data=None, on_event=on_event)
-            await asyncio.gather(
-                *(self._pump(job, name, sink, on_event) for name, sink in streams.items())
-            )
-            return await self._require_process(job).wait()
+    ) -> _CheckExit:
+        with _StatusPipe.open() as status:
+            async with asyncio.timeout(timeout):
+                await self._dispatch(
+                    job,
+                    _with_status_fd(argv, status.write_fd),
+                    cwd=cwd,
+                    env={**os.environ, STATUS_FD_ENV: str(status.write_fd)},
+                    stdin_data=None,
+                    on_event=on_event,
+                    pass_fds=(status.write_fd,),
+                )
+                status.release_write()
+                await asyncio.gather(
+                    *(self._pump(job, name, sink, on_event) for name, sink in streams.items())
+                )
+                supervisor_code = await self._require_process(job).wait()
+            return _CheckExit(supervisor_code=supervisor_code, sandbox_exit=status.exit_code())
 
     def _finish_check(
         self,
@@ -1001,6 +918,7 @@ class ClaudeAdapter:
         invocation_id: str,
         outcome: dict[str, Any],
         streams: Mapping[str, _Sink],
+        sandbox_exit: int | None,
     ) -> None:
         """Classify the outcome; a confinement fault never reads as a check result."""
         if not self.termination_confirmed(invocation_id):
@@ -1009,7 +927,7 @@ class ClaudeAdapter:
         if job.cancelled:
             outcome.update(interrupted=True, error="The check was cancelled.")
             return
-        confinement = _confinement_failure(outcome["exit_code"], streams["stderr"].text())
+        confinement = _confinement_failure(sandbox_exit, streams["stderr"].text())
         if confinement is not None:
             outcome["error"] = confinement
         elif any(sink.truncated for sink in streams.values()):
@@ -1066,7 +984,7 @@ class ClaudeAdapter:
         finally:
             await self._release(job, invocation_id)
             if job is not None:
-                _purge_credentials(job.control_dir)
+                purge_credentials(job.control_dir)
             if outcome.get("payload") is not None and not self.termination_confirmed(invocation_id):
                 outcome = {"error": UNCONFIRMED_REVIEW}
         return ReviewResult(
@@ -1090,7 +1008,10 @@ class ClaudeAdapter:
     def _review_env(self, job: _Invocation) -> dict[str, str]:
         env = dict(os.environ)
         env[MANAGED_REVIEW_ENV] = "1"
-        config_dir = self._config_dir or _isolated_config_dir(job.control_dir)
+        # Only a check carries a bwrap status pipe. Inheriting the name without the
+        # descriptor would make the supervisor refuse the reviewer outright.
+        env.pop(STATUS_FD_ENV, None)
+        config_dir = self._config_dir or isolated_config_dir(job.control_dir)
         if config_dir is not None:
             env[CONFIG_DIR_ENV] = str(config_dir)
         return env
@@ -1102,11 +1023,15 @@ class ClaudeAdapter:
         job_dir = job.control_dir / "job"
         job_dir.mkdir(mode=PRIVATE_DIR_MODE)
         scratch = prepare_scratch(job.control_dir / "scratch")
-        settings = _write_private(
+        settings = write_private(
             job_dir / "settings.json",
-            json.dumps(review_settings(snapshot, scratch, self._receipt_root.resolve())),
+            json.dumps(
+                review_settings(
+                    snapshot, scratch, self._receipt_root.resolve(), self._state_root()
+                )
+            ),
         )
-        prompt = _write_private(job_dir / f"{role}.md", _role_prompt(role))
+        prompt = write_private(job_dir / f"{role}.md", _role_prompt(role))
         route = policy.review_route(role)
         return [
             self._claude_bin,
@@ -1230,7 +1155,7 @@ class ClaudeAdapter:
         process = job.process
         if process is None or process.returncode is not None:
             return
-        identity = job.process_identity or _read_process(process.pid)
+        identity = job.process_identity or read_process(process.pid)
         if identity is not None:
             await asyncio.to_thread(_signal_process, dict(identity), signal.SIGTERM)
         with contextlib.suppress(TimeoutError):
@@ -1269,11 +1194,11 @@ class ClaudeAdapter:
         if not _identity_shaped(identity):
             return False
         try:
-            if _boot_id() != identity["boot_id"]:
+            if read_boot_id() != identity["boot_id"]:
                 return True  # Processes from a previous boot cannot still run.
             if await asyncio.to_thread(self._receipt_valid, identity):
                 return True
-            leader = await asyncio.to_thread(_read_process, identity["pid"])
+            leader = await asyncio.to_thread(read_process, identity["pid"])
             if not _same_process(leader, identity):
                 return False
             if not await asyncio.to_thread(_signal_process, identity, signal.SIGTERM):
@@ -1338,54 +1263,35 @@ def _identity_shaped(identity: Mapping[str, Any]) -> bool:
     return identity["pid"] == identity["pgid"] == identity["sid"]
 
 
-def _confinement_failure(exit_code: int | None, stderr: str) -> str | None:
+def _confinement_failure(sandbox_exit: int | None, stderr: str) -> str | None:
     """Tell "the sandbox could not be established" from "the check failed".
 
-    ``bwrap`` diagnoses its own setup and exec failures on the first stderr line.
-    An operation the *profile* blocked surfaces as the command's own ENOENT or
-    EACCES and is a genuine check failure, which this deliberately leaves alone.
+    SEC-H4, demonstrated live: this used to decide on the first stderr line
+    starting with ``bwrap:``.  The child's stderr and bwrap's stderr are the same
+    stream and the exit code does not separate them, so a failing test suite that
+    printed that prefix was recorded as a runtime fault instead of a failed check
+    — the repository classifying its own evidence.
+
+    The decision is now the JSON status pipe, measured at bubblewrap 0.9.0:
+
+    * clean run, child exits 3 → ``{"child-pid": …}`` then ``{"exit-code": 3}``;
+    * bind-setup failure (``--bind /nonexistent``) → ``{"child-pid": …}`` only;
+    * exec failure (``/nonexistent/archon-check``) → ``{"child-pid": …}`` only.
+
+    So a missing ``exit-code`` *is* the confinement fault, and the ``bwrap:``
+    prefix survives only as the diagnosis text quoted back to the operator.  An
+    operation the *profile* blocked still surfaces as the command's own ENOENT or
+    EACCES with a real exit code, and stays a genuine check failure.
     """
-    if exit_code == 0:
+    if sandbox_exit is not None:
         return None
     first = next((line for line in stderr.splitlines() if line.strip()), "")
-    if first.startswith(BWRAP_DIAGNOSTIC_PREFIX):
-        return CONFINEMENT_FAILED.format(detail=first.strip()[:400])
-    return None
-
-
-def _isolated_config_dir(control_dir: Path) -> Path | None:
-    """Give the reviewer a config directory holding only a copy of the credential.
-
-    Spike S12: both the user's own config directory and an isolated one work, and
-    ``--bare`` refuses OAuth subscription credentials outright.  The isolated one
-    is preferred because it exposes no settings, history or transcripts.  When no
-    credential file exists (keychain or API-key auth), the reviewer inherits the
-    user's configuration instead of being handed an empty one.
-    """
-    source = Path.home() / CLAUDE_HOME / CREDENTIALS_FILE
-    try:
-        payload = source.read_bytes()
-    except OSError:
-        return None
-    target = control_dir / CONFIG_DIRNAME
-    try:
-        target.mkdir(mode=PRIVATE_DIR_MODE, exist_ok=True)
-        descriptor = os.open(
-            target / CREDENTIALS_FILE,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-            PRIVATE_FILE_MODE,
-        )
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-    except OSError:
-        return None
-    return target
-
-
-def _purge_credentials(control_dir: Path) -> None:
-    """No copied credential outlives the session that needed it."""
-    with contextlib.suppress(OSError):
-        shutil.rmtree(control_dir / CONFIG_DIRNAME)
+    detail = (
+        first.strip()[:400]
+        if first.startswith(BWRAP_DIAGNOSTIC_PREFIX)
+        else CONFINEMENT_NO_STATUS
+    )
+    return CONFINEMENT_FAILED.format(detail=detail)
 
 
 def _packet_bytes(

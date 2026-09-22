@@ -12,7 +12,7 @@
     "auth_status_subscription_type": "max",
     "trivial_call_result_subtype": "success",
     "trivial_call_is_error": false,
-    "trivial_call_cost_usd": 0.030800599999999997
+    "trivial_call_cost_usd": 0.0312046
   },
-  "cost_usd": 0.030801
+  "cost_usd": 0.031205
 }

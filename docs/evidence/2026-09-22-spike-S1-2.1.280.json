@@ -1,0 +1,83 @@
+{
+  "id": "S1",
+  "date": "2026-09-22",
+  "engine_version": "2.1.280",
+  "verdict": "PASS",
+  "literal_form": "claude -p '<prompt>' --output-format stream-json --verbose --model haiku --setting-sources '' --strict-mcp-config --disable-slash-commands [--disallowedTools Agent | --tools Read]",
+  "observations": {
+    "default_tools": [
+      "Task",
+      "Bash",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "DesignSync",
+      "Edit",
+      "EnterWorktree",
+      "ExitWorktree",
+      "ListAgents",
+      "Monitor",
+      "NotebookEdit",
+      "PushNotification",
+      "Read",
+      "RemoteTrigger",
+      "ReportFindings",
+      "ScheduleWakeup",
+      "SendMessage",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskStop",
+      "TaskUpdate",
+      "ToolSearch",
+      "WebFetch",
+      "WebSearch",
+      "Workflow",
+      "Write"
+    ],
+    "subagent_dispatch_literal_names": [
+      "Task"
+    ],
+    "subagent_dispatch_present_by_default": true,
+    "deny_agent_tools": [
+      "Bash",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "DesignSync",
+      "Edit",
+      "EnterWorktree",
+      "ExitWorktree",
+      "ListAgents",
+      "Monitor",
+      "NotebookEdit",
+      "PushNotification",
+      "Read",
+      "RemoteTrigger",
+      "ReportFindings",
+      "ScheduleWakeup",
+      "SendMessage",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskStop",
+      "TaskUpdate",
+      "ToolSearch",
+      "WebFetch",
+      "WebSearch",
+      "Workflow",
+      "Write"
+    ],
+    "subagent_dispatch_removed_by_disallowedTools_Agent": true,
+    "removed_by_deny": [
+      "Task"
+    ],
+    "tools_read_only_tools": [
+      "Read"
+    ],
+    "tools_flag_exact_match": true,
+    "engine_reported_model": "claude-haiku-4-5-20251001",
+    "permission_mode_default": "default"
+  },
+  "cost_usd": 0.109997
+}

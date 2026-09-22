@@ -1,0 +1,60 @@
+{
+  "id": "S6",
+  "date": "2026-09-22",
+  "engine_version": "2.1.280",
+  "verdict": "PASS",
+  "literal_form": "fake claude emitting rate_limit_event{status:rejected} and result{is_error,'session limit'} parsed via a reference RateLimited() constructor; real arm: claude -p 'OK' --model haiku --output-format stream-json --verbose",
+  "observations": {
+    "fake_arm_a_rejected_in_stream": {
+      "raw_event": {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+          "status": "rejected",
+          "resetsAt": 1790200000,
+          "rateLimitType": "five_hour"
+        }
+      },
+      "parsed_resume_at": 1790200000,
+      "parsed_detail": "usage window five_hour closed until 1790200000: rate_limit_event status=rejected"
+    },
+    "fake_arm_b_error_string": {
+      "raw_event": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": true,
+        "result": "You've hit your session limit \u00b7 resets 2:10pm (Europe/Madrid)",
+        "session_id": "00000000-0000-0000-0000-000000000000",
+        "total_cost_usd": 0.0
+      },
+      "parsed_detail": "usage window unknown closed until 0: 2:10pm (Europe/Madrid)",
+      "note": "string channel carries no machine epoch; resume_at recorded as sentinel 0"
+    },
+    "production_adapter_status": "src/archon/claude_adapter.py is an unimplemented P3 placeholder (AdapterError); this spike used a spike-local reference parser against archon.models.RateLimited, not the production adapter.",
+    "real_arm_allowed_payload": {
+      "type": "rate_limit_event",
+      "rate_limit_info": {
+        "status": "allowed",
+        "resetsAt": 1790100000,
+        "rateLimitType": "five_hour",
+        "overageStatus": "rejected",
+        "overageDisabledReason": "org_level_disabled",
+        "isUsingOverage": false,
+        "unifiedWindows": {
+          "five_hour": {
+            "utilization": 0.8,
+            "resetsAt": 1790100000
+          },
+          "seven_day": {
+            "utilization": 0.2,
+            "resetsAt": 1790686800
+          }
+        }
+      },
+      "uuid": "c5e0dd1d-e1bf-4be0-9d18-7c1b944ab6ce",
+      "session_id": "fc65ed0a-3a41-4d57-8553-574e7429027e"
+    },
+    "fake_arm_a_pass": true,
+    "fake_arm_b_pass": true
+  },
+  "cost_usd": 0.021507
+}

@@ -113,7 +113,15 @@ with `ARCHON_MANAGED_REVIEW=1` in the environment and the packet JSON on stdin. 
 
 `--bare` is not used: it refuses OAuth subscription credentials. Reviewer transcripts land under `~/.claude/projects/<snapshot path>/` and are discarded with `--no-session-persistence`.
 
-**An interrupted reviewer is never resumed.** Spike S9 killed a session mid-stream and found no transcript on disk afterwards; `--resume` with the same id returned `subtype: success` and `num_turns: 1`, silently starting fresh rather than recovering. A resumed reviewer would therefore be a new review wearing the old one's identity, which is precisely the independence property the gate depends on. The kernel relaunches an interrupted reviewer as a new attempt with a new session id, and `--resume` appears nowhere in the adapter.
+**An interrupted reviewer is never resumed — for independence, not incapacity.** A resumed reviewer would be a new review wearing the previous one's identity, and three approvals carrying three distinct kernel-issued session ids is exactly what the gate rests on. The kernel relaunches an interrupted reviewer as a new attempt with a new session id, and `--resume` appears nowhere in the adapter.
+
+> This paragraph previously justified the rule by claiming the engine *could not* resume:
+> spike S9 at 2.1.278 found no transcript after a `kill -9` and read `num_turns: 1` as a
+> silent fresh start. That inference was wrong, and the spike never tested it. Re-run at
+> 2.1.280 with a token planted in the killed session, `--resume` returned the token
+> verbatim in every run — context *is* recovered. The capability claim is retracted; the
+> rule stands on its own reason. Justifying a correct rule with a false fact is how a rule
+> gets repealed the day the fact is checked.
 
 Reviewer sessions run under an isolated `CLAUDE_CONFIG_DIR` inside the 0700 control directory, holding a 0600 copy of the credential file which is purged afterwards. Relocation alone would **de-authenticate** the session, since credentials live inside that directory; when no credential file exists the adapter falls back to the user's own directory rather than handing the reviewer an empty one. Suppression of the user configuration tier comes from `--setting-sources ""`, never from moving the directory.
 
