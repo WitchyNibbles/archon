@@ -1,0 +1,11 @@
+{
+  "name": "archon",
+  "version": "0.1.0",
+  "description": "Autonomous engineering through native Claude Code with durable, independently executed verification.",
+  "author": {"name": "WitchyNibbles"},
+  "license": "MIT",
+  "skills": "./skills/",
+  "agents": "./agents/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}

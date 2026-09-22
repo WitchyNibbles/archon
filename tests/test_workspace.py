@@ -282,23 +282,41 @@ def test_submodule_source_is_included(workspace: Workspace, tmp_path: Path) -> N
 
 
 def test_snapshot_policies_are_inert_but_reviewable(workspace: Workspace) -> None:
-    config = workspace.root / ".codex"
+    config = workspace.root / ".claude"
     config.mkdir()
-    (config / "config.toml").write_text('[mcp_servers.untrusted]\ncommand = "unsafe"\n')
+    (config / "settings.json").write_text('{"mcpServers":{"untrusted":{"command":"unsafe"}}}')
     (config / "hooks.json").write_text('{"hook":"untrusted"}')
     (config / "rules").mkdir()
     (config / "rules" / "untrusted.md").write_text("untrusted instructions")
     candidate = workspace.snapshot()
     snapshot = Path(candidate.snapshot_path)
-    assert not (snapshot / ".codex" / "config.toml").exists()
-    assert not (snapshot / ".codex" / "hooks.json").exists()
-    assert not (snapshot / ".codex").exists()
+    assert not (snapshot / ".claude" / "settings.json").exists()
+    assert not (snapshot / ".claude" / "hooks.json").exists()
+    assert not (snapshot / ".claude").exists()
     mapping = workspace.snapshot_context(candidate)["relocated_paths"]
-    assert (snapshot / mapping[".codex/config.toml"]).read_text() == (
-        config / "config.toml"
+    assert (snapshot / mapping[".claude/settings.json"]).read_text() == (
+        config / "settings.json"
     ).read_text()
-    assert (snapshot / mapping[".codex/rules/untrusted.md"]).read_text() == "untrusted instructions"
+    assert (snapshot / mapping[".claude/rules/untrusted.md"]).read_text() == "untrusted instructions"
     assert workspace.fingerprint().candidate_digest == candidate.candidate_digest
+    workspace.verify_snapshot(candidate)
+
+
+def test_snapshot_relocates_claude_managed_paths(workspace: Workspace) -> None:
+    (workspace.root / "CLAUDE.md").write_text("# live project instructions\n")
+    (workspace.root / ".mcp.json").write_text('{"mcpServers":{"untrusted":{"command":"unsafe"}}}')
+    (workspace.root / "claude.md").write_text("not managed, wrong case\n")
+    candidate = workspace.snapshot()
+    snapshot = Path(candidate.snapshot_path)
+    assert not (snapshot / "CLAUDE.md").exists()
+    assert not (snapshot / ".mcp.json").exists()
+    assert (snapshot / "claude.md").read_text() == "not managed, wrong case\n"
+    mapping = workspace.snapshot_context(candidate)["relocated_paths"]
+    assert "claude.md" not in mapping
+    assert (snapshot / mapping["CLAUDE.md"]).read_text() == "# live project instructions\n"
+    assert (snapshot / mapping[".mcp.json"]).read_text() == (
+        '{"mcpServers":{"untrusted":{"command":"unsafe"}}}'
+    )
     workspace.verify_snapshot(candidate)
 
 
@@ -359,13 +377,13 @@ def test_global_ignores_are_respected(
     assert "private-secret" not in workspace.manifest()
 
 
-def test_codex_directory_symlink_is_inert(workspace: Workspace) -> None:
+def test_claude_directory_symlink_is_inert(workspace: Workspace) -> None:
     (workspace.root / "settings").mkdir()
     (workspace.root / "settings" / "config.toml").write_text("# untrusted config")
-    (workspace.root / ".codex").symlink_to("settings")
+    (workspace.root / ".claude").symlink_to("settings")
     candidate = workspace.snapshot()
-    assert not (Path(candidate.snapshot_path) / ".codex").exists()
-    stored = workspace.snapshot_context(candidate)["relocated_paths"][".codex"]
+    assert not (Path(candidate.snapshot_path) / ".claude").exists()
+    stored = workspace.snapshot_context(candidate)["relocated_paths"][".claude"]
     assert (Path(candidate.snapshot_path) / stored).is_symlink()
 
 

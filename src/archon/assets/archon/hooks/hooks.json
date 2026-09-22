@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [{"type": "command", "command": "<cmd> hook", "timeout": 5}]
+      }
+    ],
+    "PreCompact": [
+      {"hooks": [{"type": "command", "command": "<cmd> hook", "timeout": 5}]}
+    ],
+    "SubagentStart": [
+      {"hooks": [{"type": "command", "command": "<cmd> hook", "timeout": 5}]}
+    ],
+    "SubagentStop": [
+      {"hooks": [{"type": "command", "command": "<cmd> hook", "timeout": 5}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "<cmd> hook", "timeout": 5}]}
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "hooks": [{"type": "command", "command": "<cmd> hook", "timeout": 5}]
+      }
+    ]
+  }
+}

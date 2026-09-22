@@ -53,6 +53,27 @@ def _inside(path: Path, parent: Path) -> bool:
     return path == parent or parent in path.parents
 
 
+_CLAUDE_CONFIG_BASENAMES = frozenset(
+    {"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
+)
+
+
+def _is_claude_managed_path(path: str) -> bool:
+    """Return True when a POSIX-relative path holds live Claude Code configuration.
+
+    A review candidate must never let a reviewer session load the consuming
+    repository's own Claude Code configuration. Any path with a ``.claude`` or
+    ``.claude-plugin`` path component, or whose exact (case-sensitive) final
+    component is ``CLAUDE.md``, ``CLAUDE.local.md``, ``AGENTS.md``, or
+    ``.mcp.json``, is live configuration and must be relocated to an inert
+    review-data file before the snapshot is handed to a reviewer.
+    """
+    parts = PurePosixPath(path).parts
+    if ".claude" in parts or ".claude-plugin" in parts:
+        return True
+    return bool(parts) and parts[-1] in _CLAUDE_CONFIG_BASENAMES
+
+
 def _resolve_snapshot_link(location: Path, source_path: str) -> Path:
     try:
         try:
@@ -82,7 +103,7 @@ class Workspace:
 
     ``state_root`` overrides the Archon state base (before ``repos/<repo_id>``).
     Exclusions must be exact, explicitly declared generated paths, not globs.
-    Repository policy, including AGENTS and .codex configuration, is included.
+    Repository policy, including AGENTS.md and Claude Code configuration, is included.
     """
 
     def __init__(
@@ -574,7 +595,7 @@ class Workspace:
         relocated = {
             path: f"{inert}/{hashlib.sha256(os.fsencode(path)).hexdigest()}.review-data"
             for path in before
-            if ".codex" in PurePosixPath(path).parts
+            if _is_claude_managed_path(path)
         }
         try:
             copied = self._scan(destination, relocated)
