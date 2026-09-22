@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import shlex
 import signal
@@ -48,7 +50,7 @@ def test_default_launcher_does_not_import_consuming_repo_code(
 @pytest.mark.parametrize("filter_kind", ["clean", "process"])
 @pytest.mark.parametrize("filter_name", ["securityprobe", "security=probe"])
 def test_workspace_inspection_does_not_execute_git_content_filters(
-    git_repo, tmp_path, filter_kind, filter_name,
+    git_repo, tmp_path, filter_kind, filter_name, git_environment,
 ):
     marker = tmp_path / "unsandboxed-git-filter"
     script = tmp_path / "filter.py"
@@ -60,7 +62,7 @@ def test_workspace_inspection_does_not_execute_git_content_filters(
     subprocess.run(
         ["git", "-C", str(git_repo), "config", f"filter.{filter_name}.{filter_kind}",
          shlex.join([sys.executable, str(script)])],
-        check=True, capture_output=True,
+        check=True, capture_output=True, env=git_environment,
     )
     (git_repo / ".gitattributes").write_text(f"README.md filter={filter_name}\n")
     original = (git_repo / "README.md").read_text()
@@ -70,19 +72,37 @@ def test_workspace_inspection_does_not_execute_git_content_filters(
     assert not marker.exists(), "Git status invoked an unsandboxed repository content filter"
 
 
-def test_git_config_cannot_redirect_the_authorized_repository(git_repo, tmp_path):
+def test_git_config_cannot_redirect_the_authorized_repository(git_repo, tmp_path, git_init, git_environment):
+    """Either arm must assert: refusing and resolving are both safe, silence is not.
+
+    QA-M4: this test used to `return` inside `except WorkspaceError`, and on this
+    host that is the arm it takes - so it asserted nothing at all. The precondition
+    and a positive control now make a refusal mean what the name claims.
+    """
     unrelated = tmp_path / "unrelated-repository"
     unrelated.mkdir()
-    subprocess.run(["git", "-C", str(unrelated), "init"], check=True, capture_output=True)
+    # The shared fixture builds a repository the developer's own global Git
+    # configuration, templates and hooks cannot reach.
+    git_init(unrelated)
     subprocess.run(
         ["git", "-C", str(git_repo), "config", "core.worktree", str(unrelated)],
-        check=True, capture_output=True,
+        check=True, capture_output=True, env=git_environment,
     )
+    installed = subprocess.run(["git", "-C", str(git_repo), "config", "--get", "core.worktree"],
+                               check=True, capture_output=True, text=True, env=git_environment).stdout.strip()
+    assert installed == str(unrelated), "the redirect this test exists to refuse was never installed"
+    # A positive control: the same call must succeed on a repository carrying no
+    # redirect, so a refusal below is the redirect being refused and not the host.
+    assert Workspace(unrelated, tmp_path / "control-state").root == unrelated
+
+    refusal: WorkspaceError | None = None
+    root: Path | None = None
     try:
-        workspace = Workspace(git_repo, tmp_path / "state")
-    except WorkspaceError:
-        return
-    assert workspace.root == git_repo, "Consuming Git config selected an unrelated write root"
+        root = Workspace(git_repo, tmp_path / "state").root
+    except WorkspaceError as error:
+        refusal = error
+    assert root != unrelated, "Consuming Git config selected an unrelated write root"
+    assert refusal is not None or root == git_repo, f"Git config selected {root} as the write root"
 
 
 def test_authorized_repository_subdirectories_still_resolve(git_repo, tmp_path):
@@ -120,8 +140,8 @@ def test_runtime_receipt_stays_outside_ambient_repo_tmpdir(git_repo, tmp_path, m
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux process recovery boundary")
 def test_recovery_does_not_confirm_a_detached_command_child_stopped():
-    from archon.claude_adapter import ClaudeAdapter, _boot_id, _read_process
-    from archon.launcher import pidfd_open, pidfd_send_signal
+    from archon.claude_adapter import ClaudeAdapter
+    from archon.launcher import pidfd_open, pidfd_send_signal, read_boot_id, read_process
 
     child_code = "import time; time.sleep(30)"
     parent_code = (
@@ -140,14 +160,18 @@ def test_recovery_does_not_confirm_a_detached_command_child_stopped():
         assert owner.stdout is not None
         child_pid = int(owner.stdout.readline().strip())
         child_descriptor = pidfd_open(child_pid)
-        identity = _read_process(owner.pid)
+        identity = read_process(owner.pid)
         assert identity is not None
         identity.pop("state")
-        identity["boot_id"] = _boot_id()
+        identity["boot_id"] = read_boot_id()
         confirmed = asyncio.run(ClaudeAdapter().recover_termination(identity))
-        child = _read_process(child_pid)
+        child = read_process(child_pid)
         alive = child is not None and child["state"] not in ("Z", "X")
-        assert not confirmed or not alive, "Detached command child survived confirmed termination"
+        # QA-M4: `not confirmed or not alive` passed whenever the probe's own
+        # child had already exited, which proves nothing about recovery. The
+        # surviving child is the precondition, so its absence must fail loudly.
+        assert alive, "the detached child exited before recovery ran; this negative result proves nothing"
+        assert not confirmed, "Recovery confirmed termination while a detached command child was still running"
     finally:
         if owner.poll() is None:
             owner.kill()
@@ -164,11 +188,17 @@ def test_recovery_does_not_confirm_a_detached_command_child_stopped():
 class _PassingAdapter:
     """Known deterministic receipts, without claiming authenticated review."""
 
+    def check_profile_digest(self, candidate, policy):
+        """Derived, never quoted: the gate re-renders this and compares (CORR-M3)."""
+        shape = ["synthetic-check-profile", policy.network_access, policy.approval_policy]
+        return hashlib.sha256(json.dumps(shape, sort_keys=True).encode()).hexdigest()
+
     async def run_command(self, spec, candidate, policy, on_event=None, *, invocation_id):
         return CommandResult(
             invocation_id=invocation_id, exit_code=0, argv=spec.argv,
             cwd=str((Path(candidate.repo_root) / spec.cwd).resolve()),
             stdout="Synthetic command receipt for security state-machine regression.\n",
+            sandbox_profile_digest=self.check_profile_digest(candidate, policy),
         )
 
     async def run_review(self, role, candidate, packet, policy, on_event=None, *, invocation_id):
@@ -211,19 +241,33 @@ def _delivery(git_repo: Path, tmp_path: Path):
 
 
 def test_branch_drift_cannot_verify_a_different_delivery_branch(git_repo, tmp_path):
+    """Refusing drift and restoring the branch are both safe; verifying it is not.
+
+    QA-M4: the `except StoreError: return` arm asserted nothing, and on this host
+    it is the arm taken. Every arm now ends at the same claim - the run is not
+    verified while HEAD is somewhere other than the recorded delivery branch.
+    """
     async def exercise():
         service, runner, run_id = _delivery(git_repo, tmp_path)
         try:
             expected = service.store.get_run(run_id)["spec"]["branch"]
             service.workspace._git("symbolic-ref", "HEAD", "refs/heads/main")
+            assert service.workspace.provenance()["branch"] != expected, (
+                "the drift this test exists to refuse never happened"
+            )
+            refusal: StoreError | None = None
             try:
                 job = await service.verify(run_id)
                 await runner.wait(job["job_id"])
-                result = service.status(run_id)
-            except StoreError:
-                return  # Refusing drift is safe; preserving/restoring the branch is also valid.
+                service.status(run_id)
+            except StoreError as error:
+                refusal = error
+            state = service.store.get_run(run_id)["state"]
             observed_branch = service.workspace.provenance()["branch"]
-            assert result["run"]["state"] != "verified" or observed_branch == expected
+            assert state != "verified" or observed_branch == expected, (
+                f"verified on {observed_branch} instead of the recorded {expected}"
+            )
+            assert refusal is not None or state != "verified" or observed_branch == expected
         finally:
             await runner.close()
             service.store.close()

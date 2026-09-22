@@ -28,6 +28,15 @@ what neither caught. It is a speed bump with receipts, not a sandbox -- the OS
 sandbox (`bwrap` for checks, settings sandbox for reviewers) is the boundary that
 actually holds. This file deliberately stays a pattern table: a predecessor
 shipped a 3,572-line shell parser for this job and it was theatre.
+
+Each row carries the *canonical* spellings of the failure it names, because a row
+that misses the short form of its own flag is not a ceiling, it is a hole: `-n` is
+`--no-verify`, `: >` empties a file as surely as `rm`, `install -m` sets the same
+bit `chmod +x` does. Still out of reach and deliberately not chased, since
+enumerating unsafe shapes never converges: `sed -i` over a test body, an `Edit`
+that replaces a whole test file with nothing, `printf` into `.git/hooks` followed
+by a separate chmod in another turn, and anything a wrapper script spells for the
+model. Those are the diff scan's and the reviewer's job.
 """
 
 from __future__ import annotations
@@ -51,6 +60,10 @@ MAX_FIELD = 256
 MAX_STATE_BYTES = 8192
 MAX_INSPECTED_PATHS = 256
 MAX_SEGMENTS = 64
+# AC-21 fixes this bound in words: the Stop hook yields on `stop_hook_active` after
+# eight continuations. Eight is the engine's own cap on consecutive Stop blocks
+# (spike S7), so a larger number here would only be a budget the engine never lets
+# us spend; tests pin the literal, not this name.
 MAX_STOP_CONTINUATIONS = 8
 MAX_SAME_ACTION = 2
 
@@ -84,14 +97,21 @@ FAIL_OPEN_MESSAGE = (
 
 @dataclasses.dataclass(frozen=True)
 class GuardRule:
-    """One `PreToolUse` deny rule. `field` selects the bounded subject string."""
+    """One `PreToolUse` deny rule. `field` selects the bounded subject string.
+
+    `citation` names the observed failure the row exists for. "No mechanism without
+    a run that needed it" is an iron rule, so a row that cannot name one does not
+    ship; where the record holds only a review or a design note, the citation says
+    so in those words rather than dressing it up as a run.
+    """
 
     rule_id: str
     tools: frozenset[str]
     field: str  # "command" | "target" | "text"
     pattern: re.Pattern[str]
     reason: str
-    requires: str = ""  # "", "verification_running", "test_target", "mutating_command", "claude_md"
+    citation: str
+    requires: str = ""  # see `_condition` for the recognised conditions
 
 
 # `git restore` is the modern spelling of `git checkout --` and shares its row.
@@ -105,6 +125,12 @@ MUTATING_COMMAND = re.compile(
     r"|\bsed\b[^\n]*(?<![\w-])-i|>"
 )
 DELETION_COMMAND = re.compile(r"\b(?:rm|unlink|shred)\b|\bgit\s+rm\b|\btruncate\b")
+# `: > tests/test_x.py` empties a declared test file while naming no deletion verb,
+# so the redirection operators are part of the same row; which file a redirection
+# empties is decided by its target, never by the rest of the command line.
+REDIRECTION = r">>?"
+REDIRECT_TARGET = re.compile(r">>?\s*([^\s;&|<>]+)")
+TEST_DELETION = re.compile(DELETION_COMMAND.pattern + "|" + REDIRECTION)
 TEST_FILENAME = re.compile(
     r"(?:^|[\s\"'/])(?:test_[^\s\"'/]+|[^\s\"'/]+_test\.[A-Za-z0-9]+"
     r"|[^\s\"'/]+\.test\.[A-Za-z0-9]+|[^\s\"'/]+_spec\.[A-Za-z0-9]+)"
@@ -113,14 +139,58 @@ DEFAULT_TEST_PATHS = ("tests/", "test/", "spec/", "specs/", "__tests__/")
 # Shell separators only: one clause's verb must not condemn the next clause's path.
 SEGMENT = re.compile(r"[;&|\n]+")
 
+# Commit-hook bypass, in the spellings that mean exactly the same thing:
+# `--no-verify`, its short form `-n` on a `git commit`, and pointing the engine's
+# hook path somewhere empty. A quoted commit message is data, not a flag vector,
+# so the short form is read only outside quotes -- but an explicit `--no-verify`
+# is honoured inside them too, because `sh -c "git commit --no-verify"` is real.
+QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+EXPLICIT_BYPASS = re.compile(
+    r"(?<![\w-])--no-verify(?![\w-])|core\.hooksPath(?:\s*=|\s+[^\s;&|-])"
+)
+GIT_COMMIT = re.compile(r"\bgit\b(?=[^\n]*\bcommit\b)")
+SHORT_NO_VERIFY = re.compile(r"(?<![\w-])-[A-Za-z]*n[A-Za-z]*(?![\w-])")
+COMMIT_BYPASS = re.compile(EXPLICIT_BYPASS.pattern + "|" + SHORT_NO_VERIFY.pattern)
+
+# Writing an empty body over a declared test file is `rm` by another tool.
+CONTENT_FIELDS = ("content", "new_source", "new_string")
+ANY_TARGET = re.compile(r"\S")
+
+# A .git/hooks entry becomes live code the moment it is executable, whichever of
+# the three usual spellings put the bit there: an explicit chmod, `install -m`, or
+# a `cp -p` that carries the mode across from an already-executable source.
+HOOK_INJECTION = re.compile(
+    r"(?:\bchmod\b(?=[^\n;&|]*(?:\+x|(?<![\w])[0-7]*[1357][0-7]{0,2}(?![\w])))"
+    r"|\binstall\b(?=[^\n;&|]*(?<![\w-])-m(?![\w-]))"
+    r"|\bcp\b(?=[^\n;&|]*(?<![\w-])-p(?![\w-])))"
+    r"(?=[^\n;&|]*\.git/hooks)"
+)
+
+_MANAGED_REASON = (
+    "Managed-file edit outside `archon init`: .archon/, .claude/agents/archon-*, and "
+    ".claude/skills/archon-manager/ are written by init and are the harness's own "
+    "record. Change them with `archon init`, not from inside a run."
+)
+_MANAGED_CITATION = (
+    "project-companion magic-tower 2026-09-17 H3: a worker's attempt-1 diff deleted "
+    "`.companion/`, the harness's own record; one full attempt ($4.58) was lost."
+)
+
 GUARD_RULES: tuple[GuardRule, ...] = (
     GuardRule(
         "no_verify",
         frozenset({"Bash"}),
         "command",
-        re.compile(r"(?<![\w-])--no-verify(?![\w-])"),
-        "Commit-hook bypass: --no-verify skips the repository's own checks, which is the "
-        "shape an agent reaches for when those checks fail. Fix the failure and commit normally.",
+        COMMIT_BYPASS,
+        "Commit-hook bypass: --no-verify (or its short form -n, or an emptied "
+        "core.hooksPath) skips the repository's own checks, which is the shape an agent "
+        "reaches for when those checks fail. Fix the failure and commit normally.",
+        "project-companion magic-tower 2026-09-17 H5: the transcript scan was worth "
+        "keeping for exactly two shapes, Bash `--no-verify` and `rm` of repository test "
+        "paths. The short and core.hooksPath spellings were added after an Archon release "
+        "gate observed `git commit -n` and `git -c core.hooksPath=/dev/null commit` "
+        "passing this row unchallenged.",
+        requires="commit_hook_bypass",
     ),
     GuardRule(
         "force_push",
@@ -132,16 +202,37 @@ GUARD_RULES: tuple[GuardRule, ...] = (
         ),
         "History rewrite: force-pushing discards the commits that recorded evidence refers "
         "to. Delivery ends on a local branch; publication is a separate human instruction.",
+        "Weakest citation in this table: docs/assets.md names a TypeScript-Archon "
+        "seal-tamper finding, and no run reproducing it is on record here. The row is "
+        "kept because evidence binds to commits, and labelled rather than dressed up.",
     ),
     GuardRule(
         "test_deletion",
         frozenset({"Bash"}),
         "command",
-        DELETION_COMMAND,
-        "Test deletion: this command removes or truncates a declared test path. Measured "
-        "agents delete tests rather than report an impossible task; repair the code or "
-        "record the task as blocked instead.",
+        TEST_DELETION,
+        "Test deletion: this command removes, truncates, or overwrites a declared test "
+        "path. Measured agents delete tests rather than report an impossible task; repair "
+        "the code or record the task as blocked instead.",
+        "Measured reward hacking (docs/research): ~49% of impossible tasks bypassed by "
+        "deleting tests or hardcoding (Sep 2026), METR 30% unprompted on RE-Bench. "
+        "companion H5 narrowed the transcript scan to `rm` of repository test paths; the "
+        "redirection spelling was added after a release gate observed `: > tests/test_x.py` "
+        "empty a declared test file without naming a deletion verb.",
         requires="test_target",
+    ),
+    GuardRule(
+        "test_truncation_write",
+        frozenset({"Write", "NotebookEdit"}),
+        "target",
+        ANY_TARGET,  # the target and the empty body are both decided by the condition
+        "Test truncation: writing an empty body over a declared test path deletes the "
+        "test as surely as `rm` does. Repair the code or record the task as blocked; a "
+        "test that must change should change to something that still asserts.",
+        "An Archon release gate observed that the Bash-only test-deletion row watches "
+        "`rm tests/test_x.py` while the same worker can empty the same file with `Write`, "
+        "which reaches the identical outcome unguarded.",
+        requires="emptied_test_file",
     ),
     GuardRule(
         "candidate_mutation",
@@ -151,6 +242,9 @@ GUARD_RULES: tuple[GuardRule, ...] = (
         "Candidate mutation mid-verification: a verification job is running against this "
         "worktree's candidate, and checkout/reset/clean/stash/restore would change the "
         "sources under it. Wait for the job, then repair against fresh evidence.",
+        "devgod-recovery freshness rule (evidence binds to a candidate; a source change "
+        "invalidates the result being produced) plus companion H3, where an unsupervised "
+        "git-level base move produced a diff that deleted work nobody asked it to touch.",
         requires="verification_running",
     ),
     GuardRule(
@@ -158,9 +252,8 @@ GUARD_RULES: tuple[GuardRule, ...] = (
         frozenset({"Bash"}),
         "command",
         re.compile(_MANAGED_PATHS),
-        "Managed-file edit outside `archon init`: .archon/, .claude/agents/archon-*, and "
-        ".claude/skills/archon-manager/ are written by init and are the harness's own "
-        "record. Change them with `archon init`, not from inside a run.",
+        _MANAGED_REASON,
+        _MANAGED_CITATION,
         requires="mutating_command",
     ),
     GuardRule(
@@ -168,9 +261,8 @@ GUARD_RULES: tuple[GuardRule, ...] = (
         frozenset({"Edit", "Write", "NotebookEdit"}),
         "target",
         re.compile(_MANAGED_PATHS),
-        "Managed-file edit outside `archon init`: .archon/, .claude/agents/archon-*, and "
-        ".claude/skills/archon-manager/ are written by init and are the harness's own "
-        "record. Change them with `archon init`, not from inside a run.",
+        _MANAGED_REASON,
+        _MANAGED_CITATION,
     ),
     GuardRule(
         "managed_claude_block",
@@ -179,6 +271,7 @@ GUARD_RULES: tuple[GuardRule, ...] = (
         re.compile(_MANAGED_BLOCK),
         "Managed CLAUDE.md block: the <!-- BEGIN ARCHON NATIVE --> ... <!-- END ARCHON "
         "NATIVE --> span belongs to `archon init`. Edit your own instructions outside it.",
+        _MANAGED_CITATION,
         # Documentation that merely quotes the marker is not an edit to the block.
         requires="claude_md",
     ),
@@ -186,9 +279,13 @@ GUARD_RULES: tuple[GuardRule, ...] = (
         "hook_injection",
         frozenset({"Bash"}),
         "command",
-        re.compile(r"\bchmod\b(?=[^\n;&|]*(?:\+x|(?<![\w])777(?![\w])))(?=[^\n;&|]*\.git/hooks)"),
+        HOOK_INJECTION,
         "Hook injection: making a .git/hooks entry executable installs code that runs on "
         "every future commit, outside any review. Put the logic in a tracked check instead.",
+        "Security review of the overlay (docs/assets.md guard table); no run on record "
+        "reproduces it, and the row is labelled rather than dressed up. `install -m` and "
+        "`cp -p` were added after a release gate observed both put the bit there without "
+        "a chmod, which is the spelling the row already claimed to cover.",
     ),
 )
 
@@ -234,14 +331,49 @@ def _test_paths(status: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
-def _condition(rule: GuardRule, subject: str, target: str, status: Mapping[str, Any]) -> bool:
+def _is_test_path(text: str, status: Mapping[str, Any]) -> bool:
+    return bool(TEST_FILENAME.search(text)) or any(path in text for path in _test_paths(status))
+
+
+def _new_content(tool_input: Mapping[str, Any]) -> str:
+    """Everything the call would leave in the file it names."""
+    return "".join(_string(tool_input.get(key), MAX_SUBJECT) for key in CONTENT_FIELDS)
+
+
+def _commit_bypass(subject: str) -> bool:
+    """`git commit -n` is `--no-verify`; a message that merely mentions `-n` is not."""
+    if EXPLICIT_BYPASS.search(subject):
+        return True
+    bare = QUOTED.sub(" ", subject)
+    return bool(GIT_COMMIT.search(bare) and SHORT_NO_VERIFY.search(bare))
+
+
+def _deletes_a_test(subject: str, status: Mapping[str, Any]) -> bool:
+    """A deletion verb condemns the clause; a redirection condemns only its target."""
+    if DELETION_COMMAND.search(subject) and _is_test_path(subject, status):
+        return True
+    targets = REDIRECT_TARGET.findall(subject)[:MAX_INSPECTED_PATHS]
+    return any(_is_test_path(target, status) for target in targets)
+
+
+def _condition(rule: GuardRule, subject: str, target: str, status: Mapping[str, Any],
+               tool_input: Mapping[str, Any]) -> bool:
     if rule.requires == "verification_running":
         jobs = status.get("jobs")
         return isinstance(jobs, list) and any(
             isinstance(job, Mapping) and job.get("state") == "running" for job in jobs
         )
+    if rule.requires == "commit_hook_bypass":
+        return _commit_bypass(subject)
     if rule.requires == "test_target":
-        return bool(TEST_FILENAME.search(subject)) or any(path in subject for path in _test_paths(status))
+        return _deletes_a_test(subject, status)
+    if rule.requires == "emptied_test_file":
+        # Writing a test is the work; writing nothing over one is the deletion. A
+        # payload carrying no body field at all is a shape this guard does not
+        # understand, and an unrecognised shape is never denied.
+        if not any(key in tool_input for key in CONTENT_FIELDS):
+            return False
+        return _is_test_path(subject, status) and not _new_content(tool_input).strip()
     if rule.requires == "mutating_command":
         return bool(MUTATING_COMMAND.search(subject))
     if rule.requires == "claude_md":
@@ -264,7 +396,9 @@ def _guard(status: Mapping[str, Any], payload: Mapping[str, Any]) -> GuardRule |
             continue
         # A Bash pattern and its condition must hold within one clause of the command.
         for subject in _segments(command) if rule.field == "command" else fields[rule.field]:
-            if subject and rule.pattern.search(subject) and _condition(rule, subject, target, status):
+            if subject and rule.pattern.search(subject) and _condition(
+                rule, subject, target, status, tool_input
+            ):
                 return rule
     return None
 

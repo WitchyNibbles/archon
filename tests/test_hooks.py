@@ -199,10 +199,22 @@ def test_hook_state_symlink_does_not_write_outside_private_state(tmp_path):
 
 GUARD_DENIALS = [
     ("no_verify", tool_event("Bash", command='git commit -m "wip" --no-verify')),
+    # `-n` is the short form of the same flag, and an emptied hooks path is the same
+    # bypass by another route; a row that misses these is not a ceiling, it is a hole.
+    ("no_verify", tool_event("Bash", command='git commit -n -m "wip"')),
+    ("no_verify", tool_event("Bash", command='git commit -am "wip" --no-verify')),
+    ("no_verify", tool_event("Bash", command='git -c core.hooksPath=/dev/null commit -m "wip"')),
     ("force_push", tool_event("Bash", command="git push --force origin main")),
     ("force_push", tool_event("Bash", command="git push origin +main")),
     ("test_deletion", tool_event("Bash", command="rm -rf tests/test_gate.py")),
     ("test_deletion", tool_event("Bash", command="rm QA/Testing/smoke.py")),
+    # Truncation by redirection names no deletion verb and empties the file anyway.
+    ("test_deletion", tool_event("Bash", command=": > tests/test_gate.py")),
+    ("test_deletion", tool_event("Bash", command="printf '' >> QA/Testing/smoke.py")),
+    ("test_truncation_write", tool_event("Write", file_path="/repo/tests/test_gate.py", content="")),
+    ("test_truncation_write", tool_event("Write", file_path="/repo/QA/Testing/smoke.py", content="\n  \n")),
+    ("test_truncation_write", tool_event("NotebookEdit", notebook_path="/repo/tests/test_gate.ipynb",
+                                         new_source="")),
     ("candidate_mutation", tool_event("Bash", command="git reset --hard HEAD~1")),
     ("managed_files_bash", tool_event("Bash", command="rm -rf .archon/native-install.json")),
     ("managed_files_write", tool_event("Write", file_path="/repo/.claude/agents/archon-warden.md",
@@ -215,6 +227,10 @@ GUARD_DENIALS = [
                                         old_string="<!-- BEGIN ARCHON NATIVE -->\nrules",
                                         new_string="")),
     ("hook_injection", tool_event("Bash", command="chmod +x .git/hooks/pre-commit")),
+    # Three spellings of the same bit: an explicit mode, install's mode, cp's carry-over.
+    ("hook_injection", tool_event("Bash", command="chmod 755 .git/hooks/pre-commit")),
+    ("hook_injection", tool_event("Bash", command="install -m 755 build/hook .git/hooks/pre-commit")),
+    ("hook_injection", tool_event("Bash", command="cp -p scripts/hook.sh .git/hooks/pre-commit")),
 ]
 
 GUARD_ALLOWANCES = [
@@ -231,6 +247,19 @@ GUARD_ALLOWANCES = [
     # Prose that merely quotes the marker is not an edit to the managed block.
     tool_event("Write", file_path="/repo/docs/install.md",
                content="init writes <!-- BEGIN ARCHON NATIVE --> into CLAUDE.md"),
+    # A commit message that talks about `-n` is data, not a flag vector.
+    tool_event("Bash", command='git commit -m "document the -n shorthand"'),
+    tool_event("Bash", command="git config --get core.hooksPath"),
+    tool_event("Bash", command="git push -n origin feature/gate"),
+    # Redirection condemns only its own target: running the suite is not deleting it.
+    tool_event("Bash", command="uv run pytest tests/ -q > /tmp/pytest.log"),
+    tool_event("Bash", command='echo "release note" > docs/notes.md'),
+    tool_event("Bash", command="grep -n assert tests/test_gate.py"),
+    tool_event("Bash", command="cp -p src/feature.py src/feature_backup.py"),
+    tool_event("Bash", command="install -m 644 config/app.toml build/app.toml"),
+    # Writing a test is the work the worker is here for; only emptying one is deletion.
+    tool_event("Write", file_path="/repo/tests/test_gate.py",
+               content="def test_gate() -> None:\n    assert gate().verified\n"),
 ]
 
 
@@ -377,3 +406,47 @@ def test_real_kernel_restores_run_without_execution_adapter(tmp_path, git_repo, 
     assert any(item["kind"] == "native_hook" for item in observed)
     assert not store.list_jobs(run_id)
     store.close()
+
+
+def test_every_guard_row_names_the_failure_it_prevents() -> None:
+    """Iron rule: no mechanism without a run that needed it.
+
+    A row whose citation is a review or a design note says so in those words, so the
+    weak ones stay visible instead of being dressed up as observed runs.
+    """
+    exercised = {rule_id for rule_id, _payload in GUARD_DENIALS}
+
+    for rule in hooks.GUARD_RULES:
+        assert len(rule.citation.split()) >= 10, f"{rule.rule_id} cites nothing concrete"
+        assert rule.reason.strip() and rule.field in {"command", "target", "text"}
+        assert rule.tools <= hooks.GUARDED_TOOLS
+    assert len({rule.rule_id for rule in hooks.GUARD_RULES}) == len(hooks.GUARD_RULES)
+    assert exercised == {rule.rule_id for rule in hooks.GUARD_RULES}
+
+
+def test_a_declared_test_path_outside_tests_is_protected_from_every_spelling(tmp_path):
+    """The plan's own allowed_paths decide what a test file is, not just `tests/`."""
+    service = guarded_service(tmp_path)
+    for command in ("rm QA/Testing/smoke.py", ": > QA/Testing/smoke.py",
+                    "truncate -s 0 QA/Testing/smoke.py"):
+        denied = hooks.handle_event(tool_event("Bash", command=command), service=service)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    emptied = hooks.handle_event(
+        tool_event("Write", file_path="/repo/QA/Testing/smoke.py", content=""), service=service)
+    assert emptied["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_the_stop_continuation_budget_is_eight_and_not_a_number_the_test_derives(tmp_path):
+    """AC-21 fixes the bound in words; a loop over the constant would pass at any value."""
+    service = FakeService(tmp_path)
+    service.data["run"]["state"] = "verifying"
+    service.data["jobs"] = [{"job_id": "gate", "state": "running", "attempt": 1}]
+    service.data["next_action"] = {"action": "wait", "inputs": {"job_ids": ["gate"]}}
+
+    assert hooks.MAX_STOP_CONTINUATIONS == 8
+    blocked = 0
+    for _ in range(64):
+        if hooks.handle_event(event("Stop"), service=service).get("decision") != "block":
+            break
+        blocked += 1
+    assert blocked == 8

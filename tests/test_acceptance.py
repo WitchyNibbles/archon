@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from archon.claude_adapter import ClaudeAdapter
 from archon.hooks import handle_event
 from archon.models import CommandResult, Finding, RateLimited, ReviewPayload, ReviewResult
 from archon.service import ArchonService, ServiceError
@@ -51,6 +52,16 @@ NEGATIVE_PRICE_PROBE = (
     "else:\n"
     "    raise SystemExit(7)\n"
 )
+
+
+@pytest.fixture(autouse=True)
+def private_state_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the adapter's own receipt state inside the test's directory.
+
+    Rendering the check profile touches the private state root, and a suite must
+    not write into the developer's real one.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
 
 
 def git(root: Path, *args: str) -> bytes:
@@ -87,6 +98,19 @@ class DeterministicClaudeTransport:
         #: role -> epoch second; a one-shot simulated subscription window.
         self.rate_limited_roles: dict[str, int] = {}
 
+    def check_profile_digest(self, candidate, policy) -> str:
+        """The confinement the kernel itself renders, not a fixture invention.
+
+        This transport substitutes provider communication only, never confinement
+        identity: the digest that reaches the durable record has to be the one any
+        fresh Archon process renders for this candidate, which is what the public
+        CLI below re-derives when it reads the same record. Deriving it through
+        the adapter also means a change to the profile's shape - the confinement
+        package has already masked one more host directory - cannot leave a stale
+        literal behind in this file.
+        """
+        return ClaudeAdapter().check_profile_digest(candidate, policy)
+
     async def run_command(
         self, spec, candidate, policy, on_event=None, *, invocation_id=None,
     ) -> CommandResult:
@@ -94,7 +118,7 @@ class DeterministicClaudeTransport:
         # The kernel owns confinement: a check may never widen it or reach the network.
         assert policy.network_access is False
         assert policy.approval_policy == "never"
-        assert policy.scratch_bytes >= 1_048_576
+        assert policy.max_output_bytes >= 1024
         cwd = (Path(candidate.repo_root) / spec.cwd).resolve()
         self.command_calls.append({"id": invocation_id, "digest": candidate.candidate_digest})
         self.command_started.set()
@@ -112,6 +136,7 @@ class DeterministicClaudeTransport:
             cwd=str(cwd),
             stdout=stdout.decode(),
             stderr=stderr.decode(),
+            sandbox_profile_digest=self.check_profile_digest(candidate, policy),
         )
 
     async def run_review(
@@ -472,7 +497,7 @@ def test_corrupted_receipt_cannot_leave_public_verified_status(
 
 
 def test_rate_limited_verification_pauses_and_resumes_without_rerunning_checks(
-    git_repo: Path, tmp_path: Path,
+    git_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """AC-19: a closed usage window is a pause, and a pause is free."""
     prepare_consumer(git_repo)
@@ -487,8 +512,11 @@ def test_rate_limited_verification_pauses_and_resumes_without_rerunning_checks(
             run_id = start_delivery(service)
             claim_implementation(service, run_id, git_repo)
             repair_pricing(service, run_id, git_repo, CORRECT_PRICING)
-            # A short real window: the store's claim fence uses the real clock.
-            window = int(time.time()) + 3
+            # A real five-hour window. QA-M6: the store's claim fence and its
+            # unpause sweep both read `archon.store.time.time`, so the window is
+            # crossed by moving that clock rather than by sleeping through a
+            # short one - the test proves the same fence without waiting.
+            window = int(time.time()) + 18_000
             transport.rate_limited_roles = {"security_reviewer": window}
             dispatched = await service.verify(run_id)
             job_id = dispatched["job_id"]
@@ -509,13 +537,12 @@ def test_rate_limited_verification_pauses_and_resumes_without_rerunning_checks(
 
             # Nothing may claim the parked work until the window actually reopens.
             assert await service.verify(run_id) and store.get_job(job_id)["state"] == "paused"
-            while time.time() <= window:
-                await asyncio.sleep(0.05)
 
             # The window reopens: the same attempt requeues exactly once.
-            requeued = store.unpause_due_jobs(time.time())
+            monkeypatch.setattr("archon.store.time.time", lambda: window + 1)
+            requeued = store.unpause_due_jobs()
             assert len(requeued) == 2
-            assert store.unpause_due_jobs(time.time()) == []
+            assert store.unpause_due_jobs() == []
             resumed = await service.verify(run_id)
             assert resumed["job_id"] == job_id
             await asyncio.wait_for(runner.wait(job_id), timeout=15)
@@ -531,6 +558,121 @@ def test_rate_limited_verification_pauses_and_resumes_without_rerunning_checks(
             reviews = [item for item in store.list_evidence(run_id) if item["kind"] == "review"]
             assert len({item["payload"]["session_id"] for item in reviews}) == 3
             assert all(item["payload"]["cost_usd"] == 0.02 for item in reviews)
+        finally:
+            await runner.close()
+            store.close()
+
+    asyncio.run(exercise())
+
+
+def drive(service: ArchonService, run_id: str) -> dict:
+    """One manager turn: obey `next_action`, the kernel's only instruction channel."""
+    return service.next_action(run_id)
+
+
+def test_next_action_alone_drives_failed_check_repair_and_report(
+    git_repo: Path, tmp_path: Path,
+) -> None:
+    """CORR-C1: a persisted gate must never become a terminal `repair` fixpoint.
+
+    A failed check persists `unmet_requirements`. Every later `status` re-derives
+    that gate against the *repaired* candidate, which of course has no evidence
+    yet, so the absence statements ("lacks current successful evidence") were
+    re-persisted and `_next` answered `repair` forever: the manager was never
+    told to verify again, and the hooks' no-progress fingerprint then halted the
+    autonomous continuation. This drives the whole delivery through
+    `next_action` alone, exactly as the manager skill does.
+    """
+    prepare_consumer(git_repo)
+
+    async def exercise() -> None:
+        workspace = Workspace(git_repo, tmp_path / "state")
+        store = Store(workspace.state_dir)
+        transport = DeterministicClaudeTransport()
+        runner = VerificationRunner(workspace, store, transport)
+        service = ArchonService(workspace, store, runner)
+        try:
+            run_id = start_delivery(service)
+            repairs = [PARTIAL_PRICING, CORRECT_PRICING]
+            observed: list[str] = []
+            for _ in range(16):
+                instruction = drive(service, run_id)
+                observed.append(instruction["action"])
+                if instruction["action"] == "report":
+                    break
+                if instruction["action"] == "implement":
+                    task_id = instruction["task_id"]
+                    service.task_update(run_id, task_id, "implementing")
+                    if task_id == "invoice":
+                        (git_repo / "invoice.py").write_text(INVOICE)
+                    service.task_update(run_id, task_id, "verifying", "Implementation claim recorded.")
+                elif instruction["action"] == "verify":
+                    job = await service.verify(run_id)
+                    await asyncio.wait_for(runner.wait(job["job_id"]), timeout=20)
+                elif instruction["action"] == "repair":
+                    assert repairs, f"repair without a repairable finding: {instruction['reason']}"
+                    (git_repo / "pricing.py").write_text(repairs.pop(0))
+                else:
+                    pytest.fail(f"Unexpected instruction {instruction} after {observed}")
+            assert observed[-1] == "report", observed
+            assert observed.count("repair") == 2, observed
+            after_first_repair = observed[observed.index("repair") + 1:]
+            assert "verify" in after_first_repair, observed
+            assert service.status(run_id)["run"]["state"] == "verified"
+            assert not repairs
+        finally:
+            await runner.close()
+            store.close()
+
+    asyncio.run(exercise())
+
+
+def test_superseded_paused_coordinator_cannot_strand_a_verified_delivery(
+    git_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CORR-H1/CORR-H3: rows bound to an abandoned candidate outrank nothing.
+
+    A coordinator parks on a five-hour usage window for candidate A. The manager
+    repairs the source instead of waiting, and candidate B passes every check and
+    all three Witnesses. When A's window reopened, reconciliation requeued A's
+    rows; `_refresh_gate` then refused to finalize and `_next` answered `verify`
+    forever, so a delivery that had passed everything could never be reported.
+    """
+    prepare_consumer(git_repo)
+
+    async def exercise() -> None:
+        workspace = Workspace(git_repo, tmp_path / "state")
+        store = Store(workspace.state_dir)
+        transport = DeterministicClaudeTransport()
+        runner = VerificationRunner(workspace, store, transport)
+        service = ArchonService(workspace, store, runner)
+        try:
+            run_id = start_delivery(service)
+            claim_implementation(service, run_id, git_repo)
+            repair_pricing(service, run_id, git_repo, PARTIAL_PRICING)
+            window = int(time.time()) + 18_000
+            transport.rate_limited_roles = {"security_reviewer": window}
+            abandoned = (await service.verify(run_id))["job_id"]
+            await asyncio.wait_for(runner.wait(abandoned), timeout=20)
+            assert store.get_job(abandoned)["state"] == "paused"
+            assert service.next_action(run_id)["action"] == "wait"
+
+            # The manager repairs the source rather than waiting out the window.
+            (git_repo / "pricing.py").write_text(CORRECT_PRICING)
+            assert service.next_action(run_id)["action"] == "verify", (
+                "a pause bound to an abandoned candidate must not outrank current work"
+            )
+            current = (await service.verify(run_id))["job_id"]
+            assert current != abandoned
+            await asyncio.wait_for(runner.wait(current), timeout=20)
+
+            # The abandoned window reopens before the fresh gate was finalized.
+            monkeypatch.setattr("archon.store.time.time", lambda: window + 1)
+            status = service.status(run_id)
+            assert status["run"]["state"] == "verified", status["next_action"]
+            assert status["run"]["gate"]["verified"] is True
+            assert status["next_action"]["action"] == "report"
+            assert store.get_job(abandoned)["state"] == "cancelled"
         finally:
             await runner.close()
             store.close()

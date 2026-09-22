@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from archon.claude_adapter import AdapterError
-from archon.models import Candidate, CommandResult, RateLimited, RunSpec
+from archon.models import Candidate, CommandResult, Policy, RateLimited, RunSpec
 from archon.store import Store
 from archon.verification import ROLES, VerificationError, VerificationRunner
 
@@ -52,7 +52,19 @@ class FixtureWorkspace:
 
 
 class SimulatedAdapter:
+    #: The fixture's own confinement, derived exactly like the real adapter's:
+    #: from the policy in force, never a quoted digest. The kernel's profile
+    #: shape changes - the confinement package has already masked one more host
+    #: directory - so any literal here would be stale the next time it does.
+    def check_profile_digest(self, candidate, policy):
+        shape = ["simulated-check-profile", policy.network_access, policy.approval_policy,
+                 "narrowed" if self.narrowed_profile else "standard"]
+        return hashlib.sha256(json.dumps(shape, sort_keys=True).encode()).hexdigest()
+
     def __init__(self):
+        self.unconfined = False
+        self.narrowed_profile = False
+        self.forged_profile = False
         self.commands = []
         self.reviews = []
         self.cancelled = []
@@ -98,6 +110,11 @@ class SimulatedAdapter:
             invocation_id="wrong" if self.wrong_invocation else invocation_id,
             argv=spec.argv, cwd=str((Path(candidate.repo_root) / spec.cwd).resolve()),
             exit_code=self.exit_code, stdout=self.output,
+            sandbox_profile_digest=(
+                None if self.unconfined
+                else hashlib.sha256(b"a profile the kernel would never render").hexdigest() if self.forged_profile
+                else self.check_profile_digest(candidate, policy)
+            ),
         )
 
     async def run_review(self, role, candidate, packet, policy, on_event=None, *, invocation_id=None):
@@ -729,6 +746,215 @@ def test_recorded_provenance_is_bounded_and_excludes_transcripts(setup):
                    for turn in turns)
         assert all(turn["cost_usd"] == adapter.cost_usd for turn in turns)
         assert "secrets" not in json.dumps(turns)
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_check_that_names_no_confinement_profile_cannot_pass(setup):
+    """CORR-M3: evidence binds to the exact confinement, or it binds to nothing.
+
+    The plan records `sandbox_profile_digest` "so evidence binds to the exact
+    confinement", but nothing read it: a receipt with none passed the gate, and a
+    command that had in fact run outside the kernel's profile was indistinguishable
+    from one that had not.
+    """
+    workspace, store, adapter, runner = setup
+
+    async def scenario():
+        adapter.unconfined = True
+        job = await runner.start("run")
+        assert (await runner.wait(job["job_id"]))["state"] == "failed"
+        assert not adapter.reviews, "an unconfined check must not reach the reviewers"
+        records = store.list_evidence("run")
+        assert len(records) == 1 and not records[0]["payload"]["succeeded"]
+        assert "confinement profile" in records[0]["payload"]["result"]["error"]
+        assert not runner.evaluate_gate("run", runner.current_candidate("run")).verified
+
+        # The positive control: the same command, recording the profile it ran
+        # under, passes. Without it a refusal here would be indistinguishable
+        # from a fixture that simply cannot verify anything.
+        adapter.unconfined = False
+        (workspace.root / "app.py").write_text("value = 2\n")
+        resumed = await runner.start("run")
+        assert (await runner.wait(resumed["job_id"]))["state"] == "succeeded"
+        current = runner.current_candidate("run")
+        assert runner.evaluate_gate("run", current).verified
+        accepted = [item for item in store.list_evidence("run") if item["kind"] == "check"]
+        assert accepted[-1]["payload"]["sandbox_profile_digest"] == adapter.check_profile_digest(current, Policy())
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_paused_sibling_of_this_candidate_leaves_the_gate_unmet(setup):
+    """CORR-H2: `paused` never reached the gate's own unresolved-work sweep.
+
+    Defence in depth for the same omission that let task claims and plan
+    amendments change a candidate out from under a parked verification.
+    """
+    _, store, _, runner = setup
+
+    async def scenario():
+        job = await runner.start("run")
+        await runner.wait(job["job_id"])
+        candidate = runner.current_candidate("run")
+        assert runner.evaluate_gate("run", candidate).verified
+
+        sibling = store.enqueue_job("run", "check", candidate.model_dump(mode="json"),
+                                    idempotency_key="parked-sibling",
+                                    payload={"parent_job_id": job["job_id"]})
+        lease = store.claim_job(sibling["job_id"], "executor")
+        assert store.pause_job(sibling["job_id"], lease.attempt, lease.lease_token,
+                               int(time.time()) + 18_000, "usage window closed")
+        gate = runner.evaluate_gate("run", candidate)
+        assert not gate.verified
+        assert any(sibling["job_id"] in reason for reason in gate.unmet_requirements)
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_check_naming_a_profile_the_kernel_did_not_render_cannot_pass(setup):
+    """CORR-M3: a self-consistent digest is not a binding.
+
+    The gate re-renders the confinement it expects and compares the receipt
+    against it. While only presence was required, a command that had run under
+    some other profile - or none - produced evidence indistinguishable from one
+    the kernel confined. The shape is not stable either: masking the host runtime
+    directory changed it during this very repair cycle, and evidence produced
+    under the old shape must stop passing when it does.
+    """
+    _, store, adapter, runner = setup
+
+    async def scenario():
+        # A result that names a profile of its own choosing is refused where it
+        # is recorded, and never reaches a reviewer.
+        adapter.forged_profile = True
+        forged = await runner.start("run")
+        assert (await runner.wait(forged["job_id"]))["state"] == "failed"
+        assert not adapter.reviews
+        receipt = store.list_evidence("run")[0]["payload"]
+        assert not receipt["succeeded"]
+        assert "confinement profile" in receipt["result"]["error"]
+        assert not runner.evaluate_gate("run", runner.current_candidate("run")).verified
+
+        # The positive control: the same command, naming the profile the kernel
+        # renders, passes and verifies.
+        adapter.forged_profile = False
+        (runner.workspace.root / "app.py").write_text("value = 2\n")
+        honest = await runner.start("run")
+        assert (await runner.wait(honest["job_id"]))["state"] == "succeeded"
+        current = runner.current_candidate("run")
+        assert runner.evaluate_gate("run", current).verified
+
+        # The kernel narrows the profile, as the confinement package did. The
+        # very same stored evidence now names a confinement nobody would render.
+        adapter.narrowed_profile = True
+        gate = runner.evaluate_gate("run", current)
+        assert not gate.verified
+        assert any("confinement profile" in reason for reason in gate.unmet_requirements), gate.unmet_requirements
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_runtime_that_cannot_render_the_profile_never_verifies(setup):
+    """The kernel must be able to say what it expects, or it grants nothing.
+
+    An adapter with no profile derivation leaves the gate unable to bind evidence
+    to a confinement; that is a fault to report, never a pass.
+    """
+    workspace, store, adapter, _ = setup
+
+    async def scenario():
+        runner = VerificationRunner(workspace, store, adapter)
+        job = await runner.start("run")
+        assert (await runner.wait(job["job_id"]))["state"] == "succeeded"
+        candidate = runner.current_candidate("run")
+        assert runner.evaluate_gate("run", candidate).verified
+
+        blind = VerificationRunner(workspace, store, object())
+        gate = blind.evaluate_gate("run", candidate)
+        assert not gate.verified
+        assert any("confinement profile" in reason for reason in gate.unmet_requirements), gate.unmet_requirements
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_narrowed_profile_makes_ordinary_verification_rerun_the_check(setup):
+    """A confinement change invalidates its evidence, and re-verification repairs it.
+
+    When the check profile narrows - as it did when the confinement package
+    masked the host runtime directory - every receipt produced under the old
+    shape stops binding. Without this, the coordinator would resume onto that
+    stale receipt, skip the command, and hand the gate evidence it must refuse:
+    `repair` with nothing a source repair could fix.
+    """
+    _, store, adapter, runner = setup
+
+    async def scenario():
+        first = await runner.start("run")
+        assert (await runner.wait(first["job_id"]))["state"] == "succeeded"
+        candidate = runner.current_candidate("run")
+        assert runner.evaluate_gate("run", candidate).verified
+        assert len(adapter.commands) == 1
+
+        # The kernel narrows the profile; the recorded candidate is untouched.
+        adapter.narrowed_profile = True
+        assert not runner.evaluate_gate("run", candidate).verified
+
+        # An ordinary re-verification - no source edit - re-runs the command
+        # under the current profile and verifies on its evidence.
+        second = await runner.start("run")
+        assert (await runner.wait(second["job_id"]))["state"] == "succeeded"
+        assert len(adapter.commands) == 2, "the stale receipt was resumed instead of re-executed"
+        current = runner.current_candidate("run")
+        assert current.candidate_digest == candidate.candidate_digest
+        gate = runner.evaluate_gate("run", current)
+        assert gate.verified, gate.unmet_requirements
+        assert store._finalize_gate("run", gate)["state"] == "verified"
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_profile_change_during_a_usage_window_still_reaches_verified(setup, monkeypatch):
+    """Waking into a narrower confinement rebuilds instead of stranding the run.
+
+    A coordinator parked on a five-hour window wakes on the same attempt, holding
+    a check receipt bound to the confinement that was in force when it ran. If
+    the kernel narrowed the profile meanwhile - masking the host runtime
+    directory did exactly that - that receipt can no longer carry the gate, and
+    the delivery must repair itself by re-executing the command rather than
+    sitting on evidence nothing will accept.
+    """
+    _, store, adapter, runner = setup
+
+    async def scenario():
+        window = int(time.time()) + 18_000
+        adapter.rate_limit_roles = {"security_reviewer": window}
+        parked = await runner.start("run")
+        assert (await runner.wait(parked["job_id"]))["state"] == "paused"
+        assert len(adapter.commands) == 1
+
+        # The window reopens into a kernel whose check profile has narrowed.
+        adapter.narrowed_profile = True
+        adapter.rate_limit_roles = {}
+        monkeypatch.setattr("archon.store.time.time", lambda: window + 1)
+        resumed = await runner.start("run")
+        assert resumed["job_id"] == parked["job_id"]
+        assert (await runner.wait(resumed["job_id"]))["state"] == "failed"
+        assert not runner.evaluate_gate("run", runner.current_candidate("run")).verified
+
+        # The next ordinary dispatch rebuilds the receipt under the current
+        # profile, with no source edit and no manual recovery.
+        rebuilt = await runner.start("run")
+        assert (await runner.wait(rebuilt["job_id"]))["state"] == "succeeded"
+        assert len(adapter.commands) == 2, "the stale receipt was resumed instead of re-executed"
+        gate = runner.evaluate_gate("run", runner.current_candidate("run"))
+        assert gate.verified, gate.unmet_requirements
         await runner.close()
 
     asyncio.run(scenario())

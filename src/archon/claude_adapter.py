@@ -118,11 +118,6 @@ __all__ = [
     "tested_engine_range",
 ]
 
-#: The process-identity primitives moved to :mod:`archon.launcher` in the split.
-#: ``tests/test_security.py`` imports them from here, so the names stay bound.
-_read_process = read_process
-_boot_id = read_boot_id
-
 ENGINE_BINARY = "claude"
 LAUNCHER_SCRIPT = "launcher.py"
 CHECK_KIND = "check"

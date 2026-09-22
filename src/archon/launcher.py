@@ -5,6 +5,12 @@ rendered ``bwrap`` confinement from :mod:`archon.sandbox`, and a reviewer
 ``claude -p`` session.  Neither is composed here.  This supervisor stays alive
 until all descendants, including detached ones, are reaped, and writes the
 termination receipt the kernel needs before it may call a check passed.
+
+It also holds the three primitives that supervision rests on and that the adapter
+and the credential store both need — process identity from ``/proc``, the boot id,
+and the private 0600 file write.  They live in one place rather than in each
+caller because the release gate's CRITICAL finding was two copies of a list
+drifting apart inside a file nobody read end to end.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 
 def _libc_function(
@@ -82,11 +88,43 @@ def pidfd_supported() -> bool:
     return True
 
 
-def _birth(pid: int) -> int | None:
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def read_process(pid: int) -> dict[str, Any] | None:
+    """Read birth and group identity, without inspecting command args or environment."""
     try:
-        return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
-    except (FileNotFoundError, ProcessLookupError):
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except (FileNotFoundError, ProcessLookupError, IndexError, OSError):
         return None
+    return {
+        "pid": pid,
+        "state": fields[0],
+        "pgid": int(fields[2]),
+        "sid": int(fields[3]),
+        "start_ticks": int(fields[19]),
+    }
+
+
+def read_boot_id() -> str:
+    """Processes from a previous boot cannot still be running under these PIDs."""
+    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+
+def write_private(path: Path, payload: str) -> Path:
+    """Create a uid-private file, never write through a link or over a plant."""
+    descriptor = os.open(
+        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, PRIVATE_FILE_MODE
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+    return path
+
+
+def _birth(pid: int) -> int | None:
+    process = read_process(pid)
+    return None if process is None else int(process["start_ticks"])
 
 
 def _children() -> list[int]:
@@ -119,7 +157,38 @@ def _kill_children() -> None:
             time.sleep(0.02)
 
 
-def supervise(command: list[str], receipt_dir: Path, nonce: str) -> int:
+RECEIPT_NAME = "stopped.json"
+FORGED_RECEIPT = (
+    "Archon supervisor receipt already exists; refusing to supervise a control directory "
+    "whose termination attestation was written by something else."
+)
+
+
+def _claim_receipt(receipt_dir: Path) -> int:
+    """Claim the receipt name before the supervised child exists (SEC-M1).
+
+    The receipt used to be opened ``O_EXCL`` only *after* the child exited, and
+    none of its fields are secret to that child: the nonce is in
+    ``/proc/<ppid>/cmdline``, the rest in ``/proc/<ppid>/stat`` and the boot id.
+    A child that created this one file before exiting won the race, the
+    supervisor's own write then raised, and the validator accepted the planted
+    file — attesting ``descendants_reaped: True`` while descendants were alive.
+    Claiming the name first inverts that: the child can no longer create it, and
+    an ``EEXIST`` here is a forgery signal, not a lifecycle error.
+    """
+    try:
+        return os.open(
+            receipt_dir / RECEIPT_NAME,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            PRIVATE_FILE_MODE,
+        )
+    except FileExistsError as exc:
+        raise SystemExit(FORGED_RECEIPT) from exc
+
+
+def supervise(
+    command: list[str], receipt_dir: Path, nonce: str, pass_fds: tuple[int, ...] = ()
+) -> int:
     """Internal supervisor primitive; the executable entry fixes the command."""
     if not pidfd_supported():
         raise OSError(errno.ENOSYS, "Kernel PID handles are unavailable for managed execution.")
@@ -141,11 +210,12 @@ def supervise(command: list[str], receipt_dir: Path, nonce: str) -> int:
         stop_requested = True
     os.setsid()
     own_birth = _birth(os.getpid())
-    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    boot_id = read_boot_id()
     exit_code = 1
+    descriptor = _claim_receipt(receipt_dir)
     try:
         if not stop_requested:
-            primary = subprocess.Popen(command)
+            primary = subprocess.Popen(command, pass_fds=pass_fds)
             while not stop_requested:
                 code = primary.poll()
                 if code is not None:
@@ -161,11 +231,6 @@ def supervise(command: list[str], receipt_dir: Path, nonce: str) -> int:
         "boot_id": boot_id,
         "descendants_reaped": True,
     }
-    descriptor = os.open(
-        receipt_dir / "stopped.json",
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o600,
-    )
     with os.fdopen(descriptor, "w") as handle:
         json.dump(receipt, handle)
         handle.flush()
@@ -181,6 +246,7 @@ def supervise(command: list[str], receipt_dir: Path, nonce: str) -> int:
 SEPARATOR = "--"
 KINDS: tuple[str, ...] = ("check", "review")
 CONFIG_DIR_VARIABLE = "CLAUDE_CONFIG_DIR"
+STATUS_FD_VARIABLE = "ARCHON_STATUS_FD"
 NONCE_DIGITS = "0123456789abcdef"
 NONCE_LENGTH = 32
 USAGE = "Usage: archon-launch <control_dir> <nonce> {check|review} -- <argv...>"
@@ -207,6 +273,28 @@ def _honour_config_dir(environ: Mapping[str, str]) -> None:
         raise SystemExit("Invalid Archon reviewer configuration directory.")
 
 
+def status_fds(environ: Mapping[str, str]) -> tuple[int, ...]:
+    """Forward the kernel's ``bwrap --json-status-fd`` pipe, or nothing at all.
+
+    The descriptor is named by the adapter that opened it; this supervisor keeps
+    it across the exec and never reads it.  It is the channel that separates "the
+    sandbox never ran the child" from "the check failed" (SEC-H4), so a name that
+    does not resolve to an open descriptor is refused rather than dropped: a
+    silently missing status pipe would make every check look like a runtime fault.
+    """
+    value = environ.get(STATUS_FD_VARIABLE)
+    if value is None:
+        return ()
+    if not value.isdigit():
+        raise SystemExit("Invalid Archon supervisor status descriptor.")
+    descriptor = int(value)
+    try:
+        os.fstat(descriptor)
+    except OSError as exc:
+        raise SystemExit("Invalid Archon supervisor status descriptor.") from exc
+    return (descriptor,)
+
+
 def main() -> None:
     if sys.platform != "linux":
         raise SystemExit("Archon managed execution requires Linux subreaper support.")
@@ -221,7 +309,7 @@ def main() -> None:
         raise SystemExit(USAGE)
     if kind == "review":
         _honour_config_dir(os.environ)
-    raise SystemExit(supervise(command, receipt_dir, nonce))
+    raise SystemExit(supervise(command, receipt_dir, nonce, status_fds(os.environ)))
 
 
 if __name__ == "__main__":

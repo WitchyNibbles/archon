@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -19,6 +20,26 @@ def _environment() -> dict[str, str]:
     return environment
 
 
+def consumer_repo(
+    tmp_path: Path, git_init: Callable[[Path], None], environment: dict[str, str]
+) -> Path:
+    """Build the consuming repository through the shared isolated Git fixtures.
+
+    A bare ``git init`` inherits the developer's ``~/.gitconfig``, including an
+    init template and a global ``core.hooksPath`` that would run their own hooks
+    inside a fixture.
+    """
+    repo = tmp_path / "consumer"
+    repo.mkdir()
+    git_init(repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", f"core.hooksPath={os.devnull}",
+         "commit", "--allow-empty", "-qm", "baseline"],
+        env=environment, check=True, capture_output=True,
+    )
+    return repo
+
+
 def _data(result) -> dict:
     content = result.structured_content
     if content is not None:
@@ -26,12 +47,10 @@ def _data(result) -> dict:
     return json.loads(result.content[0].text)
 
 
-def test_actual_stdio_initialize_schema_and_kernel_calls(tmp_path: Path) -> None:
-    repo = tmp_path / "consumer"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c",
-                    "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "baseline"], check=True)
+def test_actual_stdio_initialize_schema_and_kernel_calls(
+    tmp_path: Path, git_init: Callable[[Path], None], git_environment: dict[str, str]
+) -> None:
+    repo = consumer_repo(tmp_path, git_init, git_environment)
 
     async def exercise() -> None:
         parameters = StdioServerParameters(
@@ -166,3 +185,28 @@ create_server('.', runtime_factory=lambda *args: SyntheticRuntime()).run()
                 assert rejected.is_error
     asyncio.run(exercise())
     assert marker.read_text() == "closed"
+
+
+def test_the_runtime_gives_the_adapter_a_receipt_root_inside_the_workspace_state(
+    tmp_path: Path, git_init: Callable[[Path], None], git_environment: dict[str, str]
+) -> None:
+    """SEC-H2: the adapter masks its receipt root's *parent* for checks.
+
+    That is only the workspace state root — the directory holding ``state.sqlite3``
+    and ``snapshots/`` — while the runtime composes the receipt root as
+    ``<state_dir>/supervisors``.  The two live in different packages, so the
+    relationship the mask depends on is asserted here rather than assumed.
+    """
+    from archon.mcp_server import open_runtime
+
+    repo = consumer_repo(tmp_path, git_init, git_environment)
+    runtime = open_runtime(repo, tmp_path / "state")
+    try:
+        state_dir = Path(runtime.workspace.state_dir).resolve()
+
+        assert runtime.adapter._receipt_root.resolve().parent == state_dir
+        assert runtime.adapter._state_root() == state_dir
+        assert runtime.store.path.parent == state_dir
+        assert (state_dir / "supervisors") == runtime.adapter._receipt_root
+    finally:
+        asyncio.run(runtime.close())

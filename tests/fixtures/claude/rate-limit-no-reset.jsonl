@@ -1,0 +1,2 @@
+{"type": "system", "subtype": "init", "session_id": "{{session_id}}", "tools": ["Bash", "Glob", "Grep", "Read", "StructuredOutput"], "mcp_servers": [], "skills": [], "agents": ["Explore", "Plan"], "permissionMode": "dontAsk", "model": "claude-opus-5-20260114", "cwd": "/snapshot", "uuid": "init-0001"}
+{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour", "overageStatus": "rejected", "isUsingOverage": false, "unifiedWindows": {"five_hour": {"utilization": 1.0}, "seven_day": {"utilization": 0.4}}}}

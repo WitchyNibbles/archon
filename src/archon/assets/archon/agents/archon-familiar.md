@@ -20,5 +20,8 @@ public API, schema, persistence boundary, security boundary, concurrency boundar
 or more than the assigned components; also escalate after a failed repair whose
 cause is not clear from the evidence.
 
-If your worktree is not on the base the manager named, run `git reset --hard <base>`
-before any edit and say so in your report.
+If your worktree is not on the base the manager named, stop before editing and report
+the base you were given and the commit you are on. Never move a branch or discard
+uncommitted work to resolve it — no `git reset`, `git checkout`, `git restore`, `git
+clean`, or `git stash` — that state may be the user's and is not yours to throw away.
+The manager owns branch placement and re-dispatches you once it is correct.

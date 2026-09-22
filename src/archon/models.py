@@ -84,6 +84,39 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+#: Every state in which a job may still produce a result, and therefore every
+#: state that must block a plan or task-claim change, a cancellation sweep, and
+#: a final gate.  ``paused`` was added to :class:`JobStatus` without reaching the
+#: predicates that spell "an active job exists", so a verification parked on a
+#: usage window could be mutated out from under (CORR-H2): task claims changed
+#: while a coordinator was paused, `replace_plan` amended its checks, `cancel_run`
+#: left paused rows behind that ordinary polling later resumed into a cancelled
+#: run, and a gate could finalize `verified` with a paused job still pending.
+ACTIVE_JOB_STATES: tuple[str, ...] = ("queued", "running", "paused")
+
+#: The kernel owns the retry budget: ``Store._retry_jobs`` refuses a fourth
+#: attempt and ``Store.reconcile_jobs`` stops requeuing at the same number.
+ATTEMPT_CEILING = 3
+
+#: A reviewer model must reliably call the engine's ``StructuredOutput`` tool.
+#: Recorded probes (docs/spikes.md S3) show haiku returning the literal null
+#: shape instead, so a manager-supplied policy may not route a Witness to it.
+UNSTRUCTURED_REVIEW_MODELS: tuple[str, ...] = ("haiku",)
+
+
+def review_model_text(value: str) -> str:
+    """Reject a reviewer route the recorded probes show cannot be structured."""
+    if not value.strip():
+        raise ValueError("review model must not be blank")
+    lowered = value.lower()
+    if any(family in lowered for family in UNSTRUCTURED_REVIEW_MODELS):
+        raise ValueError(
+            "review model may not route a Witness to haiku: it does not reliably "
+            "produce the engine's structured output (docs/spikes.md S3)"
+        )
+    return value
+
+
 class ReviewDecision(StrEnum):
     APPROVE = "approve"
     REQUEST_CHANGES = "request_changes"
@@ -116,6 +149,13 @@ class Policy(Model):
     ``network_access`` stays ``Literal[False]``: no run has needed egress from a
     check, and DevGod's first field failure was a policy that could not be
     widened.  Widen it only together with a run that required it.
+
+    ``max_attempts`` is bounded by the kernel's own retry budget: ``Store``
+    refuses a fourth attempt and reconciliation stops requeuing at the same
+    ceiling, so the field advertises 1-3 rather than the 1-5 it once claimed and
+    silently clamped (CORR-M2).  Values below the ceiling are honoured: the
+    store reads the run's policy before requeuing, and a review child is not
+    retried past it.
     """
 
     approval_policy: Literal["never"] = "never"
@@ -124,19 +164,16 @@ class Policy(Model):
     review_routes: dict[Role, ModelRoute] = Field(default_factory=dict)
     fable_allowed: StrictBool = False
     max_parallel_reviews: int = Field(default=3, strict=True, ge=1, le=3)
-    max_attempts: int = Field(default=3, strict=True, ge=1, le=5)
+    max_attempts: int = Field(default=3, strict=True, ge=1, le=ATTEMPT_CEILING)
     command_timeout_seconds: int = Field(default=600, strict=True, ge=1, le=3600)
     review_timeout_seconds: int = Field(default=900, strict=True, ge=1, le=3600)
     review_budget_usd: float = Field(default=3.0, gt=0, le=50, allow_inf_nan=False)
     max_output_bytes: int = Field(default=1_048_576, strict=True, ge=1024, le=16_777_216)
-    scratch_bytes: int = Field(default=2_147_483_648, strict=True, ge=1_048_576)
 
     @field_validator("review_model")
     @classmethod
     def nonblank_model(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("review model must not be blank")
-        return value
+        return review_model_text(value) if value is not None else value
 
     def review_route(self, role: Role) -> ModelRoute:
         """Resolve a reviewer's explicit route without inheriting host settings."""
@@ -150,9 +187,12 @@ class Policy(Model):
 class ModelRoute(Model):
     """Pinned model and effort for a role-owned Claude Code invocation.
 
-    ``model`` is a Claude Code alias (``opus``/``sonnet``/``haiku``/``fable``) or a
-    full model id.  Haiku is never a reviewer default: it does not reliably call
-    the engine's ``StructuredOutput`` tool (see docs/research).
+    ``model`` is a Claude Code alias (``opus``/``sonnet``/``fable``) or a full
+    model id.  A route is only ever a Witness route, so haiku is rejected here
+    rather than merely discouraged: it does not reliably call the engine's
+    ``StructuredOutput`` tool (docs/spikes.md S3), and a non-blank check alone
+    let a manager-supplied policy weaken all three independent reviews at once
+    (CORR-M4).
     """
 
     model: ShortText
@@ -161,9 +201,7 @@ class ModelRoute(Model):
     @field_validator("model")
     @classmethod
     def nonblank_model(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("route model must not be blank")
-        return value
+        return review_model_text(value)
 
 
 # Compatibility name used by service and adapter implementations.
@@ -388,6 +426,16 @@ class ExecutionAdapter(Protocol):
         *,
         invocation_id: str | None = None,
     ) -> ReviewResult: ...
+
+    def check_profile_digest(self, candidate: Candidate, policy: Policy) -> str:
+        """The digest of the confinement the kernel itself would render here.
+
+        The gate re-derives what it expects instead of trusting the digest a
+        result reports: a receipt naming any other self-consistent profile used
+        to pass (CORR-M3).  Synchronous, because the gate evaluates from the
+        record.  Never a quoted value: the profile's shape changes.
+        """
+        ...
 
     async def cancel(self, invocation_id: str) -> None: ...
 

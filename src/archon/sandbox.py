@@ -10,6 +10,22 @@ override by which a repository can add a bind, restore egress, or leak a name.
 DevGod died eight minutes into its first real run because its policy excluded
 ``/tmp`` and ``uv`` could not write a cache.  The scratch directory with its own
 ``TMPDIR``/``TMP``/``TEMP``/``HOME`` exists for that run and is not optional.
+
+``--unshare-net`` takes away IP, not IPC.  ``--ro-bind / /`` leaves every filesystem
+socket on the host in place and the kernel exempts sockets from the read-only
+superblock check, so a confined child used to hold a two-way conversation with an
+unconfined one through ``$XDG_RUNTIME_DIR`` — the session D-Bus (and therefore
+``systemd --user StartTransientUnit``, i.e. an unconfined process with egress), the
+gpg-agent socket even with ``~/.gnupg`` masked, and Claude Code's own sockets.  The
+runtime directory, ``/run`` and ``/var/run`` are masked for that reason; a check
+needs none of them.
+
+The price is named rather than paid quietly: a *toolchain* installed under the
+runtime directory becomes unreachable too.  ``fnm`` puts its per-shell ``node``
+and ``npm`` in ``$XDG_RUNTIME_DIR/fnm_multishells/...``, so on such a host a check
+that shells out to ``npm`` now fails with ENOENT inside the confinement.  It fails
+closed, which is the contract; the answer is a node installed outside the runtime
+directory, never a bind added back for this host.
 """
 
 from __future__ import annotations
@@ -73,6 +89,12 @@ BASE_FILESYSTEM: tuple[str, ...] = (
 #: EACCES, where ``--tmpfs`` on a file path fails at mount time (ENOTDIR).
 MASK_FILE_SOURCE = "/dev/null"
 
+#: Declared, not discovered.  ``tests/test_sandbox.py`` pins this tuple literally
+#: and runs one real-bwrap arm per entry: deleting ``~/.aws`` and ``~/.claude`` from
+#: here once left the whole suite green (QA-C1).
+#: ``/run`` and ``/var/run`` carry the host's filesystem sockets, which survive
+#: ``--unshare-net`` and a read-only bind (SEC-H1); on a usrmerge host ``/var/run``
+#: is a symlink to ``/run`` and ``masked_paths()`` collapses the pair.
 DEFAULT_MASKED: tuple[Path, ...] = (
     Path("~/.ssh"),
     Path("~/.aws"),
@@ -80,6 +102,8 @@ DEFAULT_MASKED: tuple[Path, ...] = (
     Path("~/.claude"),
     Path("~/.config/gh"),
     Path("~/.netrc"),
+    Path("/run"),
+    Path("/var/run"),
 )
 
 #: Inherited from the host only when the caller does not supply the name itself.
@@ -99,6 +123,7 @@ SCRATCH_MODE = 0o700
 CANONICAL_WORKTREE = "/<worktree>"
 CANONICAL_SCRATCH = "/<scratch>"
 CANONICAL_STATE = "/<state>"
+CANONICAL_RUNTIME = "/<runtime>"
 CANONICAL_HOME = "/<home>"
 CANONICAL_COMMAND: tuple[str, ...] = ("/<command>",)
 CANONICAL_ENV_VALUE = "<inherited>"
@@ -260,6 +285,24 @@ def _realpath(path: Path) -> Path:
     return Path(os.path.realpath(path))
 
 
+def default_runtime_dir(env: Mapping[str, str] | None = None) -> Path:
+    """The per-session socket directory this host puts filesystem sockets in.
+
+    Usually inside ``/run``, which is masked anyway, but a container or a
+    hand-rolled session may point ``XDG_RUNTIME_DIR`` somewhere else entirely, and
+    an unmasked one is a live IPC channel out of the confinement (SEC-H1).
+    """
+    source = os.environ if env is None else env
+    declared = source.get("XDG_RUNTIME_DIR", "").strip()
+    if declared.startswith("/"):
+        return Path(declared)
+    return Path(f"/run/user/{os.getuid()}")
+
+
+#: Read once at import so a profile's shape does not drift mid-process.
+DEFAULT_RUNTIME_DIR: Path = default_runtime_dir()
+
+
 @dataclass(frozen=True)
 class _Layout:
     """The absolute (or canonical placeholder) strings a render is built from."""
@@ -285,6 +328,7 @@ class CheckProfile:
     state_dir: Path
     home: Path
     masked: tuple[Path, ...] = DEFAULT_MASKED
+    runtime_dir: Path = DEFAULT_RUNTIME_DIR
     binary: str = BWRAP_BINARY
 
     def __post_init__(self) -> None:
@@ -307,15 +351,32 @@ class CheckProfile:
                 raise SandboxError(
                     "Archon's state directory must not sit inside a writable bind."
                 )
-        for entry in self.masked:
-            expanded = _expand(self.home, entry)
-            for writable in (self.worktree, self.scratch):
-                if _contains(writable, expanded):
-                    raise SandboxError(
-                        f"A masked path must not sit inside a writable bind: {expanded}."
-                    )
+        if not self.runtime_dir.is_absolute():
+            raise SandboxError(
+                f"The runtime directory must be an absolute path, got {self.runtime_dir!r}."
+            )
+        self._reject_masks_inside_writable_binds()
         if not self.binary or "\0" in self.binary:
             raise SandboxError("The bubblewrap binary name must be a nonempty string.")
+
+    def _reject_masks_inside_writable_binds(self) -> None:
+        """Validate the path that gets mounted, not the one that was declared.
+
+        SEC-L1: this ran on ``_expand()`` output while ``masked_paths()`` and
+        ``_layout()`` mount ``_realpath()`` output, so a mask whose realpath landed
+        inside a writable bind passed here and then made bwrap refuse the whole argv
+        with ``Can't remount readonly on ...: Invalid argument``.  It failed closed,
+        but the operator got bwrap's message instead of the actual problem.
+        """
+        for entry in (*self.masked, self.runtime_dir):
+            declared = _expand(self.home, entry)
+            target = _realpath(declared)
+            for writable in (self.worktree, self.scratch):
+                if _contains(writable, target):
+                    through = "" if target == declared else f" (reached through {declared})"
+                    raise SandboxError(
+                        f"A masked path must not sit inside a writable bind: {target}{through}."
+                    )
 
     @property
     def sandbox_home(self) -> Path:
@@ -326,9 +387,11 @@ class CheckProfile:
         return self.scratch / SCRATCH_TMP
 
     def masked_paths(self) -> tuple[Path, ...]:
-        """Every path this profile hides, including Archon's own state directory."""
+        """Every path this profile hides: the declared masks, the session runtime
+        directory, and Archon's own state directory.  Realpaths, so a symlinked
+        ``/var/run`` collapses onto ``/run`` instead of being mounted twice."""
         ordered: list[Path] = []
-        for entry in (*self.masked, self.state_dir):
+        for entry in (*self.masked, self.runtime_dir, self.state_dir):
             target = _realpath(_expand(self.home, entry))
             if target not in ordered:
                 ordered.append(target)
@@ -353,7 +416,8 @@ class CheckProfile:
 
     def _canonical_layout(self) -> _Layout:
         masks = tuple(
-            _canonical_mask(entry) for entry in (*self.masked, Path(CANONICAL_STATE))
+            _canonical_mask(entry)
+            for entry in (*self.masked, Path(CANONICAL_RUNTIME), Path(CANONICAL_STATE))
         )
         return _Layout(
             worktree=CANONICAL_WORKTREE,

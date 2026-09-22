@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 import archon.launcher as module
+from archon.claude_adapter import ClaudeAdapter
 from archon.launcher import pidfd_open, pidfd_send_signal, supervise
 
 NONCE = "c" * 32
@@ -208,12 +209,17 @@ def test_subreaper_receipt_covers_detached_children(
         identity = _read_process(owner.pid)
         assert identity is not None
         assert identity["pid"] == identity["sid"] == identity["pgid"]
+        attestation = {key: identity[key] for key in ("pid", "pgid", "sid", "start_ticks")}
+        attestation |= {"boot_id": _boot_id(), "receipt_path": str(receipt_path), "nonce": NONCE}
         if kill_supervisor:
             owner.kill()
             owner.wait(timeout=10)
-            # A SIGKILLed supervisor writes no receipt, so nothing may be treated
-            # as terminated: the absence is the whole point of the receipt.
-            assert not receipt_path.exists()
+            # SEC-M1 moved the O_EXCL claim ahead of the child, so the name is now
+            # taken from the start. A SIGKILLed supervisor therefore leaves the file
+            # behind — but it never wrote the attestation, and nothing may read an
+            # empty receipt as termination. The absence of *content* is the point.
+            assert receipt_path.read_bytes() == b""
+            assert not ClaudeAdapter._receipt_valid(attestation)
             return
         descriptor = pidfd_open(owner.pid)
         try:
@@ -232,6 +238,9 @@ def test_subreaper_receipt_covers_detached_children(
         assert receipt["start_ticks"] == identity["start_ticks"]
         assert receipt["boot_id"] == _boot_id()
         assert os.stat(receipt_path).st_mode & 0o777 == 0o600
+        # Positive control for the SIGKILL arm above: the same validator, the same
+        # identity shape, and this one must accept.
+        assert ClaudeAdapter._receipt_valid(attestation)
     finally:
         if owner.poll() is None:
             owner.kill()
@@ -246,7 +255,12 @@ def test_subreaper_receipt_covers_detached_children(
 
 
 def test_the_receipt_is_never_overwritten(tmp_path: Path) -> None:
-    """O_CREAT|O_EXCL: a second supervisor may not forge a receipt over the first."""
+    """O_CREAT|O_EXCL: a second supervisor may not forge a receipt over the first.
+
+    SEC-M1 moved the claim ahead of ``Popen``, so an existing name is now refused
+    before anything is supervised, with a forgery diagnosis rather than a
+    traceback from the write at the end.
+    """
     receipt_dir = tmp_path / "control"
     receipt_dir.mkdir(mode=0o700)
     supervisor = tmp_path / "supervisor.py"
@@ -265,7 +279,7 @@ def test_the_receipt_is_never_overwritten(tmp_path: Path) -> None:
         [sys.executable, "-I", str(supervisor)], capture_output=True, text=True, timeout=60
     )
     assert second.returncode != 0
-    assert "FileExistsError" in second.stderr
+    assert module.FORGED_RECEIPT in second.stderr
     assert (receipt_dir / "stopped.json").read_bytes() == original
 
 
@@ -276,7 +290,9 @@ def test_the_receipt_is_never_overwritten(tmp_path: Path) -> None:
 def dispatched(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], Path, str]]:
     calls: list[tuple[list[str], Path, str]] = []
 
-    def record(command: list[str], receipt_dir: Path, nonce: str) -> int:
+    def record(
+        command: list[str], receipt_dir: Path, nonce: str, pass_fds: tuple[int, ...] = ()
+    ) -> int:
         calls.append((command, receipt_dir, nonce))
         return 0
 
@@ -403,3 +419,53 @@ def test_the_codex_runtime_assertion_is_gone() -> None:
     # The one surviving mention is inside the frozen `supervise()` error string,
     # which must stay byte-identical to the proven donor implementation.
     assert source.lower().count("codex") == 1
+
+
+def test_a_child_cannot_pre_forge_the_receipt_it_will_be_attested_by(tmp_path: Path) -> None:
+    """SEC-M1: every receipt field is derivable by the child, so only timing protected it.
+
+    The child's parent *is* the supervisor, so ``/proc/<ppid>/cmdline`` yields the
+    nonce and ``/proc/<ppid>/stat`` the rest.  While the receipt was opened
+    ``O_EXCL`` only after the child exited, a child that created that one file first
+    won: the supervisor's write raised and the validator accepted the planted file,
+    attesting ``descendants_reaped: True``.  The claim now happens before the child
+    exists, so the same attempt fails with EEXIST.
+    """
+    receipt_dir = tmp_path / "control"
+    receipt_dir.mkdir(mode=0o700)
+    report = tmp_path / "attempt.json"
+    forger = tmp_path / "forger.py"
+    forger.write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        f"receipt = Path({str(receipt_dir)!r})\n"
+        "flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL\n"
+        "outcome = {}\n"
+        "for name in ('stopped.json', 'control.json'):\n"
+        "    try:\n"
+        "        os.close(os.open(receipt / name, flags, 0o600))\n"
+        "        outcome[name] = 'created'\n"
+        "    except OSError as error:\n"
+        "        outcome[name] = type(error).__name__\n"
+        f"Path({str(report)!r}).write_text(json.dumps(outcome))\n",
+        encoding="utf-8",
+    )
+    supervisor = tmp_path / "supervisor.py"
+    supervisor.write_text(
+        "import sys\nfrom pathlib import Path\nfrom archon.launcher import supervise\n"
+        f"raise SystemExit(supervise([sys.executable,'-I',{str(forger)!r}],"
+        f"Path({str(receipt_dir)!r}),{NONCE!r}))\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", str(supervisor)], capture_output=True, text=True, timeout=60
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    attempt = json.loads(report.read_text(encoding="utf-8"))
+    assert attempt["stopped.json"] == "FileExistsError"
+    # Positive control: the directory really is writable by this child, so the
+    # refusal above is the supervisor's claim and not a missing or read-only path.
+    assert attempt["control.json"] == "created"
+    receipt = json.loads((receipt_dir / "stopped.json").read_text(encoding="utf-8"))
+    assert receipt["nonce"] == NONCE and receipt["descendants_reaped"] is True

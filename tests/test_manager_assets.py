@@ -7,6 +7,7 @@ Behaviour under a real engine is proven by the plugin eval suite, not here.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -139,7 +140,8 @@ def test_agent_bodies_keep_specialists_inside_their_assignment() -> None:
         assert "Archon manager" in body
         assert "Archon manager run" in body
     familiar = _flat(AGENTS / "archon-familiar.md")
-    assert "run `git reset --hard <base>` before any edit" in familiar
+    assert "stop before editing and report" in familiar
+    assert "The manager owns branch placement" in familiar
 
 
 @pytest.mark.parametrize("role", ["reviewer", "qa_engineer", "security_reviewer"])
@@ -169,3 +171,64 @@ def test_the_three_reviewers_are_not_the_same_reviewer() -> None:
     assert "path traversal" in texts["security_reviewer"]
     assert "`--no-verify`" in texts["security_reviewer"]
     assert "blocks completion" in texts["security_reviewer"]
+
+
+# A worker reads these files inside a real person's repository, on a mid-tier model,
+# with Write and Bash. An instruction to move a ref or drop working-tree state there
+# destroys work the harness never created and promised to preserve.
+DESTRUCTIVE_GIT = re.compile(
+    r"git\s+(?:reset|checkout|clean|stash|restore|rm)\b|git\s+push[^.]*--force|rm\s+-rf"
+)
+# "not on the base ... run `git reset --hard`" contains a negation and is still an
+# instruction to destroy work, so the sentence must carry an explicit prohibition and
+# must not read as a directive to run the thing.
+PROHIBITION = re.compile(r"\b(?:never|do not|don't|must not|cannot|refuse)\b", re.IGNORECASE)
+INSTRUCTED_DESTRUCTION = re.compile(
+    r"\b(?:run|use|execute|issue|perform|call|apply|with|via|by|then|first)\s+`?"
+    r"(?:git\s+(?:reset|checkout|clean|stash|restore|rm)\b|rm\s+-rf)",
+    re.IGNORECASE,
+)
+ASSET_FILES = sorted(p for p in ASSETS.rglob("*") if p.is_file())
+
+
+def _sentences(path: Path) -> list[str]:
+    return re.split(r"(?<=[.;])\s+", _flat(path))
+
+
+@pytest.mark.parametrize("path", ASSET_FILES, ids=lambda p: p.name)
+def test_no_packaged_asset_tells_a_worker_to_destroy_repository_state(path: Path) -> None:
+    text = _flat(path)
+    assert not INSTRUCTED_DESTRUCTION.search(text), f"{path.name} directs a worker to destroy state"
+    for sentence in _sentences(path):
+        if DESTRUCTIVE_GIT.search(sentence):
+            assert PROHIBITION.search(sentence), f"{path.name} instructs: {sentence}"
+
+
+def test_the_worker_reports_a_wrong_base_instead_of_resetting_onto_it() -> None:
+    familiar = _flat(AGENTS / "archon-familiar.md")
+    manager = _flat(SKILL)
+
+    assert "git reset --hard" not in familiar
+    assert "report the base you were given and the commit you are on" in familiar
+    assert "may be the user's and is not yours to throw away" in familiar
+    # Report-and-stop needs a receiver, or the worker is stuck instead of safe.
+    assert "If a child reports that its worktree is not on the base you named" in manager
+    assert "never instruct a child to reset, check out, clean, or stash a worktree" in manager
+    assert "Preserve pre-existing staged, unstaged, and untracked work." in manager
+
+
+def test_the_packaged_asset_set_is_exactly_what_the_wheel_is_checked_for() -> None:
+    """CI asserts eleven packaged paths; this is the same list, kept honest here."""
+    assert [str(path.relative_to(ASSETS)) for path in ASSET_FILES] == [
+        "archon/.claude-plugin/plugin.json",
+        "archon/.mcp.json",
+        "archon/agents/archon-familiar.md",
+        "archon/agents/archon-oracle.md",
+        "archon/agents/archon-warden.md",
+        "archon/hooks/hooks.json",
+        "archon/reviewers/qa_engineer.md",
+        "archon/reviewers/reviewer.md",
+        "archon/reviewers/security_reviewer.md",
+        "archon/skills/archon-manager/SKILL.md",
+        "claude-block.md",
+    ]

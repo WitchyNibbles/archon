@@ -7,7 +7,9 @@ or anything under ``~/.claude``.
 
 Every configuration change is a pure insertion whose exact text is recorded, so
 ``uninstall`` restores the original bytes by deleting what was inserted, and a
-region a person edited afterwards stays active instead of being replaced.
+region a person edited afterwards stays active instead of being replaced. The
+byte-level half of that promise lives in ``jsonc``; this module decides *what* is
+owned, and ``jsonc`` decides where the bytes for it go.
 """
 from __future__ import annotations
 
@@ -26,32 +28,37 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# `doctor`'s two derivations moved to `diagnostics`; they are still reached through
+# this module by name, so the redundant aliases are deliberate re-exports.
+from .diagnostics import (
+    EVIDENCE as EVIDENCE,
+)
+from .diagnostics import (
+    _evidence_directory as _evidence_directory,
+)
+from .diagnostics import (
+    _masked_path_entries,
+    _tested_versions,
+    _version_key,
+)
+from .diagnostics import (
+    _masked_roots as _masked_roots,
+)
+from .jsonc import (
+    InstallError,
+    _block,
+    _current,
+    _document,
+    _insert,
+    _members,
+    _satisfied,
+    _strip,
+    _Unit,
+)
+
+__all__ = ["InstallError", "doctor", "init", "uninstall"]
+
 ASSETS = Path(__file__).parent / "assets"
-
-
-def _evidence_directory() -> Path:
-    """Locate recorded spike evidence from a checkout *or* an installed wheel.
-
-    This was a fixed ``parents[2]`` offset, which is correct in the source
-    tree and silently wrong once installed: from
-    ``site-packages/archon/install.py`` it resolves to ``<prefix>/docs/evidence``,
-    which does not exist. `doctor` therefore derived an empty tested range and
-    could never warn on engine drift (AC-22) for the distributed artifact —
-    a guard that reported nothing rather than reporting a problem.
-
-    The wheel force-includes the evidence at ``archon/docs/evidence``, so a
-    parent walk finds it in both layouts. This matches
-    ``claude_adapter._evidence_directory``; the two must agree, because a
-    `doctor` range that disagrees with the adapter's is worse than none.
-    """
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "docs" / "evidence"
-        if candidate.is_dir():
-            return candidate
-    return Path(__file__).parent / "docs" / "evidence"
-
-
-EVIDENCE = _evidence_directory()
 
 MANIFEST = ".archon/native-install.json"
 INSTRUCTIONS = "CLAUDE.md"
@@ -78,6 +85,12 @@ HOOK_EVENTS: tuple[tuple[str, str | None], ...] = (
 )
 HOOK_TIMEOUT = 5
 ENV_BIN = "/usr/bin/env"
+# Repository configuration must not reach the kernel's interpreter: PYTHONPATH and
+# PYTHONHOME are unset, user site-packages disabled, for hooks and the MCP server alike.
+# PYTHONSAFEPATH is the env spelling of `-P`: without it a `python -m archon` whose
+# argv carries no `-I` still puts the repository's own directory first on sys.path,
+# and a consumer's `archon.py` is imported before the installed kernel.
+NEUTRAL_ENV = ("-u", "PYTHONPATH", "-u", "PYTHONHOME", "PYTHONNOUSERSITE=1", "PYTHONSAFEPATH=1")
 GITIGNORE_ENTRIES = (".archon/", ".claude/worktrees/")
 
 SERVER_PATTERN = r"archon(?:_workflow(?:_\d+)?)?"
@@ -97,12 +110,6 @@ OBSERVABILITY_NOTE = (
     "definitions were approved, or whether a subagent actually spawned; those are "
     "reported by a real session, never by this command."
 )
-
-_DECODER = json.JSONDecoder()
-
-
-class InstallError(ValueError):
-    """An unsafe or malformed installation input was rejected before writing."""
 
 
 def _digest(data: bytes | str) -> str:
@@ -144,10 +151,17 @@ def _read(root: Path, relative: str) -> str:
 
 def _write(root: Path, relative: str, content: str, *, private: bool = False) -> None:
     target = _safe(root, relative)
-    if target.exists() and target.read_text(encoding="utf-8") == content:
+    # An existing file keeps the mode its author chose -- except where Archon owns
+    # the privacy: a manifest a repository pre-created (or chmod'd) at 0644 must not
+    # stay world-readable just because it was there first, and identical bytes are
+    # no evidence that the mode is right either.
+    existing = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
+    mode = 0o600 if private else (existing if existing is not None else 0o644)
+    if existing is not None and target.read_text(encoding="utf-8") == content:
+        if existing != mode:
+            os.chmod(target, mode)
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else (0o600 if private else 0o644)
     fd, temporary = tempfile.mkstemp(prefix=".archon-write-", dir=target.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
@@ -190,6 +204,42 @@ def _private_base(state_home: Path | str | None) -> Path:
     return path
 
 
+def _state_home(flag: Path | str | None, previous: dict[str, Any]) -> tuple[str | None, str]:
+    """Where private kernel state lives, and which authority decided it.
+
+    The manifest lives inside the repository, so a model can write it, and the
+    rendering it has to match is computed from inputs the repository already knows.
+    It may therefore *confirm* a location, never choose one against the person
+    running the command: a `--state-home` that disagrees with the recorded value is
+    a divergence `init` reports and refuses, rather than silently moving the
+    database, evidence and backups to one of them. With no flag the recorded value
+    is adopted, because repeating `init` has to stay idempotent -- but the adopted
+    value and where it came from are reported, so a path that arrived through the
+    repository is never invisible. What keeps this out of critical either way is
+    that the workspace refuses a state directory inside any worktree.
+    """
+    recorded = previous.get("state_home")
+    if flag is None:
+        return recorded, "manifest" if recorded is not None else "default"
+    selected = str(_private_base(flag))
+    if recorded is not None and recorded != selected:
+        raise InstallError(
+            f"The private state location on the command line ({selected}) is not the one "
+            f"recorded in {MANIFEST} ({recorded}). Nothing was changed: run `archon "
+            "uninstall` first to move it, or pass the recorded location."
+        )
+    return selected, "flag"
+
+
+def _state_location(recorded: str | None, source: str) -> dict[str, str]:
+    """The resolved private state directory, named in every report that adopts one."""
+    try:
+        return {"state_home": str(_private_base(recorded)), "state_home_source": source}
+    except InstallError:
+        # A report never fails on the very thing it exists to describe.
+        return {"state_home": str(recorded), "state_home_source": source}
+
+
 def _backup(root: Path, relative: str, content: str, state_home: Path | str | None = None) -> str:
     from .workspace import Workspace
 
@@ -227,162 +277,6 @@ def _backup(root: Path, relative: str, content: str, state_home: Path | str | No
     return str(name)
 
 
-def _skip(text: str, index: int) -> int:
-    """Advance past whitespace, separators and the comment forms Claude Code accepts."""
-    while index < len(text):
-        if text[index].isspace() or text[index] == ",":
-            index += 1
-        elif text.startswith("//", index):
-            end = text.find("\n", index)
-            index = len(text) if end < 0 else end + 1
-        elif text.startswith("/*", index):
-            end = text.find("*/", index)
-            if end < 0:
-                raise InstallError("Unterminated comment in configuration; nothing was changed")
-            index = end + 2
-        else:
-            return index
-    return index
-
-
-def _scan_object(text: str, start: int) -> tuple[dict[str, tuple[int, int]], int]:
-    index = _skip(text, start)
-    if index >= len(text) or text[index] != "{":
-        raise InstallError("Expected a JSON object in configuration")
-    index += 1
-    spans: dict[str, tuple[int, int]] = {}
-    while True:
-        index = _skip(text, index)
-        if index >= len(text):
-            raise InstallError("Unterminated JSON object; nothing was changed")
-        if text[index] == "}":
-            return spans, index + 1
-        key, index = _raw(text, index)
-        if not isinstance(key, str):
-            raise InstallError("JSON object keys must be strings")
-        index = _skip(text, index)
-        if index >= len(text) or text[index] != ":":
-            raise InstallError("Malformed JSON object member; nothing was changed")
-        begin = _skip(text, index + 1)
-        _, index = _decode(text, begin)
-        spans[key] = (begin, index)
-
-
-def _scan_array(text: str, start: int) -> tuple[list[tuple[int, int]], int]:
-    index = _skip(text, start)
-    if index >= len(text) or text[index] != "[":
-        raise InstallError("Expected a JSON array in configuration")
-    index += 1
-    spans: list[tuple[int, int]] = []
-    while True:
-        index = _skip(text, index)
-        if index >= len(text):
-            raise InstallError("Unterminated JSON array; nothing was changed")
-        if text[index] == "]":
-            return spans, index + 1
-        begin = index
-        _, index = _decode(text, begin)
-        spans.append((begin, index))
-
-
-def _raw(text: str, index: int) -> tuple[Any, int]:
-    try:
-        return _DECODER.raw_decode(text, index)
-    except ValueError as exc:
-        raise InstallError("Invalid JSON configuration; nothing was changed") from exc
-
-
-def _decode(text: str, index: int) -> tuple[Any, int]:
-    index = _skip(text, index)
-    if index >= len(text):
-        raise InstallError("Truncated JSON configuration; nothing was changed")
-    if text[index] == "{":
-        members, end = _scan_object(text, index)
-        return {key: _decode(text, span[0])[0] for key, span in members.items()}, end
-    if text[index] == "[":
-        elements, end = _scan_array(text, index)
-        return [_decode(text, span[0])[0] for span in elements], end
-    return _raw(text, index)
-
-
-def _members(text: str, start: int = 0) -> dict[str, tuple[int, int]]:
-    return _scan_object(text, start)[0]
-
-
-def _document(text: str) -> Any:
-    return _decode(text, 0)[0] if text.strip() else {}
-
-
-def _line_indent(text: str, index: int) -> str:
-    """The indentation of the line holding ``index``, so additions line up with it."""
-    line = text[text.rfind("\n", 0, index) + 1 : index]
-    return line[: len(line) - len(line.lstrip())]
-
-
-def _shift(rendered: str, indent: str) -> str:
-    return rendered.replace("\n", "\n" + indent)
-
-
-@dataclass(frozen=True)
-class _Unit:
-    """One owned insertion: a member of, or an element in, a JSON container."""
-
-    id: str
-    path: tuple[str, ...]
-    key: str | None
-    value: Any
-
-    def canonical(self) -> str:
-        return json.dumps(self.value, ensure_ascii=False, sort_keys=True)
-
-
-def _descend(text: str, path: tuple[str, ...]) -> tuple[tuple[int, int], tuple[str, ...]]:
-    begin = _skip(text, 0)
-    span = (begin, _decode(text, begin)[1])
-    for index, name in enumerate(path):
-        members = _members(text, span[0])
-        if name not in members:
-            return span, path[index:]
-        span = members[name]
-    return span, ()
-
-
-def _wrap(remaining: tuple[str, ...], key: str | None, value: Any) -> tuple[str, Any]:
-    node: Any = {key: value} if key is not None else [value]
-    for name in reversed(remaining[1:]):
-        node = {name: node}
-    return remaining[0], node
-
-
-def _placement(text: str, span: tuple[int, int], key: str | None, rendered: str) -> tuple[int, str]:
-    opener = text[span[0]]
-    if opener == "{":
-        items = list(_scan_object(text, span[0])[0].values())
-    elif opener == "[":
-        items = _scan_array(text, span[0])[0]
-    else:
-        raise InstallError("Managed configuration member is not a JSON container")
-    prefix = (json.dumps(key) + ": ") if key is not None else ""
-    if items:
-        indent = _line_indent(text, min(start for start, _end in items))
-        anchor = max(end for _start, end in items)
-        newline = text.find("\n", anchor)
-        tail = text[anchor : newline if newline >= 0 else len(text)]
-        if tail.lstrip().startswith("//"):
-            # A trailing comment annotates the entry above it, not Archon's.
-            return anchor + len(tail), "\n" + indent + ", " + prefix + _shift(rendered, indent)
-        return anchor, ",\n" + indent + prefix + _shift(rendered, indent)
-    outer = _line_indent(text, span[0])
-    indent = outer + "  "
-    return span[1] - 1, "\n" + indent + prefix + _shift(rendered, indent) + "\n" + outer
-
-
-def _insert(text: str, unit: _Unit) -> tuple[str, str]:
-    span, remaining = _descend(text, unit.path)
-    key, value = _wrap(remaining, unit.key, unit.value) if remaining else (unit.key, unit.value)
-    rendered = json.dumps(value, ensure_ascii=False, indent=2)
-    position, inserted = _placement(text, span, key, rendered)
-    return text[:position] + inserted + text[position:], inserted
 
 
 def _argv(executable: str | Sequence[str] | None) -> list[str]:
@@ -404,11 +298,7 @@ def _options(root: Path, state_home: str | None) -> list[str]:
 
 
 def _hook_command(argv: list[str], root: Path, state_home: str | None) -> str:
-    vector = [
-        ENV_BIN, "-u", "PYTHONPATH", "-u", "PYTHONHOME", "PYTHONNOUSERSITE=1",
-        *argv, *_options(root, state_home), "hook",
-    ]
-    return shlex.join(vector)
+    return shlex.join([ENV_BIN, *NEUTRAL_ENV, *argv, *_options(root, state_home), "hook"])
 
 
 def _hook_groups(argv: list[str], root: Path, state_home: str | None = None) -> dict[str, list[dict[str, Any]]]:
@@ -424,9 +314,17 @@ def _hook_groups(argv: list[str], root: Path, state_home: str | None = None) -> 
 
 
 def _server_entry(argv: list[str], root: Path, state_home: str | None) -> dict[str, Any]:
+    """The MCP entry, neutralized exactly as the hook command is.
+
+    An MCP `env` block can only *add* variables, so unsetting has to happen in the
+    vector itself. With the default argv `-I` already ignores the environment, but a
+    custom executable -- a console script, a wrapper -- does not, and then a
+    repository-set `PYTHONPATH` injects its own modules into the kernel process.
+    Same neutralization, same reason, same place the packaged .mcp.json puts it.
+    """
     return {
-        "command": argv[0],
-        "args": [*argv[1:], *_options(root, state_home), "mcp"],
+        "command": ENV_BIN,
+        "args": [*NEUTRAL_ENV, *argv, *_options(root, state_home), "mcp"],
         "env": {"PYTHONNOUSERSITE": "1"},
     }
 
@@ -486,16 +384,6 @@ def _validate_runtime(root: Path, data: dict[str, Any]) -> None:
         raise InstallError("Manifest hook ownership does not match the narrow Archon integration")
 
 
-def _block(text: str, begin: str, end: str) -> tuple[int, int] | None:
-    starts = [m.start() for m in re.finditer(rf"(?m)^{re.escape(begin)}\r?$", text)]
-    ends = [m.end() for m in re.finditer(rf"(?m)^{re.escape(end)}\r?$", text)]
-    if not starts and not ends:
-        return None
-    if len(starts) != 1 or len(ends) != 1 or ends[0] <= starts[0]:
-        raise InstallError("Ambiguous managed markers; no content removed")
-    return starts[0], ends[0]
-
-
 @dataclass
 class _Plan:
     root: Path
@@ -510,30 +398,6 @@ class _Plan:
         self.backups.append(_backup(self.root, relative, content, self.state_home))
 
 
-def _strip(text: str, records: list[dict[str, str]]) -> tuple[str, dict[str, bool]]:
-    """Lift owned insertions innermost first: a nested one is contiguous only then."""
-    present: dict[str, bool] = {}
-    for record in reversed(records):
-        present[record["id"]] = record["text"] in text
-        if present[record["id"]]:
-            text = text.replace(record["text"], "", 1)
-    return text, present
-
-
-def _current(previous: list[dict[str, str]], units: list[_Unit], text: str) -> bool:
-    if [record["id"] for record in previous] != [unit.id for unit in units]:
-        return False
-    if any(record["value"] != unit.canonical() for record, unit in zip(previous, units, strict=True)):
-        return False
-    return all(_strip(text, previous)[1].values())
-
-
-def _satisfied(text: str, unit: _Unit) -> bool:
-    """The array already holds this element, so Archon adds and owns nothing."""
-    span, remaining = _descend(text, unit.path)
-    if remaining or unit.key is not None or text[span[0]] != "[":
-        return False
-    return unit.value in _decode(text, span[0])[0]
 
 
 def _apply(plan: _Plan, path: str, text: str, units: list[_Unit], previous: list[dict[str, str]]) -> str:
@@ -676,115 +540,6 @@ def _gitignore(plan: _Plan, text: str, previous: list[dict[str, str]]) -> str:
     return text + inserted
 
 
-_LEGACY_MANIFESTS = (".archon/install-manifest.json", ".devgod/install-manifest.json")
-_LEGACY_TARGETS = (
-    r"\.archon/(?:ACTIVE|work/.+|rules/.+|skills/.+|templates/.+)",
-    r"\.claude/hooks/archon-[A-Za-z0-9._-]+\.mjs",
-    r"\.claude/agents/[A-Za-z0-9._-]+/AGENT\.md",
-    r"\.claude/skills/archon-[A-Za-z0-9._-]+/.+",
-    r"\.agents/skills/devgod-[A-Za-z0-9._-]+/.+",
-    r"\.codex/agents/devgod-[A-Za-z0-9._-]+\.toml",
-)
-_LEGACY_SECTIONS = (
-    ("AGENTS.md", "<!-- BEGIN DEVGOD NATIVE -->", "<!-- END DEVGOD NATIVE -->"),
-    (".codex/config.toml", "# BEGIN DEVGOD NATIVE", "# END DEVGOD NATIVE"),
-)
-_LEGACY_HOOK_COMMAND = re.compile(r"(?:^|\s)-m\s+devgod(?:\s|$)|devgod/(?:src/admin\.ts|dist/admin\.js)")
-_LEGACY_REVIEW = (
-    ("package.json", re.compile(r'"archon:[A-Za-z0-9:_-]+"\s*:')),
-    (".env.example", re.compile(r"ARCHON_CORE_DATABASE_URL")),
-    (".env.template", re.compile(r"ARCHON_CORE_DATABASE_URL")),
-    (".env.sample", re.compile(r"ARCHON_CORE_DATABASE_URL")),
-)
-
-
-def _legacy_records(root: Path) -> list[tuple[str, str]]:
-    """Recorded (path, content hash) pairs from a previous overlay's own manifest."""
-    records: list[tuple[str, str]] = []
-    for relative in _LEGACY_MANIFESTS:
-        raw = _read(root, relative)
-        if not raw:
-            continue
-        try:
-            manifest = json.loads(raw)
-        except ValueError:
-            continue
-        entries = manifest.get("files", []) if isinstance(manifest, dict) else []
-        entries = entries if isinstance(entries, list) else []
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            target, content_hash = entry.get("target"), entry.get("contentHash")
-            if isinstance(target, str) and isinstance(content_hash, str):
-                records.append((target, content_hash))
-    return records
-
-
-def _legacy_hooks(text: str) -> tuple[dict[str, Any], bool]:
-    """Drop only hook handlers whose command is a known DevGod form."""
-    try:
-        document = json.loads(text)
-    except ValueError as exc:
-        raise InstallError("Existing .codex/hooks.json is invalid; preserved") from exc
-    hooks = document.get("hooks") if isinstance(document, dict) else None
-    if not isinstance(hooks, dict):
-        return {}, False
-    remaining: dict[str, Any] = {}
-    changed = False
-    for event, entries in hooks.items():
-        kept = []
-        for group in entries if isinstance(entries, list) else []:
-            handlers = list(group.get("hooks", []))
-            live = [h for h in handlers if not _LEGACY_HOOK_COMMAND.search(str(h.get("command", "")))]
-            changed = changed or len(live) != len(handlers)
-            if live:
-                kept.append({**group, "hooks": live})
-        remaining[event] = kept
-    return ({**document, "hooks": remaining}, True) if changed else ({}, False)
-
-
-def _legacy_changes(root: Path, state_home: str | None) -> tuple[dict[str, str], list[str], list[str], list[str]]:
-    plan = _Plan(root=root, state_home=state_home)
-    changes: dict[str, str] = {}
-    removed: list[str] = []
-    for relative, begin, end in _LEGACY_SECTIONS:
-        original = _read(root, relative)
-        span = _block(original, begin, end)
-        if span:
-            plan.back_up(relative, original)
-            changes[relative] = original[: span[0]] + original[span[1] :]
-    hook_text = _read(root, ".codex/hooks.json")
-    if hook_text:
-        document, changed = _legacy_hooks(hook_text)
-        if changed:
-            plan.back_up(".codex/hooks.json", hook_text)
-            changes[".codex/hooks.json"] = json.dumps(document, indent=2) + "\n"
-    for target, content_hash in _legacy_records(root):
-        if not any(re.fullmatch(pattern, target) for pattern in _LEGACY_TARGETS):
-            continue
-        try:
-            content = _read(root, target)
-        except InstallError:
-            continue
-        if not content or _digest(content) != content_hash:
-            continue
-        plan.back_up(target, content)
-        removed.append(target)
-    return changes, plan.backups, removed, _legacy_review(root)
-
-
-def _legacy_review(root: Path) -> list[str]:
-    """Overlay traces left in place on purpose; a person decides what they mean."""
-    found = []
-    for relative, pattern in _LEGACY_REVIEW:
-        try:
-            text = _read(root, relative)
-        except InstallError:
-            continue
-        if text and pattern.search(text):
-            found.append(relative)
-    return found
-
 
 def init(
     repo: Path | str,
@@ -799,15 +554,20 @@ def init(
     root = _root(repo)
     argv = _argv(executable)
     previous = _load(root)
-    selected = str(_private_base(state_home)) if state_home is not None else previous.get("state_home")
+    selected, source = _state_home(state_home, previous)
     if selected is not None:
         from .workspace import Workspace
 
         Workspace(root, state_root=_private_base(selected))
-    migrated_changes, backups, migrated, review = (
-        _legacy_changes(root, selected) if migrate else ({}, [], [], [])
-    )
-    plan = _Plan(root=root, state_home=selected, pending=dict(migrated_changes), backups=list(backups))
+    plan = _Plan(root=root, state_home=selected)
+    migrated: list[str] = []
+    review: list[str] = []
+    if migrate:
+        from . import legacy
+
+        plan.pending, migrated, review = legacy.changes(
+            lambda relative: _read(root, relative), plan.back_up
+        )
     texts = {path: plan.pending.get(path, _read(root, path)) for path in EDITABLE}
     created = previous.get("created") or {path: not _safe(root, path).exists() for path in EDITABLE}
     for path in (MCP_CONFIG, SETTINGS):  # Reject malformed input before writing anything.
@@ -830,7 +590,7 @@ def init(
         "files": plan.files, "edits": plan.edits, "allow": _allow_rule(server),
         "hooks": _hook_groups(argv, root, selected), "created": created,
     }
-    return _commit(plan, manifest, migrated, review)
+    return _commit(plan, manifest, migrated, review, source)
 
 
 def _claude_block(skill_dir: str) -> str:
@@ -838,7 +598,8 @@ def _claude_block(skill_dir: str) -> str:
     return body.format(skill_path=f"{skill_dir}/SKILL.md").strip()
 
 
-def _commit(plan: _Plan, manifest: dict[str, Any], migrated: list[str], review: list[str]) -> dict[str, Any]:
+def _commit(plan: _Plan, manifest: dict[str, Any], migrated: list[str], review: list[str],
+            source: str) -> dict[str, Any]:
     root = plan.root
     for path in [*plan.pending, MANIFEST, *migrated]:
         _safe(root, path)
@@ -849,11 +610,18 @@ def _commit(plan: _Plan, manifest: dict[str, Any], migrated: list[str], review: 
     for path in migrated:
         _safe(root, path).unlink()
         _prune(root, path)
+    location = _state_location(manifest["state_home"], source)
+    notes = [TRUST_NOTE]
+    if source == "manifest":
+        notes.append(
+            f"Private state location {location['state_home']} was adopted from {MANIFEST}, "
+            "which lives in the repository; pass --state-home to choose it deliberately."
+        )
     return {
         "installed": True, "repo": str(root), "changed": changed, "server": manifest["server"],
         "skill_path": f"{manifest['skill_dir']}/SKILL.md", "backups": plan.backups,
         "preserved_edits": plan.retained, "migrated": migrated, "review": review,
-        "hook_trust": "host_managed_unknown", "notes": [TRUST_NOTE],
+        "hook_trust": "host_managed_unknown", "notes": notes, **location,
     }
 
 
@@ -899,26 +667,6 @@ def _remove_files(root: Path, manifest: dict[str, Any]) -> tuple[list[str], list
         elif current:
             preserved.append(path)
     return removed, preserved
-
-
-def _version_key(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\d+", version)[:3])
-
-
-def _tested_versions() -> tuple[str, ...]:
-    """Engine versions an evidence file on record was produced against."""
-    if not EVIDENCE.is_dir():
-        return ()
-    found: set[str] = set()
-    for path in sorted(EVIDENCE.glob("*.json")):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        version = record.get("engine_version") if isinstance(record, dict) else None
-        if isinstance(version, str) and re.match(r"\d+\.\d+", version):
-            found.add(version)
-    return tuple(sorted(found, key=_version_key))
 
 
 def _tool(name: str) -> str | None:
@@ -967,7 +715,6 @@ def _check_installed(root: Path, manifest: dict[str, Any], problems: list[str]) 
             if not present[record["id"]]:
                 problems.append(f"Managed configuration is missing or edited: {path}#{record['id']}")
 
-
 def _engine_notes(problems: list[str], warnings: list[str]) -> dict[str, Any]:
     for tool in ("bwrap", "socat"):
         if not _tool(tool):
@@ -982,7 +729,8 @@ def _engine_notes(problems: list[str], warnings: list[str]) -> dict[str, Any]:
             "re-run `uv run python scripts/spikes/run_all.py --allow-live` and commit the evidence"
         )
     return {"claude": version, "tested_range": list(tested),
-            "bwrap": bool(_tool("bwrap")), "socat": bool(_tool("socat"))}
+            "bwrap": bool(_tool("bwrap")), "socat": bool(_tool("socat")),
+            "masked_path_entries": _masked_path_entries(warnings)}
 
 
 def doctor(repo: Path | str) -> dict[str, Any]:
@@ -1003,11 +751,16 @@ def doctor(repo: Path | str) -> dict[str, Any]:
     if isinstance(settings, dict) and settings.get("permissions", {}).get("defaultMode") == "bypassPermissions":
         notes.append("This project sets permissions.defaultMode = bypassPermissions; Archon never writes it")
     engine = _engine_notes(problems, warnings)
-    for relative in _LEGACY_MANIFESTS:
+    from . import legacy
+
+    for relative in legacy.MANIFESTS:
         if _read(root, relative):
             notes.append(f"Legacy overlay manifest {relative} is present; `init --migrate` archives what it records")
+    recorded = manifest.get("state_home")
+    # The manifest is repository-writable, so where it points is a finding, not trivia.
+    location = _state_location(recorded, "manifest" if recorded else "default")
     return {
         "installed": bool(manifest), "ok": not problems, "problems": problems, "warnings": warnings,
         "notes": notes, "hook_trust": "not_observable", "oracle": manifest.get("oracle"),
-        "engine": engine, "auth": _claude_status(),
+        "engine": engine, "auth": _claude_status(), **location,
     }

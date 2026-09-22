@@ -17,6 +17,61 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from archon.models import ACTIVE_JOB_STATES, ATTEMPT_CEILING
+
+#: Policy fields withdrawn from the public contract; stored specs are rewritten
+#: on open so an existing database keeps loading (see ``_migrate_removed_policy_fields``).
+REMOVED_POLICY_FIELDS = frozenset({"scratch_bytes"})
+
+#: Placeholders for :data:`archon.models.ACTIVE_JOB_STATES` in SQL predicates.
+_ACTIVE_PLACEHOLDERS = ",".join("?" * len(ACTIVE_JOB_STATES))
+
+
+#: The durable record. Every statement is `IF NOT EXISTS`, so opening an older
+#: database adds what is missing and `_migrate` repairs what cannot be added.
+_SCHEMA = """
+            CREATE TABLE IF NOT EXISTS runs (
+                run_id TEXT PRIMARY KEY, worktree_id TEXT NOT NULL, state TEXT NOT NULL,
+                spec TEXT NOT NULL, baseline TEXT, checkpoint TEXT, gate TEXT,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS active_worktree ON runs(worktree_id)
+                WHERE state NOT IN ('verified','cancelled');
+            CREATE TABLE IF NOT EXISTS tasks (
+                run_id TEXT NOT NULL REFERENCES runs(run_id), task_id TEXT NOT NULL,
+                state TEXT NOT NULL, spec TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(run_id,task_id)
+            );
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
+                kind TEXT NOT NULL, role TEXT, state TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE, candidate TEXT NOT NULL,
+                payload TEXT NOT NULL, result TEXT, error TEXT,
+                attempt INTEGER NOT NULL DEFAULT 0, lease_token TEXT, lease_expires_at REAL,
+                owner TEXT, process_id INTEGER, process_identity TEXT,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL, resume_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS jobs_run ON jobs(run_id,state);
+            CREATE TABLE IF NOT EXISTS evidence (
+                evidence_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
+                job_id TEXT NOT NULL REFERENCES jobs(job_id), attempt INTEGER NOT NULL,
+                kind TEXT NOT NULL, invocation_id TEXT NOT NULL,
+                candidate_digest TEXT NOT NULL, checks_digest TEXT NOT NULL,
+                payload TEXT NOT NULL, created_at REAL NOT NULL,
+                UNIQUE(job_id,attempt,kind,invocation_id)
+            );
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                checkpoint_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
+                payload TEXT NOT NULL, created_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES runs(run_id), job_id TEXT,
+                kind TEXT NOT NULL, payload TEXT NOT NULL, created_at REAL NOT NULL,
+                event_key TEXT UNIQUE
+            );
+        """
+
 
 class StoreError(ValueError):
     """A rejected state change with a recoverable explanation."""
@@ -78,50 +133,32 @@ class Store:
         self._db.execute("PRAGMA busy_timeout=10000")
         self._db.execute("PRAGMA journal_mode=WAL")
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
             raise StoreError(f"Unsupported state schema {version}; use a compatible Archon release.")
-        self._db.executescript("""
-            CREATE TABLE IF NOT EXISTS runs (
-                run_id TEXT PRIMARY KEY, worktree_id TEXT NOT NULL, state TEXT NOT NULL,
-                spec TEXT NOT NULL, baseline TEXT, checkpoint TEXT, gate TEXT,
-                created_at REAL NOT NULL, updated_at REAL NOT NULL
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS active_worktree ON runs(worktree_id)
-                WHERE state NOT IN ('verified','cancelled');
-            CREATE TABLE IF NOT EXISTS tasks (
-                run_id TEXT NOT NULL REFERENCES runs(run_id), task_id TEXT NOT NULL,
-                state TEXT NOT NULL, spec TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY(run_id,task_id)
-            );
-            CREATE TABLE IF NOT EXISTS jobs (
-                job_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
-                kind TEXT NOT NULL, role TEXT, state TEXT NOT NULL,
-                idempotency_key TEXT NOT NULL UNIQUE, candidate TEXT NOT NULL,
-                payload TEXT NOT NULL, result TEXT, error TEXT,
-                attempt INTEGER NOT NULL DEFAULT 0, lease_token TEXT, lease_expires_at REAL,
-                owner TEXT, process_id INTEGER, process_identity TEXT,
-                created_at REAL NOT NULL, updated_at REAL NOT NULL, resume_at INTEGER
-            );
-            CREATE INDEX IF NOT EXISTS jobs_run ON jobs(run_id,state);
-            CREATE TABLE IF NOT EXISTS evidence (
-                evidence_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
-                job_id TEXT NOT NULL REFERENCES jobs(job_id), attempt INTEGER NOT NULL,
-                kind TEXT NOT NULL, invocation_id TEXT NOT NULL,
-                candidate_digest TEXT NOT NULL, checks_digest TEXT NOT NULL,
-                payload TEXT NOT NULL, created_at REAL NOT NULL,
-                UNIQUE(job_id,attempt,kind,invocation_id)
-            );
-            CREATE TABLE IF NOT EXISTS checkpoints (
-                checkpoint_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
-                payload TEXT NOT NULL, created_at REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS events (
-                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT NOT NULL REFERENCES runs(run_id), job_id TEXT,
-                kind TEXT NOT NULL, payload TEXT NOT NULL, created_at REAL NOT NULL,
-                event_key TEXT UNIQUE
-            );
-        """)
+        self._db.executescript(_SCHEMA)
+        self._migrate(version)
+        self._restrict_sidecars()
+
+    def _restrict_sidecars(self) -> None:
+        """Hold the WAL and shared-memory files to the database's own mode.
+
+        SEC-L4: write-ahead logging publishes `-wal` and `-shm` beside the
+        database at the ambient umask, and the WAL carries the same committed
+        evidence the 0600 database does. They do not exist until the first
+        write, so a missing one is the ordinary case, not a fault.
+        """
+        for suffix in ("-wal", "-shm"):
+            try:
+                self.path.with_name(self.path.name + suffix).chmod(0o600)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                # Never fail closed on a permissions repair: the 0700 state
+                # directory still stands between these files and other users.
+                continue
+
+    def _migrate(self, version: int) -> None:
+        """Bring an older database forward in place; never rewrite a newer one."""
         if version < 2:
             # Migration 1 -> 2: a database created before the paused-job
             # lifecycle existed has a `jobs` table with no `resume_at`
@@ -133,6 +170,33 @@ class Store:
             if "resume_at" not in columns:
                 self._db.execute("ALTER TABLE jobs ADD COLUMN resume_at INTEGER")
             self._db.execute("PRAGMA user_version=2")
+        if version < 3:
+            self._migrate_removed_policy_fields()
+            self._db.execute("PRAGMA user_version=3")
+
+
+    def _migrate_removed_policy_fields(self) -> None:
+        """Migration 2 -> 3: drop policy keys the kernel no longer honours.
+
+        ``Policy`` forbids unknown fields, so a spec persisted by an earlier
+        release would refuse to load once a field is withdrawn, and a run that
+        cannot load is a run that cannot be repaired. ``scratch_bytes`` named a
+        scratch size nothing ever applied (SEC-M5); stripping it here keeps an
+        existing database openable instead of failing closed on it.
+        """
+        for table, column, key in (("runs", "spec", None), ("jobs", "payload", "spec")):
+            rows = list(self._db.execute(f"SELECT rowid,{column} FROM {table}"))
+            for rowid, raw in rows:
+                document = json.loads(raw) if raw else None
+                if not isinstance(document, dict):
+                    continue
+                spec = document.get(key) if key else document
+                policy = spec.get("policy") if isinstance(spec, dict) else None
+                if not isinstance(policy, dict) or not (REMOVED_POLICY_FIELDS & policy.keys()):
+                    continue
+                for field in REMOVED_POLICY_FIELDS:
+                    policy.pop(field, None)
+                self._db.execute(f"UPDATE {table} SET {column}=? WHERE rowid=?", (_json(document), rowid))
 
     def close(self) -> None:
         with self._lock:
@@ -250,7 +314,11 @@ class Store:
                 raise StoreError("Plan changed concurrently; reload and reapply the amendment automatically.")
             if run["state"] == "cancelled":
                 raise StoreError("Cancelled runs cannot change their plan.")
-            if db.execute("SELECT 1 FROM jobs WHERE run_id=? AND state IN ('queued','running')", (run_id,)).fetchone():
+            # CORR-H2: a coordinator parked on a usage window is still active, and
+            # amending its checks while it waits changes the checks digest, and so
+            # the candidate, under an attempt that will resume and publish evidence.
+            if db.execute(f"SELECT 1 FROM jobs WHERE run_id=? AND state IN ({_ACTIVE_PLACEHOLDERS})",
+                          (run_id, *ACTIVE_JOB_STATES)).fetchone():
                 raise StoreError("Wait for active verification before amending its plan.")
             existing = {r["task_id"]: self._row(r) for r in db.execute("SELECT * FROM tasks WHERE run_id=?", (run_id,))}
             incoming = {item["task_id"]: item for item in map(_dict, tasks)}
@@ -356,7 +424,19 @@ class Store:
                 previous = {key: value for key, value in result["candidate"].items() if key != "snapshot_path"}
                 if result["run_id"] != run_id or result["kind"] != kind or previous != identity or result["role"] != role:
                     raise StoreError("Idempotency key was reused for a different operation.")
-                return result
+                owner = self._row(db.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone(), "run")
+                if (result["state"] != "cancelled" or owner["state"] == "cancelled"
+                        or result["attempt"] >= self._attempt_ceiling(db, run_id)):
+                    return result
+                # A row cancelled because its candidate was abandoned must not
+                # become a permanent block if the manager restores exactly that
+                # candidate: the dispatch key is derived from the candidate, so
+                # nothing else could ever be enqueued for it (fail open).
+                db.execute("UPDATE jobs SET state='queued',result=NULL,error=NULL,resume_at=NULL,updated_at=? WHERE job_id=?",
+                           (now, result["job_id"]))
+                self._event(db, run_id, "job.revived", {"kind": kind, "role": role, "attempt": result["attempt"]},
+                            result["job_id"])
+                return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (result["job_id"],)).fetchone(), "job")
             run = self._row(db.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone(), "run")
             if run["state"] in ("cancelled", "verified"):
                 raise StoreError("Cannot dispatch jobs for a completed or cancelled run.")
@@ -372,6 +452,61 @@ class Store:
     def list_jobs(self, run_id: str) -> list[dict]:
         with self._lock:
             return [self._row(r) for r in self._db.execute("SELECT * FROM jobs WHERE run_id=? ORDER BY created_at", (run_id,))]
+
+    @staticmethod
+    def _bound(candidate: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
+        """True when a row and a candidate name the same source, plan, and checks."""
+        return all(candidate.get(field) == target.get(field)
+                   for field in ("candidate_digest", "checks_digest"))
+
+    def _attempt_ceiling(self, db: sqlite3.Connection, run_id: str) -> int:
+        """The run's own retry budget, clamped to the kernel ceiling (CORR-M2)."""
+        row = db.execute("SELECT spec FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        policy = (json.loads(row["spec"]) if row and row["spec"] else {}).get("policy") or {}
+        requested = policy.get("max_attempts", ATTEMPT_CEILING)
+        if not isinstance(requested, int) or isinstance(requested, bool):
+            return ATTEMPT_CEILING
+        return max(1, min(requested, ATTEMPT_CEILING))
+
+    def _supersede_jobs(self, run_id: str, *, candidate_digest: str, checks_digest: str) -> list[dict]:
+        """Terminally dispose claimable rows bound to an abandoned candidate.
+
+        CORR-H1: a coordinator paused on a usage window for candidate A was
+        requeued by ``unpause_due_jobs`` once that window reopened, long after
+        the manager had repaired the source and candidate B had passed every
+        check and all three Witnesses. The row could still be claimed, still
+        answered "an unresolved job exists", and so stranded a finished delivery
+        in `verify` forever. Evidence is untouched: only rows that never
+        produced any are disposed, and ``cancelled`` keeps them out of both the
+        claim path and the pending sweep.
+        """
+        target = {"candidate_digest": candidate_digest, "checks_digest": checks_digest}
+        superseded: list[dict] = []
+        with self._lock:
+            stale = [job for job in (
+                self._row(row) for row in self._db.execute(
+                    f"SELECT * FROM jobs WHERE run_id=? AND state IN ({_ACTIVE_PLACEHOLDERS})",
+                    (run_id, *ACTIVE_JOB_STATES)))
+                if not self._bound(job["candidate"], target)]
+        if not stale:
+            # Ordinary polling is the common case; it must not take a write lock.
+            return superseded
+        with self._transaction() as db:
+            for job in stale:
+                if db.execute("SELECT 1 FROM jobs WHERE job_id=? AND state IN "
+                              f"({_ACTIVE_PLACEHOLDERS})", (job["job_id"], *ACTIVE_JOB_STATES)).fetchone() is None:
+                    continue  # It resolved itself between the read and the write.
+                db.execute("UPDATE jobs SET state='cancelled',error=?,lease_token=NULL,lease_expires_at=NULL,"
+                           "resume_at=NULL,updated_at=? WHERE job_id=?",
+                           (_json({"message": "Superseded: this attempt is bound to an abandoned candidate.",
+                                   "next_action": "Verify the current candidate; its evidence is what the gate reads."}),
+                            time.time(), job["job_id"]))
+                self._event(db, run_id, "job.superseded",
+                            {"candidate_digest": job["candidate"].get("candidate_digest"),
+                             "current_candidate_digest": candidate_digest, "previous_state": job["state"]},
+                            job["job_id"])
+                superseded.append(job)
+        return superseded
 
     @staticmethod
     def _owned(db: sqlite3.Connection, lease: Any, *, now: float | None = None) -> dict | None:
@@ -455,19 +590,22 @@ class Store:
                        {"attempt": job["attempt"], "resume_at": int(resume_at), "reason": reason}, job_id)
             return True
 
-    def unpause_due_jobs(self, now_epoch: float | None = None) -> list[dict]:
+    def unpause_due_jobs(self, now_epoch: float | None = None, *, run_id: str | None = None) -> list[dict]:
         """Move 'paused' rows whose ``resume_at`` has passed back to 'queued'.
 
         The attempt number is left untouched. Idempotent: a row this call
         already requeued no longer matches the ``state='paused'`` filter, so
         calling it repeatedly (as ordinary polling does) requeues each due
-        job exactly once.
+        job exactly once. ``run_id`` scopes the sweep to one delivery:
+        dispatching a run must not resume another run's parked work in the same
+        repository (CORR-L4); the database-wide sweep stays with reconciliation.
         """
         now_epoch = time.time() if now_epoch is None else now_epoch
         requeued: list[dict] = []
         with self._transaction() as db:
             due = [self._row(r) for r in db.execute(
-                "SELECT * FROM jobs WHERE state='paused' AND resume_at IS NOT NULL AND resume_at<=?", (now_epoch,))]
+                "SELECT * FROM jobs WHERE state='paused' AND resume_at IS NOT NULL AND resume_at<=? "
+                "AND (? IS NULL OR run_id=?)", (now_epoch, run_id, run_id))]
             for job in due:
                 db.execute("UPDATE jobs SET state='queued',updated_at=? WHERE job_id=?", (time.time(), job["job_id"]))
                 self._event(db, job["run_id"], "job.unpaused", {"attempt": job["attempt"]}, job["job_id"])
@@ -490,7 +628,7 @@ class Store:
             for job in jobs:
                 alive = process_alive(job["process_id"], job["process_identity"]) if job["process_id"] else None
                 safe = job["kind"] in {"review", "verification"} and alive is not True
-                state = "queued" if safe and job["attempt"] < 3 else "interrupted"
+                state = "queued" if safe and job["attempt"] < self._attempt_ceiling(db, job["run_id"]) else "interrupted"
                 reason = "Expired read-only/coordinator attempt; resume from durable child receipts." if state == "queued" else "Expired attempt may have effects; inspect its artifacts and candidate before retrying."
                 db.execute("UPDATE jobs SET state=?,error=?,lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE job_id=?",
                            (state, reason, now, job["job_id"]))
@@ -552,7 +690,7 @@ class Store:
                 permitted = {"failed", "interrupted", "succeeded"} if _rebuild else {"failed", "interrupted"}
                 if job["state"] not in permitted:
                     raise StoreError("Recovery cohort changed; reload its current attempts automatically.")
-                if job["attempt"] >= 3:
+                if job["attempt"] >= self._attempt_ceiling(db, job["run_id"]):
                     raise StoreError("Retry budget exhausted; diagnose the cause and choose a materially different repair.")
                 if job["kind"] not in {"review", "verification"} and not inspected:
                     raise StoreError("Inspect the interrupted command's effects before retrying.")
@@ -622,7 +760,15 @@ class Store:
                     raise StoreError("Every task must have an implementation claim before completion.")
                 if data.get("unmet_requirements") or not data.get("evidence_ids"):
                     raise StoreError("Incomplete evidence cannot satisfy the final gate.")
-                pending = db.execute("SELECT 1 FROM jobs WHERE run_id=? AND state IN ('queued','running')", (run_id,)).fetchone()
+                # CORR-H2/CORR-H1: a paused job is still pending, and a job bound
+                # to a superseded candidate can never speak for this one - a run
+                # that passed everything must not be stranded by a stale row.
+                pending = [
+                    self._row(row) for row in db.execute(
+                        f"SELECT * FROM jobs WHERE run_id=? AND state IN ({_ACTIVE_PLACEHOLDERS})",
+                        (run_id, *ACTIVE_JOB_STATES))
+                    if self._bound(self._row(row)["candidate"], data)
+                ]
                 if pending:
                     raise StoreError("Pending jobs must finish before completion.")
                 for evidence_id in data["evidence_ids"]:
@@ -638,8 +784,15 @@ class Store:
     def cancel_run(self, run_id: str) -> list[dict]:
         with self._transaction() as db:
             self._row(db.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone(), "run")
-            jobs = [self._row(r) for r in db.execute("SELECT * FROM jobs WHERE run_id=? AND state IN ('queued','running')", (run_id,))]
-            db.execute("UPDATE jobs SET state='cancelled',lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE run_id=? AND state IN ('queued','running')", (time.time(), run_id))
+            # CORR-H2: a paused row left behind by cancellation is not resolved;
+            # ordinary polling would requeue it into a cancelled run.
+            jobs = [self._row(r) for r in db.execute(
+                f"SELECT * FROM jobs WHERE run_id=? AND state IN ({_ACTIVE_PLACEHOLDERS})",
+                (run_id, *ACTIVE_JOB_STATES))]
+            db.execute(
+                "UPDATE jobs SET state='cancelled',lease_token=NULL,lease_expires_at=NULL,resume_at=NULL,updated_at=? "
+                f"WHERE run_id=? AND state IN ({_ACTIVE_PLACEHOLDERS})",
+                (time.time(), run_id, *ACTIVE_JOB_STATES))
             db.execute("UPDATE runs SET state='cancelled',gate=NULL,updated_at=? WHERE run_id=?", (time.time(), run_id))
             self._event(db, run_id, "run.cancelled", {"owned_jobs": [j["job_id"] for j in jobs]})
             return jobs

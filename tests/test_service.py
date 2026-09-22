@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import time
 
@@ -27,9 +29,10 @@ def service(git_repo, tmp_path):
     value.store.close()
 
 
-def start(service, tasks=None):
+def start(service, tasks=None, policy=None):
     return service.start("Deliver example", [{"acceptance_id": "AC-1", "description": "Example works"}],
-                         tasks=tasks or [task()], checks=[{"name": "unit", "argv": ["python", "-V"], "acceptance_ids": ["AC-1"]}])
+                         tasks=tasks or [task()], policy=policy,
+                         checks=[{"name": "unit", "argv": ["python", "-V"], "acceptance_ids": ["AC-1"]}])
 
 
 def test_start_is_idempotent_and_preserves_preexisting_work(service):
@@ -214,10 +217,16 @@ def test_public_report_exposes_actionable_current_findings_and_check_logs(servic
         def termination_confirmed(self, invocation_id):
             return invocation_id in self.finished
 
+        def check_profile_digest(self, candidate, policy):
+            # Derived like the adapter's own, so the gate's re-render agrees.
+            shape = ["diagnostic-check-profile", policy.network_access, policy.approval_policy]
+            return hashlib.sha256(json.dumps(shape, sort_keys=True).encode()).hexdigest()
+
         async def run_command(self, spec, candidate, policy, on_event=None, invocation_id=None):
             self.finished.add(invocation_id)
             return CommandResult(invocation_id=invocation_id, exit_code=1 if failed_check else 0,
                                  argv=list(spec.argv), cwd=str(service.workspace.root),
+                                 sandbox_profile_digest=self.check_profile_digest(candidate, policy),
                                  stderr="Expected subtotal 12, observed 9.\n" if failed_check else "")
 
         async def run_review(self, role, candidate, packet, policy, on_event=None, invocation_id=None):
@@ -339,3 +348,80 @@ def test_wait_returns_without_error_on_timeout_and_rejects_bad_timeouts(service)
         asyncio.run(service.wait(stuck["job_id"], timeout_seconds=61))
     with pytest.raises(ServiceError, match="between 0 and 60"):
         asyncio.run(service.wait(stuck["job_id"], timeout_seconds=-1))
+
+
+def test_task_claims_are_refused_while_a_verification_is_parked(service):
+    """CORR-H2: a paused verification is still active work.
+
+    Demonstrated live: with a coordinator parked on a usage window, task claims
+    could still be mutated, which rewrites the plan, the checks digest and so the
+    candidate that the resumed attempt would publish evidence against - exactly
+    what this guard exists to prevent.
+    """
+    run_id = start(service)["run"]["run_id"]
+    service.task_update(run_id, "one", "implementing")
+    candidate = service._candidate(service.store.get_run(run_id))
+    coordinator = service.store.enqueue_job(run_id, "verification", candidate, idempotency_key="parked")
+    lease = service.store.claim_job(coordinator["job_id"], "executor")
+    service.store.set_run_state(run_id, "verifying", reason="Dispatched observed verification.")
+    assert service.store.pause_job(coordinator["job_id"], lease.attempt, lease.lease_token,
+                                   int(time.time()) + 18_000, "usage window closed")
+    with pytest.raises(ServiceError, match="Verification is running"):
+        service.task_update(run_id, "one", "verifying", "claimed while the window was closed")
+    assert service.store.list_tasks(run_id)[0]["state"] == "implementing"
+
+
+def test_a_stale_pause_does_not_freeze_the_current_candidate(service):
+    """CORR-H3: `wait` on an abandoned attempt outranked ready work for hours."""
+    run_id = start(service)["run"]["run_id"]
+    for state in ("implementing", "verifying"):
+        service.task_update(run_id, "one", state)
+    candidate = service._candidate(service.store.get_run(run_id))
+    coordinator = service.store.enqueue_job(run_id, "verification", candidate, idempotency_key="abandoned")
+    lease = service.store.claim_job(coordinator["job_id"], "executor")
+    assert service.store.pause_job(coordinator["job_id"], lease.attempt, lease.lease_token,
+                                   int(time.time()) + 18_000, "usage window closed")
+    assert service.status(run_id)["next_action"]["action"] == "wait"
+    (service.workspace.root / "README.md").write_text("The manager repaired the source instead of waiting.\n")
+    instruction = service.status(run_id)["next_action"]
+    assert instruction["action"] == "verify", instruction
+    assert service.store.get_job(coordinator["job_id"])["state"] == "cancelled"
+
+    # The instruction itself is candidate-scoped, not merely rescued by the
+    # disposal that runs first: a row still parked on an abandoned candidate
+    # answers nothing, whatever order the two mechanisms run in.
+    run = service.store.get_run(run_id)
+    parked = dict(service.store.get_job(coordinator["job_id"]), state="paused")
+    direct = service._next(run, service.store.list_tasks(run_id), [parked], service._candidate(run))
+    assert direct["action"] != "wait", direct
+
+
+def test_policy_cannot_weaken_the_witnesses_or_outbid_the_retry_budget(service):
+    """CORR-M4 and CORR-M2: the schema must not advertise what code refuses.
+
+    `Policy` arrives from the model through the MCP start tool, so an unconstrained
+    reviewer route let a manager send all three Witnesses to a model recorded as
+    unable to produce structured output, and `max_attempts` advertised 1-5 while
+    the kernel silently clamped anything above 3.
+    """
+    with pytest.raises(ValidationError, match="haiku"):
+        start(service, policy={"review_routes": {"reviewer": {"model": "haiku"}}})
+    with pytest.raises(ValidationError, match="haiku"):
+        start(service, policy={"review_model": "claude-haiku-4-5-20251001"})
+    with pytest.raises(ValidationError, match="less than or equal to 3"):
+        start(service, policy={"max_attempts": 5})
+    assert service.store.list_runs() == []
+    accepted = start(service, policy={"max_attempts": 2,
+                                      "review_routes": {"reviewer": {"model": "opus", "effort": "max"}}})
+    assert accepted["run"]["spec"]["policy"]["max_attempts"] == 2
+
+
+def test_waiting_on_a_job_is_bound_to_this_worktree(service):
+    """CORR-L1..L4: `verification_status` binds a job id; `wait` did not."""
+    run_id = start(service)["run"]["run_id"]
+    candidate = service._candidate(service.store.get_run(run_id))
+    service.store.create_run({"worktree_id": "another-tree", "run_id": "other-run", "goal": "Elsewhere"})
+    foreign = service.store.enqueue_job("other-run", "verification", candidate, idempotency_key="foreign")
+    with pytest.raises(ServiceError, match="another worktree"):
+        asyncio.run(service.wait(foreign["job_id"], timeout_seconds=0.1))
+    assert service.store.get_job(foreign["job_id"])["state"] == "queued"

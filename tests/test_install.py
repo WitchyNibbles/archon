@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -38,11 +40,13 @@ SETTINGS_FIXTURE = """{
 
 
 @pytest.fixture
-def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_init: Callable[[Path], None]) -> Path:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     root = tmp_path / "repo with spaces"
     root.mkdir()
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    # Through the shared fixture: a bare `git init` would inherit the developer's
+    # global templates, hooks and init.defaultBranch into every installation test.
+    git_init(root)
     return root
 
 
@@ -107,8 +111,13 @@ def test_generated_runtime_paths_never_grant_host_permissions(repo: Path) -> Non
     document = settings(repo)
     server = mcp(repo)["mcpServers"][result["server"]]
 
-    assert server["command"] == sys.executable
-    assert server["args"] == ["-I", "-m", "archon", "--repo", str(repo), "mcp"]
+    # The MCP entry is neutralized exactly as the hook command is: an `env` block can
+    # only add variables, so PYTHONPATH and PYTHONHOME are unset in the vector itself.
+    assert server["command"] == install.ENV_BIN
+    assert server["args"] == [
+        "-u", "PYTHONPATH", "-u", "PYTHONHOME", "PYTHONNOUSERSITE=1", "PYTHONSAFEPATH=1",
+        sys.executable, "-I", "-m", "archon", "--repo", str(repo), "mcp",
+    ]
     assert server["env"] == {"PYTHONNOUSERSITE": "1"}
     assert document["permissions"] == {"allow": ["mcp__archon__*"]}
     assert set(document) == {"permissions", "hooks"}
@@ -121,7 +130,7 @@ def test_generated_runtime_paths_never_grant_host_permissions(repo: Path) -> Non
         assert handler["timeout"] == 5 and handler["type"] == "command"
         assert shlex.split(handler["command"]) == [
             "/usr/bin/env", "-u", "PYTHONPATH", "-u", "PYTHONHOME", "PYTHONNOUSERSITE=1",
-            sys.executable, "-I", "-m", "archon", "--repo", str(repo), "hook",
+            "PYTHONSAFEPATH=1", sys.executable, "-I", "-m", "archon", "--repo", str(repo), "hook",
         ]
 
 
@@ -543,13 +552,17 @@ def test_doctor_warns_but_never_fails_on_an_untested_engine_version(
 ) -> None:
     install.init(repo)
     monkeypatch.setattr(install, "_engine_version", lambda: "99.0.0")
+    # A PATH the developer's own shell shaped would add masked-entry warnings here.
+    monkeypatch.setenv("PATH", "/usr/bin")
     report = install.doctor(repo)
 
     assert report["ok"] and not report["problems"]
     assert len(report["warnings"]) == 1
     assert "scripts/spikes/run_all.py" in report["warnings"][0]
     assert report["engine"]["claude"] == "99.0.0"
-    assert report["engine"]["tested_range"] == list(install._tested_versions())
+    # Comparing to the deriving code alone would also pass on an empty range, which
+    # is the defect that made this warning unreachable from an installed wheel.
+    assert report["engine"]["tested_range"] == list(install._tested_versions()) != []
 
 
 def test_doctor_reports_what_it_cannot_observe_and_never_the_account_email(
@@ -591,3 +604,186 @@ def test_doctor_on_an_uninstalled_repository_reports_it_plainly(repo: Path, engi
 
     assert report["installed"] is False and not report["ok"]
     assert report["problems"] == ["Archon native integration is not installed"]
+
+
+def test_doctor_reports_a_missing_claude_cli_as_a_problem(
+    repo: Path, engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deleting this problem from doctor left the whole suite green; it no longer does.
+
+    An installed overlay with no engine on PATH cannot run a session or a reviewer,
+    and that is the first thing a person runs `doctor` to be told.
+    """
+    install.init(repo)
+    monkeypatch.setattr(install, "_tool", lambda name: None if name == "claude" else f"/usr/bin/{name}")
+    monkeypatch.setattr(install, "_engine_version", lambda: None)
+    report = install.doctor(repo)
+
+    assert not report["ok"]
+    assert [p for p in report["problems"] if "Claude Code CLI is not on PATH" in p]
+    assert report["engine"]["claude"] is None
+    assert report["installed"] is True
+
+
+def test_the_tested_engine_range_is_derived_from_evidence_and_is_never_empty() -> None:
+    """AC-22 is unreachable with an empty range: the warning could never fire."""
+    versions = install._tested_versions()
+    recorded = {
+        record.get("engine_version")
+        for record in (json.loads(p.read_text(encoding="utf-8")) for p in install.EVIDENCE.glob("*.json"))
+    }
+
+    assert install.EVIDENCE.is_dir()
+    assert versions, "no engine version on record: doctor could never warn on drift"
+    assert set(versions) == {v for v in recorded if isinstance(v, str) and re.match(r"\d+\.\d+", v)}
+    assert list(versions) == sorted(versions, key=install._version_key)
+
+
+def test_the_installer_and_the_adapter_derive_the_same_engine_range() -> None:
+    """A doctor range that disagrees with the adapter's is worse than none."""
+    from archon import claude_adapter
+
+    versions = install._tested_versions()
+
+    assert claude_adapter._evidence_directory() == install.EVIDENCE
+    assert claude_adapter.tested_engine_range() == [versions[0], versions[-1]] != []
+
+
+def test_doctor_reports_the_tested_range_it_actually_derived(repo: Path, engine: None) -> None:
+    install.init(repo)
+    report = install.doctor(repo)
+
+    assert report["engine"]["tested_range"], "doctor reported no tested range at all"
+    assert report["engine"]["tested_range"] == list(install._tested_versions())
+    assert report["ok"], report["problems"]
+
+
+def test_a_manifest_cannot_relocate_private_state_against_the_flag(repo: Path, tmp_path: Path) -> None:
+    """The manifest lives in the repository, so it may confirm a location, never choose one."""
+    chosen = tmp_path / "chosen state"
+    install.init(repo, state_home=chosen)
+    path = repo / install.MANIFEST
+    manifest = json.loads(path.read_text())
+    elsewhere = tmp_path / "elsewhere state"
+    manifest["state_home"] = str(elsewhere)
+    # The repository can compute the rendering the validator checks, so validity is no
+    # protection here: only refusing to take the value from the manifest is.
+    manifest["hooks"] = install._hook_groups(manifest["executable"], repo, str(elsewhere))
+    path.write_text(json.dumps(manifest))
+    before = snapshot(repo)
+
+    with pytest.raises(install.InstallError, match="private state location"):
+        install.init(repo, state_home=chosen)
+    assert snapshot(repo) == before
+    assert not elsewhere.exists()
+
+
+def test_an_adopted_state_home_is_named_in_init_and_in_doctor(
+    repo: Path, tmp_path: Path, engine: None,
+) -> None:
+    chosen = tmp_path / "chosen state"
+    created = install.init(repo, state_home=chosen)
+
+    assert created["state_home"] == str(chosen)
+    assert created["state_home_source"] == "flag"
+
+    adopted = install.init(repo)
+    assert not adopted["changed"]
+    assert adopted["state_home"] == str(chosen)
+    assert adopted["state_home_source"] == "manifest"
+    assert [note for note in adopted["notes"] if str(chosen) in note and install.MANIFEST in note]
+
+    report = install.doctor(repo)
+    assert report["state_home"] == str(chosen)
+    assert report["state_home_source"] == "manifest"
+
+
+def test_the_default_state_home_is_reported_without_a_manifest_or_a_flag(
+    repo: Path, tmp_path: Path, engine: None,
+) -> None:
+    created = install.init(repo)
+
+    assert created["state_home"] == str(tmp_path / "state" / "archon")
+    assert created["state_home_source"] == "default"
+    assert install.doctor(repo)["state_home_source"] == "default"
+
+
+def test_a_repository_cannot_keep_the_manifest_world_readable(repo: Path) -> None:
+    install.init(repo)
+    manifest = repo / install.MANIFEST
+    manifest.chmod(0o644)
+
+    install.init(repo)  # same bytes, so only the mode is left to restore
+    assert manifest.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_private_write_never_inherits_a_pre_created_mode(repo: Path) -> None:
+    (repo / ".archon").mkdir()
+    seeded = repo / install.MANIFEST
+    seeded.write_text("seeded by the repository")
+    seeded.chmod(0o644)
+
+    install._write(repo, install.MANIFEST, "owned by the installer", private=True)
+    assert seeded.stat().st_mode & 0o777 == 0o600
+    assert seeded.read_text() == "owned by the installer"
+
+
+def test_the_mcp_vector_ignores_repository_python_even_without_isolated_mode(
+    repo: Path, tmp_path: Path,
+) -> None:
+    """A custom executable loses `-I`; only the env neutralization is left to hold."""
+    injected = tmp_path / "injected"
+    injected.mkdir()
+    marker = tmp_path / "mcp-imported-untrusted-code"
+    source = f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+    (injected / "archon.py").write_text(source)
+    (repo / "archon.py").write_text(source)
+    install.init(repo, executable=[sys.executable, "-m", "archon"])
+    server = mcp(repo)["mcpServers"]["archon"]
+    environment = dict(os.environ, PYTHONPATH=str(injected), PYTHONHOME=str(injected))
+
+    assert "-I" not in server["args"]
+    result = subprocess.run([server["command"], *server["args"], "--help"], cwd=repo,
+                            env=environment, input="", text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+
+
+def test_doctor_warns_when_a_path_entry_hides_inside_a_masked_root(
+    repo: Path, engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A masked PATH entry makes an installed tool read as missing, and never blocks.
+
+    The check profile masks /run and $XDG_RUNTIME_DIR because host sockets survive
+    --unshare-net; fnm publishes node and npm there, so `npm ci` inside confinement
+    fails with ENOENT while `which npm` on the host succeeds.
+    """
+    from archon import sandbox
+
+    install.init(repo)
+    shims = f"{sandbox.default_runtime_dir()}/fnm_multishells/177618/bin"
+    monkeypatch.setenv("PATH", os.pathsep.join([shims, "/usr/bin", "/usr/local/bin"]))
+    report = install.doctor(repo)
+
+    assert report["ok"] and not report["problems"], "masking is correct; only the confusion is not"
+    assert report["engine"]["masked_path_entries"] == [shims]
+    masked = [w for w in report["warnings"] if shims in w]
+    assert masked and "No such file or directory" in masked[0]
+    assert "installed" in masked[0]
+
+
+def test_doctor_leaves_an_ordinary_path_alone_and_reads_the_profile_for_the_list(
+    repo: Path, engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archon import sandbox
+
+    install.init(repo)
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/usr/local/bin", str(repo / "bin")]))
+    report = install.doctor(repo)
+
+    assert report["engine"]["masked_path_entries"] == []
+    assert not report["warnings"]
+    # The mask list is the profile's own, not a second copy that can drift from it.
+    assert Path(os.path.realpath(sandbox.default_runtime_dir())) in install._masked_roots()
+    for declared in sandbox.DEFAULT_MASKED:
+        assert Path(os.path.realpath(Path(declared).expanduser())) in install._masked_roots()

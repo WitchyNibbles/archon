@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -51,12 +52,23 @@ def fake_engine(tmp_path: Path, version: str) -> dict[str, str]:
 
 
 @pytest.fixture
-def cli_repo(tmp_path: Path) -> Path:
+def cli_repo(
+    tmp_path: Path, git_init: Callable[[Path], None], git_environment: dict[str, str]
+) -> Path:
+    """A consumer repository the developer's own Git configuration cannot reach.
+
+    A bare ``git init`` here inherited ``~/.gitconfig``: an init template, a global
+    ``core.hooksPath``, ``init.defaultBranch``.  The shared fixtures own that
+    isolation so every repository a test creates is built the same way.
+    """
     repo = tmp_path / "consumer"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c",
-                    "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "baseline"], check=True)
+    git_init(repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", f"core.hooksPath={os.devnull}",
+         "commit", "--allow-empty", "-qm", "baseline"],
+        env=git_environment, check=True, capture_output=True,
+    )
     return repo
 
 
@@ -285,3 +297,45 @@ def test_recover_owns_execution_until_a_fresh_gate(monkeypatch: pytest.MonkeyPat
         ("recover", ("job_demo", 1, "a" * 64, "b" * 64, "No interrupted effects remain.")),
         ("wait", "job_demo"), ("close",),
     ]
+
+
+def test_doctor_reports_a_missing_engine_and_never_raises(
+    cli_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QA-H1: nothing ran doctor with the engine absent, so the path was unasserted.
+
+    Three mutations of it each left the suite green.  This drives the real
+    ``_doctor`` coroutine with an empty PATH, which is the only host state that
+    reproduces an uninstalled Claude Code without touching the user's own.
+    """
+    from archon.cli import _doctor
+
+    empty = tmp_path / "no-tools"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    report = asyncio.run(_doctor(cli_repo))
+
+    assert report["ok"] is False
+    assert report["runtime"]["engine_version"] is None
+    assert report["runtime"]["available"] is False
+    assert "not found on PATH" in report["runtime"]["warning"]
+    assert any("Claude Code CLI" in problem for problem in report["problems"]), report["problems"]
+
+
+def test_doctor_sees_the_engine_when_it_is_on_path(
+    cli_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive control: the absence above is the engine, not the empty PATH."""
+    from archon.cli import _doctor
+
+    environment = fake_engine(tmp_path, "2.1.278")
+    monkeypatch.setenv("PATH", environment["PATH"])
+    monkeypatch.setenv("FAKE_CLAUDE_VERSION", environment["FAKE_CLAUDE_VERSION"])
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    report = asyncio.run(_doctor(cli_repo))
+
+    assert report["runtime"]["engine_version"] == "2.1.278"
+    assert not any("Claude Code CLI" in problem for problem in report["problems"])
