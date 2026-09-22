@@ -8,7 +8,7 @@
 
 <p>Autonomous engineering for your existing Claude Code session.</p>
 
-<p><strong>Status: design and implementation plan, 2026-09-22.</strong> Nothing here runs yet. The plan is written for agents to build from; the acceptance gates say when it may be called real.</p>
+<p><strong>Status: the kernel is built and its deterministic suite is green, 2026-09-22.</strong> Checks, gate, installer, adapter, CLI and MCP surface all run. What has <em>not</em> happened yet is the paid proof: the live verification smoke and the native manager run are written and opt-in, and no recorded pass exists. Until they do, nothing here claims to have delivered real work.</p>
 
 [The grimoire](docs/design.md) · [The plan](docs/implementation-plan.md) · [The spike book](docs/spikes.md) · [Field notes](docs/operations.md) · [Platform research](docs/research/2026-09-22-claude-code-platform.md)
 
@@ -40,13 +40,15 @@ A worker saying "done" cannot mark a run verified. A reviewer approving the wron
 - The Claude Code CLI (tested at **2.1.278**), logged in with your subscription.
 - A consuming Git repository with an initial commit.
 
-Planned installation, once P5 lands:
+Installation:
 
 ```sh
 uv tool install --python 3.12 .
 archon --repo /absolute/path/to/your-project init
 archon --repo /absolute/path/to/your-project doctor
 ```
+
+`doctor` reports bubblewrap, socat, kernel PID handles, the installed overlay, and whether your engine version is inside the range the [spike book](docs/spikes.md) was last proven against. An untested version is a **warning** naming `archon spikes` as the remedy — it never blocks your repository.
 
 `init` adds a marked block to `CLAUDE.md`, one manager skill, three agent files, an `.mcp.json` entry, and two managed members of `.claude/settings.json`. It never touches your model, your permission mode, or anything under `~/.claude`. `uninstall` removes only what it owns.
 
@@ -58,6 +60,15 @@ Keep talking to Claude Code as usual:
 
 Or invoke `/archon-manager` explicitly. Pick up an interrupted thread with **"Resume the Archon run."**
 
+Administration lives in one command; `archon --help` lists all of it, and [the field notes](docs/operations.md) explain each one.
+
+```sh
+archon --repo PATH status            # run, tasks, jobs, and the one next action
+archon --repo PATH verify            # real checks and the three Witnesses; waits for the gate
+archon --repo PATH wait JOB          # observe a job, including one parked on a usage window
+archon --repo PATH spikes --id S5    # re-prove a platform fact against your installed engine
+```
+
 ## 🔮 Inside the grimoire
 
 - [Design](docs/design.md) — architecture, roles, trust, dissent.
@@ -67,6 +78,9 @@ Or invoke `/archon-manager` explicitly. Pick up an interrupted thread with **"Re
 - [Operations](docs/operations.md) — paths, commands, recovery, execution boundaries.
 - [Platform research](docs/research/2026-09-22-claude-code-platform.md) — LIVE / DOCS / INHERITED evidence behind every design choice.
 - [The two haunted houses](docs/research/2026-09-22-original-projects.md) — what was taken from devgod-recovery and the old Archon, and what was left.
+- [Verification record](docs/verification.md) — what has actually been observed, and what is still unproven.
+
+Three opt-in scripts carry the proofs a test suite cannot: `scripts/package_smoke.py` (free — wheel, install, idempotent `init`, `doctor`, `uninstall`), `scripts/live_smoke.py --allow-live` (real checks and three real Witnesses), and `scripts/native_smoke.py --allow-live` (one real manager turn delivering two dependent tasks). Each writes a JSON report with a `PASS` / `FAIL` / `UNRESOLVED` verdict and spends nothing unless it says so.
 
 ## 📜 License
 

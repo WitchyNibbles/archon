@@ -5,24 +5,49 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from archon.cli import _criteria, _dispatch, _parser, _read_json
+from archon.cli import _criteria, _dispatch, _human, _parser, _read_json
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "claude"
+# doctor reports local prerequisites; its exit code legitimately depends on them.
+PREREQUISITES = pytest.mark.skipif(
+    not (shutil.which("bwrap") and shutil.which("socat")),
+    reason="doctor reports bubblewrap and socat as missing prerequisites without them",
+)
 
 
-def cli(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def cli(repo: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    environment.update(env or {})
     return subprocess.run(
         [sys.executable, "-m", "archon", "--repo", str(repo),
          "--state-home", str(repo.parent / "state"), "--json", *args],
-        env=environment, capture_output=True, text=True, timeout=20, check=False,
+        env=environment, capture_output=True, text=True, timeout=60, check=False,
     )
+
+
+def fake_engine(tmp_path: Path, version: str) -> dict[str, str]:
+    """Put the recorded fake ``claude`` on PATH: a version string, never a model call."""
+    directory = tmp_path / f"engine-{version}"
+    directory.mkdir(exist_ok=True)
+    shim = directory / "claude"
+    shim.write_text(
+        "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " "
+        + shlex.quote(str(FIXTURES / "fake_claude.py")) + ' "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return {"PATH": f"{directory}{os.pathsep}{os.environ['PATH']}", "FAKE_CLAUDE_VERSION": version}
 
 
 @pytest.fixture
@@ -97,20 +122,102 @@ def test_invalid_repo_reports_actionable_json(tmp_path: Path) -> None:
     assert error["message"]
 
 
-def test_install_doctor_and_removal_through_cli(cli_repo: Path) -> None:
-    instructions = cli_repo / "AGENTS.md"
+@PREREQUISITES
+def test_install_doctor_and_removal_through_cli(cli_repo: Path, tmp_path: Path) -> None:
+    """Claude Code has no Codex ``command/exec``: checks are kernel-run argv under bwrap.
+
+    So the runtime block reports observed local confinement and supervision
+    capability, and says in words that it never made an authenticated call.
+    """
+    instructions = cli_repo / "CLAUDE.md"
     instructions.write_text("Project instructions remain here.\n")
     installed = cli(cli_repo, "init")
     assert installed.returncode == 0, installed.stdout + installed.stderr
     assert json.loads(installed.stdout)["installed"] is True
-    checked = cli(cli_repo, "doctor")
+    engine = fake_engine(tmp_path, "2.1.278")
+    checked = cli(cli_repo, "doctor", env=engine)
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    runtime = json.loads(checked.stdout)["runtime"]
-    assert runtime["command_protocol"] == "command/exec"
+    report = json.loads(checked.stdout)
+    runtime = report["runtime"]
+    assert runtime["engine_version"] == "2.1.278"
+    assert runtime["engine_version_tested"] is True
+    assert runtime["bwrap"]["available"] is True, runtime["bwrap"]
+    assert runtime["pidfd"] is True
+    assert runtime["crash_recovery"] == "linux-subreaper-receipt"
+    assert runtime["structured_reviews"] is True
+    # doctor spends nothing, so it must never imply an authenticated engine.
     assert runtime["live_authenticated"] is None
+    assert "no live authenticated invocation and no spend" in runtime["measurement"]
+    assert report["hook_trust"] == "not_observable"
     removed = cli(cli_repo, "uninstall")
     assert removed.returncode == 0, removed.stdout + removed.stderr
-    assert instructions.read_text() == "Project instructions remain here.\n"
+    assert instructions.read_text().strip().endswith("Project instructions remain here.")
+    assert "BEGIN ARCHON NATIVE" not in instructions.read_text()
+
+
+@PREREQUISITES
+def test_doctor_warns_and_exits_zero_on_an_untested_engine(cli_repo: Path, tmp_path: Path) -> None:
+    """AC-22: version drift names the spike runner and never blocks the repository."""
+    assert cli(cli_repo, "init").returncode == 0
+    drifted = cli(cli_repo, "doctor", env=fake_engine(tmp_path, "99.1.0"))
+    assert drifted.returncode == 0, drifted.stdout + drifted.stderr
+    report = json.loads(drifted.stdout)
+    assert report["ok"] is True and report["problems"] == []
+    assert any("99.1.0" in warning and "run_all.py" in warning for warning in report["warnings"]), report
+    assert report["runtime"]["engine_version_tested"] is False
+    assert "spike" in report["runtime"]["warning"].lower()
+
+
+def test_spikes_subcommand_passes_the_book_its_arguments_and_never_authorizes_spend(
+    cli_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``archon spikes`` is the documented remedy doctor names; live spend stays opt-in."""
+    from archon import cli as module
+
+    observed: dict[str, Any] = {}
+
+    def record(argv, **kwargs):
+        observed.update(argv=argv, kwargs=kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="report", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", record)
+    args = module._parser().parse_args(["spikes", "--id", "S5", "S7", "--budget-usd", "0.5"])
+    report, code = module._spikes(args)
+    assert code == 0 and report["allow_live"] is False
+    assert observed["argv"][1].endswith("scripts/spikes/run_all.py")
+    assert observed["argv"][2:] == ["--id", "S5", "S7", "--budget-usd", "0.5"]
+    assert "--allow-live" not in observed["argv"]
+    authorized = module._parser().parse_args(["spikes", "--allow-live"])
+    report, _ = module._spikes(authorized)
+    assert report["allow_live"] is True and "--allow-live" in observed["argv"]
+
+
+def test_wait_reports_a_paused_usage_window_as_unfinished_not_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed provider window is a pause: the CLI reports wait and never a failure."""
+    resume_at = 1_800_000_000
+
+    async def wait(job_id, timeout_seconds=30):
+        assert timeout_seconds == 0
+        return {"job_id": job_id, "run_id": "run_demo", "state": "paused",
+                "next_action": {"action": "wait", "run_id": "run_demo", "task_id": None,
+                                "reason": "A verification job is paused for a provider usage window.",
+                                "inputs": {"job_id": job_id, "resume_at": resume_at}}}
+
+    async def close():
+        return None
+
+    runtime = SimpleNamespace(service=SimpleNamespace(wait=wait), runner=None, close=close)
+    monkeypatch.setattr("archon.mcp_server.open_runtime", lambda *args: runtime)
+    args = _parser().parse_args(["wait", "job_demo", "--timeout", "0"])
+    result, code = asyncio.run(_dispatch(args))
+    assert result["state"] == "paused"
+    assert result["next_action"]["action"] == "wait"
+    assert code == 3, "A parked job is unfinished work, not a failed gate"
+    rendered = _human(result)
+    assert "job job_demo" in rendered and str(resume_at) in rendered
+    assert "2027-01-15" in rendered, rendered
 
 
 def test_mcp_startup_error_never_uses_transport_stdout(tmp_path: Path) -> None:

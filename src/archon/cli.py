@@ -1,7 +1,9 @@
 """Administrative command line and local MCP entry point.
 
-Normal engineering work stays in Codex. These commands expose the same kernel
-operations for setup, inspection and automated diagnostics.
+Normal engineering work stays in the Claude Code conversation. These commands
+expose the same kernel operations for setup, inspection, capability probing and
+automated diagnostics. Every subcommand here is documented in
+``docs/operations.md``; nothing documented there is missing from this parser.
 """
 
 from __future__ import annotations
@@ -9,31 +11,47 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import subprocess
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 MAX_INPUT_BYTES = 1_048_576
+MAX_CAPTURED_OUTPUT = 65_536
+SPIKE_RUNNER = ("scripts", "spikes", "run_all.py")
+# A job that is still queued, running, or parked on a provider usage window has
+# not failed; it simply has no result yet.
+UNFINISHED_EXIT = 3
+FAILED_JOB_STATES = frozenset({"failed", "cancelled", "interrupted"})
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="archon", description=__doc__)
-    parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Consuming Git worktree")
-    parser.add_argument("--state-home", type=Path, help="Private state location (default: XDG_STATE_HOME)")
-    parser.add_argument("--json", action="store_true", help="Print structured JSON")
-    commands = parser.add_subparsers(dest="command", required=True)
-    init = commands.add_parser("init", help="Install repository-local native Codex integration")
-    init.add_argument("--migrate", action="store_true", help="Migrate recognized legacy Archon integration")
+def _setup_commands(commands: argparse._SubParsersAction) -> None:
+    """Installation, host entry points, and the capability spike book."""
+    init = commands.add_parser("init", help="Install the repository-local Claude Code integration")
+    init.add_argument("--migrate", action="store_true", help="Migrate recognized legacy Archon or DevGod integration")
+    init.add_argument("--fable", action="store_true", help="Let the Oracle agent use fable; otherwise it pins opus/max")
+    init.add_argument("--gitignore", action="store_true", help="Create .gitignore when absent to exclude private state")
     commands.add_parser("doctor", help="Inspect installation and local runtime capabilities")
     commands.add_parser("uninstall", help="Remove only Archon-owned repository integration")
     commands.add_parser("mcp", help="Run the local stdio MCP server")
-    commands.add_parser("hook", help="Handle one native Codex lifecycle event from stdin")
+    commands.add_parser("hook", help="Handle one native Claude Code lifecycle event from stdin")
 
+    spikes = commands.add_parser("spikes", help="Run the capability spike book and record its evidence")
+    spikes.add_argument("--id", nargs="+", metavar="ID", help="Run only these spike ids (default: the whole book)")
+    spikes.add_argument("--allow-live", action="store_true",
+                        help="Authorize live engine calls that spend real money; without it live spikes self-report UNRESOLVED")
+    spikes.add_argument("--budget-usd", type=float, help="Total live-spend ceiling for this run")
+
+
+def _work_commands(commands: argparse._SubParsersAction) -> None:
+    """Recording an accepted plan and the progress claimed against it."""
     start = commands.add_parser("start", help="Start an accepted goal on a local delivery branch")
     start.add_argument("--goal", required=True)
     start.add_argument("--acceptance", action="append", required=True, metavar="ID:DESCRIPTION")
     start.add_argument("--branch", help="Delivery branch name; automatically generated when omitted")
+    start.add_argument("--tasks", type=Path, help="JSON array of accepted task specifications")
     start.add_argument("--checks", type=Path, help="JSON array of accepted check specifications")
     start.add_argument("--decisions", type=Path, help="JSON object of accepted design decisions")
 
@@ -75,6 +93,9 @@ def _parser() -> argparse.ArgumentParser:
     show = checkpoint_commands.add_parser("show")
     show.add_argument("--run", dest="run_id")
 
+
+def _execution_commands(commands: argparse._SubParsersAction) -> None:
+    """The commands that own a job's outcome."""
     verify = commands.add_parser("verify", help="Execute checks and independent reviews; wait for the result")
     verify.add_argument("run_id", nargs="?")
     recover = commands.add_parser("recover", help="Record inspection of interrupted effects and safely rerun verification")
@@ -86,6 +107,17 @@ def _parser() -> argparse.ArgumentParser:
     wait = commands.add_parser("wait", help="Wait for a job owned by a running MCP service")
     wait.add_argument("job_id")
     wait.add_argument("--timeout", type=float, default=30.0, help="Maximum wait in seconds (0–60)")
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="archon", description=__doc__)
+    parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Consuming Git worktree")
+    parser.add_argument("--state-home", type=Path, help="Private state location (default: XDG_STATE_HOME)")
+    parser.add_argument("--json", action="store_true", help="Print structured JSON")
+    commands = parser.add_subparsers(dest="command", required=True)
+    _setup_commands(commands)
+    _work_commands(commands)
+    _execution_commands(commands)
     return parser
 
 
@@ -107,6 +139,24 @@ def _criteria(values: list[str]) -> list[dict[str, str]]:
     return result
 
 
+def _action_line(action: dict[str, Any]) -> str:
+    """Render the deterministic next action the way a person has to act on it."""
+    inputs = action.get("inputs") or {}
+    job_id = inputs.get("job_id") or (inputs.get("job_ids") or [None])[0]
+    parts = [f"next_action: {action.get('action', 'unknown')}"]
+    if action.get("task_id"):
+        parts.append(f"task {action['task_id']}")
+    if job_id:
+        parts.append(f"job {job_id}")
+    resume_at = inputs.get("resume_at")
+    if isinstance(resume_at, (int, float)) and not isinstance(resume_at, bool):
+        moment = datetime.fromtimestamp(float(resume_at), UTC).isoformat(timespec="seconds")
+        parts.append(f"resumes at {moment} (epoch {int(resume_at)})")
+    line = " · ".join(parts)
+    reason = action.get("reason")
+    return f"{line}\n  {reason}" if reason else line
+
+
 def _human(value: Any) -> str:
     """Keep inspectable structured detail without leaking protocol chatter."""
     if isinstance(value, dict):
@@ -117,7 +167,9 @@ def _human(value: Any) -> str:
             return str(error)
         lines = []
         for key, item in value.items():
-            if isinstance(item, (dict, list)):
+            if key == "next_action" and isinstance(item, dict) and item.get("action"):
+                lines.append(_action_line(item))
+            elif isinstance(item, (dict, list)):
                 lines.append(f"{key}: {json.dumps(item, ensure_ascii=False, sort_keys=True)}")
             elif item is not None:
                 lines.append(f"{key}: {item}")
@@ -132,8 +184,77 @@ def _print(value: Any, *, as_json: bool, error: bool = False) -> None:
           file=sys.stderr if error and not as_json else sys.stdout)
 
 
+def _record(service: Any, args: argparse.Namespace) -> Any:
+    """Task scopes, implementation claims, and continuation context.
+
+    None of these can grant verification: an update may claim readiness, never a
+    verified state, and a checkpoint stores the manager's own words verbatim.
+    """
+    from .mcp_server import selected_run
+    from .models import TaskSpec
+
+    run_id = selected_run(service, args.run_id)
+    if args.command == "checkpoint":
+        if args.checkpoint_command != "save":
+            return {"run_id": run_id, "checkpoint": service.status(run_id)["run"].get("checkpoint")}
+        return service.checkpoint(run_id, {
+            "summary": args.summary,
+            "decisions": _read_json(args.decisions) if args.decisions else {},
+            "next_actions": args.next_action,
+        })
+    if args.task_command == "add":
+        spec = TaskSpec(task_id=args.task_id, title=args.title, owner_role=args.role,
+                        acceptance=args.acceptance, depends_on=args.depends_on,
+                        allowed_paths=args.path)
+        return service.plan(run_id, [spec])
+    if args.task_command == "list":
+        return {"run_id": run_id, "tasks": service.status(run_id)["tasks"]}
+    if args.complete and args.state:
+        raise ValueError("Use either --complete or --state for a task update")
+    if not args.complete and not args.state:
+        raise ValueError("Task update requires --state or --complete")
+    return service.task_update(run_id, args.task_id,
+                               "verifying" if args.complete else args.state, summary=args.summary)
+
+
+def _job_state(result: Any) -> str | None:
+    job = result.get("job", result) if isinstance(result, dict) else {}
+    state = job.get("state", job.get("status"))
+    return str(state) if state is not None else None
+
+
+async def _execute(runtime: Any, args: argparse.Namespace) -> tuple[Any, int]:
+    """The three commands that own a job's outcome rather than just recording one."""
+    from .mcp_server import jsonable, wait_for_job
+
+    service = runtime.service
+    if args.command == "wait":
+        result = await wait_for_job(service, args.job_id, args.timeout)
+        state = _job_state(result)
+        if state == "succeeded":
+            return result, 0
+        return result, 1 if state in FAILED_JOB_STATES else UNFINISHED_EXIT
+    if args.command == "recover":
+        started = jsonable(await service.recover(
+            args.job_id, args.attempt, args.candidate_digest, args.checks_digest, args.observations,
+        ))
+    else:
+        started = jsonable(await service.verify(args.run_id))
+    job_id = started.get("job", started)["job_id"]
+    # The CLI has no resident loop after exit, so it owns execution until the job
+    # completes; only MCP can return promptly while keeping its worker alive.
+    await runtime.runner.wait(job_id)
+    result = jsonable(service.verification_status(job_id))
+    state = _job_state(result)
+    if state == "succeeded" and result.get("run", {}).get("state") == "verified":
+        return result, 0
+    # A closed provider usage window parks the job; the manager waits it out and
+    # resumes. That is unfinished work, never a failed gate.
+    return result, UNFINISHED_EXIT if state == "paused" else 1
+
+
 async def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
-    from .mcp_server import jsonable, open_runtime, selected_run, wait_for_job
+    from .mcp_server import jsonable, open_runtime, selected_run
     from .models import AcceptanceCriterion, CheckSpec, TaskSpec
 
     runtime = open_runtime(args.repo, args.state_home)
@@ -144,7 +265,8 @@ async def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
             result = service.start(
                 args.goal,
                 [AcceptanceCriterion.model_validate(item) for item in _criteria(args.acceptance)],
-                checks=[CheckSpec.model_validate(item) for item in _read_json(args.checks)] if args.checks else [],
+                [TaskSpec.model_validate(item) for item in _read_json(args.tasks)] if args.tasks else [],
+                [CheckSpec.model_validate(item) for item in _read_json(args.checks)] if args.checks else [],
                 decisions=_read_json(args.decisions) if args.decisions else {},
                 branch=args.branch,
             )
@@ -162,59 +284,48 @@ async def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
             tasks = [TaskSpec.model_validate(item) for item in _read_json(args.tasks)] if args.tasks else []
             checks = [CheckSpec.model_validate(item) for item in _read_json(args.checks)] if args.checks else None
             result = service.plan(selected_run(service, args.run_id), tasks, checks=checks)
-        elif command == "task":
-            run_id = selected_run(service, args.run_id)
-            if args.task_command == "add":
-                spec = TaskSpec(task_id=args.task_id, title=args.title, owner_role=args.role,
-                                acceptance=args.acceptance, depends_on=args.depends_on, allowed_paths=args.path)
-                result = service.plan(run_id, [spec])
-            elif args.task_command == "list":
-                result = {"run_id": run_id, "tasks": service.status(run_id)["tasks"]}
-            else:
-                if args.complete and args.state:
-                    raise ValueError("Use either --complete or --state for a task update")
-                if not args.complete and not args.state:
-                    raise ValueError("Task update requires --state or --complete")
-                result = service.task_update(run_id, args.task_id,
-                                             "verifying" if args.complete else args.state, summary=args.summary)
-        elif command == "checkpoint":
-            run_id = selected_run(service, args.run_id)
-            if args.checkpoint_command == "save":
-                result = service.checkpoint(run_id, {
-                    "summary": args.summary,
-                    "decisions": _read_json(args.decisions) if args.decisions else {},
-                    "next_actions": args.next_action,
-                })
-            else:
-                result = {"run_id": run_id, "checkpoint": service.status(run_id)["run"].get("checkpoint")}
-        elif command in {"verify", "recover"}:
-            if command == "recover":
-                started = jsonable(await service.recover(
-                    args.job_id, args.attempt, args.candidate_digest, args.checks_digest,
-                    args.observations,
-                ))
-            else:
-                started = jsonable(await service.verify(args.run_id))
-            job = started.get("job", started)
-            job_id = job["job_id"]
-            # CLI has no resident loop after exit. Own execution until completion;
-            # only MCP can return promptly while keeping its worker alive.
-            await runtime.runner.wait(job_id)
-            result = jsonable(service.verification_status(job_id))
-            job = result.get("job", result)
-            state = job.get("state", job.get("status"))
-            verified = result.get("run", {}).get("state") == "verified"
-            return result, 0 if state == "succeeded" and verified else 1
-        elif command == "wait":
-            result = await wait_for_job(service, args.job_id, args.timeout)
-            job = result.get("job", result)
-            state = job.get("state", job.get("status"))
-            return result, 0 if state == "succeeded" else (1 if state in {"failed", "cancelled", "interrupted"} else 3)
+        elif command in {"task", "checkpoint"}:
+            result = _record(service, args)
+        elif command in {"verify", "recover", "wait"}:
+            return await _execute(runtime, args)
         else:
             raise ValueError(f"Unsupported command: {command}")
         return jsonable(result), 0
     finally:
         await runtime.close()
+
+
+def _spike_runner() -> Path:
+    """The spike book ships with the source checkout, never inside the wheel."""
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent.joinpath(*SPIKE_RUNNER)
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        "The capability spike book lives in the Archon source checkout, not in the installed "
+        "distribution. Clone the repository and run `uv run python scripts/spikes/run_all.py`."
+    )
+
+
+def _spikes(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    """Shell out to the spike book; live spend stays opt-in for every run."""
+    runner = _spike_runner()
+    argv = [sys.executable, str(runner)]
+    if args.id:
+        argv.extend(["--id", *args.id])
+    if args.allow_live:
+        argv.append("--allow-live")
+    if args.budget_usd is not None:
+        argv.extend(["--budget-usd", str(args.budget_usd)])
+    completed = subprocess.run(argv, cwd=runner.parents[2], text=True,
+                               capture_output=args.json, check=False)
+    report: dict[str, Any] = {"command": argv, "returncode": completed.returncode,
+                              "allow_live": bool(args.allow_live),
+                              "evidence": str(runner.parents[2] / "docs" / "evidence")}
+    if args.json:
+        report["stdout"] = (completed.stdout or "")[-MAX_CAPTURED_OUTPUT:]
+        report["stderr"] = (completed.stderr or "")[-MAX_CAPTURED_OUTPUT:]
+    return report, completed.returncode
 
 
 async def _doctor(repo: Path) -> dict[str, Any]:
@@ -249,11 +360,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.state_home is not None:
                 hook_args.extend(["--state-home", str(args.state_home)])
             return hook_main(hook_args)
+        if args.command == "spikes":
+            result, code = _spikes(args)
+            _print(result, as_json=args.json)
+            return code
         if args.command in {"init", "doctor", "uninstall"}:
             from . import install
 
             if args.command == "init":
-                result = install.init(args.repo, migrate=args.migrate, state_home=args.state_home)
+                result = install.init(args.repo, migrate=args.migrate, state_home=args.state_home,
+                                      fable=args.fable, gitignore=args.gitignore)
             elif args.command == "doctor":
                 result = asyncio.run(_doctor(args.repo))
             else:

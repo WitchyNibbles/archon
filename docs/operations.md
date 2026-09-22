@@ -54,7 +54,7 @@ Reviewer sessions run `claude -p` with a kernel-issued session ID, no settings s
 
 `verify` returns a job ID and continues in the service's event loop between tool calls; the CLI `verify` waits because there is no resident loop after exit. Duplicate requests reuse the existing job.
 
-**Usage windows.** If the subscription's five-hour or seven-day window closes mid-verification, the affected job pauses with the reset time, `status` reports `next_action: wait`, and the manager calls `wait` until it reopens. No attempt is consumed; evidence gathered before the pause is reused. A weekly window can be days; closing the session is safe, and `resume` after reopening continues from the paused job.
+**Usage windows.** If the subscription's five-hour or seven-day window closes mid-verification, the affected job pauses with the reset time, `status` reports `next_action: wait` naming the job and the reset instant, and the manager calls `wait` until it reopens. The MCP `wait` tool and `archon wait JOB` are the same kernel call: a bounded observation that cancels nothing, unpauses a job whose window has reopened, and returns the job state with the next action. No attempt is consumed; evidence gathered before the pause is reused. A weekly window can be days; closing the session is safe, and `resume` after reopening continues from the paused job.
 
 Interruption preserves state. Leases and attempt tokens reject late results. Each kernel-launched process runs under a child-subreaper supervisor that writes a termination receipt only after every descendant is reaped; a check passes only with that receipt. After a service crash, recovery reconciles recorded supervisors and requires inspection of completed effects before a replay. Hooks restore recorded checkpoints and request bounded continuation; they fail open and never lock the repository.
 
@@ -81,6 +81,24 @@ Options `--repo`, `--state-home`, `--json` precede the subcommand; every command
 | `recover JOB --attempt N --candidate-digest HASH --checks-digest HASH --observations TEXT` | Record manager inspection and retry a stopped attempt. |
 | `cancel [RUN]` | Cancel owned jobs, preserving work and history. |
 | `mcp`, `hook` | Generated native host entry points. |
-| `spikes [--id S1…]` | Run the capability spike book and record evidence. |
+| `spikes [--id S1…] [--allow-live] [--budget-usd N]` | Run the capability spike book against the installed engine and record its evidence. |
+
+`init` accepts `--fable` (the Oracle may use fable; otherwise it pins `opus`/`max`), `--gitignore` (create `.gitignore` when absent) and `--migrate`. `start` accepts `--tasks FILE` and `--checks FILE`, each a JSON array of the corresponding specification.
+
+Exit status: `0` the operation succeeded, `1` it failed or the gate is not satisfied, `2` the request was malformed, `3` the job has no result yet — still queued, running, or parked on a usage window — and `130` interrupted. A pause is `3`, never `1`: nothing failed.
+
+`spikes` shells out to `scripts/spikes/run_all.py`, which lives in the source checkout rather than the installed wheel, and passes its arguments straight through. Without `--allow-live` every spike that needs a model call self-reports `UNRESOLVED` and spends nothing; `--budget-usd` caps cumulative live spend and a spike that would exceed the remaining headroom is recorded `UNRESOLVED` instead of being run.
 
 Errors explain the failing operation and the next recovery action. Diagnostic output never replaces MCP protocol messages on stdout. `doctor` reports installed capabilities without claiming a live authenticated invocation.
+
+## Proving it for real
+
+The deterministic suite (`bash scripts/check.sh`) is the blocking gate for code, but it cannot prove a distribution installs, a reviewer session is hermetic, or a manager delivers. Three opt-in scripts carry those, each writing a JSON report whose verdict is exactly `PASS`, `FAIL`, or `UNRESOLVED`, and each exiting `0`, `1`, or `3` to match. `UNRESOLVED` is the honest answer when the script could not be run — no engine, no authorization, a missing host prerequisite — and it never becomes a pass.
+
+| Script | Spends | What a pass establishes |
+|---|---|---|
+| `scripts/package_smoke.py [--online]` | nothing | The wheel carries every consumer asset and the plugin manifest; a clean environment imports the installed package and not the checkout; `init` twice is byte-identical; `doctor` reports a clean install with a tested engine range derived from the packaged evidence; `uninstall` hands back the repository's own bytes. The engine on `PATH` is the recorded fake, so no model runs. |
+| `scripts/live_smoke.py --allow-live` | model quota | A real failing check drives the run to `repair`; after repair a real check and three real Witnesses with three distinct `session_id`s and structured output reach `verified`; one later edit flips it back to `repair`; a planted egress attempt under the check profile is denied. |
+| `scripts/native_smoke.py --allow-live` | model quota | One headless manager turn delivers two dependent tasks to a kernel-`verified` branch, dispatching Familiar and Warden subagents, with zero permission prompts, the five terminal headings in order, and the user's own `~/.claude` settings and credentials byte-identical afterwards. |
+
+`native_smoke.py` copies the 0600 credential file into a private 0700 `CLAUDE_CONFIG_DIR` and purges it afterwards: an isolated configuration directory without that file is simply not authenticated (`docs/evidence/2026-09-22-spike-S12.json`). Recorded denial shapes for the check profile live in `docs/evidence/2026-09-22-confinement.json`; the smoke records what it observes rather than asserting a retyped error string.

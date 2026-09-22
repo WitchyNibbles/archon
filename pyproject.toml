@@ -30,9 +30,19 @@ dev = ["pytest>=8,<10", "ruff>=0.12,<1", "mypy>=1.15,<2", "pyyaml>=6,<7", "types
 [tool.hatch.build.targets.wheel]
 packages = ["src/archon"]
 
+# The tested engine range is derived from recorded spike evidence, never typed by
+# hand, so an installed Archon needs that evidence beside the adapter. Without it
+# `doctor` has no range to compare against and can never warn on version drift
+# (AC-22). 72 KiB of JSON; the source tree keeps the originals under docs/.
+[tool.hatch.build.targets.wheel.force-include]
+"docs/evidence" = "archon/docs/evidence"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Default `test*` also collects imported helpers such as `tested_engine_range`,
+# which then "pass" while asserting nothing. Only `test_` prefixed functions.
+python_functions = ["test_*"]
 markers = [
   "live: requires an authenticated local Claude Code runtime",
   "sandbox: requires bubblewrap on the host",
@@ -47,7 +57,11 @@ select = ["E4", "E7", "E9", "F", "I", "UP"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src/archon"]
+# The smoke scripts drive the kernel directly, so they are held to the same bar
+# as the package. mypy_path makes them resolve the source tree rather than an
+# installed copy of it.
+files = ["src/archon", "scripts/live_smoke.py", "scripts/native_smoke.py", "scripts/package_smoke.py"]
+mypy_path = ["src"]
 check_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true

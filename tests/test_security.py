@@ -6,6 +6,7 @@ import asyncio
 import os
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -91,17 +92,30 @@ def test_authorized_repository_subdirectories_still_resolve(git_repo, tmp_path):
     assert workspace.root == git_repo
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Supervision uses Linux PID handles")
 def test_runtime_receipt_stays_outside_ambient_repo_tmpdir(git_repo, tmp_path, monkeypatch):
+    """A check writes inside the worktree, so its receipt must live out of reach.
+
+    The repository under verification is made the ambient temporary directory by
+    every channel a child could influence: ``TMPDIR`` and the interpreter's own
+    cached ``tempfile.tempdir``. The adapter must still place the supervisor
+    control directory under its private state root.
+    """
     from archon.claude_adapter import ClaudeAdapter
 
+    private_state = tmp_path / "private-state"
     monkeypatch.setenv("TMPDIR", str(git_repo))
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "private-state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(private_state))
     monkeypatch.setattr(tempfile, "tempdir", str(git_repo))
-    adapter = ClaudeAdapter(client_factory=lambda *_args, **_kwargs: object())
-    job = adapter._new_invocation("private-control", "command", git_repo)
-    assert not Path(job.receipt_path).resolve().is_relative_to(git_repo), (
+    adapter = ClaudeAdapter()
+    job = adapter._new_invocation("invocation-receipt", "check", git_repo, repo_root=git_repo)
+    receipt = Path(job.receipt_path).resolve()
+    assert not receipt.is_relative_to(git_repo.resolve()), (
         "A check can forge its supervisor receipt inside its writable repository"
     )
+    assert receipt.is_relative_to(private_state.resolve()), receipt
+    control = Path(job.control_dir)
+    assert stat.S_IMODE(control.parent.stat().st_mode) == 0o700, "Receipt state is not uid-private"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux process recovery boundary")

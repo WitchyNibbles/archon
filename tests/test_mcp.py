@@ -96,9 +96,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from archon.mcp_server import create_server
 
+TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted'}
+
+# Stands in for the kernel: only job lifetime and wait plumbing are under test.
 class SyntheticService:
     def __init__(self):
         self.job = {'job_id': 'job_demo', 'state': 'queued'}
+        self.paused = {'job_id': 'job_parked', 'state': 'paused', 'resume_at': 1800000000}
         self.task = None
     async def verify(self, run_id=None):
         async def work():
@@ -107,8 +111,20 @@ class SyntheticService:
             self.job['state'] = 'succeeded'
         self.task = asyncio.create_task(work())
         return dict(self.job)
+    def _record(self, job_id):
+        return self.paused if job_id == 'job_parked' else self.job
     def verification_status(self, job_id):
-        return dict(self.job)
+        return dict(self._record(job_id))
+    async def wait(self, job_id, timeout_seconds=30):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        record = self._record(job_id)
+        while record['state'] not in TERMINAL and loop.time() < deadline:
+            await asyncio.sleep(0.05)
+        action = 'wait' if record['state'] == 'paused' else 'report'
+        return {'job_id': job_id, 'run_id': 'run_demo', 'state': record['state'],
+                'next_action': {'action': action, 'inputs': {k: v for k, v in record.items()
+                                                             if k in ('job_id', 'resume_at')}}}
     def status(self, run_id=None):
         return {'alive': True}
 
@@ -140,5 +156,13 @@ create_server('.', runtime_factory=lambda *args: SyntheticRuntime()).run()
                 assert status["alive"]
                 completed = _data(await client.call_tool("wait", {"job_id": "job_demo", "timeout_seconds": 2}))
                 assert completed["state"] == "succeeded"
+                # A job parked on a provider usage window is not terminal: the tool
+                # returns the pause and the deterministic action, never an error.
+                parked = _data(await client.call_tool("wait", {"job_id": "job_parked", "timeout_seconds": 0}))
+                assert parked["state"] == "paused"
+                assert parked["next_action"]["action"] == "wait"
+                assert parked["next_action"]["inputs"]["resume_at"] == 1800000000
+                rejected = await client.call_tool("wait", {"job_id": "job_demo", "timeout_seconds": 61})
+                assert rejected.is_error
     asyncio.run(exercise())
     assert marker.read_text() == "closed"

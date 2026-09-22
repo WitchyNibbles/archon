@@ -27,7 +27,31 @@ from pathlib import Path
 from typing import Any
 
 ASSETS = Path(__file__).parent / "assets"
-EVIDENCE = Path(__file__).resolve().parents[2] / "docs" / "evidence"
+
+
+def _evidence_directory() -> Path:
+    """Locate recorded spike evidence from a checkout *or* an installed wheel.
+
+    This was a fixed ``parents[2]`` offset, which is correct in the source
+    tree and silently wrong once installed: from
+    ``site-packages/archon/install.py`` it resolves to ``<prefix>/docs/evidence``,
+    which does not exist. `doctor` therefore derived an empty tested range and
+    could never warn on engine drift (AC-22) for the distributed artifact —
+    a guard that reported nothing rather than reporting a problem.
+
+    The wheel force-includes the evidence at ``archon/docs/evidence``, so a
+    parent walk finds it in both layouts. This matches
+    ``claude_adapter._evidence_directory``; the two must agree, because a
+    `doctor` range that disagrees with the adapter's is worse than none.
+    """
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "docs" / "evidence"
+        if candidate.is_dir():
+            return candidate
+    return Path(__file__).parent / "docs" / "evidence"
+
+
+EVIDENCE = _evidence_directory()
 
 MANIFEST = ".archon/native-install.json"
 INSTRUCTIONS = "CLAUDE.md"

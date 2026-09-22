@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import json
 import logging
@@ -28,7 +27,6 @@ from .models import (
 )
 
 _LOG = logging.getLogger(__name__)
-_TERMINAL_JOBS = {"succeeded", "failed", "interrupted", "cancelled"}
 
 
 def jsonable(value: Any) -> Any:
@@ -109,17 +107,17 @@ def selected_run(service: Any, run_id: str | None) -> str:
 
 
 async def wait_for_job(service: Any, job_id: str, timeout_seconds: float = 30) -> dict[str, Any]:
-    """A bounded observation only: timeout does not cancel the owned execution."""
+    """A bounded observation only: a timeout cancels nothing and fails nothing.
+
+    The kernel owns every wait semantic, including unpausing a job whose provider
+    usage window reopened while this call was polling. The interface validates the
+    request and forwards it, so the CLI and the MCP tool cannot drift apart.
+    """
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
+        raise ValueError("Wait timeout must be a number of seconds between 0 and 60")
     if not 0 <= timeout_seconds <= 60:
         raise ValueError("Wait timeout must be between 0 and 60 seconds")
-    deadline = asyncio.get_running_loop().time() + timeout_seconds
-    while True:
-        result = jsonable(service.verification_status(job_id))
-        job = result.get("job", result)
-        remaining = deadline - asyncio.get_running_loop().time()
-        if job.get("state", job.get("status")) in _TERMINAL_JOBS or remaining <= 0:
-            return result
-        await asyncio.sleep(min(0.2, remaining))
+    return jsonable(await service.wait(job_id, timeout_seconds))
 
 
 def create_server(
@@ -144,7 +142,7 @@ def create_server(
     server = MCPServer(
         "Archon",
         instructions=(
-            "Manage accepted engineering work in the existing Codex conversation. "
+            "Manage accepted engineering work in the existing Claude Code conversation. "
             "Internal bookkeeping is automatic. Use native specialists for implementation, "
             "then verify to dispatch sandboxed checks and independent review. Only a current "
             "kernel verified result establishes the review-ready local delivery branch."
@@ -249,7 +247,11 @@ def create_server(
         job_id: Identifier,
         timeout_seconds: Annotated[float, Field(ge=0, le=60)] = 30,
     ) -> dict[str, Any]:
-        """Wait at most 60 seconds for a job; timeout leaves the verification running."""
+        """Wait at most 60 seconds for a job, including one paused on a usage window.
+
+        A timeout leaves the verification running and is never an error; the reply
+        carries the job state and the deterministic next action to take.
+        """
         return await wait_for_job(runtime().service, job_id, timeout_seconds)
 
     @tool()
