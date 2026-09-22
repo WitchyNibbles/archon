@@ -102,7 +102,6 @@ def run(ctx: common.SpikeContext) -> common.EvidenceRecord:
     ctx.record_spend(cost)
 
     res_ev = common.result_event(result)
-    hook_events = common.find_events(result, "system")
 
     log_entries = []
     if log_path.exists():

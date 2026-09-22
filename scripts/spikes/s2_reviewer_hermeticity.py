@@ -8,17 +8,66 @@ the task requires >= 1 ``Read``.
 PASS means: ``init.mcp_servers == []``, ``init.skills == 0``, no marker
 files were created, the nonce is absent from output, and >= 1 executed
 ``Read`` tool call was observed (executed-call guard).
+
+Correction from the first run of this book (2026-09-22, engine 2.1.278).
+The probe pointed ``CLAUDE_CONFIG_DIR`` at an empty fixture directory to
+isolate the user tier. An empty config directory has no credentials, so
+the engine answered ``Not logged in - Please run /login`` with
+``error: authentication_failed``, ``total_cost_usd: 0`` and one turn: no
+model turn ever happened and the executed-call guard correctly withheld a
+verdict. This is a platform fact the kernel depends on, recorded in
+``docs/research/2026-09-22-claude-code-platform.md`` §9: **relocating
+``CLAUDE_CONFIG_DIR`` de-authenticates the session** unless the credential
+file is carried across, because subscription credentials live inside that
+directory. Suppression of the user tier itself comes from
+``--setting-sources ''``, not from moving the directory.
+
+``claude_adapter`` carries a 0600 copy into its 0700 control directory and
+purges it. This probe instead symlinks the live ``.credentials.json``, so
+the token is never duplicated onto disk and is never read by this script;
+only the engine follows the link. The fixture directory still holds the
+planted user-tier hook, so a fired marker would still prove a leak.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 
 from . import common
 
 SPIKE_ID = "S2"
+CREDENTIALS_FILE = ".credentials.json"
+
+
+def _real_config_dir() -> Path:
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    if override:
+        return Path(override)
+    return Path.home() / ".claude"
+
+
+def _link_credentials(fixture_dir: Path) -> dict[str, object]:
+    """Symlink the live credential file into the fixture config directory.
+
+    Returns what was observed, so the evidence record can say plainly
+    whether the run was authenticated and how.
+    """
+    source = _real_config_dir() / CREDENTIALS_FILE
+    if not source.exists():
+        return {"credentials_linked": False, "credentials_source_present": False}
+    link = fixture_dir / CREDENTIALS_FILE
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(source)
+    return {
+        "credentials_linked": True,
+        "credentials_source_present": True,
+        "credentials_link_target": str(source),
+        "credentials_copied": False,
+    }
 
 REVIEWER_FLAGS = [
     "--setting-sources",
@@ -114,6 +163,18 @@ def run(ctx: common.SpikeContext) -> common.EvidenceRecord:
 
     nonce = f"S2-NONCE-{uuid.uuid4().hex[:12]}"
     repo, user_config_dir, project_marker, user_marker = _build_fixture(ctx, nonce)
+    user_config_dir.chmod(0o700)
+    auth = _link_credentials(user_config_dir)
+    if not auth["credentials_linked"]:
+        return common.unresolved(
+            SPIKE_ID,
+            ctx,
+            "no credential file at the live config directory, so a relocated "
+            "CLAUDE_CONFIG_DIR would de-authenticate the probe and no model turn "
+            "would happen (this host may use keychain or API-key auth)",
+            literal_form="claude -p '<task>' --setting-sources '' --strict-mcp-config --tools Read",
+            **auth,
+        )
 
     args = [
         "-p",
@@ -154,19 +215,30 @@ def run(ctx: common.SpikeContext) -> common.EvidenceRecord:
     executed_read = len(reads) >= 1
     if not executed_read:
         # Executed-call guard: zero tool calls means UNRESOLVED, never PASS,
-        # regardless of how clean the isolation looks.
+        # regardless of how clean the isolation looks. An authentication
+        # failure lands here too, and is named explicitly because it is what
+        # the first run hit.
+        auth_failed = "authentication_failed" in result.stdout or "Not logged in" in result.stdout
+        reason = (
+            "the engine never authenticated (`Not logged in`), so no model turn happened; "
+            "check that the credential link into the fixture config directory survived"
+            if auth_failed
+            else "executed-call guard: no Read tool_use observed in the assistant stream "
+            "(model may have refused or answered without reading)"
+        )
         return common.unresolved(
             SPIKE_ID,
             ctx,
-            "executed-call guard: no Read tool_use observed in the assistant stream "
-            "(model may have refused or answered without reading)",
+            reason,
             literal_form="claude -p '<task>' --setting-sources '' --strict-mcp-config --tools Read",
             init_mcp_servers=init.get("mcp_servers"),
             init_skills=init.get("skills"),
             project_marker_fired=project_marker_fired,
             user_marker_fired=user_marker_fired,
             nonce_leaked=nonce_leaked,
+            authentication_failed=auth_failed,
             cost_usd=cost,
+            **auth,
         )
 
     mcp_servers = init.get("mcp_servers", [])
@@ -191,6 +263,7 @@ def run(ctx: common.SpikeContext) -> common.EvidenceRecord:
         "executed_read_tool_calls": len(reads),
         "result_subtype": res_ev.get("subtype") if res_ev else None,
         "result_is_error": res_ev.get("is_error") if res_ev else None,
+        **auth,
     }
 
     return common.EvidenceRecord(

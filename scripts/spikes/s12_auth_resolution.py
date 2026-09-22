@@ -20,7 +20,6 @@ redaction precedent in docs/evidence/2026-09-22-live-probes.json
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import stat
