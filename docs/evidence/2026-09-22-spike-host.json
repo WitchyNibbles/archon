@@ -1,14 +1,14 @@
 {
   "id": "host",
   "date": "2026-09-22",
-  "engine_version": "2.1.278",
+  "engine_version": "2.1.280",
   "verdict": "PASS",
-  "literal_form": "claude --version ; bwrap --version ; socat -V ; /proc/sys/kernel/unprivileged_userns_clone or aa-enabled ; archon.launcher.pidfd_supported() ; claude -p '<spawn worktree-prober subagent>' (isolation: worktree agent, base-branch check)",
+  "literal_form": "claude --version ; bwrap --version ; socat -V ; /proc/sys/kernel/unprivileged_userns_clone or aa-enabled ; archon.launcher.pidfd_supported() ; bwrap --json-status-fd N (clean / bind-setup-failure / exec-failure arms) ; claude -p '<spawn worktree-prober subagent>' (isolation: worktree agent, base-branch check)",
   "observations": {
     "claude_version": {
       "ok": true,
       "returncode": 0,
-      "output": "2.1.278 (Claude Code)"
+      "output": "2.1.280 (Claude Code)"
     },
     "bwrap_version": {
       "ok": true,
@@ -33,19 +33,74 @@
       "functional": true,
       "source": "archon.launcher.pidfd_supported (pidfd_open + pidfd_send_signal(0))"
     },
+    "bwrap_json_status_fd": {
+      "available": true,
+      "clean_run_child_exit_3_forging_the_prefix": {
+        "returncode": 3,
+        "documents": [
+          {
+            "child-pid": 931843,
+            "cgroup-namespace": 4026532233,
+            "ipc-namespace": 4026532231,
+            "mnt-namespace": 4026532229,
+            "net-namespace": 4026532234,
+            "pid-namespace": 4026532232,
+            "uts-namespace": 4026532230
+          },
+          {
+            "exit-code": 3
+          }
+        ],
+        "exit_code_reported": 3,
+        "stderr_tail": "bwrap: forged diagnostic"
+      },
+      "bind_setup_failure": {
+        "returncode": 1,
+        "documents": [
+          {
+            "child-pid": 931846,
+            "cgroup-namespace": 4026532300,
+            "ipc-namespace": 4026532298,
+            "mnt-namespace": 4026532230,
+            "net-namespace": 4026532301,
+            "pid-namespace": 4026532299,
+            "uts-namespace": 4026532233
+          }
+        ],
+        "exit_code_reported": null,
+        "stderr_tail": "bwrap: Can't find source path /nonexistent-archon-probe: No such file or directory"
+      },
+      "exec_failure": {
+        "returncode": 1,
+        "documents": [
+          {
+            "child-pid": 931848,
+            "cgroup-namespace": 4026532363,
+            "ipc-namespace": 4026532361,
+            "mnt-namespace": 4026532233,
+            "net-namespace": 4026532364,
+            "pid-namespace": 4026532362,
+            "uts-namespace": 4026532300
+          }
+        ],
+        "exit_code_reported": null,
+        "stderr_tail": "bwrap: execvp /nonexistent/archon-check: No such file or directory"
+      },
+      "discriminator_holds": true
+    },
     "isolation_worktree_base_branch_probe": {
       "skipped": false,
-      "cost_usd": 0.08356255,
+      "cost_usd": 0.08393690000000001,
       "repo_current_branch_at_spawn_time": "feature-branch",
       "main_branch_name": "master",
-      "main_branch_log": "04fcb87 main: initial commit",
-      "feature_branch_log": "0f1266e feature: distinguishing commit",
-      "subagent_tool_calls_observed": 2,
-      "manager_result_text": "The worktree-prober agent is running in the background. I'll report back with the LOG and BRANCH lines once it completes.",
+      "main_branch_log": "7be1208 main: initial commit",
+      "feature_branch_log": "e521a54 feature: distinguishing commit",
+      "subagent_tool_calls_observed": 1,
+      "manager_result_text": "Here are the exact LOG and BRANCH lines from the worktree-prober:\n\n**LOG:** e521a54 feature: distinguishing commit\n\n**BRANCH:** worktree-agent-a17541df0a5fc9f62",
       "manager_result_subtype": "success",
       "worktree_appears_based_on_main_not_head": false,
-      "worktree_appears_based_on_feature_head": false
+      "worktree_appears_based_on_feature_head": true
     }
   },
-  "cost_usd": 0.083563
+  "cost_usd": 0.083937
 }

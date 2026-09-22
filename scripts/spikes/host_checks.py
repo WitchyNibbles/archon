@@ -9,6 +9,7 @@ H3) via a subagent that prints ``git log -1`` in its worktree.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -99,6 +100,74 @@ def _pidfd_open_probe() -> dict:
     return probe
 
 
+def _status_fd_probe() -> dict:
+    """Record how ``bwrap --json-status-fd`` separates a confinement fault.
+
+    The adapter used to decide "runtime fault, not a check outcome" by testing
+    whether the first stderr line began ``bwrap:``. The child's stderr and
+    bwrap's own are the same stream and the exit code does not separate them,
+    so a failing test suite that printed that prefix had its own failure
+    reclassified — the repository deciding how its evidence is filed, which is
+    what the iron rule exists to prevent.
+
+    The status pipe is the discriminator, and this records the fact rather
+    than leaving it to a unit test: bwrap emits an ``exit-code`` document
+    **only** when the sandbox was established and the child actually ran. No
+    ``exit-code`` means the fault was confinement's, whatever stderr says.
+
+    Free, local, and no model call.
+    """
+    if not shutil.which("bwrap"):
+        return {"available": False, "reason": "bwrap not on PATH"}
+
+    def arm(argv: list[str]) -> dict:
+        read_fd, write_fd = os.pipe()
+        try:
+            proc = subprocess.run(
+                ["bwrap", "--json-status-fd", str(write_fd), *argv],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                pass_fds=(write_fd,),
+            )
+            os.close(write_fd)
+            write_fd = -1
+            with os.fdopen(read_fd, encoding="utf-8") as stream:
+                documents = [json.loads(line) for line in stream if line.strip()]
+            read_fd = -1
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            for fd in (read_fd, write_fd):
+                if fd >= 0:
+                    os.close(fd)
+        return {
+            "returncode": proc.returncode,
+            "documents": documents,
+            "exit_code_reported": next(
+                (d["exit-code"] for d in documents if "exit-code" in d), None
+            ),
+            "stderr_tail": proc.stderr.strip()[-200:],
+        }
+
+    base = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-all"]
+    clean = arm([*base, "--", "/bin/sh", "-c", "echo 'bwrap: forged diagnostic' >&2; exit 3"])
+    setup = arm([*base, "--bind", "/nonexistent-archon-probe", "/mnt", "--", "/bin/true"])
+    execfail = arm([*base, "--", "/nonexistent/archon-check"])
+
+    return {
+        "available": True,
+        "clean_run_child_exit_3_forging_the_prefix": clean,
+        "bind_setup_failure": setup,
+        "exec_failure": execfail,
+        "discriminator_holds": (
+            clean.get("exit_code_reported") == 3
+            and setup.get("exit_code_reported") is None
+            and execfail.get("exit_code_reported") is None
+        ),
+    }
+
+
 def _worktree_base_branch_probe(ctx: common.SpikeContext) -> dict:
     if not ctx.allow_live:
         return {"skipped": True, "reason": "not authorized: --allow-live not passed"}
@@ -175,6 +244,7 @@ def run(ctx: common.SpikeContext) -> common.EvidenceRecord:
     socat_version = _run_version(["socat", "-V"])
     sandbox_signals = _sandbox_signals()
     pidfd = _pidfd_open_probe()
+    status_fd = _status_fd_probe()
     worktree = _worktree_base_branch_probe(ctx)
 
     observations = {
@@ -183,11 +253,16 @@ def run(ctx: common.SpikeContext) -> common.EvidenceRecord:
         "socat_version": socat_version,
         "sandbox_kernel_signals": sandbox_signals,
         "pidfd_open": pidfd,
+        "bwrap_json_status_fd": status_fd,
         "isolation_worktree_base_branch_probe": worktree,
     }
 
     core_tools_present = claude_version["ok"] and bwrap_version["ok"] and socat_version["ok"]
-    verdict = "PASS" if core_tools_present else "FAIL"
+    # The status-pipe discriminator is load-bearing: without it a check that
+    # prints `bwrap:` on stderr has its own failure recorded as a confinement
+    # fault, letting the repository classify its own evidence.
+    discriminator_ok = status_fd.get("available") is False or bool(status_fd.get("discriminator_holds"))
+    verdict = "PASS" if (core_tools_present and discriminator_ok) else "FAIL"
     if worktree.get("skipped"):
         # Core one-liners can still PASS/FAIL on their own; the worktree
         # probe being skipped for lack of authorization doesn't invalidate
@@ -204,6 +279,7 @@ def run(ctx: common.SpikeContext) -> common.EvidenceRecord:
         literal_form=(
             "claude --version ; bwrap --version ; socat -V ; "
             "/proc/sys/kernel/unprivileged_userns_clone or aa-enabled ; archon.launcher.pidfd_supported() ; "
+            "bwrap --json-status-fd N (clean / bind-setup-failure / exec-failure arms) ; "
             "claude -p '<spawn worktree-prober subagent>' (isolation: worktree agent, base-branch check)"
         ),
         observations=observations,

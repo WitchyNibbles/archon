@@ -1,7 +1,7 @@
 {
   "id": "preflight",
   "date": "2026-09-22",
-  "engine_version": "2.1.278",
+  "engine_version": "2.1.280",
   "verdict": "PASS",
   "literal_form": "claude auth status  (+ one trivial authenticated call when --allow-live)",
   "observations": {
@@ -12,7 +12,7 @@
     "auth_status_subscription_type": "max",
     "trivial_call_result_subtype": "success",
     "trivial_call_is_error": false,
-    "trivial_call_cost_usd": 0.0311016
+    "trivial_call_cost_usd": 0.030800599999999997
   },
-  "cost_usd": 0.031102
+  "cost_usd": 0.030801
 }

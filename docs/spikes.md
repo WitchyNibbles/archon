@@ -24,6 +24,28 @@ Twelve probes that must run against the installed engine before any P3/P4 code m
 | **S11** | Plugin manifest surface and `enabledPlugins` | `claude plugin validate` on the packaged manifest; `claude plugin install --plugin-dir`; inspect `~/.claude/settings.json` `enabledPlugins` in a temp `CLAUDE_CONFIG_DIR`. | Manifest accepted with `skills`, `agents`, `hooks`, `mcpServers`; plugin hooks fire in a consuming repo; format recorded. | P5 packaging |
 | **S12** | Auth resolution for kernel-launched sessions | Reviewer flag set with the user's config dir (no `CLAUDE_CONFIG_DIR`) and with an isolated `CLAUDE_CONFIG_DIR` containing only a copied `.credentials.json` (0600). | Record which works; `--bare` recorded as refusing OAuth. Default adapter path is the one that PASSes with the fewest copied secrets — **the isolated directory**. Note that an isolated directory *without* the credential file does not merely fail to isolate, it de-authenticates the session. | P3 launcher |
 
+### Host capability recorded alongside the book
+
+**`bwrap --json-status-fd`** — how a confinement fault is told apart from a failed
+check. The adapter originally decided this by testing whether the first stderr line
+began `bwrap:`, but the child's stderr and bubblewrap's own are the same stream and the
+exit code does not separate them, so a check that printed that prefix had its own
+failure filed as a runtime fault. That is the repository classifying its own evidence,
+which is exactly what the first iron rule exists to prevent.
+
+Measured locally at bubblewrap 0.9.0, free, no model call, recorded in the `host`
+evidence file under `bwrap_json_status_fd`:
+
+| Arm | Status pipe | Recorded as |
+|---|---|---|
+| clean run, child prints `bwrap: forged diagnostic` and exits 3 | `{child-pid}` then `{exit-code: 3}` | failed check, code 3 |
+| bind setup failure | `{child-pid}` only | confinement fault |
+| exec failure | `{child-pid}` only | confinement fault |
+
+**An `exit-code` document is emitted only when the sandbox was established and the child
+actually ran.** Its absence is the discriminator; the `bwrap:` prefix is now quoted as
+diagnosis text and decides nothing. The host arm fails if this stops holding.
+
 Additional one-line checks folded into `run_all.py`: `claude --version` (record), `bwrap --version`, `socat -V`, `/proc/sys/kernel/unprivileged_userns_clone` or AppArmor status, Python `os.pidfd_open` availability, and `isolation: worktree` base-branch behavior (companion H3) via a subagent that prints `git log -1` in its worktree.
 
 Evidence files are committed. The tested range in `capabilities()` is derived from the set of engine versions with a complete PASS/UNRESOLVED book on record, never typed by hand.

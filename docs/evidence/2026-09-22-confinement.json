@@ -19,22 +19,58 @@
       "stdout": ""
     },
     {
-      "arm": "masked home directory read",
+      "arm": "masked read ~/.ssh",
       "as_expected": true,
       "exit_code": 7,
       "expects": "deny",
       "leaked_planted_marker": false,
       "observed": "",
-      "stdout": "2 [Errno 2] No such file or directory: '/tmp/archon-confinement-ybb09ze0/home/.ssh/marker'"
+      "stdout": "2 [Errno 2] No such file or directory: '/var/tmp/archon-confinement-ftd4vvby/home/.ssh/marker'"
     },
     {
-      "arm": "masked home file read",
+      "arm": "masked read ~/.aws",
       "as_expected": true,
       "exit_code": 7,
       "expects": "deny",
       "leaked_planted_marker": false,
       "observed": "",
-      "stdout": "13 [Errno 13] Permission denied: '/tmp/archon-confinement-ybb09ze0/home/.netrc'"
+      "stdout": "2 [Errno 2] No such file or directory: '/var/tmp/archon-confinement-ftd4vvby/home/.aws/marker'"
+    },
+    {
+      "arm": "masked read ~/.gnupg",
+      "as_expected": true,
+      "exit_code": 7,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "2 [Errno 2] No such file or directory: '/var/tmp/archon-confinement-ftd4vvby/home/.gnupg/marker'"
+    },
+    {
+      "arm": "masked read ~/.claude",
+      "as_expected": true,
+      "exit_code": 7,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "2 [Errno 2] No such file or directory: '/var/tmp/archon-confinement-ftd4vvby/home/.claude/marker'"
+    },
+    {
+      "arm": "masked read ~/.config/gh",
+      "as_expected": true,
+      "exit_code": 7,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "2 [Errno 2] No such file or directory: '/var/tmp/archon-confinement-ftd4vvby/home/.config/gh/marker'"
+    },
+    {
+      "arm": "masked read ~/.netrc",
+      "as_expected": true,
+      "exit_code": 7,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "13 [Errno 13] Permission denied: '/var/tmp/archon-confinement-ftd4vvby/home/.netrc'"
     },
     {
       "arm": "private state write",
@@ -43,10 +79,46 @@
       "expects": "deny",
       "leaked_planted_marker": false,
       "observed": "",
-      "stdout": "30 [Errno 30] Read-only file system: '/tmp/archon-confinement-ybb09ze0/state/archon.sqlite3'"
+      "stdout": "30 [Errno 30] Read-only file system: '/var/tmp/archon-confinement-ftd4vvby/state/archon.sqlite3'"
+    },
+    {
+      "arm": "runtime dir marker read",
+      "as_expected": true,
+      "exit_code": 7,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "2 [Errno 2] No such file or directory: '/run/user/1000/archon-capture-772162.marker'"
+    },
+    {
+      "arm": "runtime dir unix socket",
+      "as_expected": true,
+      "exit_code": 7,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "2 [Errno 2] No such file or directory"
     },
     {
       "arm": "unmasked read of same marker (control)",
+      "as_expected": true,
+      "exit_code": 0,
+      "expects": "allow",
+      "leaked_planted_marker": true,
+      "observed": "",
+      "stdout": "archon-planted-marker-value"
+    },
+    {
+      "arm": "unmasked read inside the fake home (control)",
+      "as_expected": true,
+      "exit_code": 0,
+      "expects": "allow",
+      "leaked_planted_marker": true,
+      "observed": "",
+      "stdout": "archon-planted-marker-value"
+    },
+    {
+      "arm": "unix socket inside the worktree (control)",
       "as_expected": true,
       "exit_code": 0,
       "expects": "allow",
@@ -84,10 +156,21 @@
   ],
   "bwrap_version": "bubblewrap 0.9.0",
   "date": "2026-09-22",
-  "denied_arms": 5,
-  "permitted_arms": 4,
+  "declared_masks": [
+    "~/.ssh",
+    "~/.aws",
+    "~/.gnupg",
+    "~/.claude",
+    "~/.config/gh",
+    "~/.netrc",
+    "/run",
+    "/var/run"
+  ],
+  "declared_runtime_dir": "/run/user/1000",
+  "denied_arms": 11,
+  "permitted_arms": 6,
   "planted_marker_leaked_past_a_mask": false,
   "positive_control_read_the_planted_marker": true,
-  "profile_digest": "c9a983b9d8911f2ca5e310c9738012a28898d9b8287f5892609241544484d8c1",
+  "profile_digest": "dfcaaa0d51961de9511842d8234836305a4f59ed5b2552b619b94e2e93c37425",
   "verdict": "PASS"
 }
