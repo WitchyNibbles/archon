@@ -1,0 +1,18 @@
+{
+  "id": "preflight",
+  "date": "2026-09-22",
+  "engine_version": "2.1.278",
+  "verdict": "PASS",
+  "literal_form": "claude auth status  (+ one trivial authenticated call when --allow-live)",
+  "observations": {
+    "purpose": "cites the auth-status shape that scripts/live_smoke.py, scripts/native_smoke.py and install.doctor all gate on",
+    "auth_status_returncode": 0,
+    "auth_status_logged_in": true,
+    "auth_status_method": "claude.ai",
+    "auth_status_subscription_type": "max",
+    "trivial_call_result_subtype": "success",
+    "trivial_call_is_error": false,
+    "trivial_call_cost_usd": 0.0311016
+  },
+  "cost_usd": 0.031102
+}

@@ -3,7 +3,7 @@
   "date": "2026-09-22",
   "engine_version": "2.1.278",
   "verdict": "PASS",
-  "literal_form": "claude --version ; bwrap --version ; socat -V ; /proc/sys/kernel/unprivileged_userns_clone or aa-enabled ; os.pidfd_open(getpid()) ; claude -p '<spawn worktree-prober subagent>' (isolation: worktree agent, base-branch check)",
+  "literal_form": "claude --version ; bwrap --version ; socat -V ; /proc/sys/kernel/unprivileged_userns_clone or aa-enabled ; archon.launcher.pidfd_supported() ; claude -p '<spawn worktree-prober subagent>' (isolation: worktree agent, base-branch check)",
   "observations": {
     "claude_version": {
       "ok": true,
@@ -28,22 +28,24 @@
       }
     },
     "pidfd_open": {
-      "available": false,
-      "reason": "os.pidfd_open not exposed by this Python build"
+      "stdlib_os_pidfd_open_exposed": true,
+      "available": true,
+      "functional": true,
+      "source": "archon.launcher.pidfd_supported (pidfd_open + pidfd_send_signal(0))"
     },
     "isolation_worktree_base_branch_probe": {
       "skipped": false,
-      "cost_usd": 0.0636016,
+      "cost_usd": 0.08356255,
       "repo_current_branch_at_spawn_time": "feature-branch",
       "main_branch_name": "master",
-      "main_branch_log": "c5047f6 main: initial commit",
-      "feature_branch_log": "cb47491 feature: distinguishing commit",
-      "subagent_tool_calls_observed": 0,
-      "manager_result_text": "Here are the exact LOG and BRANCH lines from the worktree:\n\n**LOG:**\n```\ncommit cb474916535e7b4d6b66d0787389d638a056b0e0\nAuthor: archon spike <spike@example.invalid>\nDate:   Tue Sep 22 17:29:14 2026 +0200\n\n    feature: distinguishing commit\n```\n\n**BRANCH:**\n```\nfeature-branch\n```",
+      "main_branch_log": "04fcb87 main: initial commit",
+      "feature_branch_log": "0f1266e feature: distinguishing commit",
+      "subagent_tool_calls_observed": 2,
+      "manager_result_text": "The worktree-prober agent is running in the background. I'll report back with the LOG and BRANCH lines once it completes.",
       "manager_result_subtype": "success",
       "worktree_appears_based_on_main_not_head": false,
-      "worktree_appears_based_on_feature_head": true
+      "worktree_appears_based_on_feature_head": false
     }
   },
-  "cost_usd": 0.063602
+  "cost_usd": 0.083563
 }

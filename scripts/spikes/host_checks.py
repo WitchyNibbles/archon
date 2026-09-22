@@ -2,8 +2,8 @@
 
 Writes ``docs/evidence/<date>-spike-host.json`` with: ``claude --version``,
 ``bwrap --version``, ``socat -V``, AppArmor status /
-``/proc/sys/kernel/unprivileged_userns_clone``, Python ``os.pidfd_open``
-availability, and ``isolation: worktree`` base-branch behavior (companion
+``/proc/sys/kernel/unprivileged_userns_clone``, pidfd availability as the
+launcher itself measures it, and ``isolation: worktree`` base-branch behavior (companion
 H3) via a subagent that prints ``git log -1`` in its worktree.
 """
 
@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 from . import common
 
@@ -64,14 +66,37 @@ def _sandbox_signals() -> dict:
 
 
 def _pidfd_open_probe() -> dict:
-    if not hasattr(os, "pidfd_open"):
-        return {"available": False, "reason": "os.pidfd_open not exposed by this Python build"}
+    """Probe the capability the kernel actually uses, not just the stdlib alias.
+
+    The first run of this book recorded ``available: false`` with the reason
+    "os.pidfd_open not exposed by this Python build" under an overall PASS
+    verdict. Read literally that says managed execution is impossible on the
+    very host that produced a green suite, which is a contradiction a reader
+    applying "UNRESOLVED restricts" would resolve the wrong way.
+
+    The cause is that this probe tested only ``os.pidfd_open`` while
+    ``archon.launcher`` carries a ctypes fallback and its own
+    ``pidfd_supported()`` — which also confirms ``pidfd_send_signal`` works,
+    since an fd you cannot signal through is useless to the supervisor. Both
+    signals are now recorded, and the load-bearing one is the launcher's.
+    """
+    stdlib = hasattr(os, "pidfd_open")
+    probe: dict = {"stdlib_os_pidfd_open_exposed": stdlib}
     try:
-        fd = os.pidfd_open(os.getpid())
-        os.close(fd)
-        return {"available": True, "functional": True}
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+        from archon.launcher import pidfd_supported
     except Exception as exc:  # noqa: BLE001
-        return {"available": True, "functional": False, "error": f"{type(exc).__name__}: {exc}"}
+        probe["available"] = False
+        probe["reason"] = f"archon.launcher could not be imported: {type(exc).__name__}: {exc}"
+        return probe
+
+    supported = pidfd_supported()
+    probe["available"] = supported
+    probe["functional"] = supported
+    probe["source"] = "archon.launcher.pidfd_supported (pidfd_open + pidfd_send_signal(0))"
+    if not supported:
+        probe["reason"] = "the kernel or runtime refused pidfd_open/pidfd_send_signal"
+    return probe
 
 
 def _worktree_base_branch_probe(ctx: common.SpikeContext) -> dict:
@@ -178,7 +203,7 @@ def run(ctx: common.SpikeContext) -> common.EvidenceRecord:
         verdict=verdict,
         literal_form=(
             "claude --version ; bwrap --version ; socat -V ; "
-            "/proc/sys/kernel/unprivileged_userns_clone or aa-enabled ; os.pidfd_open(getpid()) ; "
+            "/proc/sys/kernel/unprivileged_userns_clone or aa-enabled ; archon.launcher.pidfd_supported() ; "
             "claude -p '<spawn worktree-prober subagent>' (isolation: worktree agent, base-branch check)"
         ),
         observations=observations,

@@ -26,6 +26,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -126,10 +127,44 @@ def unresolved(
     )
 
 
-def write_evidence(record: EvidenceRecord) -> Path:
+def _spent_something(payload: dict) -> bool:
+    cost = payload.get("cost_usd")
+    return isinstance(cost, int | float) and cost > 0
+
+
+def write_evidence(record: EvidenceRecord, *, allow_downgrade: bool = True) -> Path:
+    """Write one evidence record, refusing to trade paid observations for free ones.
+
+    Found by making the mistake. Re-running a spike without ``--allow-live``
+    to pick up a code change silently replaced a record that had cost real
+    money — including a live subagent observation — with one whose every live
+    arm read ``"skipped": "not authorized"``. Nothing warned, and the evidence
+    was only recoverable because the run could be paid for a second time.
+
+    Evidence is the most expensive artifact this project produces and the one
+    thing its claims rest on, so a cheaper record never silently overwrites a
+    dearer one. Pass ``allow_downgrade=True`` only when the caller is itself
+    authorized to spend, in which case the new record is the better one.
+    """
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
     path = EVIDENCE_DIR / f"{record.date}-spike-{record.id}.json"
-    path.write_text(json.dumps(record.to_dict(), indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    payload = record.to_dict()
+
+    if not allow_downgrade and path.exists() and not _spent_something(payload):
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            existing = {}
+        if _spent_something(existing):
+            print(
+                f"  ! refusing to overwrite {path.name}: the record on disk cost "
+                f"${existing.get('cost_usd'):.4f} and this run spent nothing. "
+                f"Re-run with --allow-live to replace it.",
+                file=sys.stderr,
+            )
+            return path
+
+    path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
     return path
 
 

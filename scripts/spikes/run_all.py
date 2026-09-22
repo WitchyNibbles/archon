@@ -192,7 +192,7 @@ def run_book(requested_ids: list[str], ctx: common.SpikeContext) -> list[tuple[s
                     },
                 )
         ctx.record_spend(record.cost_usd)
-        path = common.write_evidence(record)
+        path = common.write_evidence(record, allow_downgrade=ctx.allow_live)
         written.append((spike_id, record, path))
     return written
 
@@ -237,6 +237,32 @@ def main(argv: list[str] | None = None) -> int:
             written.append((spike_id, record, common.write_evidence(record)))
         print_report(written, preflight_cost)
         return 1
+
+    # Record the preflight on SUCCESS too, not only on failure.
+    #
+    # `claude auth status` emitting JSON carrying `loggedIn` is a live engine
+    # fact, and three separate places depend on it: both paid smoke scripts
+    # gate their whole run on it, and `install.doctor` reads it. Until now the
+    # observations were written only when preflight failed, so a green book
+    # left the fact uncited — and CLAUDE.md says engine facts come from
+    # observed behaviour, never memory. An unrecorded dependency is exactly
+    # the kind of inherited claim the book exists to eliminate.
+    preflight_record = common.EvidenceRecord(
+        id="preflight",
+        date=date,
+        engine_version=engine_version,
+        verdict="PASS",
+        literal_form="claude auth status  (+ one trivial authenticated call when --allow-live)",
+        observations={
+            "purpose": (
+                "cites the auth-status shape that scripts/live_smoke.py, "
+                "scripts/native_smoke.py and install.doctor all gate on"
+            ),
+            **preflight_obs,
+        },
+        cost_usd=preflight_cost,
+    )
+    common.write_evidence(preflight_record, allow_downgrade=args.allow_live)
 
     ctx = common.SpikeContext(
         date=date,
