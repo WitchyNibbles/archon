@@ -30,7 +30,9 @@ sessions · `verification.py` job orchestration and the gate · `service.py` pub
 overlay · `assets/` what `init` writes.
 
 `docs/` design, plan, spikes, assets spec, operations, research, evidence.
-`scripts/spikes/` capability probes. `tests/` pytest.
+`scripts/spikes/` capability probes · `scripts/capture_confinement_evidence.py` records
+what the check profile really denies · `scripts/*_smoke.py` opt-in live proofs. `tests/`
+pytest.
 
 ## Working here
 
@@ -40,6 +42,10 @@ overlay · `assets/` what `init` writes.
   about Claude Code, add a spike to `docs/spikes.md`, run it, and commit the evidence JSON.
   A fact tiered DOCS or INHERITED in `docs/research/` is a hypothesis until a spike passes
   at the installed version.
+- **A negative result needs a positive control.** A denial that looks identical to an
+  absence proves nothing. The second spike-book run found two: a masked file that did not
+  exist on the host, and a session that never authenticated. Pair every blocking arm with
+  an arm that must succeed, and treat the probe as invalid if the control fails.
 - The tested engine range is derived from the evidence files on record, never typed by hand.
   `doctor` warns on an untested version; it must never block.
 - Write scopes are disjoint by package (see the plan's ownership table). Propose a change to
