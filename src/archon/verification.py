@@ -11,14 +11,20 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .models import Candidate, CheckSpec, GateResult, Policy, ReviewPayload
+from .models import Candidate, CheckSpec, GateResult, Policy, RateLimited, ReviewPayload
 
 ROLES = ("reviewer", "qa_engineer", "security_reviewer")
+# Provider telemetry is recorded field by field: never a raw transcript.
+EVENT_FIELDS = ("kind", "session_id", "result_uuid", "process_id", "model", "method", "item_type")
+IDENTITY_FIELDS = ("pid", "pgid", "sid", "start_ticks", "boot_id", "receipt_path", "nonce")
+MAX_CAPTURED_EVENTS = 128
 
 
 def _data(value: Any) -> Any:
@@ -43,6 +49,20 @@ class VerificationError(RuntimeError):
 
 class StaleCandidate(VerificationError):
     pass
+
+
+@dataclass(frozen=True)
+class PauseSignal:
+    """A provider usage window closed: the job is parked, never finished.
+
+    A pause is not a result.  It consumes no retry attempt, publishes no
+    evidence, and leaves every earlier receipt for the same candidate valid.
+    The store requeues the same attempt once ``resume_at`` passes, so the
+    pipeline resumes exactly where the window interrupted it.
+    """
+
+    resume_at: int
+    window: str = "unknown"
 
 
 class VerificationRunner:
@@ -105,6 +125,9 @@ class VerificationRunner:
         if self._closing:
             raise VerificationError("Verification service is closing; resume in the next host session.")
         async with self._start_lock:
+            # Re-dispatch is also the resumption point: a window that reopened
+            # returns its paused coordinator and children to the same attempt.
+            self.store.unpause_due_jobs(time.time())
             spec, plan = self._context(run_id)
             observed = await asyncio.to_thread(self.current_candidate, run_id)
             existing = next((
@@ -278,6 +301,11 @@ class VerificationRunner:
         target = self.store.get_job(job_id)
         if target["attempt"] != attempt or not observations.strip() or len(observations) > 16_384:
             raise VerificationError("Recovery requires the exact attempt and a bounded inspection summary.")
+        if target["state"] == "paused":
+            raise VerificationError(
+                f"That attempt is parked on a provider usage window until {target['resume_at']}; "
+                "it resumes itself with the same attempt and needs no inspection."
+            )
         if target["state"] not in {"failed", "interrupted"}:
             raise VerificationError("Only a failed or interrupted owned attempt can be recovered.")
         observed = await asyncio.to_thread(self.current_candidate, target["run_id"])
@@ -368,7 +396,12 @@ class VerificationRunner:
         self._children[job_id] = set()
         try:
             result = await self._owned(lease, self._pipeline(job, lease))
-            self.store.finish_job(lease, "succeeded" if result.verified else "failed", result=_data(result))
+            if isinstance(result, PauseSignal):
+                self._pause(lease, result, "Verification")
+            else:
+                self.store.finish_job(lease, "succeeded" if result.verified else "failed", result=_data(result))
+        except RateLimited as limit:
+            self._pause(lease, PauseSignal(limit.resume_at, limit.window), "Verification")
         except asyncio.CancelledError:
             await self._cancel_invocations(job_id)
             state = "interrupted" if self._closing else "cancelled"
@@ -406,12 +439,26 @@ class VerificationRunner:
 
         await asyncio.gather(*(stop(inv) for inv in tuple(self._invocations.get(job_id, ()))), return_exceptions=True)
 
+    def _pause(self, lease: Any, signal: PauseSignal, label: str) -> PauseSignal:
+        """Park one owned job on a provider window under its own lease fence.
+
+        The store refuses the write unless this attempt still holds the lease,
+        so a superseded worker can neither pause nor resurrect a job.  The
+        attempt counter is untouched: a closed window is not a spent try, and
+        no evidence is written, so nothing recorded earlier is invalidated.
+        """
+        self.store.pause_job(
+            lease.job_id, lease.attempt, lease.lease_token, signal.resume_at,
+            f"{label} paused: provider usage window {signal.window} closed until {signal.resume_at}.",
+        )
+        return signal
+
     async def _assert_fresh(self, run_id: str, candidate: Candidate) -> None:
         observed = await asyncio.to_thread(self.current_candidate, run_id)
         if (observed.candidate_digest, observed.checks_digest) != (candidate.candidate_digest, candidate.checks_digest):
             raise StaleCandidate("Source, task plan, or verification policy changed during verification; fresh evidence is required.")
 
-    async def _pipeline(self, job: dict[str, Any], lease: Any) -> GateResult:
+    async def _pipeline(self, job: dict[str, Any], lease: Any) -> GateResult | PauseSignal:
         candidate = Candidate.model_validate(job["candidate"])
         spec = job["payload"]["spec"]
         policy = Policy.model_validate(spec.get("policy", {}))
@@ -421,6 +468,8 @@ class VerificationRunner:
             if self._has_completed_child(job, candidate, "check", check.name, _digest(check)):
                 continue
             passed = await self._check(job, candidate, check, policy)
+            if isinstance(passed, PauseSignal):
+                return passed
             if not passed:
                 return self.evaluate_gate(job["run_id"], candidate, coordinator_job_id=job["job_id"])
         await self._assert_fresh(job["run_id"], candidate)
@@ -429,7 +478,7 @@ class VerificationRunner:
         # All three are independent invocations with a frozen read-only candidate.
         review_slots = asyncio.Semaphore(policy.max_parallel_reviews)
 
-        async def review_role(role: str) -> bool:
+        async def review_role(role: str) -> bool | PauseSignal:
             if self._has_completed_child(job, candidate, "review", role):
                 return True
             async with review_slots:
@@ -437,12 +486,17 @@ class VerificationRunner:
 
         review_tasks = [asyncio.create_task(review_role(role)) for role in ROLES]
         try:
-            await asyncio.gather(*review_tasks)
+            outcomes = await asyncio.gather(*review_tasks)
         finally:
             for task in review_tasks:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*review_tasks, return_exceptions=True)
+        paused = next((item for item in outcomes if isinstance(item, PauseSignal)), None)
+        if paused is not None:
+            # A closed window is not a verdict: leave the coordinator unfinished
+            # and the gate unevaluated until the same attempt resumes.
+            return paused
         await self._assert_fresh(job["run_id"], candidate)
         await asyncio.to_thread(self.workspace.verify_snapshot, candidate)
         return self.evaluate_gate(job["run_id"], candidate, coordinator_job_id=job["job_id"])
@@ -504,34 +558,54 @@ class VerificationRunner:
                     chunk = str(event.get("text", "")).encode("utf-8", errors="replace")[:self.max_output_bytes - captured_bytes]
                     captured[stream].append(chunk.decode("utf-8", errors="replace"))
                     captured_bytes += len(chunk)
-            elif event_count < 128:
-                safe: dict[str, Any] = {key: str(event[key])[:1000] for key in ("kind", "session_id", "result_uuid", "process_id", "model", "method", "item_type") if key in event}
-                safe["invocation_id"] = invocation_id
-                safe["attempt"] = attempt
-                if event.get("kind") == "provider_process" and isinstance(event.get("process_identity"), dict):
-                    safe["process_identity"] = {
-                        key: event["process_identity"][key]
-                        for key in ("pid", "pgid", "sid", "start_ticks", "boot_id", "receipt_path", "nonce")
-                        if key in event["process_identity"]
-                    }
-                self.store.append_event(run_id, "invocation.event", safe, job_id=child_job_id or job_id)
+            elif event_count < MAX_CAPTURED_EVENTS:
+                self.store.append_event(run_id, "invocation.event", self._provenance(event, invocation_id, attempt), job_id=child_job_id or job_id)
                 event_count += 1
 
         try:
             return await asyncio.wait_for(method(*args, on_event=on_event, invocation_id=invocation_id), timeout=timeout)
+        except RateLimited as limit:
+            # A closed window is diagnosed, not failed: the same artifacts are
+            # kept, tagged with the window that has to reopen first.
+            await self._abandon(run_id, invocation_id, attempt, captured, child_job_id or job_id,
+                                {"rate_limited_until": limit.resume_at, "window": limit.window})
+            raise
         except BaseException:
-            try:
-                await asyncio.wait_for(self.adapter.cancel(invocation_id), timeout=10)
-            except Exception:
-                pass
-            artifacts = [self._artifact(invocation_id, f"interrupted-{stream}.log", "".join(chunks), self.max_output_bytes) for stream, chunks in captured.items() if chunks]
-            self.store.append_event(run_id, "invocation.interrupted", {"invocation_id": invocation_id, "artifacts": artifacts}, job_id=child_job_id or job_id)
+            await self._abandon(run_id, invocation_id, attempt, captured, child_job_id or job_id, {})
             raise
         finally:
             confirmed = getattr(self.adapter, "termination_confirmed", lambda _: False)(invocation_id)
             if confirmed:
                 self.store.append_event(run_id, "invocation.stopped", {"invocation_id": invocation_id, "attempt": attempt, "confirmation": "owned_transport_closed"}, job_id=child_job_id or job_id)
             self._invocations[job_id].discard(invocation_id)
+
+    def _provenance(self, event: Mapping[str, Any], invocation_id: str, attempt: int) -> dict[str, Any]:
+        """Whitelist provider telemetry: identity and cost, never transcripts."""
+        safe: dict[str, Any] = {key: str(event[key])[:1000] for key in EVENT_FIELDS if key in event}
+        safe["invocation_id"] = invocation_id
+        safe["attempt"] = attempt
+        cost = event.get("cost_usd")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            safe["cost_usd"] = float(cost)
+        identity = event.get("process_identity")
+        if event.get("kind") == "provider_process" and isinstance(identity, Mapping):
+            safe["process_identity"] = {key: identity[key] for key in IDENTITY_FIELDS if key in identity}
+        return safe
+
+    async def _abandon(self, run_id: str, invocation_id: str, attempt: int,
+                       captured: Mapping[str, list[str]], job_id: str | None,
+                       detail: Mapping[str, Any]) -> None:
+        """Stop an unfinished invocation and keep its bounded diagnostic."""
+        try:
+            await asyncio.wait_for(self.adapter.cancel(invocation_id), timeout=10)
+        except Exception:
+            pass
+        artifacts = [
+            self._artifact(invocation_id, f"interrupted-{stream}.log", "".join(chunks), self.max_output_bytes)
+            for stream, chunks in captured.items() if chunks
+        ]
+        payload = {"invocation_id": invocation_id, "attempt": attempt, "artifacts": artifacts, **detail}
+        self.store.append_event(run_id, "invocation.interrupted", payload, job_id=job_id)
 
     def _artifact(self, invocation_id: str, name: str, contents: str, limit: int) -> dict[str, Any]:
         raw = contents.encode("utf-8", errors="replace")
@@ -549,7 +623,18 @@ class VerificationRunner:
             os.fsync(handle.fileno())
         return {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw), "truncated": truncated}
 
-    async def _check(self, job: dict[str, Any], candidate: Candidate, check: CheckSpec, policy: Policy) -> bool:
+    @staticmethod
+    def _check_envelope(check: CheckSpec, invocation_id: str, result_data: Mapping[str, Any],
+                        artifacts: list[dict[str, Any]], policy: Policy, passed: bool) -> dict[str, Any]:
+        """The bounded, candidate-bound record of one executed check."""
+        return {
+            "check_name": check.name, "check_spec_digest": _digest(check),
+            "acceptance_ids": list(check.acceptance_ids),
+            "succeeded": passed, "result": dict(result_data), "artifacts": artifacts,
+            "sandbox_policy": _data(policy), "invocation_id": invocation_id,
+        }
+
+    async def _check(self, job: dict[str, Any], candidate: Candidate, check: CheckSpec, policy: Policy) -> bool | PauseSignal:
         _, lease = self._child(job, candidate, "check", check.name)
         invocation_id = uuid.uuid4().hex
         try:
@@ -581,17 +666,15 @@ class VerificationRunner:
                 {
                     "kind": "check", "invocation_id": invocation_id,
                     "candidate_digest": candidate.candidate_digest, "checks_digest": candidate.checks_digest,
-                    "payload": {
-                        "check_name": check.name, "check_spec_digest": _digest(check), "acceptance_ids": list(check.acceptance_ids),
-                        "succeeded": passed, "result": result_data, "artifacts": [stdout, stderr],
-                        "sandbox_policy": _data(policy), "invocation_id": invocation_id,
-                    },
+                    "payload": self._check_envelope(check, invocation_id, result_data, [stdout, stderr], policy, passed),
                 },
             )
             if not evidence:
                 raise VerificationError("Lost command lease; its result is not accepted.")
             self.store.finish_job(lease, "succeeded" if passed else "failed", result={"evidence_id": evidence.get("evidence_id"), "succeeded": passed, "execution_terminated": terminated, "invocation_id": invocation_id})
             return passed
+        except RateLimited as limit:
+            return self._pause(lease, PauseSignal(limit.resume_at, limit.window), f"Check {check.name}")
         except asyncio.CancelledError:
             self.store.finish_job(lease, "interrupted", error={"message": "Check interrupted; inspect effects before resuming."})
             raise
@@ -651,7 +734,39 @@ class VerificationRunner:
                 raise VerificationError("Finding lacks a source or evidence reference.")
         return parsed
 
-    async def _review(self, job: dict[str, Any], candidate: Candidate, role: str, packet: dict[str, Any], policy: Policy) -> bool:
+    def _accept_review(self, lease: Any, role: str, invocation_id: str, candidate: Candidate,
+                       result_data: Mapping[str, Any], payload: ReviewPayload, policy: Policy) -> bool:
+        """Bind one validated review to its candidate, artifact, and session.
+
+        Only the store's fence decides whether the envelope is published, and
+        ``approved`` here records a reviewer's verdict: the gate, not this
+        method, decides whether three such verdicts add up to verified.
+        """
+        serialized = json.dumps(_data(payload), ensure_ascii=False, sort_keys=True)
+        artifact = self._artifact(invocation_id, "review.json", serialized, min(policy.max_output_bytes, self.max_output_bytes))
+        if artifact["truncated"]:
+            raise VerificationError("Reviewer output exceeded the bounded evidence limit.")
+        approved = payload.decision == "approve" and not any(f.severity in {"high", "critical"} for f in payload.findings)
+        evidence = self.store._record_evidence(
+            lease,
+            {
+                "kind": "review", "invocation_id": invocation_id,
+                "candidate_digest": candidate.candidate_digest, "checks_digest": candidate.checks_digest,
+                "payload": {
+                    "role": role, "invocation_id": invocation_id,
+                    "candidate_digest": candidate.candidate_digest, "checks_digest": candidate.checks_digest,
+                    "session_id": result_data.get("session_id"), "result_uuid": result_data.get("result_uuid"),
+                    "cost_usd": result_data.get("cost_usd"),
+                    "payload": _data(payload), "artifacts": [artifact], "succeeded": approved,
+                },
+            },
+        )
+        if not evidence:
+            raise VerificationError("Lost review lease; its result is not accepted.")
+        self.store.finish_job(lease, "succeeded" if approved else "failed", result={"evidence_id": evidence.get("evidence_id"), "decision": payload.decision, "execution_terminated": True})
+        return approved
+
+    async def _review(self, job: dict[str, Any], candidate: Candidate, role: str, packet: dict[str, Any], policy: Policy) -> bool | PauseSignal:
         retries = min(self.max_review_retries, max(0, policy.max_attempts - 1))
         async with self._semaphore:
             for attempt in range(retries + 1):
@@ -676,28 +791,11 @@ class VerificationRunner:
                     ):
                         raise VerificationError("Review result lacks the assigned invocation, candidate, independent session provenance, or confirmed runtime termination.")
                     payload = self._validate_review(result_data.get("payload"), candidate, packet)
-                    serialized = json.dumps(_data(payload), ensure_ascii=False, sort_keys=True)
-                    artifact = self._artifact(invocation_id, "review.json", serialized, min(policy.max_output_bytes, self.max_output_bytes))
-                    if artifact["truncated"]:
-                        raise VerificationError("Reviewer output exceeded the bounded evidence limit.")
-                    approved = payload.decision == "approve" and not any(f.severity in {"high", "critical"} for f in payload.findings)
-                    evidence = self.store._record_evidence(
-                        lease,
-                        {
-                            "kind": "review", "invocation_id": invocation_id,
-                            "candidate_digest": candidate.candidate_digest, "checks_digest": candidate.checks_digest,
-                            "payload": {
-                                "role": role, "invocation_id": invocation_id,
-                                "candidate_digest": candidate.candidate_digest, "checks_digest": candidate.checks_digest,
-                                "session_id": result_data.get("session_id"), "result_uuid": result_data.get("result_uuid"),
-                                "payload": _data(payload), "artifacts": [artifact], "succeeded": approved,
-                            },
-                        },
-                    )
-                    if not evidence:
-                        raise VerificationError("Lost review lease; its result is not accepted.")
-                    self.store.finish_job(lease, "succeeded" if approved else "failed", result={"evidence_id": evidence.get("evidence_id"), "decision": payload.decision, "execution_terminated": True})
-                    return approved
+                    return self._accept_review(lease, role, invocation_id, candidate, result_data, payload, policy)
+                except RateLimited as limit:
+                    # Parked, not spent: this retry index is replayed verbatim
+                    # once the window reopens, and no evidence is published.
+                    return self._pause(lease, PauseSignal(limit.resume_at, limit.window), f"Review {role}")
                 except asyncio.CancelledError:
                     self.store.finish_job(lease, "interrupted", error={"message": "Read-only review interrupted; a fresh review may be retried."})
                     raise
@@ -726,6 +824,39 @@ class VerificationRunner:
             except (OSError, KeyError, TypeError):
                 return False
         return True
+
+    def _independent_approvals(self, valid: list[dict[str, Any]], required: set[str]) -> tuple[list[str], list[str]]:
+        """Accept one current approval per role, each provably its own session.
+
+        Independence is proved by two kernel-issued identities that must both
+        be present and distinct across the trio: the invocation this runner
+        assigned, and the session id the engine echoed back.  A review with no
+        session identity proves nothing and satisfies no role.
+        """
+        accepted: list[str] = []
+        unmet: list[str] = []
+        seen_invocations: set[str] = set()
+        seen_sessions: set[str] = set()
+        for role in ROLES:
+            matches = [item for item in valid if item["kind"] == "review" and item["payload"].get("role") == role]
+            match = matches[-1] if matches else None
+            if match is None:
+                unmet.append(f"Independent {role} review lacks current approval.")
+                continue
+            envelope = match["payload"]
+            payload = envelope.get("payload", {})
+            session = envelope.get("session_id")
+            if payload.get("decision") != "approve" or any(f.get("severity") in {"high", "critical"} for f in payload.get("findings", [])) or set(payload.get("acceptance_ids", [])) != required:
+                unmet.append(f"Independent {role} review is incomplete or contains blocking findings.")
+            elif not isinstance(session, str) or not session.strip():
+                unmet.append(f"Independent {role} review carries no kernel-issued session identity.")
+            elif match["invocation_id"] in seen_invocations or session in seen_sessions:
+                unmet.append(f"Independent {role} review reused another review invocation/session.")
+            else:
+                seen_invocations.add(match["invocation_id"])
+                seen_sessions.add(session)
+                accepted.append(match["evidence_id"])
+        return accepted, unmet
 
     def evaluate_gate(self, run_id: str, candidate: Candidate, *, coordinator_job_id: str | None = None) -> GateResult:
         """Compute completion solely from persisted owned evidence and obligations.
@@ -791,28 +922,9 @@ class VerificationRunner:
                 unmet.append(f"Check {parsed_check.name} lacks current successful evidence.")
             else:
                 accepted.append(matches[-1]["evidence_id"])
-        seen_invocations: set[str] = set()
-        seen_sessions: set[str] = set()
-        for role in ROLES:
-            matches = [item for item in valid if item["kind"] == "review" and item["payload"].get("role") == role]
-            match = matches[-1] if matches else None
-            if match is None:
-                unmet.append(f"Independent {role} review lacks current approval.")
-                continue
-            envelope = match["payload"]
-            payload = envelope.get("payload", {})
-            if payload.get("decision") != "approve" or any(f.get("severity") in {"high", "critical"} for f in payload.get("findings", [])) or set(payload.get("acceptance_ids", [])) != required:
-                unmet.append(f"Independent {role} review is incomplete or contains blocking findings.")
-                continue
-            invocation = match["invocation_id"]
-            session = envelope.get("session_id")
-            if invocation in seen_invocations or (session and session in seen_sessions):
-                unmet.append(f"Independent {role} review reused another review invocation/session.")
-                continue
-            seen_invocations.add(invocation)
-            if session:
-                seen_sessions.add(session)
-            accepted.append(match["evidence_id"])
+        role_ids, role_unmet = self._independent_approvals(valid, required)
+        accepted.extend(role_ids)
+        unmet.extend(role_unmet)
         for job in jobs:
             bound = job.get("candidate", {})
             if job["job_id"] != coordinator_job_id and job["state"] in {"queued", "running"} and bound.get("candidate_digest") == candidate.candidate_digest and bound.get("checks_digest") == candidate.checks_digest:

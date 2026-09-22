@@ -1,6 +1,6 @@
 """Fresh-consumer acceptance through the real kernel, runner, and workspace.
 
-Only the Codex transport is substituted. Its command leg executes the fixture's
+Only the Claude Code transport is substituted. Its command leg executes the fixture's
 actual Python check; its review leg supplies deterministic behavioral critiques
 of the frozen snapshot. These tests prove delivery mechanics, not live model,
 native-subagent, or operating-system sandbox behavior.
@@ -13,13 +13,14 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from archon.hooks import handle_event
-from archon.models import CommandResult, Finding, ReviewPayload, ReviewResult
+from archon.models import CommandResult, Finding, RateLimited, ReviewPayload, ReviewResult
 from archon.service import ArchonService, ServiceError
 from archon.store import Store, StoreError
 from archon.verification import ROLES, VerificationRunner
@@ -70,7 +71,7 @@ def git(root: Path, *args: str) -> bytes:
     ).stdout
 
 
-class DeterministicCodexTransport:
+class DeterministicClaudeTransport:
     """Exercise fixture behavior while replacing only provider communication."""
 
     def __init__(self, *, hold_command: bool = False) -> None:
@@ -83,13 +84,17 @@ class DeterministicCodexTransport:
         self.cancelled: list[str] = []
         self.processes: dict[str, asyncio.subprocess.Process] = {}
         self.stopped: set[str] = set()
+        #: role -> epoch second; a one-shot simulated subscription window.
+        self.rate_limited_roles: dict[str, int] = {}
 
     async def run_command(
         self, spec, candidate, policy, on_event=None, *, invocation_id=None,
     ) -> CommandResult:
         assert invocation_id
-        assert policy.sandbox_mode == "workspace-write"
+        # The kernel owns confinement: a check may never widen it or reach the network.
         assert policy.network_access is False
+        assert policy.approval_policy == "never"
+        assert policy.scratch_bytes >= 1_048_576
         cwd = (Path(candidate.repo_root) / spec.cwd).resolve()
         self.command_calls.append({"id": invocation_id, "digest": candidate.candidate_digest})
         self.command_started.set()
@@ -113,7 +118,14 @@ class DeterministicCodexTransport:
         self, role, candidate, packet, policy, on_event=None, *, invocation_id=None,
     ) -> ReviewResult:
         assert invocation_id
-        assert policy.review_sandbox_mode == "read-only"
+        # Every reviewer route is pinned by policy, never inherited from the host.
+        route = policy.review_route(role)
+        assert route.model and route.effort in {"low", "medium", "high", "xhigh", "max"}
+        assert policy.review_budget_usd > 0
+        assert policy.network_access is False
+        window = self.rate_limited_roles.pop(role, None)
+        if window is not None:
+            raise RateLimited(window, window="five_hour", detail="simulated subscription window")
         snapshot = Path(candidate.snapshot_path)
         assert snapshot.resolve() != Path(candidate.repo_root).resolve()
         assert (snapshot / "invoice.py").read_text() == INVOICE
@@ -143,6 +155,7 @@ class DeterministicCodexTransport:
             checks_digest=candidate.checks_digest,
             session_id=f"fixture-thread-{invocation_id}",
             result_uuid=f"fixture-turn-{invocation_id}",
+            cost_usd=0.02,
             payload=ReviewPayload(
                 decision="request_changes" if rejected else "approve",
                 summary="Negative prices remain accepted." if rejected else "Assigned review passed.",
@@ -246,7 +259,7 @@ def test_fresh_consumer_failed_check_review_rejection_repair_and_current_branch(
     async def exercise() -> None:
         workspace = Workspace(git_repo, tmp_path / "state")
         store = Store(workspace.state_dir)
-        transport = DeterministicCodexTransport()
+        transport = DeterministicClaudeTransport()
         runner = VerificationRunner(workspace, store, transport)
         service = ArchonService(workspace, store, runner)
         try:
@@ -338,7 +351,7 @@ def test_duplicate_dispatch_and_interruption_preserve_unfinished_work(
     async def exercise() -> None:
         workspace = Workspace(git_repo, tmp_path / "state")
         store = Store(workspace.state_dir)
-        transport = DeterministicCodexTransport(hold_command=True)
+        transport = DeterministicClaudeTransport(hold_command=True)
         runner = VerificationRunner(workspace, store, transport)
         service = ArchonService(workspace, store, runner)
         run_id = start_delivery(service)
@@ -364,7 +377,7 @@ def test_duplicate_dispatch_and_interruption_preserve_unfinished_work(
         store.close()
 
         reopened = Store(workspace.state_dir)
-        resumed_runner = VerificationRunner(workspace, reopened, DeterministicCodexTransport())
+        resumed_runner = VerificationRunner(workspace, reopened, DeterministicClaudeTransport())
         resumed_service = ArchonService(workspace, reopened, resumed_runner)
         try:
             resumed = resumed_service.resume(run_id)
@@ -402,7 +415,7 @@ def test_public_claims_cannot_bypass_missing_task_or_give_review_authority(
     async def exercise() -> None:
         workspace = Workspace(git_repo, tmp_path / "state")
         store = Store(workspace.state_dir)
-        transport = DeterministicCodexTransport()
+        transport = DeterministicClaudeTransport()
         runner = VerificationRunner(workspace, store, transport)
         service = ArchonService(workspace, store, runner)
         try:
@@ -431,7 +444,7 @@ def test_corrupted_receipt_cannot_leave_public_verified_status(
     async def exercise() -> None:
         workspace = Workspace(git_repo, tmp_path / "state")
         store = Store(workspace.state_dir)
-        runner = VerificationRunner(workspace, store, DeterministicCodexTransport())
+        runner = VerificationRunner(workspace, store, DeterministicClaudeTransport())
         service = ArchonService(workspace, store, runner)
         try:
             run_id = start_delivery(service)
@@ -451,6 +464,71 @@ def test_corrupted_receipt_cannot_leave_public_verified_status(
             assert rebuilt["run"]["gate"]["candidate_digest"] == initial_digest
             assert (git_repo / "pricing.py").read_text() == CORRECT_PRICING
             assert len(runner.adapter.review_calls) > 3
+        finally:
+            await runner.close()
+            store.close()
+
+    asyncio.run(exercise())
+
+
+def test_rate_limited_verification_pauses_and_resumes_without_rerunning_checks(
+    git_repo: Path, tmp_path: Path,
+) -> None:
+    """AC-19: a closed usage window is a pause, and a pause is free."""
+    prepare_consumer(git_repo)
+
+    async def exercise() -> None:
+        workspace = Workspace(git_repo, tmp_path / "state")
+        store = Store(workspace.state_dir)
+        transport = DeterministicClaudeTransport()
+        runner = VerificationRunner(workspace, store, transport)
+        service = ArchonService(workspace, store, runner)
+        try:
+            run_id = start_delivery(service)
+            claim_implementation(service, run_id, git_repo)
+            repair_pricing(service, run_id, git_repo, CORRECT_PRICING)
+            # A short real window: the store's claim fence uses the real clock.
+            window = int(time.time()) + 3
+            transport.rate_limited_roles = {"security_reviewer": window}
+            dispatched = await service.verify(run_id)
+            job_id = dispatched["job_id"]
+            await asyncio.wait_for(runner.wait(job_id), timeout=15)
+
+            paused = service.verification_status(job_id)
+            assert paused["job"]["state"] == "paused"
+            assert paused["job"]["resume_at"] == window
+            assert paused["job"]["attempt"] == 1, "A closed window costs no attempt."
+            assert paused["run"]["state"] != "verified"
+            # The manager is never told to report, repair, or inspect a pause.
+            assert paused["next_action"]["action"] in {"wait", "verify"}
+            assert len(transport.command_calls) == 1
+            assert [item for item in store.list_evidence(run_id) if item["kind"] == "check"]
+            assert len(paused["evidence"]["reviews"]) == 2
+
+            # Nothing may claim the parked work until the window actually reopens.
+            assert await service.verify(run_id) and store.get_job(job_id)["state"] == "paused"
+            while time.time() <= window:
+                await asyncio.sleep(0.05)
+
+            # The window reopens: the same attempt requeues exactly once.
+            requeued = store.unpause_due_jobs(time.time())
+            assert len(requeued) == 2
+            assert store.unpause_due_jobs(time.time()) == []
+            resumed = await service.verify(run_id)
+            assert resumed["job_id"] == job_id
+            await asyncio.wait_for(runner.wait(job_id), timeout=15)
+
+            final = service.verification_status(job_id)
+            assert final["run"]["state"] == "verified"
+            assert final["run"]["gate"]["verified"] is True
+            assert len(final["run"]["gate"]["evidence_ids"]) == 4
+            assert len(transport.command_calls) == 1, "The passed check was never replayed."
+            assert {call["role"] for call in transport.review_calls} == set(ROLES)
+            assert len({call["id"] for call in transport.review_calls}) == 3
+            assert service.next_action(run_id)["action"] == "report"
+            reviews = [item for item in store.list_evidence(run_id) if item["kind"] == "review"]
+            assert len({item["payload"]["session_id"] for item in reviews}) == 3
+            assert all(item["payload"]["cost_usd"] == 0.02 for item in reviews)
         finally:
             await runner.close()
             store.close()

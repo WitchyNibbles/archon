@@ -6,14 +6,17 @@ import asyncio
 import hashlib
 import json
 import stat
+import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from archon.models import Candidate, CommandResult, RunSpec
+from archon.claude_adapter import AdapterError
+from archon.models import Candidate, CommandResult, RateLimited, RunSpec
 from archon.store import Store
-from archon.verification import ROLES, VerificationRunner
+from archon.verification import ROLES, VerificationError, VerificationRunner
 
 
 class FixtureWorkspace:
@@ -68,10 +71,17 @@ class SimulatedAdapter:
         self.wrong_invocation = False
         self.command_started = asyncio.Event()
         self.release_command = None
+        # Provider faults that are pauses or bounded diagnostics, never verdicts.
+        self.rate_limit_checks: int | None = None
+        self.rate_limit_roles: dict[str, int] = {}
+        self.null_structured_output = False
+        self.cost_usd = 0.42
 
     async def run_command(self, spec, candidate, policy, on_event=None, *, invocation_id=None):
         self.commands.append(invocation_id)
         self.command_started.set()
+        if self.rate_limit_checks is not None:
+            raise RateLimited(self.rate_limit_checks, window="five_hour", detail="simulated check window")
         if self.before_dispatch_failure:
             raise RuntimeError("Simulated provider startup failure before command dispatch.")
         if on_event:
@@ -92,6 +102,17 @@ class SimulatedAdapter:
 
     async def run_review(self, role, candidate, packet, policy, on_event=None, *, invocation_id=None):
         self.reviews.append((role, invocation_id, candidate.candidate_digest))
+        session_id = "shared" if self.shared_thread else f"thread-{invocation_id}"
+        if on_event:
+            await on_event({
+                "kind": "provider_turn", "invocation_id": invocation_id, "session_id": session_id,
+                "model": "opus", "cost_usd": self.cost_usd, "transcript": "reviewer prose and secrets",
+            })
+        window = self.rate_limit_roles.get(role)
+        if window is not None:
+            raise RateLimited(window, window="seven_day", detail="simulated review window")
+        if self.null_structured_output:
+            raise AdapterError("no structured output")
         payload = {
             "decision": "request_changes" if role in self.reject_roles else "approve",
             "summary": "Simulated fixture review.",
@@ -115,8 +136,8 @@ class SimulatedAdapter:
         return {
             "invocation_id": invocation_id, "role": role,
             "candidate_digest": candidate.candidate_digest, "checks_digest": candidate.checks_digest,
-            "session_id": "shared" if self.shared_thread else f"thread-{invocation_id}", "result_uuid": f"turn-{invocation_id}",
-            "payload": payload,
+            "session_id": session_id, "result_uuid": f"turn-{invocation_id}",
+            "cost_usd": self.cost_usd, "payload": payload,
         }
 
     async def cancel(self, invocation_id):
@@ -512,6 +533,202 @@ def test_ordinary_verify_rebuilds_damaged_internal_evidence_without_source_edit(
         assert runner.evaluate_gate("run", runner.current_candidate("run")).verified
         assert len(adapter.commands) == (1 if damaged == "review" else 2)
         assert len(adapter.reviews) == (4 if damaged == "review" else 6)
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+class SessionRewrite:
+    """Read-through store view that restates recorded reviewer session ids.
+
+    Evidence rows are never edited in place: the gate is re-run against a copy
+    so a forged or missing session identity can be shown not to satisfy a role.
+    """
+
+    def __init__(self, store: Store, sessions: dict[str, str]) -> None:
+        self._store = store
+        self._sessions = dict(sessions)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+    def list_evidence(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return [self._restate(item) for item in self._store.list_evidence(*args, **kwargs)]
+
+    def _restate(self, item: dict[str, Any]) -> dict[str, Any]:
+        role = item["payload"].get("role")
+        if item["kind"] != "review" or role not in self._sessions:
+            return item
+        return {**item, "payload": {**item["payload"], "session_id": self._sessions[role]}}
+
+
+def test_closed_review_window_pauses_and_keeps_earlier_evidence(setup):
+    """A window that has not reopened parks the work and replays nothing."""
+    _, store, adapter, runner = setup
+
+    async def scenario():
+        window = int(time.time()) + 3600
+        adapter.rate_limit_roles = {"qa_engineer": window}
+        job = await runner.start("run")
+        paused = await runner.wait(job["job_id"])
+        # The coordinator parks instead of failing, and keeps its attempt.
+        assert paused["state"] == "paused"
+        assert paused["resume_at"] == window and paused["attempt"] == 1
+        child = next(item for item in store.list_jobs("run")
+                     if item["kind"] == "review" and item["role"] == "qa_engineer")
+        assert child["state"] == "paused" and child["attempt"] == 1 and child["resume_at"] == window
+        assert child["payload"]["retry"] == 0, "A pause must not spend a review retry."
+        # Evidence recorded before the window closed stays valid and reusable.
+        checks = [item for item in store.list_evidence("run") if item["kind"] == "check"]
+        assert len(checks) == 1 and checks[0]["payload"]["succeeded"]
+        assert {item["payload"]["role"] for item in store.list_reviews("run")} == {"reviewer", "security_reviewer"}
+        assert not runner.evaluate_gate("run", runner.current_candidate("run")).verified
+        interrupted = [item for item in store.events("run", limit=500) if item["kind"] == "invocation.interrupted"]
+        assert interrupted and interrupted[-1]["payload"]["rate_limited_until"] == window
+        # Re-dispatching before the window reopens returns the same parked job.
+        again = await runner.start("run")
+        assert again["job_id"] == job["job_id"] and again["state"] == "paused"
+        assert len(adapter.commands) == 1 and len(adapter.reviews) == 3
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_reopened_review_window_resumes_once_without_replaying_checks(setup):
+    _, store, adapter, runner = setup
+
+    async def scenario():
+        window = int(time.time()) - 1
+        adapter.rate_limit_roles = {"qa_engineer": window}
+        job = await runner.start("run")
+        assert (await runner.wait(job["job_id"]))["state"] == "paused"
+        adapter.rate_limit_roles = {}
+        # The coordinator and its parked child requeue exactly once, same attempt.
+        requeued = store.unpause_due_jobs(time.time())
+        assert len(requeued) == 2 and all(item["state"] == "queued" for item in requeued)
+        assert store.unpause_due_jobs(time.time()) == []
+        assert store.get_job(job["job_id"])["attempt"] == 1
+        second = await runner.start("run")
+        assert second["job_id"] == job["job_id"]
+        assert (await runner.wait(second["job_id"]))["state"] == "succeeded"
+        assert len(adapter.commands) == 1, "A pause must not replay a check that already passed."
+        assert len(adapter.reviews) == 4, "Only the parked reviewer is re-dispatched."
+        assert runner.evaluate_gate("run", runner.current_candidate("run")).verified
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_rate_limited_check_pauses_and_is_not_an_inspectable_interruption(setup):
+    _, store, adapter, runner = setup
+
+    async def scenario():
+        window = int(time.time()) - 1
+        adapter.rate_limit_checks = window
+        job = await runner.start("run")
+        paused = await runner.wait(job["job_id"])
+        assert paused["state"] == "paused" and paused["resume_at"] == window
+        check = next(item for item in store.list_jobs("run") if item["kind"] == "check")
+        assert check["state"] == "paused" and check["attempt"] == 1
+        assert not store.list_evidence("run"), "A pause publishes no evidence, passing or failing."
+        assert not adapter.reviews
+        assert not runner.evaluate_gate("run", runner.current_candidate("run")).verified
+        with pytest.raises(VerificationError, match="parked"):
+            await runner.recover(
+                check["job_id"], attempt=check["attempt"],
+                candidate_digest=check["candidate"]["candidate_digest"],
+                checks_digest=check["candidate"]["checks_digest"],
+                observations="The command never ran; inspect nothing and retry it now.",
+            )
+        adapter.rate_limit_checks = None
+        resumed = await runner.start("run")
+        assert (await runner.wait(resumed["job_id"]))["state"] == "succeeded"
+        assert len(adapter.commands) == 2, "The check that never ran is executed on resumption."
+        assert runner.evaluate_gate("run", runner.current_candidate("run")).verified
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_null_structured_output_retries_in_bounds_and_never_approves(setup):
+    _, store, adapter, runner = setup
+
+    async def scenario():
+        adapter.null_structured_output = True
+        job = await runner.start("run")
+        terminal = await runner.wait(job["job_id"])
+        assert terminal["state"] == "failed"
+        assert len(adapter.reviews) == 6, "Bounded retry: three roles, two attempts each."
+        assert not store.list_reviews("run"), "A provider fault is never approving evidence."
+        gate = runner.evaluate_gate("run", runner.current_candidate("run"))
+        assert not gate.verified
+        assert all(any(role in reason for reason in gate.unmet_requirements) for role in ROLES)
+        children = [item for item in store.list_jobs("run") if item["kind"] == "review"]
+        assert all(item["state"] == "failed" for item in children)
+        assert all("no structured output" in item["error"]["message"] for item in children)
+        assert [item for item in children if item["error"]["exhausted"]]
+        assert all("Native manager" in item["error"]["next_action"] for item in children)
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("session", ["", "   "])
+def test_review_without_a_session_identity_does_not_satisfy_its_role(setup, session):
+    workspace, store, adapter, runner = setup
+
+    async def scenario():
+        job = await runner.start("run")
+        await runner.wait(job["job_id"])
+        candidate = runner.current_candidate("run")
+        assert runner.evaluate_gate("run", candidate).verified
+        blind = VerificationRunner(workspace, SessionRewrite(store, {"qa_engineer": session}), adapter)
+        gate = blind.evaluate_gate("run", candidate)
+        assert not gate.verified
+        assert any("qa_engineer review carries no kernel-issued session identity" in reason
+                   for reason in gate.unmet_requirements)
+        assert len(gate.evidence_ids) == 3
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_two_approvals_sharing_a_session_leave_the_gate_unmet(setup):
+    workspace, store, adapter, runner = setup
+
+    async def scenario():
+        job = await runner.start("run")
+        await runner.wait(job["job_id"])
+        candidate = runner.current_candidate("run")
+        assert runner.evaluate_gate("run", candidate).verified
+        shared = SessionRewrite(store, {"reviewer": "session-a", "security_reviewer": "session-a"})
+        gate = VerificationRunner(workspace, shared, adapter).evaluate_gate("run", candidate)
+        assert not gate.verified
+        assert any("security_reviewer review reused another review invocation/session" in reason
+                   for reason in gate.unmet_requirements)
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_recorded_provenance_is_bounded_and_excludes_transcripts(setup):
+    _, store, adapter, runner = setup
+
+    async def scenario():
+        job = await runner.start("run")
+        await runner.wait(job["job_id"])
+        for record in store.list_reviews("run"):
+            envelope = record["payload"]
+            assert envelope["session_id"].startswith("thread-")
+            assert envelope["result_uuid"].startswith("turn-")
+            assert envelope["cost_usd"] == adapter.cost_usd
+        turns = [item["payload"] for item in store.events("run", limit=500)
+                 if item["kind"] == "invocation.event" and item["payload"].get("kind") == "provider_turn"]
+        assert len(turns) == 3
+        assert all(set(turn) == {"kind", "session_id", "model", "invocation_id", "attempt", "cost_usd"}
+                   for turn in turns)
+        assert all(turn["cost_usd"] == adapter.cost_usd for turn in turns)
+        assert "secrets" not in json.dumps(turns)
         await runner.close()
 
     asyncio.run(scenario())
