@@ -1,21 +1,23 @@
-"""Linux subreaper for one pinned Codex runtime, launched with Python ``-I``.
+"""Linux subreaper for one Archon-owned child, launched with Python ``-I``.
 
-Only Codex executes repository commands. This supervisor inherits its protocol
-stdio and stays alive until all descendants, including detached ones, are reaped.
+Archon dispatches exactly two kinds of child: a check, whose argv is already the
+rendered ``bwrap`` confinement from :mod:`archon.sandbox`, and a reviewer
+``claude -p`` session.  Neither is composed here.  This supervisor stays alive
+until all descendants, including detached ones, are reaped, and writes the
+termination receipt the kernel needs before it may call a check passed.
 """
 
 from __future__ import annotations
 
 import ctypes
 import errno
-import importlib.metadata
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 
@@ -176,26 +178,50 @@ def supervise(command: list[str], receipt_dir: Path, nonce: str) -> int:
     return exit_code
 
 
+SEPARATOR = "--"
+KINDS: tuple[str, ...] = ("check", "review")
+CONFIG_DIR_VARIABLE = "CLAUDE_CONFIG_DIR"
+NONCE_DIGITS = "0123456789abcdef"
+NONCE_LENGTH = 32
+USAGE = "Usage: archon-launch <control_dir> <nonce> {check|review} -- <argv...>"
+
+
+def _split_invocation(arguments: list[str]) -> tuple[list[str], list[str]]:
+    """Separate the supervisor's own arguments from the child argv it must not read."""
+    if SEPARATOR not in arguments:
+        raise SystemExit(USAGE)
+    boundary = arguments.index(SEPARATOR)
+    head, command = arguments[:boundary], arguments[boundary + 1 :]
+    if len(head) != 3 or not command:
+        raise SystemExit(USAGE)
+    return head, command
+
+
+def _honour_config_dir(environ: Mapping[str, str]) -> None:
+    """Honour an adapter-supplied reviewer config directory; never invent one."""
+    value = environ.get(CONFIG_DIR_VARIABLE)
+    if value is None:
+        return
+    directory = Path(value)
+    if not directory.is_absolute() or not directory.is_dir() or directory.is_symlink():
+        raise SystemExit("Invalid Archon reviewer configuration directory.")
+
+
 def main() -> None:
     if sys.platform != "linux":
         raise SystemExit("Archon managed execution requires Linux subreaper support.")
-    if len(sys.argv) != 3:
-        raise SystemExit("Archon supervisor requires its private receipt directory and nonce.")
-    receipt_dir = Path(sys.argv[1])
-    nonce = sys.argv[2]
+    head, command = _split_invocation(sys.argv[1:])
+    receipt_dir = Path(head[0])
+    nonce, kind = head[1], head[2]
     if not receipt_dir.is_absolute() or not receipt_dir.is_dir() or receipt_dir.is_symlink():
         raise SystemExit("Invalid Archon supervisor receipt directory.")
-    if len(nonce) != 32 or any(character not in "0123456789abcdef" for character in nonce):
+    if len(nonce) != NONCE_LENGTH or any(character not in NONCE_DIGITS for character in nonce):
         raise SystemExit("Invalid Archon supervisor nonce.")
-    if importlib.metadata.version("openai-codex-cli-bin") != "0.154.0":
-        raise SystemExit("Archon requires the locked Codex runtime 0.154.0.")
-    from codex_cli_bin import bundled_codex_path, bundled_path_dir  # type: ignore[import-untyped]
-
-    runtime = str(bundled_codex_path())
-    helper_dir = bundled_path_dir()
-    if helper_dir is not None:
-        os.environ["PATH"] = str(helper_dir) + os.pathsep + os.environ.get("PATH", "")
-    raise SystemExit(supervise([runtime, "app-server", "--listen", "stdio://"], receipt_dir, nonce))
+    if kind not in KINDS:
+        raise SystemExit(USAGE)
+    if kind == "review":
+        _honour_config_dir(os.environ)
+    raise SystemExit(supervise(command, receipt_dir, nonce))
 
 
 if __name__ == "__main__":
