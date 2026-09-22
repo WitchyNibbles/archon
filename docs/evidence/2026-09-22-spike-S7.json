@@ -1,0 +1,43 @@
+{
+  "id": "S7",
+  "date": "2026-09-22",
+  "engine_version": "2.1.278",
+  "verdict": "PASS",
+  "literal_form": "claude -p 'Say done.' --output-format stream-json --verbose --include-hook-events --setting-sources project (project .claude/settings.json Stop hook, own marker-file guard)",
+  "observations": {
+    "hook_invocation_count_observed": 2,
+    "first_invocation_stop_hook_active": false,
+    "second_invocation_stop_hook_active": true,
+    "marker_file_fired": true,
+    "sentinel_reason_in_output": true,
+    "result_subtype": "success",
+    "result_num_turns": 2,
+    "raw_hook_log": [
+      {
+        "session_id": "7da83fb3-7718-4bc7-8490-53701d694378",
+        "transcript_path": "/home/eimi/.claude/projects/-tmp-archon-spikes-3-uns7wq-s7-repo-spltmp5k/7da83fb3-7718-4bc7-8490-53701d694378.jsonl",
+        "cwd": "/tmp/archon-spikes-3_uns7wq/s7-repo-spltmp5k",
+        "prompt_id": "51ecdad6-8ad3-44eb-b467-b2fc0b9af661",
+        "permission_mode": "default",
+        "hook_event_name": "Stop",
+        "stop_hook_active": false,
+        "last_assistant_message": "Done.",
+        "background_tasks": [],
+        "session_crons": []
+      },
+      {
+        "session_id": "7da83fb3-7718-4bc7-8490-53701d694378",
+        "transcript_path": "/home/eimi/.claude/projects/-tmp-archon-spikes-3-uns7wq-s7-repo-spltmp5k/7da83fb3-7718-4bc7-8490-53701d694378.jsonl",
+        "cwd": "/tmp/archon-spikes-3_uns7wq/s7-repo-spltmp5k",
+        "prompt_id": "51ecdad6-8ad3-44eb-b467-b2fc0b9af661",
+        "permission_mode": "default",
+        "hook_event_name": "Stop",
+        "stop_hook_active": true,
+        "last_assistant_message": "I see there's a stop hook that has blocked execution. The hook is indicating it can continue once with the token `S7-CONTINUE-ONCE-7d84a460`. \n\nThis appears to be part of a DevGod lifecycle management system. Would you like me to proceed with a continuation, or is there something specific you'd like me to do?",
+        "background_tasks": [],
+        "session_crons": []
+      }
+    ]
+  },
+  "cost_usd": 0.045462
+}

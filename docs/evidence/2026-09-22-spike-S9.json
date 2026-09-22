@@ -1,0 +1,23 @@
+{
+  "id": "S9",
+  "date": "2026-09-22",
+  "engine_version": "2.1.278",
+  "verdict": "FAIL",
+  "literal_form": "claude -p '<task>' --session-id 06a58cb8-6aea-4302-887a-d1cc10939428 (kill -9 after 1.5s) ; claude -p '<task>' --resume 06a58cb8-6aea-4302-887a-d1cc10939428 ; claude -p '<task>' --resume 06a58cb8-6aea-4302-887a-d1cc10939428 --fork-session",
+  "observations": {
+    "session_id_used": "06a58cb8-6aea-4302-887a-d1cc10939428",
+    "killed_mid_stream": true,
+    "transcript_path": "/home/eimi/.claude/projects/-tmp-archon-spikes-3_uns7wq-s9-75mytaa0/06a58cb8-6aea-4302-887a-d1cc10939428.jsonl",
+    "transcript_exists_after_kill": false,
+    "resume_init_session_id": "06a58cb8-6aea-4302-887a-d1cc10939428",
+    "resume_result_session_id": "06a58cb8-6aea-4302-887a-d1cc10939428",
+    "resume_result_subtype": "success",
+    "resume_num_turns": 1,
+    "fork_session_id": "bd50269d-843a-4c38-bb53-68077d932252",
+    "fork_session_id_differs_from_original": true,
+    "original_transcript_sha256_before_fork": null,
+    "original_transcript_sha256_after_fork": null,
+    "original_transcript_byte_identical_after_fork": false
+  },
+  "cost_usd": 0.017903
+}

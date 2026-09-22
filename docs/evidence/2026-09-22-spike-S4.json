@@ -1,0 +1,11 @@
+{
+  "id": "S4",
+  "date": "2026-09-22",
+  "engine_version": "2.1.278",
+  "verdict": "UNRESOLVED",
+  "literal_form": "not executed",
+  "observations": {
+    "reason": "spike module raised an unhandled exception: KeyError: 'http_code'"
+  },
+  "cost_usd": 0.0
+}

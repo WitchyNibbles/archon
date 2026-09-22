@@ -166,3 +166,48 @@ Ordered by blast radius. Each becomes a P0 spike with an executed-call guard (ze
 ## 8. Broader harness evidence carried forward
 
 The four predecessor post-mortems (devgod, archon-TS, coder-waifu, crabgic; `project-companion/docs/case-studies/`) share eight root causes: never field-proven before hardening; completion authority in something the agent cannot fix; gate-fights-author spirals; prose corpora code never loads; evidence that vouches for itself; whole plan before first run; learning loop never closed; accidental scope. The mechanisms that earned their place — claimed ≠ verified, sealed acceptance criteria, sandboxed execution, `verification[]` as executed argv, deterministic next action from on-disk state, bounded fail-open Stop continuation, honest residuals, the vacuity probe, standing policy at install — are all already present in devgod-recovery's kernel or are one small addition. devgod-recovery itself died eight minutes into its first real run because `Policy` typed the sandbox as `Literal["workspace-write"]` with `/tmp` excluded, so `uv` could not write its cache: the Archon check profile therefore gives every check a private writable scratch **and** a private `TMPDIR` inside it, and the acceptance suite runs a real `uv`/`npm` fixture, not stdlib only.
+
+---
+
+## 9. Spike book results — 2026-09-22, engine 2.1.278
+
+The book in [spikes.md](../spikes.md) was run on this host for $0.51. Verdicts: **7 PASS,
+2 FAIL, 3 UNRESOLVED**, plus a PASS on the host checks. Every evidence file is under
+`docs/evidence/2026-09-22-spike-*.json`. The two failures and the corrections they force
+are the most valuable output of the exercise, so they are recorded first.
+
+### Corrections this book forces on the sections above
+
+| # | Section corrected | What was wrong | What is true at 2.1.278 |
+|---|---|---|---|
+| 1 | §7 item 1 | Said the catalog "shows `Agent`" at 2.1.278. | That was the *interactive* catalog. The **headless** default catalog uses the literal `Task` and contains no `Agent`, no `Grep` and no `Glob`: `Task, Bash, CronCreate, CronDelete, Edit, ListAgents, PushNotification, ReportFindings, TaskCreate, TaskStop, WebFetch, Workflow, Write`. The rule name `Agent` aliases `Task`, and `--disallowedTools Agent` does remove it. crabgic's 2.1.218 finding still holds. **S1 FAIL** was an expectation error, not an engine change. |
+| 2 | §1.3, design §Verification | Implied the reviewer's tool catalog is exactly what `--tools` grants. | Passing `--json-schema` **auto-injects a `StructuredOutput` tool** on top of the allowlist. `--tools Read,Grep,Glob,Bash --json-schema S` yields `['Bash','Glob','Grep','Read','StructuredOutput']`. The hermeticity assertion must expect the requested set **plus** `StructuredOutput`, and must treat its absence as fatal. `Grep` and `Glob` are grantable by `--tools` even though absent from the default headless catalog, so the reviewer profile is unchanged otherwise. |
+| 3 | §3 | Called `--max-turns` unreliable because it is absent from `--help`. | It is **enforced**: the result comes back `subtype: error_max_turns`. `--max-budget-usd` is likewise enforced as `error_max_budget_usd`. Both are usable bounds. Set the reviewer turn cap generously (≥ 40): a reviewer given a low cap exhausts it exploring the snapshot and returns a null payload, which is bound exhaustion masquerading as a refusal. |
+| 4 | §1.4 | Assumed `skills` and `mcp_servers` are counts. | Both are **lists** in `system/init`; with `--disable-slash-commands` and `--strict-mcp-config` they are `[]`. Assert emptiness, not `== 0`. The granted tool list is returned **sorted**, not in requested order, so compare as a set. |
+| 5 | design §Verification, "if a reviewer must be resumed … `--resume`" | Assumed `--resume` recovers an interrupted reviewer. | **S9 FAIL.** After `kill -9` mid-stream the transcript did **not** exist on disk, and `--resume <same id>` returned `subtype: success` with `num_turns: 1` — it silently started fresh rather than recovering. `--session-id` does round-trip reliably into both `init` and `result`, which is all the independence proof needs. Treat an interrupted reviewer as a new attempt with a new session id; do not claim crash recovery for reviewer sessions. |
+
+### Verdicts
+
+| Spike | Verdict | What was established |
+|---|---|---|
+| S1 tool catalog | **FAIL** | Expectation error, corrected above. Deny-as-catalog-removal works: `--disallowedTools Agent` removed the tool. `--tools` matches exactly. |
+| S2 reviewer hermeticity | **UNRESOLVED** | Planted project and user hooks did not fire, `mcp_servers` and `skills` were empty, and the planted nonce did not leak — but the model answered without reading, so the executed-call guard refused to certify a PASS. The probe needs a task that forces a `Read`. The hermeticity signals themselves are all favourable. |
+| S3 structured output | **PASS** | Mediation confirmed. Instructed Sonnet called `ToolSearch` then `StructuredOutput` and returned a valid payload; uninstructed Haiku returned `structured_output: null` with `subtype: success` and said it had no such tool. This is why every reviewer prompt names the tool and why Haiku is never a reviewer. |
+| S4 engine sandbox | **UNRESOLVED** | The spike module raised `KeyError: 'http_code'`. A script defect, not an engine finding. The equivalent enforcement was measured directly during design (§1.1) and by S5. |
+| S5 kernel bwrap profile | **PASS** | Egress blocked, `~/.ssh` masked, private `/tmp` and scratch writable, against the real `archon.sandbox` module. |
+| S6 rate-limit signals | **PASS** | Both channels parse: `rate_limit_event{status: rejected}` and the `session limit` error string. Fakes only; no real limit was provoked. |
+| S7 Stop hook | **PASS** | Two invocations observed, `stop_hook_active` **false** then **true**, the sentinel reason reached the model, marker-file guard fired. The engine's own re-entry signal is real and is what bounds continuation. |
+| S8 post-compaction channel | **UNRESOLVED** | Honestly deferred: forcing a ≥100k-token compaction inside a single `-p` run would consume most of the book's budget. The inherited finding stands unverified at 2.1.278. |
+| S9 session identity | **FAIL** | Corrected above. `--session-id` round-trips; `--resume` after SIGKILL does not recover. |
+| S10 bounds | **PASS** | `error_max_turns` and `error_max_budget_usd` both observed. |
+| S11 plugin manifest | **PASS** | `claude plugin validate` passes with warnings; marketplace add and install work against an isolated `CLAUDE_CONFIG_DIR`. |
+| S12 auth | **PASS** | `--bare` refuses OAuth (exit 1). Both the real config dir and an isolated dir holding only a 0600 `.credentials.json` succeed; the isolated one is the recommended default because it exposes the fewest secrets. |
+| host | **PASS** | Claude Code 2.1.278, bubblewrap 0.9.0, socat 1.8.0.0, user namespaces permitted, `os.pidfd_open` available. |
+
+### Standing obligations
+
+S2, S4 and S8 are UNRESOLVED and therefore **restrict**: downstream code may use only the
+literal confirmed forms recorded in their evidence files and must not generalize. S2 and S4
+are probe defects and should be repaired and re-run before release; S8 needs either an
+interactive harness or a deliberate budget allocation. The tested engine range is
+`[2.1.278, 2.1.278]` and widens only by re-running this book.

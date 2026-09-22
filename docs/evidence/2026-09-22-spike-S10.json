@@ -1,0 +1,25 @@
+{
+  "id": "S10",
+  "date": "2026-09-22",
+  "engine_version": "2.1.278",
+  "verdict": "PASS",
+  "literal_form": "claude -p '<5-step Bash loop>' --tools Bash --max-turns 1 | --max-budget-usd 0.01",
+  "observations": {
+    "max_turns_arm": {
+      "subtype": "error_max_turns",
+      "num_turns": 2,
+      "bash_calls_observed": 1,
+      "enforced": true,
+      "is_error": true
+    },
+    "max_budget_usd_arm": {
+      "subtype": "error_max_budget_usd",
+      "total_cost_usd": 0.026466,
+      "bash_calls_observed": 1,
+      "enforced": true,
+      "is_error": true
+    },
+    "note": "--max-turns is documented-absent from `claude --help` at 2.1.278 though accepted without CLI error (see docs/research). Treat as unreliable unless this evidence's max_turns_arm.enforced is true."
+  },
+  "cost_usd": 0.052848
+}

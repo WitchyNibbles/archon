@@ -1,0 +1,186 @@
+"""Host one-liners folded into ``run_all.py`` per docs/spikes.md.
+
+Writes ``docs/evidence/<date>-spike-host.json`` with: ``claude --version``,
+``bwrap --version``, ``socat -V``, AppArmor status /
+``/proc/sys/kernel/unprivileged_userns_clone``, Python ``os.pidfd_open``
+availability, and ``isolation: worktree`` base-branch behavior (companion
+H3) via a subagent that prints ``git log -1`` in its worktree.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+
+from . import common
+
+SPIKE_ID = "host"
+
+WORKTREE_AGENT_FRONTMATTER = """---
+name: worktree-prober
+description: Prints git log -1 and the current branch from inside its isolated worktree.
+tools: Bash
+isolation: worktree
+model: haiku
+---
+Run `git log -1 --oneline` and `git branch --show-current` using the Bash tool (two
+separate calls), then reply with exactly:
+
+LOG: <the git log -1 --oneline output>
+BRANCH: <the git branch --show-current output>
+"""
+
+
+def _run_version(args: list[str]) -> dict:
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=15)
+        return {"ok": proc.returncode == 0, "returncode": proc.returncode, "output": (proc.stdout or proc.stderr).strip()}
+    except FileNotFoundError:
+        return {"ok": False, "returncode": None, "output": "binary not found on PATH"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "returncode": None, "output": "timed out"}
+
+
+def _sandbox_signals() -> dict:
+    signals: dict = {}
+    path = "/proc/sys/kernel/unprivileged_userns_clone"
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            signals["unprivileged_userns_clone"] = f.read().strip()
+    else:
+        signals["unprivileged_userns_clone"] = "path absent on this kernel"
+
+    aa_enabled = shutil.which("aa-enabled")
+    if aa_enabled:
+        proc = subprocess.run([aa_enabled], capture_output=True, text=True, timeout=10)
+        signals["apparmor_aa_enabled"] = {"returncode": proc.returncode, "output": (proc.stdout or proc.stderr).strip()}
+    elif os.path.exists("/sys/module/apparmor/parameters/enabled"):
+        with open("/sys/module/apparmor/parameters/enabled", encoding="utf-8") as f:
+            signals["apparmor_module_parameter"] = f.read().strip()
+    else:
+        signals["apparmor"] = "no aa-enabled binary and no /sys/module/apparmor/parameters/enabled"
+    return signals
+
+
+def _pidfd_open_probe() -> dict:
+    if not hasattr(os, "pidfd_open"):
+        return {"available": False, "reason": "os.pidfd_open not exposed by this Python build"}
+    try:
+        fd = os.pidfd_open(os.getpid())
+        os.close(fd)
+        return {"available": True, "functional": True}
+    except Exception as exc:  # noqa: BLE001
+        return {"available": True, "functional": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _worktree_base_branch_probe(ctx: common.SpikeContext) -> dict:
+    if not ctx.allow_live:
+        return {"skipped": True, "reason": "not authorized: --allow-live not passed"}
+    if not ctx.has_headroom(0.20):
+        return {"skipped": True, "reason": "budget exceeded: insufficient remaining --budget-usd headroom"}
+
+    repo = ctx.new_temp_dir("host-worktree-repo")
+    common.init_git_repo(repo)
+
+    (repo / "README.md").write_text("main content\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "main: initial commit"], cwd=str(repo), check=True)
+    main_branch = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=str(repo), capture_output=True, text=True, check=True
+    ).stdout.strip()
+    main_log = subprocess.run(
+        ["git", "log", "-1", "--oneline"], cwd=str(repo), capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    subprocess.run(["git", "checkout", "-q", "-b", "feature-branch"], cwd=str(repo), check=True)
+    (repo / "README.md").write_text("feature content, distinct from main\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feature: distinguishing commit"], cwd=str(repo), check=True)
+    feature_log = subprocess.run(
+        ["git", "log", "-1", "--oneline"], cwd=str(repo), capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    agents_dir = repo / ".claude" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "worktree-prober.md").write_text(WORKTREE_AGENT_FRONTMATTER, encoding="utf-8")
+
+    args = [
+        "-p",
+        "Use the worktree-prober subagent (Agent tool) to run its task, then report back its "
+        "exact LOG and BRANCH lines verbatim, unmodified.",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--model",
+        "haiku",
+    ]
+    result = common.run_claude(args, cwd=repo, timeout=90)
+    cost = common.extract_cost(result)
+    ctx.record_spend(cost)
+
+    res_ev = common.result_event(result)
+    agent_calls = common.executed_tool_calls(result, tool_name="Agent") or common.executed_tool_calls(
+        result, tool_name="Task"
+    )
+    output_text = (res_ev or {}).get("result", "") or ""
+
+    return {
+        "skipped": False,
+        "cost_usd": cost,
+        "repo_current_branch_at_spawn_time": "feature-branch",
+        "main_branch_name": main_branch,
+        "main_branch_log": main_log,
+        "feature_branch_log": feature_log,
+        "subagent_tool_calls_observed": len(agent_calls),
+        "manager_result_text": output_text[:1500],
+        "manager_result_subtype": (res_ev or {}).get("subtype"),
+        "worktree_appears_based_on_main_not_head": (
+            main_log.split()[0] in output_text if main_log else None
+        ),
+        "worktree_appears_based_on_feature_head": (
+            feature_log.split()[0] in output_text if feature_log else None
+        ),
+    }
+
+
+def run(ctx: common.SpikeContext) -> common.EvidenceRecord:
+    claude_version = _run_version([common.CLAUDE_BIN, "--version"])
+    bwrap_version = _run_version(["bwrap", "--version"])
+    socat_version = _run_version(["socat", "-V"])
+    sandbox_signals = _sandbox_signals()
+    pidfd = _pidfd_open_probe()
+    worktree = _worktree_base_branch_probe(ctx)
+
+    observations = {
+        "claude_version": claude_version,
+        "bwrap_version": bwrap_version,
+        "socat_version": socat_version,
+        "sandbox_kernel_signals": sandbox_signals,
+        "pidfd_open": pidfd,
+        "isolation_worktree_base_branch_probe": worktree,
+    }
+
+    core_tools_present = claude_version["ok"] and bwrap_version["ok"] and socat_version["ok"]
+    verdict = "PASS" if core_tools_present else "FAIL"
+    if worktree.get("skipped"):
+        # Core one-liners can still PASS/FAIL on their own; the worktree
+        # probe being skipped for lack of authorization doesn't invalidate
+        # them, but is called out honestly rather than silently dropped.
+        observations["worktree_probe_note"] = "worktree base-branch probe not executed: " + str(
+            worktree.get("reason")
+        )
+
+    return common.EvidenceRecord(
+        id=SPIKE_ID,
+        date=ctx.date,
+        engine_version=ctx.engine_version,
+        verdict=verdict,
+        literal_form=(
+            "claude --version ; bwrap --version ; socat -V ; "
+            "/proc/sys/kernel/unprivileged_userns_clone or aa-enabled ; os.pidfd_open(getpid()) ; "
+            "claude -p '<spawn worktree-prober subagent>' (isolation: worktree agent, base-branch check)"
+        ),
+        observations=observations,
+        cost_usd=worktree.get("cost_usd", 0.0) if isinstance(worktree, dict) else 0.0,
+    )

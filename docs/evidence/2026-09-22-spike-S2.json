@@ -1,0 +1,17 @@
+{
+  "id": "S2",
+  "date": "2026-09-22",
+  "engine_version": "2.1.278",
+  "verdict": "UNRESOLVED",
+  "literal_form": "claude -p '<task>' --setting-sources '' --strict-mcp-config --tools Read",
+  "observations": {
+    "reason": "executed-call guard: no Read tool_use observed in the assistant stream (model may have refused or answered without reading)",
+    "init_mcp_servers": [],
+    "init_skills": [],
+    "project_marker_fired": false,
+    "user_marker_fired": false,
+    "nonce_leaked": false,
+    "cost_usd": 0.0
+  },
+  "cost_usd": 0.0
+}

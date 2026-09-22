@@ -1,0 +1,32 @@
+{
+  "id": "S3",
+  "date": "2026-09-22",
+  "engine_version": "2.1.278",
+  "verdict": "PASS",
+  "literal_form": "arm1: claude -p '<StructuredOutput-instructed prompt>' --model sonnet --json-schema '<ReviewPayload>' --setting-sources ''  |  arm2: claude -p 'Say hello.' --model haiku --json-schema '<ReviewPayload>' --setting-sources ''",
+  "observations": {
+    "arm1_sonnet_instructed": {
+      "structured_output": {
+        "decision": "approve",
+        "summary": "ok"
+      },
+      "valid_against_schema_shape": true,
+      "subtype": "success",
+      "is_error": false,
+      "tool_use_blocks_observed": 2,
+      "tool_names_observed": [
+        "ToolSearch",
+        "StructuredOutput"
+      ]
+    },
+    "arm2_haiku_uninstructed": {
+      "structured_output": null,
+      "structured_output_is_null": true,
+      "subtype": "success",
+      "is_error": false,
+      "model_text": "I don't have a StructuredOutput tool available in my current toolset. Looking at the tools I have access to, I can see:\n\n- Read, Edit, Write (file operations)\n- Bash (shell commands)\n- ToolSearch, Agent (exploration and delegation)\n- Various deferred tools that can be loaded via ToolSearch (TaskCreate, Monitor, WebSearch, etc.)\n\nCould you clarify what you'd like me to do? If you're looking for a specific tool or capability, let me know and I can help you find the right approach."
+    },
+    "error_max_structured_output_retries_observed": false
+  },
+  "cost_usd": 0.112012
+}
