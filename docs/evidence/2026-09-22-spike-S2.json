@@ -2,16 +2,21 @@
   "id": "S2",
   "date": "2026-09-22",
   "engine_version": "2.1.278",
-  "verdict": "UNRESOLVED",
-  "literal_form": "claude -p '<task>' --setting-sources '' --strict-mcp-config --tools Read",
+  "verdict": "PASS",
+  "literal_form": "claude -p '<task requiring Read>' --output-format stream-json --verbose --model haiku --tools Read --setting-sources '' --strict-mcp-config --disable-slash-commands --permission-mode dontAsk  (CLAUDE_CONFIG_DIR pointed at isolated fixture dir)",
   "observations": {
-    "reason": "executed-call guard: no Read tool_use observed in the assistant stream (model may have refused or answered without reading)",
     "init_mcp_servers": [],
-    "init_skills": [],
-    "project_marker_fired": false,
-    "user_marker_fired": false,
-    "nonce_leaked": false,
-    "cost_usd": 0.0
+    "init_skills_count": 0,
+    "project_hook_marker_fired": false,
+    "user_hook_marker_fired": false,
+    "nonce_leaked_into_output": false,
+    "executed_read_tool_calls": 1,
+    "result_subtype": "success",
+    "result_is_error": false,
+    "credentials_linked": true,
+    "credentials_source_present": true,
+    "credentials_link_target": "/home/eimi/.claude/.credentials.json",
+    "credentials_copied": false
   },
-  "cost_usd": 0.0
+  "cost_usd": 0.017713
 }

@@ -2,7 +2,7 @@
   "id": "S1",
   "date": "2026-09-22",
   "engine_version": "2.1.278",
-  "verdict": "FAIL",
+  "verdict": "PASS",
   "literal_form": "claude -p '<prompt>' --output-format stream-json --verbose --model haiku --setting-sources '' --strict-mcp-config --disable-slash-commands [--disallowedTools Agent | --tools Read]",
   "observations": {
     "default_tools": [
@@ -35,7 +35,10 @@
       "Workflow",
       "Write"
     ],
-    "agent_literal_name_present_by_default": false,
+    "subagent_dispatch_literal_names": [
+      "Task"
+    ],
+    "subagent_dispatch_present_by_default": true,
     "deny_agent_tools": [
       "Bash",
       "CronCreate",
@@ -65,7 +68,10 @@
       "Workflow",
       "Write"
     ],
-    "agent_removed_by_disallowedTools": true,
+    "subagent_dispatch_removed_by_disallowedTools_Agent": true,
+    "removed_by_deny": [
+      "Task"
+    ],
     "tools_read_only_tools": [
       "Read"
     ],
@@ -73,5 +79,5 @@
     "engine_reported_model": "claude-haiku-4-5-20251001",
     "permission_mode_default": "default"
   },
-  "cost_usd": 0.115843
+  "cost_usd": 0.048568
 }

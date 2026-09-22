@@ -211,3 +211,35 @@ literal confirmed forms recorded in their evidence files and must not generalize
 are probe defects and should be repaired and re-run before release; S8 needs either an
 interactive harness or a deliberate budget allocation. The tested engine range is
 `[2.1.278, 2.1.278]` and widens only by re-running this book.
+
+## 10. Second book run — 2026-09-22, engine 2.1.278, after probe repair
+
+Three probes were repaired and re-run. All three now resolve **PASS**, and the tested
+engine range is unchanged at `[2.1.278, 2.1.278]`. Total spend for the repair run was
+`$0.24`. The §9 verdict table above is superseded for S1, S2 and S4 only; every other row
+still stands, and S8 remains honestly UNRESOLVED.
+
+| Spike | Was | Now | Why it changed |
+|---|---|---|---|
+| S1 tool catalog | FAIL | **PASS** | The criterion was wrong, not the engine. It demanded the literal `Agent`; the engine reports `Task`. The spike now records which spelling is live and still requires that `--disallowedTools Agent` remove it. Observed removal set is exactly `['Task']`. |
+| S2 reviewer hermeticity | UNRESOLVED | **PASS** | The probe never reached a model turn. See correction 6 below. |
+| S4 engine sandbox | UNRESOLVED (then inconclusive) | **PASS** | Two separate defects, corrections 7 and 8 below. |
+
+### Further corrections
+
+| # | Section corrected | What was wrong | What is true at 2.1.278 |
+|---|---|---|---|
+| 6 | §5, design §Verification | Assumed a reviewer session can be isolated by pointing `CLAUDE_CONFIG_DIR` at an empty directory. | **Subscription credentials live inside that directory.** An empty one de-authenticates the session: the engine answers `Not logged in · Please run /login` with `error: authentication_failed`, `total_cost_usd: 0` and `num_turns: 1`. No model turn happens at all. Relocation is still correct, but the credential file must be carried across — `claude_adapter` copies a 0600 copy into its 0700 control directory and purges it, and falls back to the user's own directory when no credential file exists. Suppression of the user tier comes from `--setting-sources ''`, never from moving the directory. |
+| 7 | §1.1 | Recorded `denyRead` as producing "ENOENT vs EACCES" without distinguishing them. | `denyRead` presents as **ENOENT**: the path is made invisible, not unreadable. Proven by planting the same file under two names — one masked, one not — and reading both in one session. The masked read returned `cat: …/planted.txt: No such file or directory`; the control read returned the nonce. A masked path is therefore indistinguishable from an absent one by error shape alone, which is why the original arm against `~/.ssh/id_rsa` proved nothing on a host that has no `id_rsa`. |
+| 8 | §1.1 | Recorded only one egress denial shape. | There are **two**, and both must be recognized. A `curl` under `strictAllowlist` first produces a tool-level refusal, `allowed_domains cannot widen network access in this session`, and on the attempt that reaches the network, exit code **56** with a `<sandbox_violations>` block reading `deny network-outbound example.com:443 (host is not on the allow list)`. `denyWrite` is distinct again: exit 1, `Read-only file system`. `permission_denials` stayed `[]` throughout — a sandbox denial is never a permission prompt. |
+
+### What the repair run established about probe design
+
+Two of the three original failures were the probe lying to itself rather than the engine
+misbehaving, and both were caught only because the evidence was read rather than the
+verdict. S2's executed-call guard did its job: it refused to certify hermeticity from a
+session that never authenticated, even though every hermeticity signal looked clean. S4's
+masked-read arm did not have such a guard, passed its verdict on other criteria, and
+recorded an error shape that was really just a missing file. **A negative result needs a
+positive control.** Every masking arm now plants its own target and pairs it with an
+identical unmasked control.
