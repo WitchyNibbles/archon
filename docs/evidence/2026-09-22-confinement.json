@@ -1,0 +1,93 @@
+{
+  "arms": [
+    {
+      "arm": "external egress",
+      "as_expected": true,
+      "exit_code": 1,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "OSError: [Errno 101] Network is unreachable",
+      "stdout": ""
+    },
+    {
+      "arm": "external name resolution",
+      "as_expected": true,
+      "exit_code": 1,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "socket.gaierror: [Errno -3] Temporary failure in name resolution",
+      "stdout": ""
+    },
+    {
+      "arm": "masked home directory read",
+      "as_expected": true,
+      "exit_code": 7,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "2 [Errno 2] No such file or directory: '/tmp/archon-confinement-ybb09ze0/home/.ssh/marker'"
+    },
+    {
+      "arm": "masked home file read",
+      "as_expected": true,
+      "exit_code": 7,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "13 [Errno 13] Permission denied: '/tmp/archon-confinement-ybb09ze0/home/.netrc'"
+    },
+    {
+      "arm": "private state write",
+      "as_expected": true,
+      "exit_code": 7,
+      "expects": "deny",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "30 [Errno 30] Read-only file system: '/tmp/archon-confinement-ybb09ze0/state/archon.sqlite3'"
+    },
+    {
+      "arm": "unmasked read of same marker (control)",
+      "as_expected": true,
+      "exit_code": 0,
+      "expects": "allow",
+      "leaked_planted_marker": true,
+      "observed": "",
+      "stdout": "archon-planted-marker-value"
+    },
+    {
+      "arm": "worktree write (control)",
+      "as_expected": true,
+      "exit_code": 0,
+      "expects": "allow",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "control"
+    },
+    {
+      "arm": "$TMPDIR cache write (control)",
+      "as_expected": true,
+      "exit_code": 0,
+      "expects": "allow",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "cache"
+    },
+    {
+      "arm": "scratch $HOME cache write (control)",
+      "as_expected": true,
+      "exit_code": 0,
+      "expects": "allow",
+      "leaked_planted_marker": false,
+      "observed": "",
+      "stdout": "cache"
+    }
+  ],
+  "bwrap_version": "bubblewrap 0.9.0",
+  "date": "2026-09-22",
+  "denied_arms": 5,
+  "permitted_arms": 4,
+  "planted_marker_leaked_past_a_mask": false,
+  "positive_control_read_the_planted_marker": true,
+  "profile_digest": "c9a983b9d8911f2ca5e310c9738012a28898d9b8287f5892609241544484d8c1",
+  "verdict": "PASS"
+}
