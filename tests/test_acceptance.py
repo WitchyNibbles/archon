@@ -499,8 +499,10 @@ def test_rate_limited_verification_pauses_and_resumes_without_rerunning_checks(
             assert paused["job"]["resume_at"] == window
             assert paused["job"]["attempt"] == 1, "A closed window costs no attempt."
             assert paused["run"]["state"] != "verified"
-            # The manager is never told to report, repair, or inspect a pause.
-            assert paused["next_action"]["action"] in {"wait", "verify"}
+            # A pause is `wait`, never `report`, `repair` or `inspect`. Telling a
+            # manager to inspect a run that will resume itself invites a pointless
+            # manual recovery and, worse, a second attempt against a closed window.
+            assert paused["next_action"]["action"] == "wait", paused["next_action"]
             assert len(transport.command_calls) == 1
             assert [item for item in store.list_evidence(run_id) if item["kind"] == "check"]
             assert len(paused["evidence"]["reviews"]) == 2
