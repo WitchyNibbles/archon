@@ -178,10 +178,10 @@ class ClaudeAdapter:
 
 `run_review` event handling, in order:
 
-1. `system/init`: assert `session_id == requested`, `tools` set equals `{"Read","Grep","Glob","Bash"}` (or the literal spike-confirmed names), `mcp_servers == []`, `skills == 0`, `permissionMode == "dontAsk"`, `model` starts with the requested family. Any mismatch → `AdapterError("reviewer session not hermetic")`; the session is cancelled and **no result is accepted**.
+1. `system/init`: assert `session_id == requested`; `tools` **as a set** equals `{"Read","Grep","Glob","Bash"} | {"StructuredOutput"}`, because `--json-schema` injects that tool on top of `--tools` and the engine returns the catalog sorted rather than in requested order (S1, second book run); `mcp_servers` and `skills` both **empty** — they are lists, not counts, so assert emptiness and never `== 0`; `permissionMode == "dontAsk"`; `model` starts with the requested family. Any mismatch, including a *missing* `StructuredOutput`, → `AdapterError("reviewer session not hermetic")`; the session is cancelled and **no result is accepted**.
 2. `rate_limit_event`: record `unifiedWindows`; on `status == "rejected"` set `rate_limited_until = resetsAt` and cancel the session.
 3. `assistant` with `tool_use`: count; a `tool_use` whose name is not in the allowed catalog aborts the review (defence in depth; the engine already removed them).
-4. `result`: assert `session_id`; if `is_error` and the text matches `hit your .* limit`, parse the reset time and raise a rate-limit pause; if `structured_output is None` → `AdapterError("no structured output")` (bounded retry, never evidence); else `ReviewPayload.model_validate`. Record `total_cost_usd`, `permission_denials`, `num_turns`, `result.uuid`.
+4. `result`: assert `session_id`; if `is_error` and the text matches `hit your .* limit`, parse the reset time and raise a rate-limit pause; if the subtype is `error_max_turns` or `error_max_budget_usd`, report **bound exhaustion**, distinctly from refusal — both bounds are enforced (S10) and an exhausted reviewer returns `structured_output: null`, which is indistinguishable from a refusal by payload alone, so the turn cap must be generous (≥ 40) or reviewers exhaust themselves exploring the snapshot; if `structured_output is None` → `AdapterError("no structured output")` (bounded retry, never evidence); else `ReviewPayload.model_validate`. Record `total_cost_usd`, `permission_denials`, `num_turns`, `result.uuid`.
 5. Pass requires `termination_confirmed()` after close, as for commands.
 
 Stdout of `claude` is the only channel parsed; stderr is captured to an artifact, capped. Output caps come from `policy.max_output_bytes`. The role prompt and packet are never passed on the command line (argv is visible to other processes); the prompt goes on stdin and the role text through `--append-system-prompt-file` in the 0700 job directory.
@@ -193,7 +193,9 @@ archon-launch <control_dir> <nonce> check   -- <bwrap argv…>
 archon-launch <control_dir> <nonce> review  -- claude -p …
 ```
 
-Both branches call `supervise(command, receipt_dir, nonce)` unchanged; `review` additionally sets `CLAUDE_CONFIG_DIR` only if the adapter was given one (spike S12 decides whether an isolated config dir with copied credentials is required or whether the user's dir with `--setting-sources ""` is sufficient; default is the user's dir).
+Both branches call `supervise(command, receipt_dir, nonce)` unchanged; `review` additionally sets `CLAUDE_CONFIG_DIR`.
+
+S12 and the S2 repair settled the open question, and the answer inverted the placeholder default. **The default is an isolated config directory** under the 0700 control directory, holding a 0600 copy of the credential file and purged in a `finally`; it exposes the fewest secrets to the reviewer. It is not optional hardening but a correctness requirement in one direction: an isolated directory *without* the credential file de-authenticates the session outright, which the engine reports as `Not logged in` with `error: authentication_failed`, zero cost and one turn, and which looks like a silent refusal. When the host has no credential file — keychain or API-key auth — the adapter falls back to the user's own directory rather than handing the reviewer an empty one.
 
 ### Persistence (P1)
 
