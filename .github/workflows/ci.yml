@@ -1,0 +1,83 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The check profile is enforced by bubblewrap; without it the sandbox-marked
+      # tests would skip and AC-16 would go unproven on CI.
+      - name: Install sandbox dependencies
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+
+      - name: Report sandbox availability
+        run: |
+          bwrap --version
+          socat -V | head -1
+          bwrap --ro-bind / / --unshare-net -- true && echo "bwrap usable"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync locked environment
+        run: uv sync --locked --python ${{ matrix.python-version }}
+
+      - name: Lint
+        run: uv run --locked ruff check src tests scripts
+
+      - name: Type check
+        run: uv run --locked mypy
+
+      # Live tests need an authenticated Claude Code runtime and model quota; they are
+      # recorded separately in docs/verification.md, never in ordinary CI.
+      - name: Test
+        run: uv run --locked pytest -m 'not live' -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build distribution
+        run: uv build --no-sources
+      - name: Check packaged assets are present
+        run: |
+          python3 - <<'PY'
+          import pathlib, zipfile, sys
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+          if not wheels:
+              sys.exit("no wheel was built")
+          names = set(zipfile.ZipFile(wheels[-1]).namelist())
+          required = [
+              "archon/assets/claude-block.md",
+              "archon/assets/archon/skills/archon-manager/SKILL.md",
+              "archon/assets/archon/agents/archon-familiar.md",
+              "archon/assets/archon/agents/archon-warden.md",
+              "archon/assets/archon/agents/archon-oracle.md",
+              "archon/assets/archon/reviewers/reviewer.md",
+              "archon/assets/archon/reviewers/qa_engineer.md",
+              "archon/assets/archon/reviewers/security_reviewer.md",
+              "archon/assets/archon/hooks/hooks.json",
+              "archon/assets/archon/.mcp.json",
+              "archon/assets/archon/.claude-plugin/plugin.json",
+          ]
+          missing = [name for name in required if name not in names]
+          if missing:
+              sys.exit("wheel is missing packaged assets: " + ", ".join(missing))
+          print(f"{wheels[-1].name} carries all {len(required)} required assets")
+          PY
