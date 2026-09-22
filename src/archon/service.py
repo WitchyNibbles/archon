@@ -1,10 +1,12 @@
 """Native-manager workflow API; public claims never grant verification authority."""
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import json
 import os
 import stat
+import time
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -310,6 +312,11 @@ class ArchonService:
             return action("stop", "Run was cancelled; preserve its branch and recorded evidence.")
         if run["state"] == "verified":
             return action("report", "Current checks and independent reviews passed; report the local branch for human review.", branch=run["spec"]["branch"], gate=run.get("gate"))
+        paused = next((j for j in jobs if j["state"] == "paused"), None)
+        if paused:
+            resume_at = paused["resume_at"]
+            return action("wait", f"A verification job is paused for a provider usage window that reopens at epoch {resume_at}; it resumes automatically once reached.",
+                          job_id=paused["job_id"], resume_at=resume_at)
         if run["state"] == "paused":
             return action("resume", "Run is paused; restore the checkpoint when the authorized continuation resumes.")
         running = [j for j in jobs if j["state"] == "running"]
@@ -358,6 +365,31 @@ class ArchonService:
         if run["state"] in {"paused", "blocked"}:
             self.store.set_run_state(run["run_id"], "active", reason="Restored native continuation from durable checkpoint.")
         return self.status(run["run_id"])
+
+    async def wait(self, job_id: str, timeout_seconds: float = 30) -> dict:
+        """Poll a job until it leaves 'paused'/'queued'/'running', or the timeout elapses.
+
+        A timeout is not an error and cancels nothing; it simply means the job
+        is still active when this call's budget runs out. Every poll calls
+        `reconcile_jobs` so a job whose provider usage window has reopened
+        unpauses itself without a separate `resume` call.
+        """
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not 0 <= timeout_seconds <= 60:
+            raise ServiceError("Wait timeout must be between 0 and 60 seconds.")
+        poll_interval = 0.2
+        deadline = time.monotonic() + timeout_seconds
+        job = self.store.get_job(job_id)
+        run_id = job["run_id"]
+        while job["state"] in {"paused", "queued", "running"}:
+            self.store.reconcile_jobs()
+            job = self.store.get_job(job_id)
+            if job["state"] not in {"paused", "queued", "running"}:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(poll_interval, remaining))
+        return {"job_id": job_id, "run_id": run_id, "state": job["state"], "next_action": self.next_action(run_id)}
 
     async def verify(self, run_id: str | None = None) -> dict:
         run = self._resolve(run_id)

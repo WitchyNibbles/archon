@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 import pytest
 from pydantic import ValidationError
@@ -281,3 +282,60 @@ def test_public_diagnostics_do_not_follow_secret_links_or_block_on_fifo(service,
     pipe = artifacts / "provider-pipe"
     os.mkfifo(pipe)
     assert "not a regular file" in service._excerpt({"path": str(pipe)})
+
+
+def test_status_reports_wait_with_resume_at_while_paused_and_stops_once_resumed(service, monkeypatch):
+    run_id = start(service)["run"]["run_id"]
+    for state in ("implementing", "verifying"):
+        service.task_update(run_id, "one", state)
+    candidate = service._candidate(service.store.get_run(run_id))
+    coordinator = service.store.enqueue_job(run_id, "verification", candidate, idempotency_key="rate-limited")
+    lease = service.store.claim_job(coordinator["job_id"], "executor")
+    resume_at = int(time.time()) + 1000
+    assert service.store.pause_job(coordinator["job_id"], lease.attempt, lease.lease_token, resume_at, "usage window closed")
+    status = service.status(run_id)
+    assert status["next_action"]["action"] == "wait"
+    assert status["next_action"]["inputs"] == {"job_id": coordinator["job_id"], "resume_at": resume_at}
+    monkeypatch.setattr("archon.store.time.time", lambda: resume_at + 1)
+    resumed_status = service.status(run_id)
+    assert resumed_status["next_action"]["action"] != "wait"
+    assert service.store.get_job(coordinator["job_id"])["state"] == "queued"
+
+
+def test_wait_returns_early_when_job_leaves_paused_without_losing_its_attempt(service):
+    run_id = start(service)["run"]["run_id"]
+    candidate = service._candidate(service.store.get_run(run_id))
+    check = service.store.enqueue_job(run_id, "check", candidate, idempotency_key="paused-check")
+    lease = service.store.claim_job(check["job_id"], "executor")
+    resume_at = int(time.time()) - 1  # already due
+
+    async def resolve_after_a_moment():
+        await asyncio.sleep(0.05)
+        service.store.pause_job(check["job_id"], lease.attempt, lease.lease_token, resume_at, "usage window closed")
+        service.store.unpause_due_jobs()
+        reclaimed = service.store.claim_job(check["job_id"], "executor-2")
+        assert reclaimed.attempt == lease.attempt
+        service.store.finish_job(reclaimed, "succeeded")
+
+    async def exercise():
+        started = time.monotonic()
+        result, _ = await asyncio.gather(service.wait(check["job_id"], timeout_seconds=5), resolve_after_a_moment())
+        return result, time.monotonic() - started
+
+    result, elapsed = asyncio.run(exercise())
+    assert result["job_id"] == check["job_id"]
+    assert result["state"] == "succeeded"
+    assert elapsed < 2  # returned long before the 5s timeout budget
+
+
+def test_wait_returns_without_error_on_timeout_and_rejects_bad_timeouts(service):
+    run_id = start(service)["run"]["run_id"]
+    candidate = service._candidate(service.store.get_run(run_id))
+    stuck = service.store.enqueue_job(run_id, "verification", candidate, idempotency_key="stuck-queued")
+    result = asyncio.run(service.wait(stuck["job_id"], timeout_seconds=0.3))
+    assert result["job_id"] == stuck["job_id"]
+    assert result["state"] == "queued"
+    with pytest.raises(ServiceError, match="between 0 and 60"):
+        asyncio.run(service.wait(stuck["job_id"], timeout_seconds=61))
+    with pytest.raises(ServiceError, match="between 0 and 60"):
+        asyncio.run(service.wait(stuck["job_id"], timeout_seconds=-1))

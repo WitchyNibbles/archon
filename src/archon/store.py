@@ -78,7 +78,7 @@ class Store:
         self._db.execute("PRAGMA busy_timeout=10000")
         self._db.execute("PRAGMA journal_mode=WAL")
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             raise StoreError(f"Unsupported state schema {version}; use a compatible Archon release.")
         self._db.executescript("""
             CREATE TABLE IF NOT EXISTS runs (
@@ -100,7 +100,7 @@ class Store:
                 payload TEXT NOT NULL, result TEXT, error TEXT,
                 attempt INTEGER NOT NULL DEFAULT 0, lease_token TEXT, lease_expires_at REAL,
                 owner TEXT, process_id INTEGER, process_identity TEXT,
-                created_at REAL NOT NULL, updated_at REAL NOT NULL
+                created_at REAL NOT NULL, updated_at REAL NOT NULL, resume_at INTEGER
             );
             CREATE INDEX IF NOT EXISTS jobs_run ON jobs(run_id,state);
             CREATE TABLE IF NOT EXISTS evidence (
@@ -121,8 +121,18 @@ class Store:
                 kind TEXT NOT NULL, payload TEXT NOT NULL, created_at REAL NOT NULL,
                 event_key TEXT UNIQUE
             );
-            PRAGMA user_version=1;
         """)
+        if version < 2:
+            # Migration 1 -> 2: a database created before the paused-job
+            # lifecycle existed has a `jobs` table with no `resume_at`
+            # column; the CREATE TABLE IF NOT EXISTS above is a no-op for it,
+            # so add the column explicitly. A brand-new (version 0) database
+            # already has it from the CREATE TABLE above. No rows are lost or
+            # rewritten either way.
+            columns = {row[1] for row in self._db.execute("PRAGMA table_info(jobs)")}
+            if "resume_at" not in columns:
+                self._db.execute("ALTER TABLE jobs ADD COLUMN resume_at INTEGER")
+            self._db.execute("PRAGMA user_version=2")
 
     def close(self) -> None:
         with self._lock:
@@ -377,14 +387,21 @@ class Store:
             job = self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone(), "job")
             if job["state"] != "queued":
                 return None
+            if job["resume_at"] is not None and job["resume_at"] > time.time():
+                return None
             run = db.execute("SELECT state FROM runs WHERE run_id=?", (job["run_id"],)).fetchone()
             if run["state"] == "cancelled":
                 return None
+            # A row whose `resume_at` is still set just left `unpause_due_jobs`;
+            # resuming it is not a new dispatch, so it keeps its running attempt
+            # number instead of spending one. Any other queued row (fresh, or
+            # requeued after a lease expiry / explicit retry) gets the next.
+            resumed = job["resume_at"] is not None
             token, expires = secrets.token_hex(24), time.time() + lease_seconds
-            attempt = job["attempt"] + 1
-            db.execute("UPDATE jobs SET state='running',attempt=?,lease_token=?,lease_expires_at=?,owner=?,updated_at=? WHERE job_id=?",
+            attempt = job["attempt"] if resumed else job["attempt"] + 1
+            db.execute("UPDATE jobs SET state='running',attempt=?,lease_token=?,lease_expires_at=?,owner=?,resume_at=NULL,updated_at=? WHERE job_id=?",
                        (attempt, token, expires, owner, time.time(), job_id))
-            self._event(db, job["run_id"], "job.claimed", {"attempt": attempt, "owner": owner}, job_id)
+            self._event(db, job["run_id"], "job.claimed", {"attempt": attempt, "owner": owner, "resumed": resumed}, job_id)
         return JobLease(job_id=job_id, attempt=attempt, lease_token=token,
                         lease_expires_at=datetime.fromtimestamp(expires, UTC).isoformat())
 
@@ -417,16 +434,57 @@ class Store:
             self._event(db, job["run_id"], "job.finished", {"state": state, "attempt": job["attempt"], "error": error}, job["job_id"])
             return True
 
+    def pause_job(self, job_id: str, attempt: int, lease_token: str, resume_at: int, reason: str) -> bool:
+        """Park a running job on a provider usage window without spending its attempt.
+
+        Lease-fenced exactly like ``finish_job``: the job must still be
+        'running' with the matching ``attempt`` and ``lease_token``, and the
+        lease must not have expired, or nothing is written and ``False`` is
+        returned (a stale attempt, a wrong token, or a job that already left
+        'running'). On success the job moves to 'paused', ``resume_at`` is
+        recorded, the lease is cleared, and an event is appended. The attempt
+        counter is left untouched: a pause is not a failure.
+        """
+        with self._transaction() as db:
+            job = self._owned(db, {"job_id": job_id, "attempt": attempt, "lease_token": lease_token})
+            if not job:
+                return False
+            db.execute("UPDATE jobs SET state='paused',resume_at=?,lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE job_id=?",
+                       (int(resume_at), time.time(), job_id))
+            self._event(db, job["run_id"], "job.paused",
+                       {"attempt": job["attempt"], "resume_at": int(resume_at), "reason": reason}, job_id)
+            return True
+
+    def unpause_due_jobs(self, now_epoch: float | None = None) -> list[dict]:
+        """Move 'paused' rows whose ``resume_at`` has passed back to 'queued'.
+
+        The attempt number is left untouched. Idempotent: a row this call
+        already requeued no longer matches the ``state='paused'`` filter, so
+        calling it repeatedly (as ordinary polling does) requeues each due
+        job exactly once.
+        """
+        now_epoch = time.time() if now_epoch is None else now_epoch
+        requeued: list[dict] = []
+        with self._transaction() as db:
+            due = [self._row(r) for r in db.execute(
+                "SELECT * FROM jobs WHERE state='paused' AND resume_at IS NOT NULL AND resume_at<=?", (now_epoch,))]
+            for job in due:
+                db.execute("UPDATE jobs SET state='queued',updated_at=? WHERE job_id=?", (time.time(), job["job_id"]))
+                self._event(db, job["run_id"], "job.unpaused", {"attempt": job["attempt"]}, job["job_id"])
+                requeued.append({"job_id": job["job_id"], "state": "queued", "reason": "Provider usage window reopened; resumed automatically."})
+        return requeued
+
     def reconcile_jobs(self, *, now: float | None = None,
                        process_alive: Callable[[int, str | None], bool | None] | None = None) -> list[dict]:
         """Fence expired owners, retry read-only work, inspect ambiguous checks.
 
         A live or unidentifiable process is never killed or assumed stopped.
-        Its old attempt cannot publish evidence once expired.
+        Its old attempt cannot publish evidence once expired. Due paused jobs
+        are also requeued here so ordinary status polling resumes them.
         """
         now = time.time() if now is None else now
         process_alive = process_alive or _process_alive
-        recovered = []
+        recovered = list(self.unpause_due_jobs(now))
         with self._transaction() as db:
             jobs = [self._row(r) for r in db.execute("SELECT * FROM jobs WHERE state='running' AND lease_expires_at<=?", (now,))]
             for job in jobs:

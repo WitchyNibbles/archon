@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -173,3 +176,140 @@ def test_large_derived_baseline_is_not_limited_like_model_context(store):
     assert run["baseline"] == baseline
     with pytest.raises(StoreError, match="2 MB"):
         store.save_checkpoint("large-run", {"text": "x" * 2_000_001})
+
+
+def test_paused_job_is_hidden_from_claim_until_resume_at_then_claimable(store, monkeypatch):
+    record = job(store)
+    lease = store.claim_job(record["job_id"], "executor")
+    resume_at = int(time.time()) + 1000
+    assert store.pause_job(record["job_id"], lease.attempt, lease.lease_token, resume_at, "usage window closed")
+    paused = store.get_job(record["job_id"])
+    assert paused["state"] == "paused"
+    assert paused["resume_at"] == resume_at
+    assert store.claim_job(record["job_id"], "someone-else") is None
+    # Advance the store's own clock (not a synthetic `now` passed only to one
+    # call) so both `unpause_due_jobs` and `claim_job`'s own `time.time()`
+    # agree the window has reopened, exactly as they would in production.
+    monkeypatch.setattr("archon.store.time.time", lambda: resume_at + 1)
+    requeued = store.unpause_due_jobs()
+    assert [item["job_id"] for item in requeued] == [record["job_id"]]
+    assert store.get_job(record["job_id"])["state"] == "queued"
+    resumed = store.claim_job(record["job_id"], "someone-else")
+    assert resumed is not None
+    assert store.get_job(record["job_id"])["state"] == "running"
+
+
+def test_pause_and_resume_preserve_the_running_attempt_number(store):
+    record = job(store)
+    lease = store.claim_job(record["job_id"], "executor")
+    before = lease.attempt
+    assert store.pause_job(record["job_id"], lease.attempt, lease.lease_token, int(time.time()) - 1, "usage window closed")
+    store.unpause_due_jobs()
+    resumed = store.claim_job(record["job_id"], "executor-2")
+    assert resumed.attempt == before
+    assert store.get_job(record["job_id"])["attempt"] == before
+
+
+def test_pause_job_rejected_for_stale_lease_wrong_attempt_or_not_running(store, monkeypatch):
+    record = job(store)
+    lease = store.claim_job(record["job_id"], "executor")
+    resume_at = int(time.time()) + 1000
+    assert not store.pause_job(record["job_id"], lease.attempt + 1, lease.lease_token, resume_at, "wrong attempt")
+    assert not store.pause_job(record["job_id"], lease.attempt, "wrong-token", resume_at, "wrong token")
+    expired_at = store.get_job(record["job_id"])["lease_expires_at"] + 1
+    monkeypatch.setattr("archon.store.time.time", lambda: expired_at)
+    assert not store.pause_job(record["job_id"], lease.attempt, lease.lease_token, resume_at, "stale lease")
+    monkeypatch.undo()
+    other = job(store, key="not-running")
+    assert not store.pause_job(other["job_id"], 1, "whatever", resume_at, "not running")
+    assert store.pause_job(record["job_id"], lease.attempt, lease.lease_token, resume_at, "actually pause")
+    assert store.get_job(record["job_id"])["state"] == "paused"
+    assert not store.pause_job(record["job_id"], lease.attempt, lease.lease_token, resume_at, "already paused")
+
+
+def test_unpause_due_jobs_requeues_exactly_once_even_if_called_repeatedly(store):
+    record = job(store)
+    lease = store.claim_job(record["job_id"], "executor")
+    assert store.pause_job(record["job_id"], lease.attempt, lease.lease_token, int(time.time()) - 1, "already due")
+    first = store.unpause_due_jobs()
+    assert [item["job_id"] for item in first] == [record["job_id"]]
+    assert store.get_job(record["job_id"])["state"] == "queued"
+    assert store.unpause_due_jobs() == []
+    assert store.reconcile_jobs() == []
+
+
+_LEGACY_V1_SCHEMA = """
+    CREATE TABLE runs (
+        run_id TEXT PRIMARY KEY, worktree_id TEXT NOT NULL, state TEXT NOT NULL,
+        spec TEXT NOT NULL, baseline TEXT, checkpoint TEXT, gate TEXT,
+        created_at REAL NOT NULL, updated_at REAL NOT NULL
+    );
+    CREATE UNIQUE INDEX active_worktree ON runs(worktree_id)
+        WHERE state NOT IN ('verified','cancelled');
+    CREATE TABLE tasks (
+        run_id TEXT NOT NULL REFERENCES runs(run_id), task_id TEXT NOT NULL,
+        state TEXT NOT NULL, spec TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(run_id,task_id)
+    );
+    CREATE TABLE jobs (
+        job_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
+        kind TEXT NOT NULL, role TEXT, state TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE, candidate TEXT NOT NULL,
+        payload TEXT NOT NULL, result TEXT, error TEXT,
+        attempt INTEGER NOT NULL DEFAULT 0, lease_token TEXT, lease_expires_at REAL,
+        owner TEXT, process_id INTEGER, process_identity TEXT,
+        created_at REAL NOT NULL, updated_at REAL NOT NULL
+    );
+    CREATE INDEX jobs_run ON jobs(run_id,state);
+    CREATE TABLE evidence (
+        evidence_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
+        job_id TEXT NOT NULL REFERENCES jobs(job_id), attempt INTEGER NOT NULL,
+        kind TEXT NOT NULL, invocation_id TEXT NOT NULL,
+        candidate_digest TEXT NOT NULL, checks_digest TEXT NOT NULL,
+        payload TEXT NOT NULL, created_at REAL NOT NULL,
+        UNIQUE(job_id,attempt,kind,invocation_id)
+    );
+    CREATE TABLE checkpoints (
+        checkpoint_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
+        payload TEXT NOT NULL, created_at REAL NOT NULL
+    );
+    CREATE TABLE events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL REFERENCES runs(run_id), job_id TEXT,
+        kind TEXT NOT NULL, payload TEXT NOT NULL, created_at REAL NOT NULL,
+        event_key TEXT UNIQUE
+    );
+    PRAGMA user_version=1;
+"""
+
+
+def test_v1_database_opens_and_migrates_to_v2_keeping_its_rows(tmp_path):
+    state_dir = tmp_path / "legacy"
+    state_dir.mkdir(mode=0o700)
+    legacy = sqlite3.connect(state_dir / "state.sqlite3")
+    try:
+        legacy.executescript(_LEGACY_V1_SCHEMA)
+        legacy.execute("INSERT INTO runs(run_id,worktree_id,state,spec,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                       ("legacy-run", "legacy-tree", "active", json.dumps({"goal": "Preexisting"}), 1.0, 1.0))
+        legacy.execute(
+            "INSERT INTO jobs(job_id,run_id,kind,state,idempotency_key,candidate,payload,attempt,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("legacy-job", "legacy-run", "check", "queued", "legacy-key", json.dumps({}), json.dumps({}), 0, 1.0, 1.0))
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    upgraded = Store(state_dir)
+    try:
+        assert upgraded._db.execute("PRAGMA user_version").fetchone()[0] == 2
+        run = upgraded.get_run("legacy-run")
+        assert run["spec"] == {"goal": "Preexisting"}
+        jobs = upgraded.list_jobs("legacy-run")
+        assert len(jobs) == 1
+        assert jobs[0]["job_id"] == "legacy-job"
+        assert jobs[0]["resume_at"] is None
+        lease = upgraded.claim_job("legacy-job", "executor")
+        assert lease is not None
+        assert lease.attempt == 1
+    finally:
+        upgraded.close()
