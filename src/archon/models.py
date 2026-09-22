@@ -35,6 +35,21 @@ Role = Literal["reviewer", "qa_engineer", "security_reviewer"]
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+class RateLimited(Exception):
+    """The provider closed a usage window.  A pause, never a failure.
+
+    ``resume_at`` is epoch seconds taken from the runtime's own signal
+    (``rate_limit_event.rate_limit_info.resetsAt`` or a parsed usage-limit
+    message).  A paused job consumes no attempt.
+    """
+
+    def __init__(self, resume_at: int, *, window: str = "unknown", detail: str = "") -> None:
+        super().__init__(f"usage window {window} closed until {resume_at}: {detail}".strip())
+        self.resume_at = int(resume_at)
+        self.window = window
+        self.detail = detail
+
+
 class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True, validate_default=True)
 
@@ -62,6 +77,7 @@ class TaskStatus(StrEnum):
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    PAUSED = "paused"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
@@ -95,17 +111,25 @@ def relative_path(value: str) -> str:
 
 
 class Policy(Model):
-    sandbox_mode: Literal["workspace-write"] = "workspace-write"
-    review_sandbox_mode: Literal["read-only"] = "read-only"
+    """Kernel-owned execution policy.
+
+    ``network_access`` stays ``Literal[False]``: no run has needed egress from a
+    check, and DevGod's first field failure was a policy that could not be
+    widened.  Widen it only together with a run that required it.
+    """
+
     approval_policy: Literal["never"] = "never"
     network_access: Literal[False] = False
     review_model: ShortText | None = None
     review_routes: dict[Role, ModelRoute] = Field(default_factory=dict)
+    fable_allowed: StrictBool = False
     max_parallel_reviews: int = Field(default=3, strict=True, ge=1, le=3)
     max_attempts: int = Field(default=3, strict=True, ge=1, le=5)
     command_timeout_seconds: int = Field(default=600, strict=True, ge=1, le=3600)
     review_timeout_seconds: int = Field(default=900, strict=True, ge=1, le=3600)
+    review_budget_usd: float = Field(default=3.0, gt=0, le=50, allow_inf_nan=False)
     max_output_bytes: int = Field(default=1_048_576, strict=True, ge=1024, le=16_777_216)
+    scratch_bytes: int = Field(default=2_147_483_648, strict=True, ge=1_048_576)
 
     @field_validator("review_model")
     @classmethod
@@ -119,15 +143,20 @@ class Policy(Model):
         if route := self.review_routes.get(role):
             return route
         if self.review_model is not None:
-            return ModelRoute(model=self.review_model, reasoning_effort="high")
-        return ModelRoute(model="gpt-5.6-terra", reasoning_effort="high")
+            return ModelRoute(model=self.review_model, effort="high")
+        return ModelRoute(model="opus", effort="high")
 
 
 class ModelRoute(Model):
-    """Pinned model and reasoning level for a role-owned Codex invocation."""
+    """Pinned model and effort for a role-owned Claude Code invocation.
+
+    ``model`` is a Claude Code alias (``opus``/``sonnet``/``haiku``/``fable``) or a
+    full model id.  Haiku is never a reviewer default: it does not reliably call
+    the engine's ``StructuredOutput`` tool (see docs/research).
+    """
 
     model: ShortText
-    reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
 
     @field_validator("model")
     @classmethod
@@ -262,6 +291,7 @@ class CommandResult(Model):
     finished_at: ShortText | None = None
     stdout_path: PathText | None = None
     stderr_path: PathText | None = None
+    sandbox_profile_digest: Digest | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -301,9 +331,11 @@ class ReviewResult(Model):
     candidate_digest: Digest
     checks_digest: Digest
     payload: ReviewPayload | None = None
-    thread_id: ShortText | None = None
-    turn_id: ShortText | None = None
+    session_id: ShortText | None = None
+    result_uuid: ShortText | None = None
     error: Text | None = None
+    rate_limited_until: int | None = Field(default=None, strict=True, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     duration_seconds: float = Field(default=0, ge=0, allow_inf_nan=False)
 
     @property

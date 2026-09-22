@@ -115,7 +115,7 @@ class SimulatedAdapter:
         return {
             "invocation_id": invocation_id, "role": role,
             "candidate_digest": candidate.candidate_digest, "checks_digest": candidate.checks_digest,
-            "thread_id": "shared" if self.shared_thread else f"thread-{invocation_id}", "turn_id": f"turn-{invocation_id}",
+            "session_id": "shared" if self.shared_thread else f"thread-{invocation_id}", "result_uuid": f"turn-{invocation_id}",
             "payload": payload,
         }
 

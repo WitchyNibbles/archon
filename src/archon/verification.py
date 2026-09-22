@@ -505,7 +505,7 @@ class VerificationRunner:
                     captured[stream].append(chunk.decode("utf-8", errors="replace"))
                     captured_bytes += len(chunk)
             elif event_count < 128:
-                safe: dict[str, Any] = {key: str(event[key])[:1000] for key in ("kind", "thread_id", "turn_id", "process_id", "model", "method", "item_type") if key in event}
+                safe: dict[str, Any] = {key: str(event[key])[:1000] for key in ("kind", "session_id", "result_uuid", "process_id", "model", "method", "item_type") if key in event}
                 safe["invocation_id"] = invocation_id
                 safe["attempt"] = attempt
                 if event.get("kind") == "provider_process" and isinstance(event.get("process_identity"), dict):
@@ -670,8 +670,8 @@ class VerificationRunner:
                         or result_data.get("role") != role
                         or result_data.get("candidate_digest") != candidate.candidate_digest
                         or result_data.get("checks_digest") != candidate.checks_digest
-                        or not result_data.get("thread_id")
-                        or not result_data.get("turn_id")
+                        or not result_data.get("session_id")
+                        or not result_data.get("result_uuid")
                         or not getattr(self.adapter, "termination_confirmed", lambda _: False)(invocation_id)
                     ):
                         raise VerificationError("Review result lacks the assigned invocation, candidate, independent session provenance, or confirmed runtime termination.")
@@ -689,7 +689,7 @@ class VerificationRunner:
                             "payload": {
                                 "role": role, "invocation_id": invocation_id,
                                 "candidate_digest": candidate.candidate_digest, "checks_digest": candidate.checks_digest,
-                                "thread_id": result_data.get("thread_id"), "turn_id": result_data.get("turn_id"),
+                                "session_id": result_data.get("session_id"), "result_uuid": result_data.get("result_uuid"),
                                 "payload": _data(payload), "artifacts": [artifact], "succeeded": approved,
                             },
                         },
@@ -792,7 +792,7 @@ class VerificationRunner:
             else:
                 accepted.append(matches[-1]["evidence_id"])
         seen_invocations: set[str] = set()
-        seen_threads: set[str] = set()
+        seen_sessions: set[str] = set()
         for role in ROLES:
             matches = [item for item in valid if item["kind"] == "review" and item["payload"].get("role") == role]
             match = matches[-1] if matches else None
@@ -805,13 +805,13 @@ class VerificationRunner:
                 unmet.append(f"Independent {role} review is incomplete or contains blocking findings.")
                 continue
             invocation = match["invocation_id"]
-            thread = envelope.get("thread_id")
-            if invocation in seen_invocations or (thread and thread in seen_threads):
+            session = envelope.get("session_id")
+            if invocation in seen_invocations or (session and session in seen_sessions):
                 unmet.append(f"Independent {role} review reused another review invocation/session.")
                 continue
             seen_invocations.add(invocation)
-            if thread:
-                seen_threads.add(thread)
+            if session:
+                seen_sessions.add(session)
             accepted.append(match["evidence_id"])
         for job in jobs:
             bound = job.get("candidate", {})

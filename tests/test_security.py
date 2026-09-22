@@ -162,7 +162,7 @@ class _PassingAdapter:
             invocation_id=invocation_id, role=role,
             candidate_digest=candidate.candidate_digest,
             checks_digest=candidate.checks_digest,
-            thread_id=f"thread-{invocation_id}", turn_id=f"turn-{invocation_id}",
+            session_id=f"thread-{invocation_id}", result_uuid=f"turn-{invocation_id}",
             payload=ReviewPayload(
                 decision="approve", summary="Synthetic security regression approval.",
                 acceptance_ids=packet["acceptance_ids"],

@@ -141,8 +141,8 @@ class DeterministicCodexTransport:
             role=role,
             candidate_digest=candidate.candidate_digest,
             checks_digest=candidate.checks_digest,
-            thread_id=f"fixture-thread-{invocation_id}",
-            turn_id=f"fixture-turn-{invocation_id}",
+            session_id=f"fixture-thread-{invocation_id}",
+            result_uuid=f"fixture-turn-{invocation_id}",
             payload=ReviewPayload(
                 decision="request_changes" if rejected else "approve",
                 summary="Negative prices remain accepted." if rejected else "Assigned review passed.",
@@ -353,7 +353,7 @@ def test_duplicate_dispatch_and_interruption_preserve_unfinished_work(
         assert len(transport.command_calls) == 1
         assert service.next_action(run_id)["action"] == "wait"
         continuation = handle_event(
-            {"hook_event_name": "Stop", "session_id": "acceptance-session", "turn_id": "wait-1"},
+            {"hook_event_name": "Stop", "session_id": "acceptance-session", "result_uuid": "wait-1"},
             service=service,
         )
         assert continuation.get("decision") == "block", "A running gate must not need a user wakeup."

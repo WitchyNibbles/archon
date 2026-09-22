@@ -224,7 +224,7 @@ def test_public_report_exposes_actionable_current_findings_and_check_logs(servic
             rejected = role == "reviewer"
             return ReviewResult(invocation_id=invocation_id, role=role,
                                 candidate_digest=candidate.candidate_digest, checks_digest=candidate.checks_digest,
-                                thread_id=f"thread-{role}", turn_id=f"turn-{role}", payload={
+                                session_id=f"thread-{role}", result_uuid=f"turn-{role}", payload={
                                     "decision": "request_changes" if rejected else "approve",
                                     "summary": "The subtotal calculation requires repair." if rejected else "Accepted.",
                                     "acceptance_ids": ["AC-1"], "evidence_refs": [packet["candidate_reference"]],
