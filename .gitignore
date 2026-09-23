@@ -6,3 +6,6 @@ __pycache__/
 .ruff_cache/
 dist/
 .archon/
+
+# Local MCP tooling state, never part of the project.
+.serena/
