@@ -22,8 +22,9 @@ independent model reviews.
 ## Automated checks
 
 `bash scripts/check.sh` runs ruff over `src tests scripts`, mypy over the package, and the
-non-live suite. CI runs the same three on Python 3.12 and 3.13 with `bubblewrap` and
-`socat` installed, so the `sandbox`-marked tests run there rather than skipping.
+non-live suite. CI runs the same three on Python 3.12 and 3.13. It installs `bubblewrap`
+and `socat`, which is necessary for the `sandbox`-marked tests but — as the first run
+showed — not sufficient; see below.
 
 Observed locally on Python 3.12.3, engine 2.1.280:
 
