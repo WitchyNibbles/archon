@@ -5,10 +5,10 @@ evidence the tier demands.
 
 1. **Automated checks** — ruff, mypy, and the non-live pytest suite, run by
    `bash scripts/check.sh` and by CI on Python 3.12 and 3.13.
-2. **Sandbox-marked tests** — real `bubblewrap` confinement. They run on this host. Whether
-   they run on CI is an open question: the first CI run showed a GitHub runner refusing the
-   profile's own network-namespace flag (see below). They skip cleanly where the capability
-   is absent, and a skip is never reported as a pass.
+2. **Sandbox-marked tests** — real `bubblewrap` confinement. They run on this host and
+   they **skip on GitHub runners**, which cannot establish a user namespace at all (see
+   below). Confinement is therefore proven on a developer host and nowhere else. They skip
+   cleanly where the capability is absent, and a skip is never reported as a pass.
 3. **Spike evidence** — capability probes against the installed Claude Code, recorded as
    JSON under `docs/evidence/`. A spike verdict is `PASS`, `FAIL`, or `UNRESOLVED`; an
    `UNRESOLVED` restricts downstream code to the literal confirmed form it recorded.
@@ -23,8 +23,8 @@ independent model reviews.
 
 `bash scripts/check.sh` runs ruff over `src tests scripts`, mypy over the package, and the
 non-live suite. CI runs the same three on Python 3.12 and 3.13. It installs `bubblewrap`
-and `socat`, which is necessary for the `sandbox`-marked tests but — as the first run
-showed — not sufficient; see below.
+and `socat`, which is necessary for the `sandbox`-marked tests but — as the runners
+proved — not sufficient; see below.
 
 Observed locally on Python 3.12.3, engine 2.1.280:
 
@@ -32,32 +32,57 @@ Observed locally on Python 3.12.3, engine 2.1.280:
 |---|---|
 | ruff | clean over `src`, `tests`, `scripts` |
 | mypy | clean, 24 source files |
-| pytest `-m 'not live'` | 470 passed, 0 failed, ~67 s |
-| pytest `-m sandbox` | 27 passed, 443 deselected, ~15 s |
+| pytest `-m 'not live'` | 471 passed, 0 failed, ~73 s |
+| pytest `-m sandbox` | 27 passed, 444 deselected, ~14 s |
 | pytest `-m live` | **0 tests exist** |
 
 Three things a reader should not infer from that table.
 
-**CI has now run once, and it failed — on the workflow, not the code.** The repository was
-published on 2026-09-23 and the first run failed both matrix jobs before a single test
-executed. The cause was a capability probe written as a gate: the "report sandbox
-availability" step ran under `set -e`, so when the runner refused `bwrap --unshare-net`
-the whole job died. A probe that can fail the build is not a probe, and that step is now
-diagnostic only.
+**CI took four runs to go green, and the first three failures were in the harness, not
+the kernel.** The repository was published on 2026-09-23. Run 1 failed both matrix jobs
+before a single test executed, because a capability probe had been written as a gate: the
+"report sandbox availability" step ran under `set -e`, so when the runner refused
+`bwrap --unshare-net` the whole job died. A probe that can fail the build is not a probe,
+and that step is now diagnostic only. Runs 2 and 3 failed on three tests that asked the
+host for a capability it did not have and then called its absence a defect — two guarded
+on the *presence* of `bwrap` and `socat` rather than on whether they could be used, and
+one asserted `available is True` where it meant that version drift must not change
+availability. Each now asserts what it actually claims.
 
-The refusal itself is a real platform fact and is recorded verbatim:
+Run 4, commit `4bc47e9`, is green: `check (3.12)`, `check (3.13)`, and `build` all pass,
+with 442 passed and 29 skipped on each Python.
+
+**The confinement question is settled, and the answer is no.** A GitHub `ubuntu-latest`
+runner cannot establish a user namespace at all, so bubblewrap is unusable there whether
+or not the profile unshares the network. Recorded verbatim from run 4:
 
 ```
+bubblewrap 0.9.0
+--- unshare-net (the profile's own flag) ---
 bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+RESULT: unshare-net refused (exit 1)
+--- without unshare-net ---
+bwrap: setting up uid map: Permission denied
+RESULT: bwrap unusable entirely (exit 1)
+--- what the kernel module says ---
+1
+1
 ```
 
-**This puts AC-16 on CI in doubt, and the doubt is not yet resolved.** The check profile
-unshares the network namespace, and a GitHub runner appears unable to bring up loopback
-inside one. If that holds, the `sandbox`-marked tests will *skip* on CI rather than run,
-which means confinement is proven on a developer host and nowhere else. The workflow now
-reports which of those tests actually executed, so the answer appears in the run log
-instead of being assumed. **Until that report has been read, do not claim CI proves
-AC-16.** The tier list at the top of this document has been corrected accordingly.
+The two trailing `1`s are `kernel.unprivileged_userns_clone` and
+`kernel.apparmor_restrict_unprivileged_userns`. The sysctl permits the clone and AppArmor
+then refuses the uid map. The second arm is what turns this from a guess into a finding:
+dropping `--unshare-net` does not rescue it, so this is not the profile's network flag
+being unwelcome, it is the sandbox primitive itself being denied.
+
+So **all 27 `sandbox`-marked tests skip on CI**, and the run log names every one with the
+probe's own message. AC-16 is proven on a developer host with a working bubblewrap and
+nowhere else. CI proves that the code lints, types, and passes every test that does not
+need confinement — read the green matrix as that and no more.
+
+This is not a gap to be closed by trying harder on the runner. A host that can confine is
+a prerequisite the workflow cannot manufacture; closing it means a self-hosted or
+privileged runner, and that is a decision no one has made.
 
 **The `live` marker names an empty tier.** `scripts/check.sh` and the repository rules both
 describe tests that need an authenticated engine, and there are none. The live proofs are
@@ -297,6 +322,7 @@ really denies what this document says it denies.
 
 It does **not** entitle you to conclude that a real reviewer session is hermetic beyond the
 one spike and the one confirmed denied path; that Archon has ever completed an authenticated
-model call through the production adapter; that CI has ever executed; or that the manager
-workflow behaves as designed in a live session. Those are the two unrun smoke scripts and
-the spike named in AC-17, and until they run this record says so.
+model call through the production adapter; that CI confines anything; or that the manager
+workflow behaves as designed in a live session. CI has now run and is green, but it runs
+without bubblewrap, so it says nothing about the profile. The rest are the two unrun smoke
+scripts and the spike named in AC-17, and until they run this record says so.

@@ -19,9 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The check profile is enforced by bubblewrap; without it the sandbox-marked
-      # tests skip and AC-16 goes unproven on CI. A skip is never a pass, so this
-      # reports what the runner can actually do and the record states it.
+      # The check profile is enforced by bubblewrap, and these runners cannot run it:
+      # AppArmor refuses the uid map, so the sandbox-marked tests skip here and AC-16
+      # is unproven on CI. Installing it anyway keeps the next step's probe honest —
+      # it must report a refused capability, not a missing binary.
       - name: Install sandbox dependencies
         run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
 
@@ -33,6 +34,11 @@ jobs:
       # before a single test executed. A probe that can fail the build is not a
       # probe. What the runner reported, verbatim:
       #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+      #     bwrap: setting up uid map: Permission denied
+      #
+      # The second arm is why both are printed: without it, the first line reads
+      # like the profile's network flag being unwelcome. With it, the finding is
+      # that the sandbox primitive is denied outright. Keep both arms.
       - name: Report sandbox availability
         continue-on-error: true
         run: |
