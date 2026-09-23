@@ -2,8 +2,9 @@
 
 The manifest records ownership; it never authorizes an arbitrary path. Claude Code
 itself owns project trust and the first-use hook approval prompt, so ``init`` never
-writes trust, ``permissions.defaultMode``, ``model``, ``sandbox``, ``statusLine``,
-or anything under ``~/.claude``.
+writes trust, ``permissions.defaultMode``, ``model``, ``sandbox``, or anything
+under ``~/.claude``. ``statusLine`` is added only where the repository has none: a
+status line someone already chose stays theirs.
 
 Every configuration change is a pure insertion whose exact text is recorded, so
 ``uninstall`` restores the original bytes by deleting what was inserted, and a
@@ -51,6 +52,7 @@ from .jsonc import (
     _document,
     _insert,
     _members,
+    _occupied,
     _satisfied,
     _strip,
     _Unit,
@@ -301,6 +303,11 @@ def _hook_command(argv: list[str], root: Path, state_home: str | None) -> str:
     return shlex.join([ENV_BIN, *NEUTRAL_ENV, *argv, *_options(root, state_home), "hook"])
 
 
+def _statusline(argv: list[str]) -> dict[str, Any]:
+    """The status line entry: a sensor, neutralized exactly as the hook command is."""
+    return {"type": "command", "command": shlex.join([ENV_BIN, *NEUTRAL_ENV, *argv, "statusline"])}
+
+
 def _hook_groups(argv: list[str], root: Path, state_home: str | None = None) -> dict[str, list[dict[str, Any]]]:
     command = _hook_command(argv, root, state_home)
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -409,7 +416,7 @@ def _apply(plan: _Plan, path: str, text: str, units: list[_Unit], previous: list
     edited = [record for record in previous if not present[record["id"]]]
     result: list[dict[str, str]] = list(edited)
     for unit in units:
-        if any(record["id"] == unit.id for record in edited) or _satisfied(text, unit):
+        if any(record["id"] == unit.id for record in edited) or _satisfied(text, unit) or _occupied(text, unit):
             plan.retained.append(f"{path}#{unit.id}")
             continue
         text, inserted = _insert(text, unit)
@@ -431,6 +438,7 @@ def _config_units(server: str, argv: list[str], root: Path, state_home: str | No
         SETTINGS: [
             _Unit("permissions.allow", ("permissions", "allow"), None, _allow_rule(server)),
             *hooks,
+            _Unit("statusLine", (), "statusLine", _statusline(argv)),
         ],
     }
 

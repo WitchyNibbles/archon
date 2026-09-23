@@ -220,7 +220,7 @@ S12 and the S2 repair settled the open question, and the answer inverted the pla
 | `.claude/agents/archon-familiar.md`, `archon-warden.md`, `archon-oracle.md` | YAML frontmatter + body | An existing or user-edited file stays active; the packaged version goes to private backups as `.new`. |
 | `CLAUDE.md` | marker block `<!-- BEGIN ARCHON NATIVE -->` … `<!-- END ARCHON NATIVE -->` | Created if absent; appended otherwise; exactly one block. |
 | `.mcp.json` | span-preserving JSON edit of `mcpServers.archon` | Name collision → `archon_workflow`, `archon_workflow_N`. `command` is the absolute Python from the tool environment, `args = ["-I", "-m", "archon", "--repo", <root>, ("--state-home", …)?, "mcp"]`, `env = {"PYTHONNOUSERSITE": "1"}`. |
-| `.claude/settings.json` | span-preserving JSON edit | `permissions.allow` gains `"mcp__<server>__*"`; `hooks.<Event>[]` gains Archon's groups (see §Hooks). Existing entries, comments, and order untouched. **Never** writes `defaultMode`, `model`, `sandbox`, or `statusLine`. |
+| `.claude/settings.json` | span-preserving JSON edit | `permissions.allow` gains `"mcp__<server>__*"`; `hooks.<Event>[]` gains Archon's groups (see §Hooks). Existing entries, comments, and order untouched. Adds `statusLine` (the `archon statusline` sensor) only when the file has none. **Never** writes `defaultMode`, `model`, or `sandbox`. |
 | `.archon/native-install.json` | manifest v1, mode 0600 | Ownership, content hashes, runtime paths, created-flags. |
 | `.gitignore` | append `.archon/`, `.claude/worktrees/` if absent | Only if the file exists or `--gitignore` is passed. |
 

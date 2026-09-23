@@ -29,7 +29,7 @@ Install the Python distribution in a stable environment outside the consuming re
 | `.claude/skills/archon-manager/` | Manager instructions; numbered on collision. |
 | `.claude/agents/archon-{familiar,warden,oracle}.md` | Project-scoped role routes; an existing or edited file stays active rather than being overwritten. |
 | `.mcp.json` `archon` entry | Local stdio kernel. |
-| `.claude/settings.json` managed members | `permissions.allow: mcp__archon__*`; six hook groups. |
+| `.claude/settings.json` managed members | `permissions.allow: mcp__archon__*`; six hook groups; `statusLine` unless the repository already sets one. |
 | `.archon/native-install.json` | Ownership, content hashes, runtime paths. |
 
 User instructions and unrelated configuration remain intact, including comments and key order in `settings.json`. Repeating unchanged setup is byte-idempotent. Edited managed files are preserved and the installer reports backup locations under the private state root.
@@ -80,7 +80,7 @@ Options `--repo`, `--state-home`, `--json` precede the subcommand; every command
 | `wait JOB --timeout SECONDS` | Observe a job for up to 60 seconds, including a paused one. |
 | `recover JOB --attempt N --candidate-digest HASH --checks-digest HASH --observations TEXT` | Record manager inspection and retry a stopped attempt. |
 | `cancel [RUN]` | Cancel owned jobs, preserving work and history. |
-| `mcp`, `hook` | Generated native host entry points. |
+| `mcp`, `hook`, `statusline` | Generated native host entry points. `statusline` renders 🧙, model/effort, a gradient context bar, 🕐 5-hour left and 📅 weekly left, in blue and purple tones with a dark-gray `│` between; a field the engine has not sent yet reads `--`. |
 | `spikes [--id S1…] [--allow-live] [--budget-usd N]` | Run the capability spike book against the installed engine and record its evidence. |
 
 `init` accepts `--fable` (the Oracle may use fable; otherwise it pins `opus`/`max`), `--gitignore` (create `.gitignore` when absent) and `--migrate`. `start` accepts `--tasks FILE` and `--checks FILE`, each a JSON array of the corresponding specification.

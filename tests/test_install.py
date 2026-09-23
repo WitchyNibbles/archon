@@ -120,8 +120,8 @@ def test_generated_runtime_paths_never_grant_host_permissions(repo: Path) -> Non
     ]
     assert server["env"] == {"PYTHONNOUSERSITE": "1"}
     assert document["permissions"] == {"allow": ["mcp__archon__*"]}
-    assert set(document) == {"permissions", "hooks"}
-    assert not {"defaultMode", "model", "sandbox", "statusLine"} & set(document)
+    assert set(document) == {"permissions", "hooks", "statusLine"}
+    assert not {"defaultMode", "model", "sandbox"} & set(document)
     assert {event for event, _matcher in install.HOOK_EVENTS} == set(document["hooks"])
     for event, matcher in install.HOOK_EVENTS:
         group = document["hooks"][event][0]
@@ -249,7 +249,10 @@ def test_an_edited_managed_region_stays_active_and_is_not_duplicated(repo: Path,
     assert not install.doctor(repo)["ok"]
 
     install.uninstall(repo)
-    assert path.read_text() == edited
+    # The edited hooks stay; the untouched status line Archon owns does not.
+    kept = install._document(edited)
+    del kept["statusLine"]
+    assert settings(repo) == kept
 
 
 def test_an_edited_managed_instruction_block_remains_active(repo: Path) -> None:
@@ -787,3 +790,25 @@ def test_doctor_leaves_an_ordinary_path_alone_and_reads_the_profile_for_the_list
     assert Path(os.path.realpath(sandbox.default_runtime_dir())) in install._masked_roots()
     for declared in sandbox.DEFAULT_MASKED:
         assert Path(os.path.realpath(Path(declared).expanduser())) in install._masked_roots()
+
+
+def test_init_installs_the_neutralized_statusline(repo: Path, engine: None) -> None:
+    install.init(repo)
+    status = settings(repo)["statusLine"]
+    assert status["type"] == "command"
+    assert shlex.split(status["command"]) == [
+        "/usr/bin/env", "-u", "PYTHONPATH", "-u", "PYTHONHOME", "PYTHONNOUSERSITE=1", "PYTHONSAFEPATH=1",
+        sys.executable, "-I", "-m", "archon", "statusline",
+    ]
+    rendered = subprocess.run(status["command"], shell=True, input="{}", capture_output=True, text=True, timeout=20)
+    assert rendered.returncode == 0 and "\x1b[38;2;" in rendered.stdout
+    assert install.doctor(repo)["ok"], install.doctor(repo)["problems"]
+
+
+def test_a_repository_statusline_is_kept_not_replaced(repo: Path) -> None:
+    (repo / ".claude").mkdir()
+    (repo / install.SETTINGS).write_text(SETTINGS_FIXTURE)
+    result = install.init(repo)
+    assert settings(repo)["statusLine"] == {"type": "command", "command": "my-status"}
+    assert f"{install.SETTINGS}#statusLine" in result["preserved_edits"]
+    assert (repo / install.SETTINGS).read_text().count('"statusLine"') == 1

@@ -211,6 +211,14 @@ def _satisfied(text: str, unit: _Unit) -> bool:
     return unit.value in _decode(text, span[0])[0]
 
 
+def _occupied(text: str, unit: _Unit) -> bool:
+    """A person already set this key, so Archon adds nothing rather than a duplicate."""
+    span, remaining = _descend(text, unit.path)
+    if remaining or unit.key is None or text[span[0]] != "{":
+        return False
+    return unit.key in _members(text, span[0])
+
+
 def _block(text: str, begin: str, end: str) -> tuple[int, int] | None:
     """The span of one marked region in a Markdown file, or None if unmarked.
 

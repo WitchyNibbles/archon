@@ -37,6 +37,7 @@ def _setup_commands(commands: argparse._SubParsersAction) -> None:
     commands.add_parser("uninstall", help="Remove only Archon-owned repository integration")
     commands.add_parser("mcp", help="Run the local stdio MCP server")
     commands.add_parser("hook", help="Handle one native Claude Code lifecycle event from stdin")
+    commands.add_parser("statusline", help="Render the Claude Code status line from its stdin payload")
 
     spikes = commands.add_parser("spikes", help="Run the capability spike book and record its evidence")
     spikes.add_argument("--id", nargs="+", metavar="ID", help="Run only these spike ids (default: the whole book)")
@@ -367,6 +368,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             create_server(args.repo, args.state_home).run(transport="stdio")
             return 0
+        if args.command == "statusline":
+            from .statusline import main as statusline_main
+
+            return statusline_main()
         if args.command == "hook":
             from .hooks import main as hook_main
 
