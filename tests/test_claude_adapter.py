@@ -639,14 +639,28 @@ async def test_capabilities_measures_locally_and_never_invokes_a_model(
 async def test_an_untested_engine_version_warns_and_never_blocks(
     adapter: ClaudeAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("FAKE_CLAUDE_VERSION", "9.9.9 (Claude Code)")
     monkeypatch.setattr("archon.claude_adapter.tested_engine_range", lambda: ["2.1.278", "2.1.278"])
-    capabilities = await adapter.capabilities()
 
-    assert capabilities["engine_version_tested"] is False
-    assert capabilities["warning"] is not None
-    assert "outside the tested range" in capabilities["warning"]
-    assert capabilities["available"] is True
+    monkeypatch.setenv("FAKE_CLAUDE_VERSION", "2.1.278 (Claude Code)")
+    tested = await adapter.capabilities()
+    monkeypatch.setenv("FAKE_CLAUDE_VERSION", "9.9.9 (Claude Code)")
+    drifted = await adapter.capabilities()
+
+    assert tested["engine_version_tested"] is True and tested["warning"] is None
+    assert drifted["engine_version_tested"] is False
+    assert drifted["warning"] is not None
+    assert "outside the tested range" in drifted["warning"]
+
+    # AC-22 is "drift never blocks", and the honest way to say that is that
+    # availability is *unchanged* by the drift — not that it is True.
+    #
+    # This asserted True and so demanded a host with a working sandbox. CI
+    # runners ship bubblewrap and refuse to run it, so the test failed there
+    # for a reason that has nothing to do with version drift, which is exactly
+    # the confusion it exists to prevent. Comparing the two runs is also
+    # strictly stronger: it would catch a version check that *raised*
+    # availability as well as one that lowered it.
+    assert drifted["available"] == tested["available"]
 
 
 def test_tested_range_is_derived_from_recorded_evidence() -> None:
