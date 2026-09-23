@@ -20,15 +20,37 @@ jobs:
       - uses: actions/checkout@v4
 
       # The check profile is enforced by bubblewrap; without it the sandbox-marked
-      # tests would skip and AC-16 would go unproven on CI.
+      # tests skip and AC-16 goes unproven on CI. A skip is never a pass, so this
+      # reports what the runner can actually do and the record states it.
       - name: Install sandbox dependencies
         run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
 
+      # Diagnostic only — it must never decide whether the job runs.
+      #
+      # The first CI run of this repository failed here, and the step was wrong,
+      # not the runner: `set -e` turned a capability probe into a gate, so a
+      # runner that cannot unshare a network namespace failed the whole matrix
+      # before a single test executed. A probe that can fail the build is not a
+      # probe. What the runner reported, verbatim:
+      #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
       - name: Report sandbox availability
+        continue-on-error: true
         run: |
+          set +e
           bwrap --version
           socat -V | head -1
-          bwrap --ro-bind / / --unshare-net -- true && echo "bwrap usable"
+          echo "--- unshare-net (the profile's own flag) ---"
+          bwrap --ro-bind / / --unshare-net -- true \
+            && echo "RESULT: unshare-net usable" \
+            || echo "RESULT: unshare-net refused (exit $?)"
+          echo "--- without unshare-net ---"
+          bwrap --ro-bind / / -- true \
+            && echo "RESULT: bwrap usable without netns" \
+            || echo "RESULT: bwrap unusable entirely (exit $?)"
+          echo "--- what the kernel module says ---"
+          cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo "(no unprivileged_userns_clone)"
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo "(no apparmor userns restriction knob)"
+          exit 0
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -47,6 +69,14 @@ jobs:
       # recorded separately in docs/verification.md, never in ordinary CI.
       - name: Test
         run: uv run --locked pytest -m 'not live' -q
+
+      # Says plainly whether AC-16 was proven on this runner or merely skipped.
+      - name: Report which confinement tests actually ran
+        continue-on-error: true
+        run: |
+          set +e
+          uv run --locked pytest -m sandbox -q -rs 2>&1 | tail -20
+          exit 0
 
   build:
     runs-on: ubuntu-latest

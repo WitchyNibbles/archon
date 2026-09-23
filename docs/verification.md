@@ -5,9 +5,10 @@ evidence the tier demands.
 
 1. **Automated checks** — ruff, mypy, and the non-live pytest suite, run by
    `bash scripts/check.sh` and by CI on Python 3.12 and 3.13.
-2. **Sandbox-marked tests** — real `bubblewrap` confinement. They run on this host and on
-   CI (which installs `bubblewrap` and `socat`); they skip cleanly elsewhere and a skip is
-   never reported as a pass.
+2. **Sandbox-marked tests** — real `bubblewrap` confinement. They run on this host. Whether
+   they run on CI is an open question: the first CI run showed a GitHub runner refusing the
+   profile's own network-namespace flag (see below). They skip cleanly where the capability
+   is absent, and a skip is never reported as a pass.
 3. **Spike evidence** — capability probes against the installed Claude Code, recorded as
    JSON under `docs/evidence/`. A spike verdict is `PASS`, `FAIL`, or `UNRESOLVED`; an
    `UNRESOLVED` restricts downstream code to the literal confirmed form it recorded.
@@ -36,11 +37,26 @@ Observed locally on Python 3.12.3, engine 2.1.280:
 
 Three things a reader should not infer from that table.
 
-**No CI run has ever happened.** The workflow is configured and the repository is local
-with no remote, so the Python 3.12/3.13 sentence above describes what CI *will* do, not
-what it has done. The branch was also named `master` while the workflow triggers on `main`,
-so a push would not have started one; that is fixed, and it is the kind of thing that only
-surfaces when someone reads the config against the repository instead of trusting it.
+**CI has now run once, and it failed — on the workflow, not the code.** The repository was
+published on 2026-09-23 and the first run failed both matrix jobs before a single test
+executed. The cause was a capability probe written as a gate: the "report sandbox
+availability" step ran under `set -e`, so when the runner refused `bwrap --unshare-net`
+the whole job died. A probe that can fail the build is not a probe, and that step is now
+diagnostic only.
+
+The refusal itself is a real platform fact and is recorded verbatim:
+
+```
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+```
+
+**This puts AC-16 on CI in doubt, and the doubt is not yet resolved.** The check profile
+unshares the network namespace, and a GitHub runner appears unable to bring up loopback
+inside one. If that holds, the `sandbox`-marked tests will *skip* on CI rather than run,
+which means confinement is proven on a developer host and nowhere else. The workflow now
+reports which of those tests actually executed, so the answer appears in the run log
+instead of being assumed. **Until that report has been read, do not claim CI proves
+AC-16.** The tier list at the top of this document has been corrected accordingly.
 
 **The `live` marker names an empty tier.** `scripts/check.sh` and the repository rules both
 describe tests that need an authenticated engine, and there are none. The live proofs are
