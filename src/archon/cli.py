@@ -341,6 +341,20 @@ async def _doctor(repo: Path) -> dict[str, Any]:
     finally:
         await adapter.close()
     result["runtime"] = {"python": sys.version.split()[0], "mcp": version("mcp"), **capabilities}
+
+    # An unavailable runtime must explain itself. This previously flipped `ok`
+    # to false and appended nothing, so `doctor` could report failure with an
+    # empty `problems` list — a verdict with no reason and no remedy, which is
+    # the diagnostic equivalent of saying "no" and hanging up. The first CI run
+    # of this repository produced exactly that: GitHub runners refuse
+    # bubblewrap outright, and the report said only `ok: false`.
+    if not capabilities.get("available"):
+        problems = result.setdefault("problems", [])
+        probe = capabilities.get("bwrap") or {}
+        reason = probe.get("reason") or "the managed runtime reported itself unavailable"
+        remedy = probe.get("remedy") or "Run `archon doctor` again after repairing the host runtime."
+        problems.append(f"Managed execution is unavailable: {reason} {remedy}")
+
     result["ok"] = bool(result.get("ok", True) and capabilities.get("available"))
     return result
 

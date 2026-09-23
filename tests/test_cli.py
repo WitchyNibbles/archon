@@ -17,12 +17,22 @@ from typing import Any
 import pytest
 
 from archon.cli import _criteria, _dispatch, _human, _parser, _read_json
+from archon.sandbox import probe_bwrap
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "claude"
+
 # doctor reports local prerequisites; its exit code legitimately depends on them.
+#
+# This guard used to ask `shutil.which("bwrap")` — whether the binary exists.
+# GitHub runners ship it and refuse to run it ("bwrap: loopback: Failed
+# RTM_NEWADDR: Operation not permitted"), so the guard did not fire, the tests
+# ran against an unusable runtime, and the first CI run of this repository
+# failed on them. Presence is not capability, which is the same mistake as
+# reading an absent file as a denial. Ask the real probe instead.
+_PROBE = probe_bwrap()
 PREREQUISITES = pytest.mark.skipif(
-    not (shutil.which("bwrap") and shutil.which("socat")),
-    reason="doctor reports bubblewrap and socat as missing prerequisites without them",
+    not (_PROBE.available and shutil.which("socat")),
+    reason=f"doctor reports prerequisites it cannot use: {_PROBE.message}",
 )
 
 
@@ -178,6 +188,28 @@ def test_doctor_warns_and_exits_zero_on_an_untested_engine(cli_repo: Path, tmp_p
     assert any("99.1.0" in warning and "run_all.py" in warning for warning in report["warnings"]), report
     assert report["runtime"]["engine_version_tested"] is False
     assert "spike" in report["runtime"]["warning"].lower()
+
+
+def test_doctor_never_reports_failure_without_naming_a_problem(cli_repo: Path) -> None:
+    """A verdict with no reason and no remedy is not a diagnostic.
+
+    Deliberately carries no prerequisite guard: it must hold on a host with a
+    working sandbox *and* on one without, which is the whole point. The first CI
+    run of this repository returned ``ok: false`` with ``problems: []`` because
+    GitHub runners refuse bubblewrap and `_doctor` flipped the verdict without
+    recording why. The two AC-22 tests skip where the runtime is unusable, so
+    this is what still covers that host on CI.
+    """
+    assert cli(cli_repo, "init").returncode == 0
+    completed = cli(cli_repo, "doctor")
+    report = json.loads(completed.stdout)
+
+    assert (completed.returncode == 0) is (report["ok"] is True), report
+    if report["ok"] is False:
+        assert report["problems"], "doctor reported failure and named nothing to fix"
+        assert all(isinstance(problem, str) and problem.strip() for problem in report["problems"])
+    # Version drift is a warning and never a problem, on every host (AC-22).
+    assert not any("outside the tested range" in problem for problem in report["problems"]), report
 
 
 def test_spikes_subcommand_passes_the_book_its_arguments_and_never_authorizes_spend(
