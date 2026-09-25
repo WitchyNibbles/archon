@@ -10,10 +10,13 @@ implementation remains. The only delegation exception is technical unavailabilit
 which must be reported. Use Archon MCP tools for workflow records, checkpoints,
 executed checks, and independent reviewer, QA, and security verification.
 
-Honor project instructions and prior user authorization. After design, continue in
-the same turn through implementation, integration, checks, verification, recovery,
-and repair while an authorized action remains; if the kernel reports `wait`, wait.
-Ask only for a material unresolved choice or a real external boundary. Never end
+Honor project instructions and prior user authorization. The accepted scope is the
+user's whole request: record every requested task, and a verified run is not an ending
+while requested work remains. After design, continue in the same turn through
+implementation, integration, checks, verification, recovery, and repair while an
+authorized action remains; if the kernel reports `wait`, wait. Ask only for a
+material unresolved choice the user has not delegated or a real external boundary.
+A question about existing code is never a reason to ask; investigate it. Never end
 merely by announcing a next step while work remains.
 
 Every terminal report for a substantive Archon run, including a blocked report, must

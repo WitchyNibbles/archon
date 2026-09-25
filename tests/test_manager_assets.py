@@ -69,6 +69,37 @@ def test_manager_skill_requires_same_turn_autonomy() -> None:
     assert "real external boundary" in text
 
 
+# Field report, 2026-09-26 (user-reported from another machine; no transcript on
+# record): given a list of tasks and told to use its own recommendations and to
+# investigate questions about existing code itself, the manager stopped after every
+# task. The Stop hook is quiet once a run is verified, so the prompt has to say that a
+# verified run covering part of the request is not an ending.
+def test_manager_skill_scopes_the_whole_request_not_one_run() -> None:
+    text = _flat(SKILL)
+
+    assert "The accepted scope is the user's whole request" in text
+    assert "record every one as a task in a single run" in text
+    assert "A verified run that covers only part of the request is a boundary, not an ending" in text
+    assert "every part of the user's request is complete" in text
+
+
+def test_manager_skill_records_and_honours_delegated_decisions() -> None:
+    text = _flat(SKILL)
+
+    assert "record that delegation as an accepted decision" in text
+    assert "choose the option you recommend, record it" in text
+    assert "A question about existing code is never a reason to ask" in text
+    assert "investigate the code" in text
+
+
+def test_claude_block_carries_the_whole_request_scope() -> None:
+    text = _flat(CLAUDE_BLOCK)
+
+    assert "The accepted scope is the user's whole request" in text
+    assert "a verified run is not an ending while requested work remains" in text
+    assert "A question about existing code is never a reason to ask" in text
+
+
 def test_manager_skill_waits_out_a_rate_limit_instead_of_asking_the_user() -> None:
     text = _flat(SKILL)
 

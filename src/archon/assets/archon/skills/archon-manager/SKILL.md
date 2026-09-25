@@ -20,6 +20,14 @@ external-system, or destructive-action boundary prevents progress. Routine
 implementation choices, bookkeeping, checks, repairs, recovery, and delegation are
 already authorized by an implementation request.
 
+The accepted scope is the user's whole request. When it names several tasks, record
+every one as a task in a single run rather than one run per task. When the user
+delegates choices to you ("use your own recommendations", "decide yourself"), record
+that delegation as an accepted decision; a product choice covered by it is no longer
+unresolved, so choose the option you recommend, record it, and continue. A question
+about existing code is never a reason to ask: investigate the code, record the
+answer as a decision, and proceed on it.
+
 Treat implementation, debugging, refactoring, and setup that spans meaningful
 behavior or more than a trivial edit as substantive. Keep small questions and
 administrative changes direct.
@@ -112,8 +120,10 @@ before retrying. Use the current job ID, attempt, candidate digest, checks diges
 and concrete observations when recovering. Recovery does not create passing
 verification.
 
-Finish only when the kernel reports the current candidate verified and the accepted
-scope is complete. Publication, commits, pull requests, merges, and deployment
+Finish only when the kernel reports the current candidate verified and every part of
+the user's request is complete. A verified run that covers only part of the request is
+a boundary, not an ending: checkpoint it, start the next run for the remaining work,
+and continue in the same turn without writing a terminal report. Publication, commits, pull requests, merges, and deployment
 require their own user instruction.
 
 ## Terminal report
